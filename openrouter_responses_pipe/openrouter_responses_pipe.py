@@ -69,7 +69,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine
+from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine, inspect as sa_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -79,7 +79,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency, handled via requirements metadata
     lz4frame = None
 
-try:  # Phase 4: optional Redis cache
+try:  # optional Redis cache
     import redis.asyncio as aioredis
 except ImportError:  # pragma: no cover - optional dependency
     aioredis = None
@@ -120,7 +120,7 @@ class _PipeJob:
         return str(self.user.get("id") or self.metadata.get("user_id") or "")
 
 
-# Phase 3: Tool Execution ----------------------------------------------------
+# Tool Execution ----------------------------------------------------
 @dataclass(slots=True)
 class _QueuedToolCall:
     call: dict[str, Any]
@@ -136,9 +136,12 @@ class _ToolExecutionContext:
     per_request_semaphore: asyncio.Semaphore
     global_semaphore: asyncio.Semaphore | None
     timeout: float
+    batch_timeout: float | None
+    idle_timeout: float | None
     user_id: str
     event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
     workers: list[asyncio.Task] = field(default_factory=list)
+    timeout_error: Optional[str] = None
 
 
 class EncryptedStr(str):
@@ -300,9 +303,9 @@ _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
 _PAYLOAD_HEADER_SIZE = 1
 
-# Phase 4: DB Persistence constants
+# DB Persistence constants
 _REDIS_FLUSH_CHANNEL = "db-flush"
-# Phase 4 valves (defaults pulled at runtime)
+# Valves (defaults pulled at runtime)
 
 
 class OpenRouterModelRegistry:
@@ -961,6 +964,21 @@ class Pipe:
             default=(os.getenv("OPENROUTER_API_KEY") or "").strip(),
             description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
         )
+        HTTP_CONNECT_TIMEOUT_SECONDS: int = Field(
+            default=10,
+            ge=1,
+            description="Seconds to wait for the TCP/TLS connection to OpenRouter before failing.",
+        )
+        HTTP_TOTAL_TIMEOUT_SECONDS: Optional[int] = Field(
+            default=None,
+            ge=1,
+            description="Overall HTTP timeout (seconds) for OpenRouter requests. Set to null to disable the total timeout so long-running streaming responses are not interrupted.",
+        )
+        HTTP_SOCK_READ_SECONDS: int = Field(
+            default=300,
+            ge=1,
+            description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors UX for slow providers.",
+        )
 
         # Models
         MODEL_ID: str = Field(
@@ -1063,13 +1081,13 @@ class Pipe:
             default=4,
             ge=1,
             le=8,
-            description="Number of per-request SSE worker tasks that parse streamed chunks (Phase 2).",
+            description="Number of per-request SSE worker tasks that parse streamed chunks.",
         )
         MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
             default=200,
             ge=1,
             le=2000,
-            description="Global ceiling for simultaneously executing tool calls (Phase 3).",
+            description="Global ceiling for simultaneously executing tool calls.",
         )
         MAX_PARALLEL_TOOLS_PER_REQUEST: int = Field(
             default=5,
@@ -1078,14 +1096,24 @@ class Pipe:
             description="Per-request concurrency limit for tool execution workers.",
         )
         TOOL_TIMEOUT_SECONDS: int = Field(
-            default=10,
+            default=60,
             ge=1,
-            le=120,
-            description="Max seconds to wait for an individual tool to finish before timing out.",
+            le=600,
+            description="Max seconds to wait for an individual tool to finish before timing out. Generous default reduces disruption for real-world tools.",
+        )
+        TOOL_BATCH_TIMEOUT_SECONDS: int = Field(
+            default=120,
+            ge=1,
+            description="Max seconds to wait for a batch of tool calls to complete before timing out. Longer default keeps complex batches from being interrupted prematurely.",
+        )
+        TOOL_IDLE_TIMEOUT_SECONDS: Optional[int] = Field(
+            default=None,
+            ge=1,
+            description="Idle timeout (seconds) between tool executions in a queue. Set to null for unlimited idle time so intermittent tool usage does not fail unexpectedly.",
         )
         ENABLE_REDIS_CACHE: bool = Field(
             default=True,
-            description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected (Phase 4).",
+            description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected.",
         )
         REDIS_CACHE_TTL_SECONDS: int = Field(
             default=300,
@@ -1109,7 +1137,7 @@ class Pipe:
             default=10,
             ge=5,
             le=20,
-            description="Number of artifacts to commit per DB batch (Phase 4).",
+            description="Number of artifacts to commit per DB batch.",
         )
         USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
             default=False,
@@ -1120,7 +1148,7 @@ class Pipe:
             description="When True, the final status message includes elapsed time, cost, and token usage.",
         )
         ENABLE_STATUS_CSS_PATCH: bool = Field(
-            default=False,
+            default=True,
             description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",
         )
 
@@ -1138,7 +1166,7 @@ class Pipe:
             description="Override whether the final status message includes usage stats.",
         )
 
-    # Phase 1: Core Structure — shared concurrency primitives
+    # Core Structure — shared concurrency primitives
     _QUEUE_MAXSIZE = 500
     _request_queue: asyncio.Queue[_PipeJob] | None = None
     _queue_worker_task: asyncio.Task | None = None
@@ -1225,7 +1253,7 @@ class Pipe:
         self._maybe_start_log_worker()
         self._maybe_start_startup_checks()
 
-    # Phase 1: Core Structure -------------------------------------------------
+    # Core Structure -------------------------------------------------
     def _maybe_start_startup_checks(self) -> None:
         """Schedule background warmup checks once an event loop is available."""
         if self._startup_task and not self._startup_task.done():
@@ -1274,7 +1302,7 @@ class Pipe:
         loop.create_task(_ensure_worker())
 
     def _maybe_start_redis(self) -> None:
-        """Initialize Redis cache if enabled (Phase 4)."""
+        """Initialize Redis cache if enabled."""
         if not self._redis_candidate or self._redis_enabled:
             return
         try:
@@ -1359,7 +1387,7 @@ class Pipe:
                     await client.close()
             self._redis_enabled = False
             self._redis_client = None
-            self.logger.warning("Phase 4: Redis cache disabled (%s)", exc)
+            self.logger.warning("Redis cache disabled (%s)", exc)
             return
 
         self._redis_client = client
@@ -1410,11 +1438,11 @@ class Pipe:
         if not rows:
             return
         self.logger.debug(
-            "Phase 4: Flushing %s pending artifact rows from Redis",
+            "Flushing %s pending artifact rows from Redis",
             len(rows),
         )
         await self._db_persist_direct(rows)
-        self.logger.debug("Phase 4: Flushed %s pending artifact row(s)", len(rows))
+        self.logger.debug("Flushed %s pending artifact row(s)", len(rows))
 
     def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
         if not (chat_id and row_id):
@@ -1516,7 +1544,7 @@ class Pipe:
             session.commit()
             if deleted:
                 self.logger.info("Artifact cleanup removed %s old rows", deleted)
-                self.logger.debug("Phase 4: Cleanup removed %s rows older than %s", deleted, cutoff)
+                self.logger.debug("PCleanup removed %s rows older than %s", deleted, cutoff)
         except Exception as exc:
             session.rollback()
             raise exc
@@ -1660,12 +1688,14 @@ class Pipe:
         SessionLogger.set_log_queue(None)
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
-        """Gracefully stop per-request tool workers (Phase 3)."""
+        """Gracefully stop per-request tool workers."""
         try:
-            worker_count = max(1, len(context.workers) or 1)
-            for _ in range(worker_count):
-                await context.queue.put(None)
-            await context.queue.join()
+            active_workers = [task for task in context.workers if not task.done()]
+            worker_count = len(active_workers)
+            if worker_count:
+                for _ in range(worker_count):
+                    await context.queue.put(None)
+                await context.queue.join()
         except Exception:
             pass
         for task in context.workers:
@@ -1678,12 +1708,28 @@ class Pipe:
         """Process queued tool calls with batching/timeouts."""
         pending: list[tuple[_QueuedToolCall | None, bool]] = []
         batch_cap = 4
+        idle_timeout = context.idle_timeout
         try:
             while True:
                 if pending:
                     item, from_queue = pending.pop(0)
                 else:
-                    queued = await context.queue.get()
+                    try:
+                        get_coro = context.queue.get()
+                        queued = (
+                            await get_coro
+                            if idle_timeout is None
+                            else await asyncio.wait_for(get_coro, timeout=idle_timeout)
+                        )
+                    except asyncio.TimeoutError:
+                        message = (
+                            f"Tool queue idle for {idle_timeout:.0f}s; cancelling pending work."
+                            if idle_timeout
+                            else "Tool queue idle timeout triggered."
+                        )
+                        context.timeout_error = context.timeout_error or message
+                        self.logger.warning("%s", message)
+                        break
                     item, from_queue = queued, True
                 if item is None:
                     if from_queue:
@@ -1722,10 +1768,11 @@ class Pipe:
                 if leftover is None:
                     continue
                 if not leftover.future.done():
+                    error_msg = context.timeout_error or "Tool execution cancelled"
                     leftover.future.set_result(
                         self._build_tool_output(
                             leftover.call,
-                            "Tool execution cancelled",
+                            error_msg,
                             status="cancelled",
                         )
                     )
@@ -1763,12 +1810,38 @@ class Pipe:
         if not batch:
             return
         self.logger.debug(
-            "Phase 3: Batched %s tool(s) for %s",
+            "Batched %s tool(s) for %s",
             len(batch),
             batch[0].call.get("name"),
         )
         tasks = [self._invoke_tool_call(item, context) for item in batch]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        gather_coro = asyncio.gather(*tasks, return_exceptions=True)
+        # TODO: Add soak tests that cover multi-minute batch executions to validate these generous timeouts.
+        try:
+            if context.batch_timeout:
+                results = await asyncio.wait_for(gather_coro, timeout=context.batch_timeout)
+            else:
+                results = await gather_coro
+        except asyncio.TimeoutError:
+            message = (
+                f"Tool batch '{batch[0].call.get('name')}' exceeded {context.batch_timeout:.0f}s and was cancelled."
+                if context.batch_timeout
+                else "Tool batch timed out."
+            )
+            context.timeout_error = context.timeout_error or message
+            self.logger.warning("%s", message)
+            for item in batch:
+                tool_type = (item.tool_cfg.get("type") or "function").lower()
+                self._record_tool_failure_type(context.user_id, tool_type)
+                if not item.future.done():
+                    item.future.set_result(
+                        self._build_tool_output(
+                            item.call,
+                            message,
+                            status="failed",
+                        )
+                    )
+            return
         for item, result in zip(batch, results):
             if item.future.done():
                 continue
@@ -1839,7 +1912,7 @@ class Pipe:
 
     @contextlib.asynccontextmanager
     async def _acquire_tool_global(self, semaphore: asyncio.Semaphore, tool_name: str | None):
-        self.logger.debug("Phase 3: Waiting for global tool slot (%s)", tool_name)
+        self.logger.debug("Waiting for global tool slot (%s)", tool_name)
         await semaphore.acquire()
         try:
             yield
@@ -1860,17 +1933,32 @@ class Pipe:
         tool_token: contextvars.Token | None = None  # type: ignore[name-defined]
         try:
             async with self._acquire_semaphore(semaphore, job.request_id):
-                session = self._create_http_session()
+                session = self._create_http_session(job.valves)
                 tokens = self._apply_logging_context(job)
                 tool_queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(
                     max(1, job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 )
+                per_tool_timeout = max(1, int(job.valves.TOOL_TIMEOUT_SECONDS or 1))
+                batch_timeout = float(
+                    max(per_tool_timeout, int(job.valves.TOOL_BATCH_TIMEOUT_SECONDS or per_tool_timeout))
+                )
+                idle_timeout_value = job.valves.TOOL_IDLE_TIMEOUT_SECONDS
+                idle_timeout = float(max(1, int(idle_timeout_value))) if idle_timeout_value else None
+                self.logger.debug(
+                    "Tool timeouts (request=%s): per_call=%ss batch=%ss idle=%s",
+                    job.request_id,
+                    per_tool_timeout,
+                    batch_timeout,
+                    idle_timeout if idle_timeout is not None else "disabled",
+                )
                 tool_context = _ToolExecutionContext(
                     queue=tool_queue,
                     per_request_semaphore=per_request_tool_sem,
                     global_semaphore=type(self)._tool_global_semaphore,
-                    timeout=max(1, job.valves.TOOL_TIMEOUT_SECONDS),
+                    timeout=float(per_tool_timeout),
+                    batch_timeout=batch_timeout,
+                    idle_timeout=idle_timeout,
                     user_id=job.user_id,
                     event_emitter=job.event_emitter,
                 )
@@ -1915,15 +2003,32 @@ class Pipe:
                 with contextlib.suppress(Exception):
                     await session.close()
 
-    def _create_http_session(self) -> aiohttp.ClientSession:
+    def _create_http_session(self, valves: "Pipe.Valves" | None = None) -> aiohttp.ClientSession:
         """Return a fresh ClientSession with sane defaults for per-request use."""
+        valves = valves or self.valves
         connector = aiohttp.TCPConnector(
             limit=50,
             limit_per_host=10,
             keepalive_timeout=75,
             ttl_dns_cache=300,
         )
-        timeout = aiohttp.ClientTimeout(total=60, connect=10)
+        connect_timeout = max(1, int(getattr(valves, "HTTP_CONNECT_TIMEOUT_SECONDS", 10) or 10))
+        total_timeout_value = getattr(valves, "HTTP_TOTAL_TIMEOUT_SECONDS", None)
+        total_timeout = None
+        if isinstance(total_timeout_value, (int, float)):
+            if total_timeout_value > 0:
+                total_timeout = float(total_timeout_value)
+        sock_read = None
+        sock_read_value = getattr(valves, "HTTP_SOCK_READ_SECONDS", None)
+        if total_timeout is None and sock_read_value:
+            sock_read = float(max(1, int(sock_read_value)))
+        timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout, sock_read=sock_read)
+        self.logger.debug(
+            "HTTP timeouts: connect=%ss total=%s sock_read=%s",
+            connect_timeout,
+            total_timeout if total_timeout is not None else "disabled",
+            sock_read if sock_read is not None else "disabled",
+        )
         return aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
@@ -2015,7 +2120,7 @@ class Pipe:
                 }
             )
         except Exception:
-            self.logger.debug("Phase 3: Failed to emit breaker notification", exc_info=True)
+            self.logger.debug("Failed to emit breaker notification", exc_info=True)
 
     def _db_breaker_allows(self, user_id: str) -> bool:
         if not user_id:
@@ -2138,6 +2243,15 @@ class Pipe:
 
         item_model = type(class_name, (base,), attrs)
 
+        schema_name = item_model.__table__.schema
+        table_exists = True
+        try:
+            table_exists = sa_inspect(engine).has_table(table_name, schema=schema_name)
+        except SQLAlchemyError:
+            table_exists = True
+        except Exception:  # pragma: no cover - defensive; inspector uses plugins
+            table_exists = True
+
         try:
             item_model.__table__.create(bind=engine, checkfirst=True)
         except Exception as exc:  # pragma: no cover - database-specific errors
@@ -2154,11 +2268,12 @@ class Pipe:
         self._item_model = item_model
         self._artifact_table_name = table_name
         self._artifact_store_signature = (table_fragment, self._encryption_key)
-        self.logger.info(
-            "Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.",
-            table_name,
-            key_hash[:8],
-        )
+        if not table_exists:
+            self.logger.info(
+                "Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.",
+                table_name,
+                key_hash[:8],
+            )
         if self._db_executor is None:
             self._db_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="responses-db")
         self.logger.debug("Artifact table ready: %s", table_name)
@@ -2401,7 +2516,7 @@ class Pipe:
                     row.pop("_persisted", None)
 
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
-        """Persist artifacts, optionally via Redis write-behind (Phase 4)."""
+        """Persist artifacts, optionally via Redis write-behind."""
         if not rows:
             return []
 
@@ -2499,7 +2614,7 @@ class Pipe:
         message_id: Optional[str],
         item_ids: list[str],
     ) -> dict[str, dict]:
-        """Fetch artifacts with Redis cache + retries (Phase 4)."""
+        """Fetch artifacts with Redis cache + retries."""
         if not (chat_id and item_ids):
             return {}
 
@@ -3094,21 +3209,14 @@ class Pipe:
                 ):
                     etype = event.get("type")
 
-                    # Emit OpenRouter SSE frames at INFO (non-delta) only; skip delta spam entirely.
+                    # Emit OpenRouter SSE frames at DEBUG (non-delta) only; skip delta spam entirely.
                     is_delta_event = bool(etype and etype.endswith(".delta"))
-                    if not is_delta_event:
-                        log_verbose: Callable[[str, Any], None] | None = None
-                        if self.logger.isEnabledFor(logging.INFO):
-                            log_verbose = self.logger.info
-                        elif self.logger.isEnabledFor(logging.DEBUG):
-                            log_verbose = self.logger.debug
-
-                        if log_verbose:
-                            log_verbose("OpenRouter event: %s", etype)
-                            log_verbose(
-                                "OpenRouter payload: %s",
-                                json.dumps(event, indent=2, ensure_ascii=False),
-                            )
+                    if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
+                        self.logger.debug("OpenRouter event: %s", etype)
+                        self.logger.debug(
+                            "OpenRouter payload: %s",
+                            json.dumps(event, indent=2, ensure_ascii=False),
+                        )
 
                     # ─── Emit partial delta assistant message
                     if etype == "response.output_text.delta":
@@ -3595,7 +3703,7 @@ class Pipe:
         workers: int = 4,
         breaker_key: Optional[str] = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Phase 2: producer/worker SSE pipeline with delta batching."""
+        """Producer/worker SSE pipeline with delta batching."""
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -3663,7 +3771,7 @@ class Pipe:
                                                     break
                                                 await chunk_queue.put((seq, data_blob))
                                                 self.logger.debug(
-                                                    "Phase 2: Enqueued SSE chunk seq=%s size=%s",
+                                                    "Enqueued SSE chunk seq=%s size=%s",
                                                     seq,
                                                     len(data_blob),
                                                 )
@@ -3685,7 +3793,7 @@ class Pipe:
                                     if data_blob and data_blob != b"[DONE]":
                                         await chunk_queue.put((seq, data_blob))
                                         self.logger.debug(
-                                            "Phase 2: Enqueued SSE chunk seq=%s size=%s",
+                                            "Enqueued SSE chunk seq=%s size=%s",
                                             seq,
                                             len(data_blob),
                                         )
@@ -3721,7 +3829,7 @@ class Pipe:
                             continue
                         await event_queue.put((seq, event))
                         self.logger.debug(
-                            "Phase 2: Worker %s emitted seq=%s",
+                            "Worker %s emitted seq=%s",
                             worker_idx,
                             seq,
                         )
@@ -3886,7 +3994,7 @@ class Pipe:
                 await self._redis_client.close()
             self._redis_client = None
 
-    # 4.6 Tool Execution Logic (Phase 3)
+    # 4.6 Tool Execution Logic
     async def _execute_function_calls(
         self,
         calls: list[dict],
@@ -3896,7 +4004,7 @@ class Pipe:
 
         context = self._TOOL_CONTEXT.get()
         if context is None:
-            self.logger.debug("Phase 3: Using legacy tool execution path")
+            self.logger.debug("Using legacy tool execution path")
             # Fallback: legacy direct execution
             return await self._execute_function_calls_legacy(calls, tools)
 
@@ -3965,7 +4073,7 @@ class Pipe:
             )
             await context.queue.put(queued)
             self.logger.debug(
-                "Phase 3: Enqueued tool %s (batch=%s)",
+                "Enqueued tool %s (batch=%s)",
                 call.get("name"),
                 allow_batch,
             )
@@ -3978,7 +4086,19 @@ class Pipe:
 
         for call, future in pending:
             try:
-                result = await future
+                if context and context.idle_timeout:
+                    result = await asyncio.wait_for(future, timeout=context.idle_timeout)
+                else:
+                    result = await future
+            except asyncio.TimeoutError:
+                message = (
+                    f"Tool '{call.get('name')}' idle timeout after {context.idle_timeout:.0f}s."
+                    if context and context.idle_timeout
+                    else "Tool idle timeout exceeded."
+                )
+                if context:
+                    context.timeout_error = context.timeout_error or message
+                raise RuntimeError(message)
             except Exception as exc:  # pragma: no cover - defensive
                 result = self._build_tool_output(
                     call,
@@ -3986,6 +4106,9 @@ class Pipe:
                     status="failed",
                 )
             outputs.append(result)
+
+        if context and context.timeout_error:
+            raise RuntimeError(context.timeout_error)
 
         return outputs
 
@@ -3999,7 +4122,7 @@ class Pipe:
         if not self._legacy_tool_warning_emitted:
             self._legacy_tool_warning_emitted = True
             self.logger.warning(
-                "Phase 3 tool queue unavailable; falling back to direct execution."
+                "Tool queue unavailable; falling back to direct execution."
             )
 
         tasks: list[Awaitable] = []
