@@ -1,0 +1,3284 @@
+"""
+title: OpenRouter Responses API Manifold
+author: rbb-dev
+author_url: https://github.com/rbb-dev
+git_url: https://github.com/
+description: Brings OpenRouter Responses API support to Open WebUI, auto-importing every Responses-capable model from OpenRouter and translating Open WebUI requests into the new API format.
+required_open_webui_version: 0.6.28
+version: 1.0.4
+requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy
+license: MIT
+
+- Auto-discovers the full OpenRouter Responses catalog.
+- Mirrors each model's declared capabilities and provider identifiers.
+- Persists reasoning traces and tool artifacts per chat via SQLAlchemy tables scoped to the pipe id.
+- Protects stored payloads with user-supplied encryption keys.
+- Applies optional LZ4 compression to large payloads when the threshold is met.
+- Rebuilds assistant context by replaying persisted ULID-marked items into the Responses input array.
+- Strictifies Open WebUI, MCP, and plugin tool schemas so function calling stays predictable.
+- Deduplicates overlapping tool definitions before sending them upstream.
+- Streams Responses SSE events while trimming delta noise to reduce logs.
+- Emits inline citations and usage counters during streaming.
+- Exposes valves for search, logging, compression, MCP routing, and loop limits.
+- Honors Open WebUI pipe ids when naming artifact tables and storage layers.
+"""
+
+from __future__ import annotations
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Imports
+# ─────────────────────────────────────────────────────────────────────────────
+# Standard library, third-party, and Open WebUI imports
+# Standard library imports
+import asyncio
+import datetime
+import inspect
+import json
+import logging
+import os
+import re
+import sys
+import secrets
+import random
+import time
+import hashlib
+import base64
+import functools
+from time import perf_counter
+from collections import defaultdict, deque
+from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor
+import contextlib
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, Optional, Type, Union
+from urllib.parse import urlparse
+
+# Third-party imports
+import aiohttp
+from fastapi import Request
+from pydantic import BaseModel, Field, model_validator
+from pydantic_core import core_schema
+from pydantic import GetCoreSchemaHandler
+from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+try:
+    import lz4.frame as lz4frame
+except ImportError:  # pragma: no cover - optional dependency, handled via requirements metadata
+    lz4frame = None
+
+# Open WebUI internals
+from open_webui.models.chats import Chats
+from open_webui.models.models import ModelForm, Models
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+class EncryptedStr(str):
+    """String wrapper that automatically encrypts/decrypts valve values."""
+
+    _ENCRYPTION_PREFIX = "encrypted:"
+
+    @classmethod
+    def _get_encryption_key(cls) -> Optional[bytes]:
+        """Return the Fernet key derived from ``WEBUI_SECRET_KEY``.
+
+        Returns:
+            Optional[bytes]: URL-safe base64 Fernet key or ``None`` when unset.
+        """
+        secret = os.getenv("WEBUI_SECRET_KEY")
+        if not secret:
+            return None
+        hashed_key = hashlib.sha256(secret.encode()).digest()
+        return base64.urlsafe_b64encode(hashed_key)
+
+    @classmethod
+    def encrypt(cls, value: str) -> str:
+        """Encrypt ``value`` when an application secret is configured.
+
+        Args:
+            value: Plain-text string supplied by the user.
+
+        Returns:
+            str: Ciphertext prefixed with ``encrypted:`` or the original value.
+        """
+        if not value or value.startswith(cls._ENCRYPTION_PREFIX):
+            return value
+        key = cls._get_encryption_key()
+        if not key:
+            return value
+        fernet = Fernet(key)
+        encrypted = fernet.encrypt(value.encode())
+        return f"{cls._ENCRYPTION_PREFIX}{encrypted.decode()}"
+
+    @classmethod
+    def decrypt(cls, value: str) -> str:
+        """Decrypt values produced by :meth:`encrypt`.
+
+        Args:
+            value: Ciphertext string, typically prefixed with ``encrypted:``.
+
+        Returns:
+            str: Decrypted plain text or the original value when keyless.
+        """
+        if not value or not value.startswith(cls._ENCRYPTION_PREFIX):
+            return value
+        key = cls._get_encryption_key()
+        if not key:
+            return value[len(cls._ENCRYPTION_PREFIX) :]
+        try:
+            encrypted_part = value[len(cls._ENCRYPTION_PREFIX) :]
+            fernet = Fernet(key)
+            decrypted = fernet.decrypt(encrypted_part.encode())
+            return decrypted.decode()
+        except (InvalidToken, Exception):
+            return value
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, _handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        """Expose a union schema so plain strings auto-wrap as EncryptedStr."""
+        return core_schema.union_schema(
+            [
+                core_schema.is_instance_schema(cls),
+                core_schema.chain_schema(
+                    [
+                        core_schema.str_schema(),
+                        core_schema.no_info_plain_validator_function(
+                            lambda value: cls(cls.encrypt(value) if value else value)
+                        ),
+                    ]
+                ),
+            ],
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                lambda instance: str(instance)
+            ),
+        )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Constants & Global Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+class ModelFamily:
+    """
+    One place for base capabilities + alias mapping (with effort defaults).
+    """
+
+    _DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+    _PIPE_ID: ContextVar[Optional[str]] = ContextVar(
+        "owui_pipe_id_ctx",
+        default=None,
+    )
+    _DYNAMIC_SPECS: Dict[str, Dict[str, Any]] = {}
+
+    # ── tiny, intuitive helpers ──────────────────────────────────────────────
+    @classmethod
+    def _norm(cls, model_id: str) -> str:
+        """Normalize model ids by stripping pipe prefixes and date suffixes."""
+        m = (model_id or "").strip()
+        if "/" in m:
+            m = m.replace("/", ".")
+        pipe_id = cls._PIPE_ID.get()
+        if pipe_id:
+            pref = f"{pipe_id}."
+            if m.startswith(pref):
+                m = m[len(pref):]
+        return cls._DATE_RE.sub("", m.lower())
+
+    @classmethod
+    def base_model(cls, model_id: str) -> str:
+        """Canonical base model id (prefix/date stripped)."""
+        return cls._norm(model_id)
+
+    @classmethod
+    def features(cls, model_id: str) -> frozenset[str]:
+        """Capabilities for the base model behind this id."""
+        spec = cls._lookup_spec(model_id)
+        return frozenset(spec.get("features", set()))
+
+    @classmethod
+    def max_completion_tokens(cls, model_id: str) -> Optional[int]:
+        """Return max completion tokens reported by the provider, if any."""
+        spec = cls._lookup_spec(model_id)
+        return spec.get("max_completion_tokens")
+
+    @classmethod
+    def supports(cls, feature: str, model_id: str) -> bool:
+        """Check if a model supports a given feature."""
+        return feature in cls.features(model_id)
+
+    @classmethod
+    def set_dynamic_specs(cls, specs: Dict[str, Dict[str, Any]] | None) -> None:
+        """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
+        cls._DYNAMIC_SPECS = specs or {}
+
+    @classmethod
+    def _lookup_spec(cls, model_id: str) -> Dict[str, Any]:
+        """Return the stored spec for ``model_id`` or an empty dict."""
+        norm = cls.base_model(model_id)
+        return cls._DYNAMIC_SPECS.get(norm) or {}
+
+
+def sanitize_model_id(model_id: str) -> str:
+    """Convert `author/model` ids into dot-friendly ids for Open WebUI."""
+    if not model_id:
+        return model_id
+    if "/" not in model_id:
+        return model_id
+    head, tail = model_id.split("/", 1)
+    return f"{head}.{tail.replace('/', '.')}"
+
+
+_PAYLOAD_FLAG_PLAIN = 0
+_PAYLOAD_FLAG_LZ4 = 1
+_PAYLOAD_HEADER_SIZE = 1
+
+
+class OpenRouterModelRegistry:
+    """Fetches and caches the OpenRouter model catalog."""
+
+    _models: list[dict[str, Any]] = []
+    _specs: Dict[str, Dict[str, Any]] = {}
+    _id_map: Dict[str, str] = {}  # normalized sanitized id -> original id
+    _last_fetch: float = 0.0
+    _lock: asyncio.Lock = asyncio.Lock()
+
+    @classmethod
+    async def ensure_loaded(
+        cls,
+        session: aiohttp.ClientSession,
+        *,
+        base_url: str,
+        api_key: str,
+        cache_seconds: int,
+        logger: logging.Logger,
+    ) -> None:
+        """Refresh the model catalog if the cache is empty or stale."""
+        if not api_key:
+            raise ValueError("OpenRouter API key is required.")
+
+        if cls._specs and (time.time() - cls._last_fetch) < cache_seconds:
+            return
+
+        async with cls._lock:
+            if cls._specs and (time.time() - cls._last_fetch) < cache_seconds:
+                return
+            await cls._refresh(session, base_url=base_url, api_key=api_key, logger=logger)
+            cls._last_fetch = time.time()
+
+    @classmethod
+    async def _refresh(
+        cls,
+        session: aiohttp.ClientSession,
+        *,
+        base_url: str,
+        api_key: str,
+        logger: logging.Logger,
+    ) -> None:
+        """Fetch and cache the OpenRouter catalog."""
+        url = base_url.rstrip("/") + "/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        _debug_print_request(headers, {"method": "GET", "url": url})
+        try:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status >= 400:
+                    await _debug_print_error_response(resp)
+                resp.raise_for_status()
+                payload = await resp.json()
+        except Exception as exc:
+            logger.error("Failed to load OpenRouter model catalog: %s", exc)
+            if not cls._specs:
+                raise
+            return
+
+        data = payload.get("data") or []
+        raw_specs: Dict[str, Dict[str, Any]] = {}
+        models: list[dict[str, Any]] = []
+        id_map: Dict[str, str] = {}
+
+        for item in data:
+            original_id = item.get("id")
+            if not original_id:
+                continue
+
+            sanitized = sanitize_model_id(original_id)
+            norm_id = ModelFamily.base_model(sanitized)
+            supported = set(item.get("supported_parameters") or [])
+            architecture = dict(item.get("architecture") or {})
+            pricing = dict(item.get("pricing") or {})
+            limits = item.get("limits")
+            max_completion_tokens: Optional[int] = None
+            if isinstance(limits, dict):
+                max_completion_tokens = limits.get("max_completion_tokens")
+            if max_completion_tokens is None:
+                top_provider = item.get("top_provider")
+                if isinstance(top_provider, dict):
+                    max_completion_tokens = top_provider.get("max_completion_tokens")
+
+            raw_specs[norm_id] = {
+                "supported_parameters": supported,
+                "architecture": architecture,
+                "pricing": pricing,
+                "max_completion_tokens": max_completion_tokens,
+            }
+            id_map[norm_id] = original_id
+            models.append(
+                {
+                    "id": sanitized,
+                    "norm_id": norm_id,
+                    "original_id": original_id,
+                    "name": item.get("name") or original_id,
+                }
+            )
+
+        # Finalize specs shared with ModelFamily (features + max completion tokens).
+        specs: Dict[str, Dict[str, Any]] = {}
+        for norm_id, spec in raw_specs.items():
+            features = cls._derive_features(
+                spec.get("supported_parameters") or set(),
+                spec.get("architecture") or {},
+                spec.get("pricing") or {},
+            )
+            specs[norm_id] = {
+                "features": features,
+                "max_completion_tokens": spec.get("max_completion_tokens"),
+            }
+
+        models.sort(key=lambda m: m["name"].lower())
+        cls._models = models
+        cls._specs = specs
+        cls._id_map = id_map
+
+        # Share dynamic specs with ModelFamily for downstream feature checks.
+        ModelFamily.set_dynamic_specs(specs)
+
+    @staticmethod
+    def _derive_features(
+        supported_parameters: set[str],
+        architecture: Dict[str, Any],
+        pricing: Dict[str, Any],
+    ) -> set[str]:
+        """Translate OpenRouter metadata into capability flags."""
+        features: set[str] = set()
+        if {"tools", "tool_choice"} & supported_parameters:
+            features.add("function_calling")
+        if "reasoning" in supported_parameters:
+            features.add("reasoning")
+        if "include_reasoning" in supported_parameters:
+            features.add("reasoning_summary")
+        if pricing.get("web_search") is not None:
+            features.add("web_search_tool")
+        output_modalities = architecture.get("output_modalities") or []
+        if "image" in output_modalities:
+            features.add("image_gen_tool")
+        return features
+
+    @classmethod
+    def list_models(cls) -> list[dict[str, Any]]:
+        """Return a shallow copy of the cached catalog."""
+        return list(cls._models)
+
+    @classmethod
+    def specs(cls) -> Dict[str, Dict[str, Any]]:
+        """Expose the normalized spec cache to callers."""
+        return dict(cls._specs)
+
+    @classmethod
+    def api_model_id(cls, model_id: str) -> Optional[str]:
+        """Map sanitized Open WebUI ids back to provider ids."""
+        norm = ModelFamily.base_model(model_id)
+        return cls._id_map.get(norm)
+
+# Temporary debug helpers shared by registry + pipe (safe to remove later)
+def _debug_print_request(headers: Dict[str, str], payload: Optional[Dict[str, Any]]) -> None:
+    """Log sanitized request metadata when DEBUG logging is enabled."""
+    redacted_headers = dict(headers or {})
+    if "Authorization" in redacted_headers:
+        token = redacted_headers["Authorization"]
+        redacted_headers["Authorization"] = f"{token[:10]}..." if len(token) > 10 else "***"
+    LOGGER.debug("[OPENROUTER DEBUG] HEADERS: %s", json.dumps(redacted_headers, indent=2))
+    if payload is not None:
+        LOGGER.debug("[OPENROUTER DEBUG] PAYLOAD: %s", json.dumps(payload, indent=2))
+
+
+async def _debug_print_error_response(resp: aiohttp.ClientResponse) -> None:
+    """Log the response payload for easier debugging of HTTP failures."""
+    try:
+        text = await resp.text()
+    except Exception as exc:
+        text = f"<<failed to read body: {exc}>>"
+    LOGGER.debug(
+        "[OPENROUTER DEBUG] ERROR RESPONSE: %s",
+        json.dumps(
+            {
+                "status": resp.status,
+                "reason": resp.reason,
+                "url": str(resp.url),
+                "body": text,
+            },
+            indent=2,
+        ),
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Data Models
+# ─────────────────────────────────────────────────────────────────────────────
+# Pydantic models for validating request and response payloads
+class CompletionsBody(BaseModel):
+    """
+    Represents the body of a completions request to OpenAI completions API.
+    """
+    model: str
+    messages: List[Dict[str, Any]]
+    stream: bool = False
+
+    class Config:
+        """Permit passthrough of additional OpenAI parameters automatically."""
+
+        extra = "allow" # Pass through additional OpenAI parameters automatically
+
+class ResponsesBody(BaseModel):
+    """
+    Represents the body of a responses request to OpenAI Responses API.
+    """
+    
+    # Required parameters
+    model: str
+    input: Union[str, List[Dict[str, Any]]] # plain text, or rich array
+
+    # Optional parameters
+    stream: bool = False                          # SSE chunking
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+    reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
+    tool_choice: Optional[Dict[str, Any]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    plugins: Optional[List[Dict[str, Any]]] = None
+
+    class Config:
+        """Permit passthrough of additional OpenAI parameters automatically."""
+
+        extra = "allow" # Allow additional OpenAI parameters automatically (future-proofing)
+
+    @model_validator(mode='after')
+    def _normalize_model_id(self) -> "ResponsesBody":
+        """Ensure the model name references the canonical base id (prefix/date stripped)."""
+        normalized = ModelFamily.base_model(self.model or "")
+        if normalized and normalized != self.model:
+            self.model = normalized
+        return self
+
+    @staticmethod
+    def transform_owui_tools(__tools__: Dict[str, dict] | None, *, strict: bool = False) -> List[dict]:
+        """
+        Convert Open WebUI __tools__ registry (dict of entries with {"spec": {...}}) into
+        OpenAI Responses-API tool specs: {"type": "function", "name", ...}.
+
+        """
+        if not __tools__:
+            return []
+
+        tools: List[dict] = []
+        for item in __tools__.values():
+            spec = item.get("spec") or {}
+            name = spec.get("name")
+            if not name:
+                continue  # skip malformed entries
+
+            params = spec.get("parameters") or {"type": "object", "properties": {}}
+
+            tool = {
+                "type": "function",
+                "name": name,
+                "description": spec.get("description") or name,
+                "parameters": _strictify_schema(params) if strict else params,
+            }
+            if strict:
+                tool["strict"] = True
+
+            tools.append(tool)
+
+        return tools
+
+    # -----------------------------------------------------------------------
+    # Helper: turn the JSON string into valid MCP tool dicts
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _build_mcp_tools(mcp_json: str) -> list[dict]:
+        """
+        Parse ``REMOTE_MCP_SERVERS_JSON`` and return a list of ready-to-use
+        tool objects (``{\"type\":\"mcp\", …}``).  Silently drops invalid items.
+        """
+        if not mcp_json or not mcp_json.strip():
+            return []
+        if len(mcp_json) > 1_000_000:
+            LOGGER.warning(
+                "REMOTE_MCP_SERVERS_JSON ignored: payload exceeds 1MB."
+            )
+            return []
+
+        try:
+            data = json.loads(mcp_json)
+        except Exception as exc:                             # malformed JSON
+            LOGGER.warning(
+                "REMOTE_MCP_SERVERS_JSON could not be parsed (%s); ignoring.", exc
+            )
+            return []
+
+        # Accept a single object or a list
+        items = data if isinstance(data, list) else [data]
+
+        valid_tools: list[dict] = []
+        for idx, obj in enumerate(items, start=1):
+            if not isinstance(obj, dict):
+                LOGGER.warning(
+                    "REMOTE_MCP_SERVERS_JSON item %d ignored: not an object.", idx
+                )
+                continue
+
+            # Minimum viable keys
+            label = obj.get("server_label")
+            url   = obj.get("server_url")
+            if not (label and url):
+                LOGGER.warning(
+                    "REMOTE_MCP_SERVERS_JSON item %d ignored: "
+                    "'server_label' and 'server_url' are required.", idx
+                )
+                continue
+
+            parsed_url = urlparse(url)
+            scheme = (parsed_url.scheme or "").lower()
+            if scheme not in {"http", "https", "ws", "wss"} or not parsed_url.netloc:
+                LOGGER.warning(
+                    "REMOTE_MCP_SERVERS_JSON item %d ignored: unsupported server_url '%s'. "
+                    "Only http(s) or ws(s) URLs with a host are allowed.",
+                    idx,
+                    url,
+                )
+                continue
+
+            # Whitelist only official MCP keys so users can copy-paste API examples
+            allowed = {
+                "server_label",
+                "server_url",
+                "require_approval",
+                "allowed_tools",
+                "headers",
+            }
+            tool = {"type": "mcp"}
+            tool.update({k: v for k, v in obj.items() if k in allowed})
+
+            valid_tools.append(tool)
+
+        return valid_tools
+    
+    @staticmethod
+    async def transform_messages_to_input(
+        messages: List[Dict[str, Any]],
+        chat_id: Optional[str] = None,
+        openwebui_model_id: Optional[str] = None,
+        artifact_loader: Optional[
+            Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
+        ] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
+
+        Parameters `chat_id` and `openwebui_model_id` are optional. When both are
+        supplied and the messages contain empty-link encoded item references, the
+        function fetches persisted items from the database and injects them in the
+        correct order. When either parameter is missing, the messages are simply
+        converted without attempting to fetch persisted items.
+
+        When provided, `artifact_loader` is awaited with `(chat_id, message_id, ulids)`
+        for each assistant message so database-backed artifacts can be replayed.
+
+        Returns
+        -------
+        List[dict] : The fully-formed `input` list for the OpenAI Responses API.
+        """
+
+        def _extract_plain_text(content: Any) -> str:
+            """Collapse Open WebUI content blocks into a single string."""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict):
+                        text_val = block.get("text") or block.get("content")
+                        if isinstance(text_val, str):
+                            parts.append(text_val)
+                return "\n".join(parts)
+            if isinstance(content, dict):
+                text_val = content.get("text") or content.get("content")
+                if isinstance(text_val, str):
+                    return text_val
+            return str(content or "")
+
+        logger = LOGGER
+
+        pending_instructions: list[str] = []
+        openai_input: list[dict] = []
+
+        def _message_identifier(entry: dict[str, Any]) -> Optional[str]:
+            """Return the most specific identifier available on ``entry``."""
+            for key in ("id", "_id", "message_id"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return None
+
+        for msg in messages:
+            role = msg.get("role")
+            raw_content = msg.get("content", "")
+            msg_id = msg.get("message_id") or _message_identifier(msg)
+
+            # -------- system / developer messages --------------------------- #
+            if role in {"system", "developer"}:
+                text = _extract_plain_text(raw_content)
+                if text.strip():
+                    pending_instructions.append(text.strip())
+                continue
+
+            # -------- user message ---------------------------------------- #
+            if role == "user":
+                # Convert string content to a block list (["Hello"] → [{"type": "text", "text": "Hello"}])
+                content_blocks = msg.get("content") or []
+                if isinstance(content_blocks, str):
+                    content_blocks = [{"type": "text", "text": content_blocks}]
+
+                instruction_prefix = "\n\n".join(pending_instructions).strip()
+
+                # Only transform known types; leave all others unchanged
+                def _to_input_image(block: dict) -> dict:
+                    """Convert an Open WebUI image block into Responses format."""
+                    image_payload = block.get("image_url")
+                    detail: Optional[str] = None
+                    if isinstance(image_payload, dict):
+                        url = image_payload.get("url", "")
+                        detail = image_payload.get("detail")
+                    elif isinstance(image_payload, str):
+                        url = image_payload
+                    else:
+                        url = ""
+                    result: dict[str, Any] = {"type": "input_image", "image_url": url}
+                    if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+                        result["detail"] = detail
+                    elif url:
+                        result["detail"] = "auto"
+                    return result
+
+                block_transform = {
+                    "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
+                    "image_url":  _to_input_image,
+                    "input_file": lambda b: {"type": "input_file",  "file_id": b.get("file_id")},
+                }
+
+                converted_blocks = [
+                    block_transform.get(block.get("type"), lambda b: b)(block)
+                    for block in content_blocks if block
+                ]
+
+                if instruction_prefix:
+                    pending_instructions.clear()
+                    if converted_blocks and converted_blocks[0].get("type") == "input_text":
+                        converted_blocks[0]["text"] = f"{instruction_prefix}\n\n{converted_blocks[0].get('text', '')}".strip()
+                    else:
+                        converted_blocks.insert(0, {"type": "input_text", "text": instruction_prefix})
+
+                openai_input.append({
+                    "type": "message",
+                    "role": "user",
+                    "content": converted_blocks,
+                })
+                continue
+
+            # -------- assistant message ----------------------------------- #
+            assistant_text = raw_content if isinstance(raw_content, str) else _extract_plain_text(raw_content)
+            if contains_marker(assistant_text):
+                segments = split_text_by_markers(assistant_text)
+                markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
+
+                db_artifacts: dict[str, dict] = {}
+                if artifact_loader and chat_id and openwebui_model_id and markers:
+                    try:
+                        db_artifacts = await artifact_loader(chat_id, msg_id, markers)
+                    except Exception:
+                        logger.warning(
+                            "Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True
+                        )
+                        db_artifacts = {}
+
+                for segment in segments:
+                    if segment["type"] == "marker":
+                        payload = db_artifacts.get(segment["marker"])
+                        if payload is None:
+                            logger.warning(
+                                "Missing artifact %s for chat_id=%s message_id=%s",
+                                segment["marker"],
+                                chat_id,
+                                msg_id,
+                            )
+                            continue
+                        item = _normalize_persisted_item(payload)
+                        if item is not None:
+                            openai_input.append(item)
+                    elif segment["type"] == "text" and segment["text"].strip():
+                        openai_input.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": segment["text"].strip()}]
+                        })
+            else:
+                # Plain assistant text (no markers detected)
+                if assistant_text:
+                    openai_input.append(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": assistant_text}],
+                        }
+                    )
+
+        if pending_instructions:
+            instruction_text = "\n\n".join(s for s in pending_instructions if s).strip()
+            if instruction_text:
+                openai_input.insert(
+                    0,
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": instruction_text}],
+                    },
+                )
+
+        return openai_input
+
+    @classmethod
+    async def from_completions(
+        ResponsesBody,
+        completions_body: "CompletionsBody",
+        chat_id: Optional[str] = None,
+        openwebui_model_id: Optional[str] = None,
+        *,
+        artifact_loader: Optional[
+            Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
+        ] = None,
+        **extra_params,
+    ) -> "ResponsesBody":
+        """
+        Convert CompletionsBody → ResponsesBody.
+
+        - Drops unsupported fields (clearly logged).
+        - Converts max_tokens → max_output_tokens.
+        - Converts reasoning_effort → reasoning.effort (without overwriting).
+        - Builds messages in Responses API format.
+        - Allows explicit overrides via kwargs.
+        - Replays persisted artifacts by awaiting `artifact_loader` when provided.
+        """
+        completions_dict = completions_body.model_dump(exclude_none=True)
+
+        # Step 1: Remove unsupported fields
+        unsupported_fields = {
+            # Fields that are not supported by OpenAI Responses API
+            "frequency_penalty", "presence_penalty", "seed", "logit_bias",
+            "logprobs", "top_logprobs", "n", "stop",
+            "response_format", # Replaced with 'text' in Responses API
+            "suffix", # Responses API does not support suffix
+            "stream_options", # Responses API does not support stream options
+            "audio", # Responses API does not support audio input
+            "function_call", # Deprecated in favor of 'tool_choice'.
+            "functions", # Deprecated in favor of 'tools'.
+
+            # Fields that are dropped and manually handled in step 2.
+            "reasoning_effort", "max_tokens",
+
+            # Fields that are dropped and manually handled later in the pipe()
+            "tools",
+            "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
+
+            # Fields not documented in OpenRouter's Responses API reference
+            "instructions", "store", "parallel_tool_calls", "truncation",
+            "user",
+        }
+        sanitized_params = {}
+        for key, value in completions_dict.items():
+            if key in unsupported_fields:
+                logging.warning(f"Dropping unsupported parameter: '{key}'")
+            else:
+                sanitized_params[key] = value
+
+        # Step 2: Apply transformations
+        # Rename max_tokens → max_output_tokens
+        if "max_tokens" in completions_dict:
+            sanitized_params["max_output_tokens"] = completions_dict["max_tokens"]
+
+        # reasoning_effort → reasoning.effort (without overwriting existing effort)
+        effort = completions_dict.get("reasoning_effort")
+        if effort:
+            reasoning = sanitized_params.get("reasoning", {})
+            reasoning.setdefault("effort", effort)
+            sanitized_params["reasoning"] = reasoning
+
+        # Transform input messages to OpenAI Responses API format
+        if "messages" in completions_dict:
+            sanitized_params.pop("messages", None)
+            sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
+                completions_dict.get("messages", []),
+                chat_id=chat_id,
+                openwebui_model_id=openwebui_model_id,
+                artifact_loader=artifact_loader,
+            )
+
+        # Build the final ResponsesBody directly
+        return ResponsesBody(
+            **sanitized_params,
+            **extra_params  # Extra parameters that are passed to the ResponsesBody (e.g., custom parameters configured in Open WebUI model settings)
+        )
+
+ALLOWED_OPENROUTER_FIELDS = {
+    "model",
+    "input",
+    "stream",
+    "max_output_tokens",
+    "temperature",
+    "top_p",
+    "reasoning",
+    "tools",
+    "tool_choice",
+    "plugins",
+}
+
+def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop any keys not documented for the OpenRouter Responses API."""
+    filtered: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if key not in ALLOWED_OPENROUTER_FIELDS:
+            continue
+        if key == "reasoning":
+            if not isinstance(value, dict):
+                continue
+            allowed_reasoning = {}
+            if value.get("effort"):
+                allowed_reasoning["effort"] = value["effort"]
+            if not allowed_reasoning:
+                continue
+            value = allowed_reasoning
+        filtered[key] = value
+    return filtered
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Main Controller: Pipe
+# ─────────────────────────────────────────────────────────────────────────────
+# Primary interface implementing the Responses manifold
+class Pipe:
+    """Manifold entrypoint that adapts Open WebUI requests to OpenRouter."""
+    # 4.1 Configuration Schemas
+    class Valves(BaseModel):
+        """Global valve configuration shared across sessions."""
+        # Connection & Auth
+        BASE_URL: str = Field(
+            default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
+            description="OpenRouter API base URL. Override this if you are using a gateway or proxy.",
+        )
+        API_KEY: EncryptedStr = Field(
+            default=(os.getenv("OPENROUTER_API_KEY") or "").strip(),
+            description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
+        )
+
+        # Models
+        MODEL_ID: str = Field(
+            default="auto",
+            description=(
+                "Comma separated OpenRouter model IDs to expose in Open WebUI. "
+                "Set to 'auto' to import every available Responses-capable model."
+            ),
+        )
+        MODEL_CATALOG_REFRESH_SECONDS: int = Field(
+            default=60 * 60,
+            ge=60,
+            description="How long to cache the OpenRouter model catalog (in seconds) before refreshing.",
+        )
+
+        PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
+            default="disabled",
+            description="Control whether encrypted reasoning tokens are requested from the model (response | conversation | disabled). Tokens are requested only if the model supports reasoning.",
+        )
+        
+        # Tool execution behavior
+        PERSIST_TOOL_RESULTS: bool = Field(
+             default=True,
+            description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
+        )
+        ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
+            default="",
+            description="Min 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible.",
+        )
+        ENCRYPT_ALL: bool = Field(
+            default=False,
+            description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted.",
+        )
+        ENABLE_LZ4_COMPRESSION: bool = Field(
+            default=True,
+            description="When True (and lz4 is available), compress large encrypted artifacts to reduce database read/write overhead.",
+        )
+        MIN_COMPRESS_BYTES: int = Field(
+            default=512,
+            ge=0,
+            description="Payloads at or above this size (in bytes) are candidates for LZ4 compression before encryption. Set to 0 to disable size-based gating.",
+        )
+
+        ENABLE_STRICT_TOOL_CALLING: bool = Field(
+            default=True,
+            description=(
+                "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
+                "enforcing explicit types, required fields, and disallowing additionalProperties."
+            ),
+        )
+        MAX_FUNCTION_CALL_LOOPS: int = Field(
+            default=10,
+            description=(
+                "Maximum number of full execution cycles (loops) allowed per request. "
+                "Each loop involves the model generating one or more function/tool calls, "
+                "executing all requested functions, and feeding the results back into the model. "
+                "Looping stops when this limit is reached or when the model no longer requests "
+                "additional tool or function calls."
+            )
+        )
+
+        # Web search
+        ENABLE_WEB_SEARCH_TOOL: bool = Field(
+            default=True,
+            description="Enable the OpenRouter web-search plugin (id='web') when supported by the selected model.",
+        )
+        WEB_SEARCH_MAX_RESULTS: Optional[int] = Field(
+            default=3,
+            ge=1,
+            le=10,
+            description="Number of web results to request when the web-search plugin is enabled (1-10). Set to null to use the provider default.",
+        )
+
+        # Integrations
+        REMOTE_MCP_SERVERS_JSON: Optional[str] = Field(
+            default=None,
+            description=(
+                "[EXPERIMENTAL] A JSON-encoded list (or single JSON object) defining one or more "
+                "remote MCP servers to be automatically attached to each request. This can be useful "
+                "for globally enabling tools across all chats.\n\n"
+                "Note: The Responses API currently caches MCP server definitions at the start of each chat. "
+                "This means the first message in a new thread may be slower. A more efficient implementation is planned."
+                "Each item must follow the MCP tool schema supported by the OpenAI Responses API, for example:\n"
+                '[{"server_label":"deepwiki","server_url":"https://mcp.deepwiki.com/mcp","require_approval":"never","allowed_tools": ["ask_question"]}]'
+            ),
+        )
+
+        # Logging
+        LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+            default=os.getenv("GLOBAL_LOG_LEVEL", "INFO").upper(),
+            description="Select logging level.  Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
+        )
+        USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
+            default=False,
+            description="When enabled, automatically include the provider's max_output_tokens in each request. Disable to omit the parameter entirely.",
+        )
+        SHOW_FINAL_USAGE_STATUS: bool = Field(
+            default=True,
+            description="When True, the final status message includes elapsed time, cost, and token usage.",
+        )
+
+
+    class UserValves(BaseModel):
+        """Per-user valve overrides."""
+        LOG_LEVEL: Literal[
+            "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"
+        ] = Field(
+            default="INHERIT",
+            description="Select logging level. 'INHERIT' uses the pipe default.",
+        )
+        SHOW_FINAL_USAGE_STATUS: Optional[bool] = Field(
+            default=None,
+            description="Override whether the final status message includes usage stats.",
+        )
+
+    # 4.2 Constructor and Entry Points
+    def __init__(self):
+        """Initialize valve defaults and lazy-initialized resources."""
+        self.type = "manifold"
+        self.valves = self.Valves()  # Note: valve values are not accessible in __init__. Access from pipes() or pipe() methods.
+        self.session: aiohttp.ClientSession | None = None
+        self.logger = SessionLogger.get_logger(__name__)
+        self._session_closed = False
+        decrypted_encryption_key = EncryptedStr.decrypt(self.valves.ARTIFACT_ENCRYPTION_KEY)
+        self._encryption_key: str = (decrypted_encryption_key or "").strip()
+        self._encrypt_all: bool = bool(self.valves.ENCRYPT_ALL)
+        self._compression_min_bytes: int = max(0, int(self.valves.MIN_COMPRESS_BYTES or 0))
+        self._compression_enabled: bool = bool(
+            self.valves.ENABLE_LZ4_COMPRESSION and lz4frame is not None
+        )
+        self._fernet: Fernet | None = None
+        self._engine: Engine | None = None
+        self._session_factory: sessionmaker | None = None
+        self._item_model: Type[Any] | None = None
+        self._artifact_table_name: str | None = None
+        self._db_executor: ThreadPoolExecutor | None = None
+        self._artifact_store_signature: tuple[str, str] | None = None
+        self._lz4_warning_emitted = False
+
+    def _ensure_artifact_store(self, valves: "Pipe.Valves", pipe_identifier: Optional[str] = None) -> None:
+        """Configure encryption/compression + ensure the backing table exists."""
+        decrypted_encryption_key = EncryptedStr.decrypt(valves.ARTIFACT_ENCRYPTION_KEY)
+        encryption_key = (decrypted_encryption_key or "").strip()
+        self._encryption_key = encryption_key
+        self._encrypt_all = bool(valves.ENCRYPT_ALL)
+        self._compression_min_bytes = max(0, int(valves.MIN_COMPRESS_BYTES or 0))
+
+        wants_compression = bool(valves.ENABLE_LZ4_COMPRESSION)
+        compression_enabled = wants_compression and lz4frame is not None
+        if wants_compression and lz4frame is None and not self._lz4_warning_emitted:
+            self.logger.warning(
+                "LZ4 compression requested but the 'lz4' package is not available. "
+                "Artifacts will be stored without compression."
+            )
+            self._lz4_warning_emitted = True
+        self._compression_enabled = compression_enabled
+
+        pipe_identifier = pipe_identifier or getattr(self, "id", None)
+        if not pipe_identifier:
+            raise RuntimeError("Pipe identifier is missing; Open WebUI did not assign an id to this manifold.")
+        table_fragment = _sanitize_table_fragment(pipe_identifier)
+        desired_signature = (table_fragment, self._encryption_key)
+        if (
+            self._artifact_store_signature == desired_signature
+            and self._item_model is not None
+            and self._session_factory is not None
+            and self._engine is not None
+        ):
+            return
+
+        self._init_artifact_store(
+            pipe_identifier=pipe_identifier,
+            table_fragment=table_fragment,
+        )
+
+    def _resolve_pipe_identifier(self, openwebui_model_id: Optional[str] = None) -> str:
+        """Derive the pipe identifier prefix used for storage namespaces."""
+        if isinstance(openwebui_model_id, str):
+            candidate = openwebui_model_id.split(".", 1)[0].strip()
+            if candidate:
+                return candidate
+        explicit_id = getattr(self, "id", None)
+        if isinstance(explicit_id, str) and explicit_id.strip():
+            return explicit_id.strip()
+        raise RuntimeError("Unable to determine pipe identifier from Open WebUI metadata.")
+
+    def _init_artifact_store(
+        self,
+        pipe_identifier: Optional[str] = None,
+        *,
+        table_fragment: Optional[str] = None,
+    ) -> None:
+        """Initialize the per-pipe SQLAlchemy model + executor for artifact storage."""
+        engine: Engine | None = None
+        session_factory: sessionmaker | None = None
+        base: Any | None = None
+
+        try:
+            from open_webui.internal import db as owui_db  # type: ignore
+        except Exception:  # pragma: no cover - optional dependency
+            owui_db = None
+
+        if owui_db is not None:
+            engine = getattr(owui_db, "engine", None)
+            session_factory = getattr(owui_db, "SessionLocal", None)
+            base = getattr(owui_db, "Base", None)
+
+        if not (engine and session_factory and base):
+            self.logger.warning(
+                "Artifact persistence disabled: Open WebUI database helpers are unavailable."
+            )
+            self._engine = None
+            self._session_factory = None
+            self._item_model = None
+            self._artifact_table_name = None
+            self._artifact_store_signature = None
+            return
+
+        pipe_identifier = pipe_identifier or getattr(self, "id", None)
+        if not pipe_identifier:
+            raise RuntimeError("Pipe identifier is required to initialize the artifact store.")
+        encryption_key = self._encryption_key
+        hash_source = f"{encryption_key}{pipe_identifier}".encode("utf-8", "ignore")
+        key_hash = hashlib.sha256(hash_source).hexdigest()
+        table_fragment = table_fragment or _sanitize_table_fragment(pipe_identifier)
+        table_name = f"response_items_{table_fragment}_{key_hash[:8]}"
+        class_name = f"ResponseItem_{table_fragment}_{key_hash[:4]}"
+
+        attrs: dict[str, Any] = {
+            "__tablename__": table_name,
+            "__table_args__": {"extend_existing": True, "sqlite_autoincrement": False},
+            "id": Column(String(ULID_LENGTH), primary_key=True),
+            "chat_id": Column(String(64), index=True, nullable=False),
+            "message_id": Column(String(64), index=True, nullable=False),
+            "model_id": Column(String(128), nullable=True),
+            "item_type": Column(String(64), nullable=False),
+            "payload": Column(JSON, nullable=False, default=dict),
+            "is_encrypted": Column(Boolean, nullable=False, default=False),
+            "created_at": Column(DateTime, nullable=False, default=datetime.datetime.utcnow),
+        }
+
+        item_model = type(class_name, (base,), attrs)
+
+        try:
+            item_model.__table__.create(bind=engine, checkfirst=True)
+        except Exception as exc:  # pragma: no cover - database-specific errors
+            self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
+            self._engine = None
+            self._session_factory = None
+            self._item_model = None
+            self._artifact_table_name = None
+            self._artifact_store_signature = None
+            return
+
+        self._engine = engine
+        self._session_factory = session_factory
+        self._item_model = item_model
+        self._artifact_table_name = table_name
+        self._artifact_store_signature = (table_fragment, self._encryption_key)
+        self.logger.info(
+            "Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.",
+            table_name,
+            key_hash[:8],
+        )
+        if self._db_executor is None:
+            self._db_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="responses-db")
+        self.logger.debug("Artifact table ready: %s", table_name)
+
+    def shutdown(self) -> None:
+        """Public method to shut down background resources."""
+        executor = self._db_executor
+        self._db_executor = None
+        if executor:
+            executor.shutdown(wait=True)
+
+    def _get_fernet(self) -> Fernet | None:
+        """Return (and cache) the Fernet helper derived from the encryption key."""
+        if not self._encryption_key:
+            return None
+        if self._fernet is None:
+            digest = hashlib.sha256(self._encryption_key.encode("utf-8")).digest()
+            key = base64.urlsafe_b64encode(digest)
+            self._fernet = Fernet(key)
+        return self._fernet
+
+    def _should_encrypt(self, item_type: str) -> bool:
+        """Determine whether a payload of ``item_type`` must be encrypted."""
+        if not self._encryption_key:
+            return False
+        if self._encrypt_all:
+            return True
+        return (item_type or "").lower() == "reasoning"
+
+    def _serialize_payload_bytes(self, payload: dict[str, Any]) -> bytes:
+        """Return compact JSON bytes for ``payload``."""
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def _maybe_compress_payload(self, serialized: bytes) -> tuple[bytes, bool]:
+        """Compress serialized bytes when LZ4 is available and thresholds are met."""
+        if not serialized:
+            return serialized, False
+        if not self._compression_enabled:
+            return serialized, False
+        if self._compression_min_bytes and len(serialized) < self._compression_min_bytes:
+            return serialized, False
+        if lz4frame is None:
+            return serialized, False
+        try:
+            compressed = lz4frame.compress(serialized)
+        except Exception as exc:  # pragma: no cover - depends on native lib
+            self.logger.warning(
+                "LZ4 compression failed; disabling compression for the remainder of this process: %s",
+                exc,
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            self._compression_enabled = False
+            return serialized, False
+        if not compressed or len(compressed) >= len(serialized):
+            return serialized, False
+        return compressed, True
+
+    def _encode_payload_bytes(self, payload: dict[str, Any]) -> bytes:
+        """Serialize payload bytes and prepend a compression flag header."""
+        serialized = self._serialize_payload_bytes(payload)
+        data, compressed = self._maybe_compress_payload(serialized)
+        flag = _PAYLOAD_FLAG_LZ4 if compressed else _PAYLOAD_FLAG_PLAIN
+        return bytes([flag]) + data
+
+    def _decode_payload_bytes(self, payload_bytes: bytes) -> dict[str, Any]:
+        """Decode stored payload bytes into dictionaries."""
+        if not payload_bytes:
+            return {}
+        if len(payload_bytes) <= _PAYLOAD_HEADER_SIZE:
+            body = payload_bytes
+        else:
+            flag = payload_bytes[0]
+            body = payload_bytes[_PAYLOAD_HEADER_SIZE:]
+            if flag == _PAYLOAD_FLAG_LZ4:
+                body = self._lz4_decompress(body)
+            elif flag != _PAYLOAD_FLAG_PLAIN:
+                # Backward compatibility: old ciphertexts lack the header and are just JSON.
+                body = payload_bytes
+        try:
+            return json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError("Unable to decode persisted artifact payload.") from exc
+
+    def _lz4_decompress(self, data: bytes) -> bytes:
+        """Decompress LZ4 payloads or raise descriptive errors."""
+        if not data:
+            return b""
+        if lz4frame is None:
+            raise RuntimeError(
+                "Encountered compressed artifact, but the 'lz4' package is unavailable."
+            )
+        try:
+            return lz4frame.decompress(data)
+        except Exception as exc:  # pragma: no cover - depends on native lib
+            raise ValueError("Failed to decompress persisted artifact payload.") from exc
+
+    def _encrypt_payload(self, payload: dict[str, Any]) -> str:
+        """Encrypt payload bytes using the configured Fernet helper."""
+        fernet = self._get_fernet()
+        if not fernet:
+            raise RuntimeError("Encryption requested but ARTIFACT_ENCRYPTION_KEY is not configured.")
+        encoded = self._encode_payload_bytes(payload)
+        return fernet.encrypt(encoded).decode("utf-8")
+
+    def _decrypt_payload(self, ciphertext: str) -> dict[str, Any]:
+        """Decrypt ciphertext previously produced by :meth:`_encrypt_payload`."""
+        fernet = self._get_fernet()
+        if not fernet:
+            raise RuntimeError("Decryption requested but ARTIFACT_ENCRYPTION_KEY is not configured.")
+        try:
+            plaintext = fernet.decrypt(ciphertext.encode("utf-8"))
+        except InvalidToken as exc:
+            raise ValueError("Unable to decrypt payload (invalid token).") from exc
+        return self._decode_payload_bytes(plaintext)
+
+    def _encrypt_if_needed(self, item_type: str, payload: dict[str, Any]) -> tuple[Any, bool]:
+        """Optionally encrypt ``payload`` depending on the item type."""
+        if not self._should_encrypt(item_type):
+            return payload, False
+        encrypted = self._encrypt_payload(payload)
+        return {"ciphertext": encrypted}, True
+
+    def _make_db_row(
+        self,
+        chat_id: Optional[str],
+        message_id: Optional[str],
+        model_id: str,
+        payload: Dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        """Construct a persistence-ready row dict or return ``None`` when invalid."""
+        if not (chat_id and self._item_model):
+            return None
+        if not message_id:
+            self.logger.warning(
+                "Skipping artifact persistence for chat_id=%s: missing message_id.",
+                chat_id,
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+        item_type = payload.get("type", "unknown")
+        return {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "model_id": model_id,
+            "item_type": item_type,
+            "payload": payload,
+        }
+
+    def _db_persist_sync(self, rows: list[dict[str, Any]]) -> list[str]:
+        """Persist prepared rows once; intentionally no automatic retry logic."""
+        if not rows or not self._item_model or not self._session_factory:
+            return []
+
+        now = datetime.datetime.utcnow()
+
+        instances = []
+        ulids: list[str] = []
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            ulid = row.get("id") or generate_item_id()
+            stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
+            instances.append(
+                self._item_model(  # type: ignore[call-arg]
+                    id=ulid,
+                    chat_id=row.get("chat_id"),
+                    message_id=row.get("message_id"),
+                    model_id=row.get("model_id"),
+                    item_type=row.get("item_type"),
+                    payload=stored_payload,
+                    is_encrypted=is_encrypted,
+                    created_at=now,
+                )
+            )
+            ulids.append(ulid)
+
+        if not instances:
+            return []
+
+        session: Session = self._session_factory()  # type: ignore[call-arg]
+        try:
+            session.add_all(instances)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover - DB-specific errors
+            session.rollback()
+            self.logger.error(
+                "Failed to persist response artifacts: %s",
+                exc,
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            raise
+        finally:
+            session.close()
+
+        self.logger.debug("Persisted %d response artifact(s) to %s.", len(instances), self._artifact_table_name)
+        return ulids
+
+    async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
+        """Run :meth:`_db_persist_sync` inside the thread pool executor."""
+        if not rows or not self._db_executor or not self._item_model or not self._session_factory:
+            return []
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._db_executor, self._db_persist_sync, rows)
+
+    def _db_fetch_sync(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        item_ids: list[str],
+    ) -> dict[str, dict]:
+        """Synchronously fetch persisted artifacts for ``chat_id``."""
+        if not item_ids or not self._item_model or not self._session_factory:
+            return {}
+        model = self._item_model
+        session: Session = self._session_factory()  # type: ignore[call-arg]
+        try:
+            query = session.query(model).filter(model.chat_id == chat_id)
+            if item_ids:
+                query = query.filter(model.id.in_(item_ids))
+            if message_id:
+                query = query.filter(model.message_id == message_id)
+            rows = query.all()
+        finally:
+            session.close()
+
+        results: dict[str, dict] = {}
+        for row in rows:
+            payload = row.payload
+            if row.is_encrypted:
+                ciphertext = ""
+                if isinstance(payload, dict):
+                    ciphertext = payload.get("ciphertext", "")
+                elif isinstance(payload, str):
+                    ciphertext = payload
+                try:
+                    payload = self._decrypt_payload(ciphertext or "")
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to decrypt artifact %s: %s",
+                        row.id,
+                        exc,
+                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                    )
+                    continue
+            if isinstance(payload, dict):
+                results[row.id] = payload
+        return results
+
+    async def _db_fetch(
+        self,
+        chat_id: Optional[str],
+        message_id: Optional[str],
+        item_ids: list[str],
+    ) -> dict[str, dict]:
+        """Threaded wrapper around :meth:`_db_fetch_sync` with error handling."""
+        if not (chat_id and item_ids and self._db_executor and self._item_model and self._session_factory):
+            return {}
+        loop = asyncio.get_running_loop()
+        fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids)
+        try:
+            return await loop.run_in_executor(self._db_executor, fetch_call)
+        except Exception as exc:
+            self.logger.warning(
+                "Artifact fetch failed: %s",
+                exc,
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+            return {}
+
+    async def pipes(self):
+        """Return the list of models exposed to Open WebUI."""
+        session = await self._get_or_init_http_session()
+        try:
+            await OpenRouterModelRegistry.ensure_loaded(
+                session,
+                base_url=self.valves.BASE_URL,
+                api_key=EncryptedStr.decrypt(self.valves.API_KEY),
+                cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
+                logger=self.logger,
+            )
+        except ValueError as exc:
+            self.logger.error("OpenRouter configuration error: %s", exc)
+            return []
+
+        available_models = OpenRouterModelRegistry.list_models()
+        selected_models = self._select_models(self.valves.MODEL_ID, available_models)
+        return [{"id": model["id"], "name": model["name"]} for model in selected_models]
+
+    async def pipe(
+        self,
+        body: dict[str, Any],
+        __user__: dict[str, Any],
+        __request__: Request,
+        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]],
+        __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+        __metadata__: dict[str, Any],
+        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
+        __task__: Optional[dict[str, Any]] = None,
+        __task_body__: Optional[dict[str, Any]] = None,
+    ) -> AsyncGenerator[str, None] | str | None:
+        """Process a user request and return either a stream or final text.
+
+        When ``body['stream']`` is ``True`` the method yields deltas from
+        ``_run_streaming_loop``.  Otherwise it falls back to
+        ``_run_nonstreaming_loop`` and returns the aggregated response.
+        """
+        valves = self._merge_valves(self.valves, self.UserValves.model_validate(__user__.get("valves", {})))
+
+        openwebui_model_id = __metadata__.get("model", {}).get("id", "")
+        pipe_identifier_for_artifacts = self._resolve_pipe_identifier(openwebui_model_id)
+        self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier_for_artifacts)
+
+        session = await self._get_or_init_http_session()
+        try:
+            await OpenRouterModelRegistry.ensure_loaded(
+                session,
+                base_url=valves.BASE_URL,
+                api_key=EncryptedStr.decrypt(valves.API_KEY),
+                cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+                logger=self.logger,
+            )
+        except ValueError as exc:
+            await self._emit_error(
+                __event_emitter__,
+                f"OpenRouter configuration error: {exc}",
+                show_error_message=True,
+                done=True,
+            )
+            return ""
+        available_models = OpenRouterModelRegistry.list_models()
+        allowed_models = self._select_models(valves.MODEL_ID, available_models) or available_models
+        allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+
+        # Full model ID, e.g. "<pipe-id>.gpt-4o"
+        pipe_identifier = pipe_identifier_for_artifacts
+        ModelFamily._PIPE_ID.set(pipe_identifier)
+        # Features are nested under the pipe id key – read them dynamically.
+        _features_all = __metadata__.get("features", {}) or {}
+        features = _features_all.get(pipe_identifier, {})
+        # Custom location that this manifold uses to store feature flags
+
+        # STEP 0: Set up session logger with session_id and log level
+        SessionLogger.session_id.set(__metadata__.get("session_id", None))
+        SessionLogger.log_level.set(getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO))
+
+        # ------------------------------------------------------------------
+        # BONUS: Add support for Multi-line Status Descriptions (plus bold first line)
+        #
+        #  Open WebUI clamps each emitted status description to one line
+        # (Tailwind `line-clamp-1`). This tiny, idempotent CSS patch:
+        #   1) Removes the clamp and enables `white-space: pre-wrap` so "\n"
+        #      render as real line breaks.
+        #   2) Adds gentle, native-feeling emphasis to the *first visual line*
+        #      using semibold (600), not full bold.
+        #
+        # Scope:
+        #   • Affects only elements under `.status-description`
+        #   • No frontend rebuild; injected at runtime via `execute`
+        #   • Runs once per tab (checks for an existing <style> tag)
+        # ------------------------------------------------------------------
+        await __event_call__({
+            "type": "execute",
+            "data": {
+                "code": """
+                (() => {
+                // Only inject once per tab
+                if (document.getElementById("owui-status-unclamp")) return "ok";
+
+                const style = document.createElement("style");
+                style.id = "owui-status-unclamp";
+
+                style.textContent = `
+                    /* Allow multi-line in the status strip */
+                    .status-description .line-clamp-1,
+                    .status-description .text-base.line-clamp-1,
+                    .status-description .text-gray-500.text-base.line-clamp-1 {
+                    display: block !important;
+                    overflow: visible !important;
+                    -webkit-line-clamp: unset !important;
+                    -webkit-box-orient: initial !important;
+                    white-space: pre-wrap !important;  /* render \\n as line breaks */
+                    word-break: break-word;
+                    }
+
+                    /* Bold the first visual line */
+                    .status-description .text-base::first-line,
+                    .status-description .text-gray-500.text-base::first-line {
+                    font-weight: 500 !important;
+                    }
+                `;
+
+                document.head.appendChild(style);
+                return "ok";
+                })();
+                """
+            }
+        })
+        # ------------------------------------------------------------------
+
+
+        # STEP 1: Transform request body (Completions API -> Responses API).
+        completions_body = CompletionsBody.model_validate(body)
+        responses_body = await ResponsesBody.from_completions(
+            completions_body=completions_body,
+
+            # If chat_id and openwebui_model_id are provided, from_completions() uses them to fetch previously persisted items (function_calls, reasoning, etc.) from DB and reconstruct the input array in the correct order.
+            **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
+            **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
+            artifact_loader=self._db_fetch,
+
+        )
+        if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
+            if responses_body.max_output_tokens is None:
+                default_max = ModelFamily.max_completion_tokens(responses_body.model)
+                if default_max:
+                    responses_body.max_output_tokens = default_max
+        else:
+            responses_body.max_output_tokens = None
+
+        normalized_model_id = ModelFamily.base_model(responses_body.model)
+        if allowed_norm_ids and normalized_model_id not in allowed_norm_ids:
+            await self._emit_error(
+                __event_emitter__,
+                f"Model '{responses_body.model}' is not enabled for this pipe. Please choose one of the allowed models.",
+                show_error_message=True,
+                done=True,
+            )
+            return ""
+
+        # STEP 2: Detect if task model (generate title, generate tags, etc.), handle it separately
+        if __task__:
+            self.logger.info("Detected task model: %s", __task__)
+            return await self._run_task_model_request(
+                responses_body.model_dump(),
+                valves,
+                task_context=__task__,
+            )  # Placeholder for task handling logic
+
+        # STEP 3: Build OpenAI Tools JSON (from __tools__, valves, and completions_body.extra_tools)
+        __tools__ = await __tools__ if inspect.isawaitable(__tools__) else __tools__  # Await coroutine if needed (required for newer versions of Open WebUI)
+        tools = build_tools(
+            responses_body,
+            valves,
+            __tools__=__tools__,
+            features=features,
+            extra_tools=getattr(completions_body, "extra_tools", None),
+        )
+
+        # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
+        if tools and ModelFamily.supports("function_calling", openwebui_model_id):
+            model = Models.get_model_by_id(openwebui_model_id)
+            if model:
+                params = dict(model.params or {})
+                if params.get("function_calling") != "native":
+                    await self._emit_notification(
+                        __event_emitter__,
+                        content=f"Enabling native function calling for model: {openwebui_model_id}. Please re-run your query.",
+                        level="info"
+                    )
+                    params["function_calling"] = "native"
+                    form_data = model.model_dump()
+                    form_data["params"] = params
+                    Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+
+        # STEP 5: Add tools to responses body, if supported
+        if ModelFamily.supports("function_calling", responses_body.model):
+            if tools:
+                responses_body.tools = tools
+
+        # STEP 6: Configure OpenRouter web-search plugin if supported/enabled
+        if ModelFamily.supports("web_search_tool", responses_body.model) and (
+            valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False)
+        ):
+            plugin_payload = {"id": "web"}
+            if valves.WEB_SEARCH_MAX_RESULTS is not None:
+                plugin_payload["max_results"] = valves.WEB_SEARCH_MAX_RESULTS
+            plugins = list(responses_body.plugins or [])
+            plugins.append(plugin_payload)
+            responses_body.plugins = plugins
+
+        # STEP 7: Log the transformed request body
+        self.logger.debug(
+            "Transformed ResponsesBody: %s",
+            json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False),
+        )
+
+        # Convert the normalized model id back to the original OpenRouter id for the API request.
+        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
+
+        # STEP 8: Send to OpenAI Responses API
+        if responses_body.stream:
+            # Return async generator for partial text
+            return await self._run_streaming_loop(responses_body, valves, __event_emitter__, __metadata__, __tools__)
+        else:
+            # Return final text (non-streaming)
+            return await self._run_nonstreaming_loop(responses_body, valves, __event_emitter__, __metadata__, __tools__)
+
+    def _select_models(self, filter_value: str, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Filter OpenRouter catalog entries based on the valve string."""
+        if not available_models:
+            return []
+
+        filter_value = (filter_value or "").strip()
+        if not filter_value or filter_value.lower() == "auto":
+            return available_models
+
+        requested = {
+            ModelFamily.base_model(sanitize_model_id(model_id.strip()))
+            for model_id in filter_value.split(",")
+            if model_id.strip()
+        }
+        if not requested:
+            return available_models
+
+        selected = [model for model in available_models if model["norm_id"] in requested]
+        missing = requested - {model["norm_id"] for model in selected}
+        if missing:
+            self.logger.warning(
+                "Requested models not found in OpenRouter catalog: %s",
+                ", ".join(sorted(missing)),
+            )
+        return selected or available_models
+
+    # 4.3 Core Multi-Turn Handlers
+    async def _run_streaming_loop(
+        self,
+        body: ResponsesBody,
+        valves: Pipe.Valves,
+        event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
+        metadata: dict[str, Any] = {},
+        tools: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        """
+        Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
+        """
+        tools = tools or {}
+        openwebui_model = metadata.get("model", {}).get("id", "")
+        assistant_message = ""
+        pending_ulids: list[str] = []
+        pending_items: list[dict[str, Any]] = []
+        total_usage: dict[str, Any] = {}
+        ordinal_by_url: dict[str, int] = {}
+        emitted_citations: list[dict] = []
+        chat_id = metadata.get("chat_id")
+        message_id = metadata.get("message_id")
+
+        async def _flush_pending(reason: str) -> None:
+            """Persist buffered artifacts and emit a warning when the DB fails."""
+            if not pending_items:
+                return
+            rows = pending_items[:]
+            # Clear immediately so a failure here does not cause the same rows
+            # to be re-attempted during later flushes. Callers report the error
+            # to the UI instead of silently retrying.
+            pending_items.clear()
+            try:
+                ulids = await self._db_persist(rows)
+            except Exception as exc:  # pragma: no cover - DB errors handled later
+                self.logger.error(
+                    "Failed to persist response artifacts (%s): %s",
+                    reason,
+                    exc,
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
+                if event_emitter:
+                    await event_emitter(
+                        {
+                            "type": "status",
+                            "data": {"description": "⚠️ Tool storage unavailable", "done": False},
+                        }
+                    )
+                return
+            pending_ulids.extend(ulids)
+
+        thinking_tasks: list[asyncio.Task] = []
+        if ModelFamily.supports("reasoning", body.model) and event_emitter:
+            async def _later(delay: float, msg: str) -> None:
+                """Emit a delayed status update to reassure the user during long thoughts."""
+                await asyncio.sleep(delay)
+                await event_emitter({"type": "status", "data": {"description": msg}})
+
+            thinking_tasks = []
+            for delay, msg in [
+                (0, "Thinking…"),
+                (1.5, "Reading the user's question…"),
+                (4.0, "Gathering my thoughts…"),
+                (6.0, "Exploring possible responses…"),
+                (7.0, "Building a plan…"),
+            ]:
+                thinking_tasks.append(
+                    asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg))
+                )
+
+        def cancel_thinking() -> None:
+            """Cancel any scheduled reasoning status updates once the loop completes."""
+            if thinking_tasks:
+                for t in thinking_tasks:
+                    t.cancel()
+                thinking_tasks.clear()
+
+        start_time = perf_counter()
+
+        # Send OpenAI Responses API request, parse and emit response
+        error_occurred = False
+        try:
+            for _ in range(valves.MAX_FUNCTION_CALL_LOOPS):
+                final_response: dict[str, Any] | None = None
+                request_payload = body.model_dump(exclude_none=True)
+                api_model_override = getattr(body, "api_model", None)
+                if api_model_override:
+                    request_payload["model"] = api_model_override
+                    request_payload.pop("api_model", None)
+                request_payload = _filter_openrouter_request(request_payload)
+
+                api_key_value = EncryptedStr.decrypt(valves.API_KEY)
+                async for event in self.send_openai_responses_streaming_request(
+                    request_payload,
+                    api_key=api_key_value,
+                    base_url=valves.BASE_URL,
+                ):
+                    etype = event.get("type")
+
+                    # Emit OpenRouter SSE frames at INFO (non-delta) only; skip delta spam entirely.
+                    is_delta_event = bool(etype and etype.endswith(".delta"))
+                    if not is_delta_event:
+                        log_verbose: Callable[[str, Any], None] | None = None
+                        if self.logger.isEnabledFor(logging.INFO):
+                            log_verbose = self.logger.info
+                        elif self.logger.isEnabledFor(logging.DEBUG):
+                            log_verbose = self.logger.debug
+
+                        if log_verbose:
+                            log_verbose("OpenRouter event: %s", etype)
+                            log_verbose(
+                                "OpenRouter payload: %s",
+                                json.dumps(event, indent=2, ensure_ascii=False),
+                            )
+
+                    # ─── Emit partial delta assistant message
+                    if etype == "response.output_text.delta":
+                        delta = event.get("delta", "")
+                        if delta:
+                            assistant_message += delta
+                            await event_emitter({"type": "chat:message", "data": {"content": assistant_message}})
+                        continue
+
+                    # ─── Emit reasoning summary once done ───────────────────────
+                    if etype == "response.reasoning_summary_text.done":
+                        text = (event.get("text") or "").strip()
+                        if text:
+                            title_match = re.findall(r"\*\*(.+?)\*\*", text)
+                            title = title_match[-1].strip() if title_match else "Thinking…"
+                            content = re.sub(r"\*\*(.+?)\*\*", "", text).strip()
+                            if event_emitter:
+                                cancel_thinking()
+                                await event_emitter(
+                                    {
+                                        "type": "status",
+                                        "data": {"description": f"{title}\n{content}"},
+                                    }
+                                )
+                        continue
+
+                    # ─── Citations from inline annotations (simple, no helpers) ───────────────
+                    if etype == "response.output_text.annotation.added":
+                        ann = event.get("annotation") or {}
+                        if ann.get("type") == "url_citation":
+                            # Basic fields
+                            url = (ann.get("url") or "").strip()
+                            if url.endswith("?utm_source=openai"):
+                                url = url[: -len("?utm_source=openai")]
+                            title = (ann.get("title") or url).strip()
+
+                            # Stable [n] per unique URL
+                            if url in ordinal_by_url:
+                                n = ordinal_by_url[url]
+                            else:
+                                n = len(ordinal_by_url) + 1
+                                ordinal_by_url[url] = n
+
+                                # First time seeing this URL → emit a 'source' event
+                                # Minimal domain extraction (no urlparse)
+                                host = url.split("//", 1)[-1].split("/", 1)[0].lower().lstrip("www.")
+                                citation = {
+                                    "source": {"name": host or "source", "url": url},
+                                    "document": [title],
+                                    "metadata": [{
+                                        "source": url,
+                                        "date_accessed": datetime.date.today().isoformat(),
+                                    }],
+                                }
+                                await self._emit_citation(event_emitter, citation)
+                                emitted_citations.append(citation)
+
+                            # TODO: Add support for insert citation markers.
+                            marker = f" [{n}]"
+                            end_idx = ann.get("end_index")
+                            if isinstance(end_idx, int) and 0 <= end_idx <= len(assistant_message):
+                                assistant_message = (
+                                    assistant_message[:end_idx]
+                                    + marker
+                                    + assistant_message[end_idx:]
+                                )
+                            else:
+                                assistant_message += marker
+                            if event_emitter:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:message",
+                                        "data": {"content": assistant_message},
+                                    }
+                                )
+
+                        continue
+
+
+                    # ─── Emit status updates for in-progress items ──────────────────────
+                    if etype == "response.output_item.added":
+                        item = event.get("item", {})
+                        item_type = item.get("type", "")
+                        item_status = item.get("status", "")
+
+                        if item_type == "message" and item_status == "in_progress":
+                            if event_emitter:
+                                await event_emitter(
+                                    {
+                                        "type": "status",
+                                        "data": {"description": "Responding to the user…"},
+                                    }
+                                )
+                            continue
+
+                    # ─── Emit detailed tool status upon completion ────────────────────────
+                    if etype == "response.output_item.done":
+                        item = event.get("item", {})
+                        item_type = item.get("type", "")
+                        item_name = item.get("name", "unnamed_tool")
+
+                        # Skip irrelevant item types
+                        if item_type in ("message"):
+                            continue
+
+                        # Decide persistence policy
+                        should_persist = False
+                        if item_type == "reasoning":
+                            # Persist reasoning only when explicitly allowed
+                            should_persist = valves.PERSIST_REASONING_TOKENS == "conversation"
+
+                        elif item_type in ("message", "web_search_call"):
+                            # Never persist assistant/user messages or ephemeral search calls
+                            should_persist = False
+
+                        else:
+                            # Persist all other non-message items if valve enabled
+                            should_persist = valves.PERSIST_TOOL_RESULTS
+
+                        if item_type == "function_call":
+                            # Defer persistence until the corresponding tool result is stored
+                            should_persist = False
+
+                        if should_persist:
+                            normalized_item = _normalize_persisted_item(item)
+                            if normalized_item:
+                                row = self._make_db_row(
+                                    chat_id, message_id, openwebui_model, normalized_item
+                                )
+                                if row:
+                                    pending_items.append(row)
+
+
+                        # Default empty content
+                        title = f"Running `{item_name}`"
+                        content = ""
+
+                        # Prepare detailed content per item_type
+                        if item_type == "function_call":
+                            title = f"Running the {item_name} tool…"
+                            arguments = json.loads(item.get("arguments") or "{}")
+                            args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
+                            content = wrap_code_block(f"{item_name}({args_formatted})", "python")
+
+                        elif item_type == "web_search_call":
+                            action = item.get("action", {}) or {}
+
+                            if action.get("type") == "search":
+                                query = action.get("query")
+                                sources = action.get("sources") or []
+                                urls = [s.get("url") for s in sources if s.get("url")]
+
+                                if event_emitter:
+                                    # Emit 'searching' status update along with the search query if available
+                                    if query:
+                                        await event_emitter({
+                                            "type": "status",
+                                            "data": {
+                                                "action": "web_search_queries_generated",
+                                                "description": "Searching",
+                                                "queries": [query],
+                                                "done": False,
+                                            },
+                                        })
+
+                                    # If API returned sources, emit the panel now
+                                    if urls:
+                                        await event_emitter({
+                                            "type": "status",
+                                            "data": {
+                                                "action": "web_search",
+                                                "description": "Reading through {{count}} sites",
+                                                "query": query,
+                                                "urls": urls,
+                                                "done": False,
+                                            },
+                                        })
+
+                            elif action.get("type") == "open_page":
+                                #TODO: emit status for open_page.  Only emitted by Deep Research models
+                                continue
+                            elif action.get("type") == "find_in_page":
+                                #TODO: emit status for find_in_page.  Only emitted by Deep Research models
+                                continue
+                                    
+                            continue
+
+                        elif item_type == "file_search_call":
+                            title = "Let me skim those files…"
+                        elif item_type == "image_generation_call":
+                            title = "Let me create that image…"
+                        elif item_type == "local_shell_call":
+                            title = "Let me run that command…"
+                        elif item_type == "mcp_call":
+                            title = "Let me query the MCP server…"
+                        elif item_type == "reasoning":
+                            title = None # Don't emit a title for reasoning items
+
+                        # Log the status with prepared title and detailed content instead of emitting it
+                        if title:
+                            desc = title if not content else f"{title}\n{content}"
+                            if thinking_tasks:
+                                cancel_thinking()
+                            self.logger.debug("Tool status update: %s", desc)
+
+                        continue
+
+                    # ─── Capture final response payload for this loop
+                    if etype == "response.completed":
+                        final_response = event.get("response", {})
+                        break
+
+                if final_response is None:
+                    raise ValueError("No final response received from OpenAI Responses API.")
+
+                # Extract usage information from OpenAI response and pass-through to Open WebUI
+                usage = final_response.get("usage", {})
+                if usage:
+                    usage["turn_count"] = 1
+                    usage["function_call_count"] = sum(
+                        1 for i in final_response["output"] if i["type"] == "function_call"
+                    )
+                    total_usage = merge_usage_stats(total_usage, usage)
+                    await self._emit_completion(event_emitter, content="", usage=total_usage, done=False)
+
+                # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
+                call_items = []
+                for item in final_response.get("output", []):
+                    if item.get("type") == "function_call":
+                        normalized_call = _normalize_persisted_item(item)
+                        if normalized_call:
+                            call_items.append(normalized_call)
+                if call_items:
+                    body.input.extend(call_items)
+
+                calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
+                function_outputs: list[dict[str, Any]] = []
+                if calls:
+                    function_outputs = await self._execute_function_calls(calls, tools)
+                    if valves.PERSIST_TOOL_RESULTS:
+                        persist_payloads: list[dict] = []
+                        for idx, output in enumerate(function_outputs):
+                            if idx < len(call_items):
+                                persist_payloads.append(call_items[idx])
+                            persist_payloads.append(output)
+
+                        if persist_payloads:
+                            for payload in persist_payloads:
+                                normalized_payload = _normalize_persisted_item(payload)
+                                if not normalized_payload:
+                                    continue
+                                row = self._make_db_row(
+                                    chat_id, message_id, openwebui_model, normalized_payload
+                                )
+                                if row:
+                                    pending_items.append(row)
+                            if thinking_tasks:
+                                cancel_thinking()
+                            await _flush_pending("function_outputs")
+
+                    for output in function_outputs:
+                        result_text = wrap_code_block(output.get("output", ""))
+                        if thinking_tasks:
+                            cancel_thinking()
+                        self.logger.debug("Received tool result\n%s", result_text)
+                    body.input.extend(function_outputs)
+                else:
+                    break
+
+        # Catch any exceptions during the streaming loop and emit an error
+        except Exception as e:  # pragma: no cover - network errors
+            error_occurred = True
+            await self._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)
+
+        finally:
+            cancel_thinking()
+            for t in thinking_tasks:
+                with contextlib.suppress(Exception):
+                    await t
+            if not error_occurred and event_emitter:
+                elapsed = max(0.0, perf_counter() - start_time)
+                description = self._format_final_status_description(
+                    elapsed=elapsed,
+                    total_usage=total_usage,
+                    valves=valves,
+                )
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": description,
+                            "done": True,
+                        },
+                    }
+                )
+
+            if valves.LOG_LEVEL != "INHERIT":
+                session_id = SessionLogger.session_id.get()
+                if session_id:
+                    logs = SessionLogger.logs.get(session_id, [])
+                    if logs and self.logger.isEnabledFor(logging.DEBUG):
+                        self.logger.debug(
+                            "Collected %d session log entries for session %s.",
+                            len(logs),
+                            session_id,
+                        )
+
+            # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
+            await self._emit_completion(event_emitter, content="", usage=total_usage, done=True)  # There must be an empty content to avoid breaking the UI
+
+            # Clear logs
+            SessionLogger.logs.pop(SessionLogger.session_id.get(), None)
+            SessionLogger.cleanup()
+
+            chat_id = metadata.get("chat_id")
+            message_id = metadata.get("message_id")
+            if chat_id and message_id and emitted_citations:
+                Chats.upsert_message_to_chat_by_id_and_message_id(
+                    chat_id, message_id, {"sources": emitted_citations}
+                )
+
+            await _flush_pending("finalize")
+            if pending_ulids:
+                ulid_block = "\n".join(pending_ulids)
+                if assistant_message and not assistant_message.endswith("\n"):
+                    assistant_message += "\n"
+                assistant_message += ulid_block
+                if not assistant_message.endswith("\n"):
+                    assistant_message += "\n"
+
+            # Return the final output to ensure persistence.
+            return assistant_message
+
+    async def _run_nonstreaming_loop(
+        self,
+        body: ResponsesBody,
+        valves: Pipe.Valves,
+        event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
+        metadata: Dict[str, Any] = {},
+        tools: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> str:
+        """Unified implementation: reuse the streaming path.
+
+        We force `stream=True` and delegate to `_run_streaming_loop`, but wrap the
+        emitter so incremental `chat:message` frames are suppressed. The final
+        message text is returned (same contract as before).
+        """
+
+        # Force SSE so we can reuse the streaming machinery
+        body.stream = True
+
+        # Pass through status / citations / usage, but do NOT emit partial text
+        wrapped_emitter = _wrap_event_emitter(
+            event_emitter,
+            suppress_chat_messages=True,
+            suppress_completion=False,
+        )
+
+        return await self._run_streaming_loop(
+            body,
+            valves,
+            wrapped_emitter,
+            metadata,
+            tools or {},
+        )
+
+    # 4.4 Task Model Handling
+    async def _run_task_model_request(
+        self,
+        body: Dict[str, Any],
+        valves: Pipe.Valves,
+        *,
+        task_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Process a task model request via the Responses API.
+
+        Task models (e.g. generating a chat title or tags) return their
+        information as standard Responses output.  This helper performs a single
+        non-streaming call and extracts the plain text from the response items.
+        """
+
+        task_body = dict(body or {})
+        source_model_id = task_body.get("model", "")
+        task_body["model"] = OpenRouterModelRegistry.api_model_id(source_model_id) or source_model_id
+        task_body.setdefault("input", "")
+        task_body["stream"] = False
+        if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
+            if task_body.get("max_output_tokens") is None:
+                default_max = ModelFamily.max_completion_tokens(source_model_id)
+                if default_max:
+                    task_body["max_output_tokens"] = default_max
+        else:
+            task_body.pop("max_output_tokens", None)
+        task_body = _filter_openrouter_request(task_body)
+
+        attempts = 2
+        delay_seconds = 0.2  # keep retries snappy; task models run in latency-sensitive contexts
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self.send_openai_responses_nonstreaming_request(
+                    task_body,
+                    api_key=EncryptedStr.decrypt(valves.API_KEY),
+                    base_url=valves.BASE_URL,
+                )
+
+                message = self._extract_task_output_text(response).strip()
+                if message:
+                    return message
+
+                raise ValueError(
+                    "Task model returned no output_text content."
+                )
+
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    "Task model attempt %d/%d failed: %s",
+                    attempt,
+                    attempts,
+                    exc,
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(delay_seconds)
+                    delay_seconds = min(delay_seconds * 2, 0.8)
+
+        task_type = (task_context or {}).get("type") or "task"
+        error_message = (
+            f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
+        )
+        self.logger.error(error_message, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+        return f"[Task error] Unable to generate {task_type}. Please retry later."
+
+    @staticmethod
+    def _extract_task_output_text(response: Dict[str, Any]) -> str:
+        """
+        Normalize Responses API payloads into a plain text string for task models.
+        """
+        if not isinstance(response, dict):
+            return ""
+
+        text_parts: list[str] = []
+        output_items = response.get("output", [])
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for content in item.get("content", []):
+                    if not isinstance(content, dict):
+                        continue
+                    if content.get("type") == "output_text":
+                        text_parts.append(content.get("text", "") or "")
+
+        # Fallback: some providers return a collapsed output_text field
+        fallback_text = response.get("output_text")
+        if isinstance(fallback_text, str):
+            text_parts.append(fallback_text)
+
+        joined = "\n".join(part for part in text_parts if part)
+        return joined
+      
+    # 4.5 LLM HTTP Request Helpers
+    async def send_openai_responses_streaming_request(
+        self,
+        request_body: dict[str, Any],
+        api_key: str,
+        base_url: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield SSE events from the Responses endpoint as soon as they arrive.
+
+        This low-level helper is tuned for minimal latency when streaming large
+        responses. It buffers multi-line ``data:`` payloads until the blank-line
+        separator arrives, ignores other SSE fields, and intentionally skips any
+        malformed JSON instead of retrying so upstream callers can keep their
+        state machines simple.
+        """
+        # Get or create aiohttp session (aiohttp is used for performance).
+        self.session = await self._get_or_init_http_session()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        _debug_print_request(headers, request_body)
+        url = base_url.rstrip("/") + "/responses"
+
+        buf = bytearray()
+        event_data_parts: list[bytes] = []
+        async with self.session.post(url, json=request_body, headers=headers) as resp:
+            if resp.status >= 400:
+                await _debug_print_error_response(resp)
+            resp.raise_for_status()
+
+            async for chunk in resp.content.iter_chunked(4096):
+                buf.extend(chunk)
+                start_idx = 0
+                # Process all complete lines in the buffer
+                while True:
+                    newline_idx = buf.find(b"\n", start_idx)
+                    if newline_idx == -1:
+                        break
+
+                    line = buf[start_idx:newline_idx]
+                    start_idx = newline_idx + 1
+
+                    stripped = line.strip()
+                    if not stripped:
+                        if event_data_parts:
+                            data_blob = b"\n".join(event_data_parts).strip()
+                            event_data_parts.clear()
+                            if not data_blob:
+                                continue
+                            if data_blob == b"[DONE]":
+                                return
+                            try:
+                                yield json.loads(data_blob.decode("utf-8"))
+                            except json.JSONDecodeError as exc:
+                                self.logger.warning(
+                                    "Discarding malformed SSE payload: %s", exc
+                                )
+                        continue
+
+                    if stripped.startswith(b":"):
+                        continue
+
+                    if stripped.startswith(b"data:"):
+                        event_data_parts.append(stripped[5:].lstrip())
+                        continue
+                    # Ignore other SSE fields for now
+
+                # Remove processed data from the buffer
+                if start_idx > 0:
+                    del buf[:start_idx]
+
+            if event_data_parts:
+                data_blob = b"\n".join(event_data_parts).strip()
+                if data_blob and data_blob != b"[DONE]":
+                    try:
+                        yield json.loads(data_blob.decode("utf-8"))
+                    except json.JSONDecodeError as exc:
+                        self.logger.warning(
+                            "Discarding malformed SSE payload at stream end: %s", exc
+                        )
+
+    async def send_openai_responses_nonstreaming_request(
+        self,
+        request_params: dict[str, Any],
+        api_key: str,
+        base_url: str,
+    ) -> Dict[str, Any]:
+        """Send a blocking request to the Responses API and return the JSON payload."""
+        # Get or create aiohttp session (aiohttp is used for performance).
+        self.session = await self._get_or_init_http_session()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        _debug_print_request(headers, request_params)
+        url = base_url.rstrip("/") + "/responses"
+
+        async with self.session.post(url, json=request_params, headers=headers) as resp:
+            if resp.status >= 400:
+                await _debug_print_error_response(resp)
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
+        """Return a cached ``aiohttp.ClientSession`` instance.
+
+        The session is created with connection pooling and sensible timeouts on
+        first use and is then reused for the lifetime of the process.
+        """
+        # Reuse existing session if available and open
+        if self.session is not None and not self.session.closed:
+            self.logger.debug("Reusing existing aiohttp.ClientSession")
+            return self.session
+
+        self.logger.debug("Creating new aiohttp.ClientSession")
+
+        # Configure TCP connector for connection pooling and DNS caching
+        connector = aiohttp.TCPConnector(
+            limit=50,  # Max total simultaneous connections
+            limit_per_host=10,  # Max connections per host
+            keepalive_timeout=75,  # Seconds to keep idle sockets open
+            ttl_dns_cache=300,  # DNS cache time-to-live in seconds
+        )
+
+        # Set reasonable timeouts for connection and socket operations
+        timeout = aiohttp.ClientTimeout(
+            connect=30,  # Max seconds to establish connection
+            sock_connect=30,  # Max seconds for socket connect
+            sock_read=3600,  # Max seconds for reading from socket (1 hour)
+        )
+
+        session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            json_serialize=json.dumps,
+        )
+
+        return session
+
+    async def close(self) -> None:
+        """Explicitly close the shared aiohttp session."""
+        self.shutdown()
+        session = self.session
+        self.session = None
+        if session and not session.closed:
+            await session.close()
+            self._session_closed = True
+
+    def __del__(self) -> None:
+        """Best-effort session shutdown to avoid 'Unclosed client session' warnings."""
+        self.shutdown()
+        if self._session_closed:
+            return
+        session = getattr(self, "session", None)
+        if not session or session.closed:
+            return
+        self.session = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(session.close()))
+                self._session_closed = True
+            except RuntimeError:
+                pass
+        else:
+            try:
+                new_loop = asyncio.new_event_loop()
+                try:
+                    new_loop.run_until_complete(session.close())
+                    self._session_closed = True
+                finally:
+                    new_loop.close()
+            except Exception:
+                pass
+
+    # 4.6 Tool Execution Logic
+    @staticmethod
+    async def _execute_function_calls(
+        calls: list[dict],                      # raw call-items from the LLM
+        tools: dict[str, dict[str, Any]],       # name → {callable, …}
+    ) -> list[dict]:
+        """Execute one or more tool calls and return their outputs.
+
+        Each call specification is looked up in the ``tools`` mapping by name
+        and executed concurrently.  The returned list contains synthetic
+        ``function_call_output`` items suitable for feeding back into the LLM.
+        """
+        def _make_task(call):
+            """Return an awaitable for a single tool invocation."""
+            tool_cfg = tools.get(call["name"])
+            if not tool_cfg:                                 # tool missing
+                return asyncio.sleep(0, result="Tool not found")
+
+            fn = tool_cfg["callable"]
+            args = json.loads(call["arguments"])
+
+            if inspect.iscoroutinefunction(fn):              # async tool
+                return fn(**args)
+            else:                                            # sync tool
+                return asyncio.to_thread(fn, **args)
+
+        tasks   = [_make_task(call) for call in calls]       # ← fire & forget
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        outputs: list[dict] = []
+        for call, result in zip(calls, results):
+            call_id = call.get("call_id") or generate_item_id()
+            if isinstance(result, Exception):
+                output_text = f"Tool error: {result}"
+            else:
+                output_text = "" if result is None else str(result)
+            outputs.append(
+                {
+                    "type":   "function_call_output",
+                    "id":     generate_item_id(),
+                    "status": "completed",
+                    "call_id": call_id,
+                    "output":  output_text,
+                }
+            )
+        return outputs
+    # 4.7 Emitters (Front-end communication)
+    async def _emit_error(
+        self,
+        event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
+        error_obj: Exception | str,
+        *,
+        show_error_message: bool = True,
+        show_error_log_citation: bool = False,
+        done: bool = False,
+    ) -> None:
+        """Log an error and optionally surface it to the UI.
+
+        When ``show_error_log_citation`` is true the collected debug logs are
+        dumped to the server log (instead of the UI) so developers can inspect
+        what went wrong.
+        """
+        error_message = str(error_obj)  # If it's an exception, convert to string
+        self.logger.error("Error: %s", error_message)
+
+        if show_error_message and event_emitter:
+            await event_emitter(
+                {
+                    "type": "chat:completion",
+                    "data": {
+                        "error": {"message": error_message},
+                        "done": done,
+                    },
+                }
+            )
+
+        # 2) Optionally dump the collected logs to the backend logger
+        if show_error_log_citation:
+            session_id = SessionLogger.session_id.get()
+            logs = SessionLogger.logs.get(session_id, [])
+            if logs:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        "Error logs for session %s:\n%s",
+                        session_id,
+                        "\n".join(logs),
+                    )
+            else:
+                self.logger.warning(
+                    "No debug logs found for session_id %s", session_id
+                )
+
+    async def _emit_citation(
+        self,
+        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        citation: Dict[str, Any],
+    ) -> None:
+        """Send a normalized citation block to the UI if an emitter is available."""
+        if event_emitter is None or not isinstance(citation, dict):
+            return
+
+        documents_raw = citation.get("document")
+        if isinstance(documents_raw, str):
+            documents = [documents_raw] if documents_raw.strip() else []
+        elif isinstance(documents_raw, list):
+            documents = [str(doc).strip() for doc in documents_raw if str(doc).strip()]
+        else:
+            documents = []
+        if not documents:
+            documents = ["Citation"]
+
+        metadata_raw = citation.get("metadata")
+        if isinstance(metadata_raw, list):
+            metadata = [m for m in metadata_raw if isinstance(m, dict)]
+        else:
+            metadata = []
+
+        source_info = citation.get("source")
+        if isinstance(source_info, dict):
+            source_name = (source_info.get("name") or source_info.get("url") or "source").strip() or "source"
+            if not source_info.get("name"):
+                source_info = dict(source_info)
+                source_info["name"] = source_name
+        else:
+            source_name = "source"
+            source_info = {"name": source_name}
+
+        if not metadata:
+            metadata = [
+                {
+                    "date_accessed": datetime.datetime.now().isoformat(),
+                    "source": source_info.get("url") or source_name,
+                }
+            ]
+
+        await event_emitter(
+            {
+                "type": "citation",
+                "data": {
+                    "document": documents,
+                    "metadata": metadata,
+                    "source": source_info,
+                },
+            }
+        )
+
+    async def _emit_completion(
+        self,
+        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        *,
+        content: str | None = "",                       # always included (may be "").  UI will stall if you leave it out.
+        title:   str | None = None,                     # optional title.
+        usage:   dict[str, Any] | None = None,          # optional usage block
+        done:    bool = True,                           # True → final frame
+    ) -> None:
+        """Emit a ``chat:completion`` event if an emitter is present.
+
+        The ``done`` flag indicates whether this is the final frame for the
+        request.  When ``usage`` information is provided it is forwarded as part
+        of the event data.
+        """
+        if event_emitter is None:
+            return
+
+        # Note: Open WebUI emits a final "chat:completion" event after the stream ends, which overwrites any previously emitted completion events' content and title in the UI.
+        await event_emitter(
+            {
+                "type": "chat:completion",
+                "data": {
+                    "done": done,
+                    "content": content,
+                    **({"title": title} if title is not None else {}),
+                    **({"usage": usage} if usage is not None else {}),
+                }
+            }
+        )
+
+    async def _emit_notification(
+        self,
+        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        content: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+    ) -> None:
+        """Emit a toast-style notification to the UI.
+
+        The ``level`` argument controls the styling of the notification banner.
+        """
+        if event_emitter is None:
+            return
+
+        await event_emitter(
+            {"type": "notification", "data": {"type": level, "content": content}}
+        )
+
+    def _format_final_status_description(
+        self,
+        *,
+        elapsed: float,
+        total_usage: Dict[str, Any],
+        valves: "Pipe.Valves",
+    ) -> str:
+        """Return the final status line respecting valve + available metrics."""
+        default_description = f"Thought for {elapsed:.1f} seconds"
+        if not valves.SHOW_FINAL_USAGE_STATUS:
+            return default_description
+
+        usage = total_usage or {}
+        segments: list[str] = [f"Time: {elapsed:.2f}s"]
+
+        cost = usage.get("cost")
+        if isinstance(cost, (int, float)) and cost > 0:
+            cost_str = f"{cost:.6f}".rstrip("0").rstrip(".")
+            segments.append(f"Cost ${cost_str}")
+
+        def _to_int(value: Any) -> Optional[int]:
+            """Best-effort conversion to ``int`` for usage counters."""
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            return None
+
+        input_tokens = _to_int(usage.get("input_tokens"))
+        output_tokens = _to_int(usage.get("output_tokens"))
+        total_tokens = _to_int(usage.get("total_tokens"))
+        if total_tokens is None:
+            candidates = [v for v in (input_tokens, output_tokens) if v is not None]
+            if candidates:
+                total_tokens = sum(candidates)
+
+        cached_tokens = _to_int(
+            (usage.get("input_tokens_details") or {}).get("cached_tokens")
+        )
+        reasoning_tokens = _to_int(
+            (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+        )
+
+        token_details: list[str] = []
+        if input_tokens is not None:
+            token_details.append(f"I:{input_tokens}")
+        if output_tokens is not None:
+            token_details.append(f"O:{output_tokens}")
+        if cached_tokens is not None and cached_tokens > 0:
+            token_details.append(f"C:{cached_tokens}")
+        if reasoning_tokens is not None and reasoning_tokens > 0:
+            token_details.append(f"R:{reasoning_tokens}")
+
+        if total_tokens is not None:
+            token_segment = f"Total tokens: {total_tokens}"
+            if token_details:
+                token_segment += f" ({', '.join(token_details)})"
+            segments.append(token_segment)
+        elif token_details:
+            segments.append("Tokens: " + ", ".join(token_details))
+
+        description = " | ".join(segments)
+        return description or default_description
+
+    # 4.8 Internal Static Helpers
+    def _merge_valves(self, global_valves, user_valves) -> "Pipe.Valves":
+        """Merge user-level valves into the global defaults.
+
+        Any field set to ``"INHERIT"`` (case-insensitive) is ignored so the
+        corresponding global value is preserved.
+        """
+        if not user_valves:
+            return global_valves
+
+        # Merge: update only fields not set to "INHERIT"
+        update = {
+            k: v
+            for k, v in user_valves.model_dump().items()
+            if v is not None and str(v).lower() != "inherit"
+        }
+        return global_valves.model_copy(update=update)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Utility & Helper Layer (organized, consistent docstrings)
+#    NOTE: Logic is unchanged. Only docstrings/comments/sectioning were improved.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 5.1 Logging & Diagnostics
+# -------------------------
+
+class SessionLogger:
+    """Per-request logger that captures console output and an in-memory log buffer.
+
+    The logger is bound to a logical *session* via contextvars so that log lines
+    can be collected and emitted (e.g., as citations) for the current request.
+    Cleanup is intentional and explicit: request handlers call ``cleanup`` once
+    they finish streaming so there is no background task silently pruning logs.
+
+    Attributes:
+        session_id: ContextVar storing the current logical session ID.
+        log_level:  ContextVar storing the minimum level to emit for this session.
+        logs:       Map of session_id -> fixed-size deque of formatted log strings.
+    """
+
+    session_id = ContextVar("session_id", default=None)
+    log_level = ContextVar("log_level", default=logging.INFO)
+    logs = defaultdict(lambda: deque(maxlen=2000))
+    _session_last_seen: Dict[str, float] = {}
+
+    @classmethod
+    def get_logger(cls, name=__name__):
+        """Create a logger wired to the current SessionLogger context.
+
+        Args:
+            name: Logger name; defaults to the current module name.
+
+        Returns:
+            logging.Logger: A configured logger that writes both to stdout and
+            the in-memory `SessionLogger.logs` buffer. The buffer is keyed by
+            the current `SessionLogger.session_id`.
+        """
+        logger = logging.getLogger(name)
+        logger.handlers.clear()
+        logger.filters.clear()
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+
+        # Single combined filter: attach session_id and respect per-session level.
+        def filter(record):
+            """Attach session metadata and enforce per-session log levels."""
+            sid = cls.session_id.get()
+            record.session_id = sid
+            if sid:
+                cls._session_last_seen[sid] = time.time()
+            return record.levelno >= cls.log_level.get()
+
+        logger.addFilter(filter)
+
+        # Console handler
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter("[%(levelname)s] [%(session_id)s] %(message)s"))
+        logger.addHandler(console)
+
+        # Memory handler (appends formatted lines into logs[session_id])
+        mem = logging.Handler()
+        mem.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        mem.emit = lambda r: cls.logs[r.session_id].append(mem.format(r)) if r.session_id else None
+        logger.addHandler(mem)
+
+        return logger
+
+    @classmethod
+    def cleanup(cls, max_age_seconds: float = 3600) -> None:
+        """Remove stale session logs to avoid unbounded growth."""
+        cutoff = time.time() - max_age_seconds
+        stale = [sid for sid, ts in cls._session_last_seen.items() if ts < cutoff]
+        for sid in stale:
+            cls.logs.pop(sid, None)
+            cls._session_last_seen.pop(sid, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Framework Integration Helpers (Open WebUI DB operations)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. General-Purpose Utilities (data transforms & patches)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _wrap_event_emitter(
+    emitter: Callable[[Dict[str, Any]], Awaitable[None]] | None,
+    *,
+    suppress_chat_messages: bool = False,
+    suppress_completion: bool = False,
+):
+    """
+    Wrap the given event emitter and optionally suppress specific event types.
+
+    Use-case: reuse the streaming loop for non-stream requests by swallowing
+    incremental 'chat:message' frames while allowing status/citation/usage
+    events through.
+    """
+    if emitter is None:
+        async def _noop(_event: Dict[str, Any]) -> None:
+            """Swallow events when no emitter is provided."""
+            return
+
+        return _noop
+
+    async def _wrapped(event: Dict[str, Any]) -> None:
+        """Proxy emitter that suppresses selected event types."""
+        etype = (event or {}).get("type")
+        if suppress_chat_messages and etype == "chat:message":
+            return  # swallow incremental deltas
+        if suppress_completion and etype == "chat:completion":
+            return  # optionally swallow completion frames
+        await emitter(event)
+
+    return _wrapped
+
+def merge_usage_stats(total, new):
+    """Recursively merge nested usage statistics.
+
+    For numeric values, sums are accumulated; for dicts, the function recurses;
+    other values overwrite the prior value when non-None.
+
+    Args:
+        total: Accumulator dictionary to update.
+        new:   Newly reported usage block to merge into `total`.
+
+    Returns:
+        dict: The updated accumulator dictionary (`total`).
+    """
+    for k, v in new.items():
+        if isinstance(v, dict):
+            total[k] = merge_usage_stats(total.get(k, {}), v)
+        elif isinstance(v, (int, float)):
+            total[k] = total.get(k, 0) + v
+        else:
+            total[k] = v if v is not None else total.get(k, 0)
+    return total
+
+
+def wrap_code_block(text: str, language: str = "python") -> str:
+    """Wrap text in a fenced Markdown code block.
+
+    The fence length adapts to the longest backtick run within the text to avoid
+    prematurely closing the block.
+
+    Args:
+        text:     The code or content to wrap.
+        language: Markdown fence language tag.
+
+    Returns:
+        str: Markdown code block.
+    """
+    longest = max((len(m.group(0)) for m in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{text}\n{fence}"
+
+
+def _normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Ensure persisted response artifacts match the schema expected by the
+    Responses API when replayed via the `input` array.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    item_type = item.get("type")
+    if not item_type:
+        return None
+
+    normalized = dict(item)
+
+    def _ensure_identity(status_default: str = "completed") -> None:
+        """Guarantee persisted artifacts include ``id`` and ``status`` fields."""
+        normalized.setdefault("id", generate_item_id())
+        status = normalized.get("status") or status_default
+        normalized["status"] = status
+
+    if item_type == "function_call_output":
+        _ensure_identity()
+        normalized["call_id"] = normalized.get("call_id") or generate_item_id()
+        output_value = normalized.get("output")
+        normalized["output"] = "" if output_value is None else str(output_value)
+        return normalized
+
+    if item_type == "function_call":
+        name = normalized.get("name")
+        arguments = normalized.get("arguments")
+        if not name or arguments is None:
+            return None
+        if not isinstance(arguments, str):
+            try:
+                normalized["arguments"] = json.dumps(arguments)
+            except Exception:
+                normalized["arguments"] = str(arguments)
+        normalized["call_id"] = normalized.get("call_id") or generate_item_id()
+        _ensure_identity()
+        return normalized
+
+    if item_type == "reasoning":
+        content = normalized.get("content")
+        if isinstance(content, list):
+            normalized["content"] = content
+        elif content:
+            normalized["content"] = [{"type": "reasoning_text", "text": str(content)}]
+        else:
+            normalized["content"] = []
+        summary = normalized.get("summary")
+        if not isinstance(summary, list):
+            normalized["summary"] = [] if summary in (None, "") else [summary]
+        _ensure_identity()
+        return normalized
+
+    if item_type in {
+        "web_search_call",
+        "file_search_call",
+        "image_generation_call",
+        "local_shell_call",
+        "mcp_call",
+    }:
+        _ensure_identity()
+        if item_type == "file_search_call":
+            queries = normalized.get("queries")
+            if not isinstance(queries, list):
+                normalized["queries"] = []
+        if item_type == "web_search_call":
+            action = normalized.get("action")
+            if not isinstance(action, dict):
+                normalized["action"] = {}
+        return normalized
+
+    return item
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Persistent Item Markers (ULIDs & encoding helpers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Constants for ULID-like IDs used in hidden markers.
+ULID_LENGTH = 20
+ULID_TIME_LENGTH = 16
+ULID_RANDOM_LENGTH = ULID_LENGTH - ULID_TIME_LENGTH
+CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
+_ULID_TIME_MASK = (1 << (ULID_TIME_LENGTH * 5)) - 1
+
+def _encode_crockford(value: int, length: int) -> str:
+    """Encode an integer into a fixed-width Crockford base32 string."""
+    if value < 0:
+        raise ValueError("value must be non-negative")
+    chars = ["0"] * length
+    for idx in range(length - 1, -1, -1):
+        chars[idx] = CROCKFORD_ALPHABET[value & 0x1F]
+        value >>= 5
+    return "".join(chars)
+
+
+def generate_item_id() -> str:
+    """Generate a 20-char ULID using a 16-char time component + 4-char random tail.
+
+    Returns:
+        str: Crockford-encoded ULID (stateless + monotonic per timestamp).
+    """
+    timestamp = time.time_ns() & _ULID_TIME_MASK
+    time_component = _encode_crockford(timestamp, ULID_TIME_LENGTH)
+    random_bits = secrets.randbits(ULID_RANDOM_LENGTH * 5)
+    random_component = _encode_crockford(random_bits, ULID_RANDOM_LENGTH)
+    return f"{time_component}{random_component}"
+
+
+def is_marker(line: str) -> bool:
+    """Return True when the provided line is an inline ULID marker."""
+    if len(line) != ULID_LENGTH:
+        return False
+    for char in line:
+        if char not in _CROCKFORD_SET:
+            return False
+    return True
+
+
+def contains_marker(text: str) -> bool:
+    """Fast check: does the text contain any embedded ULID markers?
+
+    Args:
+        text: Text to scan.
+
+    Returns:
+        bool: True if the sentinel substring is present; otherwise False.
+    """
+    return bool(_iter_marker_spans(text))
+
+
+def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
+    """Return ordered ULID marker spans."""
+    if not text:
+        return []
+
+    spans: list[dict[str, Any]] = []
+    cursor = 0
+    for segment in text.splitlines(True):
+        stripped = segment.strip()
+        if stripped and is_marker(stripped):
+            offset = segment.find(stripped)
+            start = cursor + (offset if offset >= 0 else 0)
+            spans.append(
+                {
+                    "start": start,
+                    "end": start + len(stripped),
+                    "marker": stripped,
+                }
+            )
+        cursor += len(segment)
+
+    spans.sort(key=lambda span: span["start"])
+    return spans
+
+
+def parse_marker(marker: str) -> dict:
+    """Parse a v3 ULID marker (plain 20-char Crockford string).
+
+    Args:
+        marker: 20-character Crockford ULID line.
+
+    Returns:
+        dict: { "version": "v3", "item_type": None, "ulid": marker, "metadata": {} }
+
+    Raises:
+        ValueError: If the marker does not conform to the ULID format.
+    """
+    if not is_marker(marker):
+        raise ValueError("not a v3 marker")
+    return {"version": "v3", "item_type": None, "ulid": marker, "metadata": {}}
+
+
+def split_text_by_markers(text: str) -> list[dict]:
+    """Split text into a sequence of literal segments and marker segments.
+
+    Args:
+        text: Source text possibly containing embedded markers.
+
+    Returns:
+        list[dict]: A list like:
+            [
+              {"type": "text",   "text": "..."},
+              {"type": "marker", "marker": "01H...Q4"},
+              ...
+            ]
+    """
+    segments: list[dict[str, Any]] = []
+    last = 0
+    for span in _iter_marker_spans(text):
+        if span["start"] > last:
+            segments.append({"type": "text", "text": text[last:span["start"]]})
+        segments.append(
+            {
+                "type": "marker",
+                "marker": span["marker"],
+            }
+        )
+        last = span["end"]
+    if last < len(text):
+        segments.append({"type": "text", "text": text[last:]})
+    return segments
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Database & Persistence Infrastructure
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _sanitize_table_fragment(value: str) -> str:
+    """Normalize arbitrary identifiers into safe SQL table suffixes."""
+    fragment = re.sub(r"[^a-z0-9_]", "_", (value or "").lower())
+    fragment = fragment.strip("_") or "pipe"
+    if len(fragment) > 62:
+        fragment = fragment[:62].rstrip("_") or "pipe"
+    return fragment
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Tool & Schema Utilities (internal)
+# ─────────────────────────────────────────────────────────────────────────────
+def build_tools(
+    responses_body: "ResponsesBody",
+    valves: "Pipe.Valves",
+    __tools__: Optional[Dict[str, Any]] = None,
+    *,
+    features: Optional[Dict[str, Any]] = None,
+    extra_tools: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Build the OpenAI Responses-API tool spec list for this request.
+
+    - Returns [] if the target model doesn't support function calling.
+    - Includes Open WebUI registry tools (strictified if enabled).
+    - Adds OpenAI web_search (if allowed + supported + not minimal effort).
+    - Adds MCP tools from REMOTE_MCP_SERVERS_JSON.
+    - Appends any caller-provided extra_tools (already-valid OpenAI tool specs).
+    - Deduplicates by (type,name) identity; last one wins.
+
+    NOTE: This builds the *schema* to send to OpenAI. For executing function
+    calls at runtime, you can keep passing the raw `__tools__` registry into
+    your streaming/non-streaming loops; those functions expect name→callable.
+    """
+    features = features or {}
+
+    # 1) If model can't do function calling, no tools
+    if not ModelFamily.supports("function_calling", responses_body.model):
+        return []
+
+    tools: List[Dict[str, Any]] = []
+
+    # 2) Baseline: Open WebUI registry tools → OpenAI tool specs
+    if isinstance(__tools__, dict) and __tools__:
+        tools.extend(
+            ResponsesBody.transform_owui_tools(
+                __tools__,
+                strict=valves.ENABLE_STRICT_TOOL_CALLING,
+            )
+        )
+
+    # 3) Optional MCP servers
+    if valves.REMOTE_MCP_SERVERS_JSON:
+        tools.extend(ResponsesBody._build_mcp_tools(valves.REMOTE_MCP_SERVERS_JSON))
+
+    # 4) Optional extra tools (already OpenAI-format)
+    if isinstance(extra_tools, list) and extra_tools:
+        tools.extend(extra_tools)
+
+    return _dedupe_tools(tools)
+
+
+_STRICT_SCHEMA_CACHE_SIZE = 128
+
+
+@functools.lru_cache(maxsize=_STRICT_SCHEMA_CACHE_SIZE)
+def _strictify_schema_cached(serialized_schema: str) -> str:
+    """Cached worker that enforces strict schema rules on serialized JSON."""
+    schema_dict = json.loads(serialized_schema)
+    strict_schema = _strictify_schema_impl(schema_dict)
+    return json.dumps(strict_schema, ensure_ascii=False)
+
+
+def _strictify_schema(schema):
+    """
+    Minimal, predictable transformer to make a JSON schema strict-compatible.
+
+    Rules for every object node (root + nested):
+      - additionalProperties := false
+      - required := all property keys
+      - fields that were optional become nullable (add "null" to their type)
+
+    We traverse properties, items (dict or list), and anyOf/oneOf branches.
+    We do NOT rewrite anyOf/oneOf; we only enforce object rules inside them.
+
+    Returns a new dict. Non-dict inputs return {}.
+    """
+    if not isinstance(schema, dict):
+        return {}
+
+    canonical = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    cached = _strictify_schema_cached(canonical)
+    return json.loads(cached)
+
+
+def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
+    """
+    root_t = schema.get("type")
+    if not (
+        root_t == "object"
+        or (isinstance(root_t, list) and "object" in root_t)
+        or "properties" in schema
+    ):
+        schema = {
+            "type": "object",
+            "properties": {"value": schema},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+
+    stack = [schema]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+
+        t = node.get("type")
+        is_object = ("properties" in node) or (t == "object") or (
+            isinstance(t, list) and "object" in t
+        )
+        if is_object:
+            props = node.get("properties")
+            if not isinstance(props, dict):
+                props = {}
+                node["properties"] = props
+
+            original_required = set(node.get("required") or [])
+
+            node["additionalProperties"] = False
+            node["required"] = list(props.keys())
+
+            for name, p in props.items():
+                if not isinstance(p, dict):
+                    continue
+                if name not in original_required:
+                    ptype = p.get("type")
+                    if isinstance(ptype, str) and ptype != "null":
+                        p["type"] = [ptype, "null"]
+                    elif isinstance(ptype, list) and "null" not in ptype:
+                        p["type"] = ptype + ["null"]
+                stack.append(p)
+
+        items = node.get("items")
+        if isinstance(items, dict):
+            stack.append(items)
+        elif isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict):
+                    stack.append(it)
+
+        for key in ("anyOf", "oneOf"):
+            branches = node.get(key)
+            if isinstance(branches, list):
+                for br in branches:
+                    if isinstance(br, dict):
+                        stack.append(br)
+
+    return schema
+
+
+def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """(Internal) Deduplicate a tool list with simple, stable identity keys.
+
+    Identity:
+      - Function tools → key = ("function", <name>)
+      - Non-function tools → key = (<type>, None)
+
+    Later entries win (last write wins).
+
+    Args:
+        tools: List of tool dicts (OpenAI Responses schema).
+
+    Returns:
+        list: Deduplicated list, preserving only the last occurrence per identity.
+    """
+    if not tools:
+        return []
+    canonical: Dict[tuple, Dict[str, Any]] = {}
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        if t.get("type") == "function":
+            key = ("function", t.get("name"))
+        else:
+            key = (t.get("type"), None)
+        if key[0]:
+            canonical[key] = t
+    return list(canonical.values())
