@@ -6,22 +6,29 @@ git_url: https://github.com/
 description: Brings OpenRouter Responses API support to Open WebUI, auto-importing every Responses-capable model from OpenRouter and translating Open WebUI requests into the new API format.
 required_open_webui_version: 0.6.28
 version: 1.0.4
-requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy
+requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
 license: MIT
 
-- Auto-discovers the full OpenRouter Responses catalog.
-- Mirrors each model's declared capabilities and provider identifiers.
-- Persists reasoning traces and tool artifacts per chat via SQLAlchemy tables scoped to the pipe id.
-- Protects stored payloads with user-supplied encryption keys.
-- Applies optional LZ4 compression to large payloads when the threshold is met.
-- Rebuilds assistant context by replaying persisted ULID-marked items into the Responses input array.
-- Strictifies Open WebUI, MCP, and plugin tool schemas so function calling stays predictable.
-- Deduplicates overlapping tool definitions before sending them upstream.
-- Streams Responses SSE events while trimming delta noise to reduce logs.
-- Emits inline citations and usage counters during streaming.
-- Exposes valves for search, logging, compression, MCP routing, and loop limits.
-- Honors Open WebUI pipe ids when naming artifact tables and storage layers.
+- Auto-discovers and imports full OpenRouter Responses model catalog with capabilities and identifiers.
+- Translates Completions to Responses API, persisting reasoning/tool artifacts per chat via scoped SQLAlchemy tables.
+- Handles 100-500 concurrent users with per-request isolation, async queues, and global semaphores for overload protection (503 rejects).
+- Non-blocking ops: Offloads sync DB to ThreadPool, async logging queue, per-request HTTP sessions with retries/breakers.
+- Optional Redis cache (auto-detected via ENV/multi-worker): Write-behind with pub/sub/timed flushes, TTL for fast artifact reads.
+- Secure artifact persistence: User-key encryption, LZ4 compression for large payloads, ULID markers for context replay.
+- Tool execution: Per-request FIFO queues, parallel workers with semaphores/timeouts, per-user/type breakers, batching non-dependent calls.
+- Streams SSE with producer-multi-consumer workers, delta batching/zero-copy, inline citations, and usage metrics.
+- Strictifies tool schemas (Open WebUI/MCP/plugins) for predictable function calling; deduplicates definitions.
+- Auto-enables web search plugin if model-supported; configurable MCP servers for global tools.
+- Exposes valves for concurrency limits, logging levels, Redis/cache settings, tool timeouts, cleanup intervals, and more.
+- OWUI-compatible: Uses internal sync DB, honors pipe IDs for tables, scales to multi-worker via Redis without assumptions.
 """
+
+# TODO (Future Improvements):
+# - Health endpoint: Expose metrics like active requests, error rates, queue sizes via a debug route.
+# - DLQ: Implement dead-letter queues for unrecoverable errors (e.g., failed tool outputs) to debug later—evaluate if issues outweigh benefits.
+# - ProcessPool Offload: For CPU-bound tools, add optional ProcessPoolExecutor integration.
+# - Metrics: Add Prometheus export or simple stats (e.g., avg latency) for monitoring.
+# - More...
 
 from __future__ import annotations
 
@@ -47,14 +54,17 @@ import functools
 from time import perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, Optional, Type, Union
 from urllib.parse import urlparse
 
 # Third-party imports
 import aiohttp
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
@@ -69,12 +79,66 @@ try:
 except ImportError:  # pragma: no cover - optional dependency, handled via requirements metadata
     lz4frame = None
 
+try:  # Phase 4: optional Redis cache
+    import redis.asyncio as aioredis
+except ImportError:  # pragma: no cover - optional dependency
+    aioredis = None
+
 # Open WebUI internals
 from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _PipeJob:
+    """Encapsulate a single OpenRouter request scheduled through the queue."""
+
+    pipe: "Pipe"
+    body: dict[str, Any]
+    user: dict[str, Any]
+    request: Request
+    event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
+    event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None
+    metadata: dict[str, Any]
+    tools: list[dict[str, Any]] | dict[str, Any] | None
+    task: Optional[dict[str, Any]]
+    task_body: Optional[dict[str, Any]]
+    valves: "Pipe.Valves"
+    future: asyncio.Future
+    request_id: str = field(default_factory=lambda: secrets.token_hex(8))
+
+    @property
+    def session_id(self) -> str:
+        return str(self.metadata.get("session_id") or "")
+
+    @property
+    def user_id(self) -> str:
+        return str(self.user.get("id") or self.metadata.get("user_id") or "")
+
+
+# Phase 3: Tool Execution ----------------------------------------------------
+@dataclass(slots=True)
+class _QueuedToolCall:
+    call: dict[str, Any]
+    tool_cfg: dict[str, Any]
+    args: dict[str, Any]
+    future: asyncio.Future
+    allow_batch: bool
+
+
+@dataclass(slots=True)
+class _ToolExecutionContext:
+    queue: asyncio.Queue[_QueuedToolCall | None]
+    per_request_semaphore: asyncio.Semaphore
+    global_semaphore: asyncio.Semaphore | None
+    timeout: float
+    user_id: str
+    event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
+    workers: list[asyncio.Task] = field(default_factory=list)
 
 
 class EncryptedStr(str):
@@ -235,6 +299,10 @@ def sanitize_model_id(model_id: str) -> str:
 _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
 _PAYLOAD_HEADER_SIZE = 1
+
+# Phase 4: DB Persistence constants
+_REDIS_FLUSH_CHANNEL = "db-flush"
+# Phase 4 valves (defaults pulled at runtime)
 
 
 class OpenRouterModelRegistry:
@@ -985,6 +1053,64 @@ class Pipe:
             default=os.getenv("GLOBAL_LOG_LEVEL", "INFO").upper(),
             description="Select logging level.  Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
         )
+        MAX_CONCURRENT_REQUESTS: int = Field(
+            default=200,
+            ge=1,
+            le=2000,
+            description="Maximum number of in-flight OpenRouter requests allowed per process.",
+        )
+        SSE_WORKERS_PER_REQUEST: int = Field(
+            default=4,
+            ge=1,
+            le=8,
+            description="Number of per-request SSE worker tasks that parse streamed chunks (Phase 2).",
+        )
+        MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
+            default=200,
+            ge=1,
+            le=2000,
+            description="Global ceiling for simultaneously executing tool calls (Phase 3).",
+        )
+        MAX_PARALLEL_TOOLS_PER_REQUEST: int = Field(
+            default=5,
+            ge=1,
+            le=50,
+            description="Per-request concurrency limit for tool execution workers.",
+        )
+        TOOL_TIMEOUT_SECONDS: int = Field(
+            default=10,
+            ge=1,
+            le=120,
+            description="Max seconds to wait for an individual tool to finish before timing out.",
+        )
+        ENABLE_REDIS_CACHE: bool = Field(
+            default=True,
+            description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected (Phase 4).",
+        )
+        REDIS_CACHE_TTL_SECONDS: int = Field(
+            default=300,
+            ge=60,
+            le=3600,
+            description="TTL applied to Redis artifact cache entries (seconds).",
+        )
+        ARTIFACT_CLEANUP_DAYS: int = Field(
+            default=90,
+            ge=1,
+            le=365,
+            description="Retention window (days) for artifact cleanup scheduler.",
+        )
+        ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
+            default=1.0,
+            ge=0.5,
+            le=24,
+            description="Frequency (hours) for the artifact cleanup worker to wake up.",
+        )
+        DB_BATCH_SIZE: int = Field(
+            default=10,
+            ge=5,
+            le=20,
+            description="Number of artifacts to commit per DB batch (Phase 4).",
+        )
         USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
             default=False,
             description="When enabled, automatically include the provider's max_output_tokens in each request. Disable to omit the parameter entirely.",
@@ -992,6 +1118,10 @@ class Pipe:
         SHOW_FINAL_USAGE_STATUS: bool = Field(
             default=True,
             description="When True, the final status message includes elapsed time, cost, and token usage.",
+        )
+        ENABLE_STATUS_CSS_PATCH: bool = Field(
+            default=False,
+            description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",
         )
 
 
@@ -1008,14 +1138,30 @@ class Pipe:
             description="Override whether the final status message includes usage stats.",
         )
 
+    # Phase 1: Core Structure — shared concurrency primitives
+    _QUEUE_MAXSIZE = 500
+    _request_queue: asyncio.Queue[_PipeJob] | None = None
+    _queue_worker_task: asyncio.Task | None = None
+    _queue_worker_lock: asyncio.Lock | None = None
+    _global_semaphore: asyncio.Semaphore | None = None
+    _semaphore_limit: int = 0
+    _tool_global_semaphore: asyncio.Semaphore | None = None
+    _tool_global_limit: int = 0
+    _log_queue: asyncio.Queue[logging.LogRecord] | None = None  # Fix: async logging queue
+    _log_worker_task: asyncio.Task | None = None
+    _log_worker_lock: asyncio.Lock | None = None
+    _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
+        "openrouter_tool_context",
+        default=None,
+    )
+    _cleanup_task: asyncio.Task | None = None
+
     # 4.2 Constructor and Entry Points
     def __init__(self):
         """Initialize valve defaults and lazy-initialized resources."""
         self.type = "manifold"
         self.valves = self.Valves()  # Note: valve values are not accessible in __init__. Access from pipes() or pipe() methods.
-        self.session: aiohttp.ClientSession | None = None
         self.logger = SessionLogger.get_logger(__name__)
-        self._session_closed = False
         decrypted_encryption_key = EncryptedStr.decrypt(self.valves.ARTIFACT_ENCRYPTION_KEY)
         self._encryption_key: str = (decrypted_encryption_key or "").strip()
         self._encrypt_all: bool = bool(self.valves.ENCRYPT_ALL)
@@ -1031,6 +1177,862 @@ class Pipe:
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
         self._lz4_warning_emitted = False
+        # Fix: breaker history bounded per user
+        self._breaker_records: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=5))
+        self._breaker_threshold = 5
+        self._breaker_window_seconds = 60
+        self._tool_breakers: dict[str, dict[str, deque[float]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=5))
+        )
+        self._db_breakers: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=5))
+        self._startup_task: asyncio.Task | None = None
+        self._startup_checks_started = False
+        self._startup_checks_pending = False
+        self._warmup_failed = False  # Fix: track warmup failures
+        self._redis_url = os.getenv("REDIS_URL")
+        raw_uvicorn_workers = (os.getenv("UVICORN_WORKERS") or "1").strip()
+        try:
+            uvicorn_workers = int(raw_uvicorn_workers or "1")
+        except ValueError:
+            self.logger.warning(
+                "Invalid UVICORN_WORKERS value '%s'; defaulting to 1.",
+                raw_uvicorn_workers,
+            )
+            uvicorn_workers = 1
+        multi_worker = uvicorn_workers > 1
+        redis_valve_enabled = bool(self.valves.ENABLE_REDIS_CACHE)
+        if multi_worker and not redis_valve_enabled:
+            self.logger.warning(
+                "Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off."
+            )
+        self._redis_candidate = (
+            bool(self._redis_url)
+            and multi_worker
+            and aioredis is not None
+            and redis_valve_enabled
+        )
+        self._redis_enabled = False
+        self._redis_client: Optional[aioredis.Redis] = None
+        self._redis_listener_task: asyncio.Task | None = None
+        self._redis_flush_task: asyncio.Task | None = None
+        self._redis_ready_task: asyncio.Task | None = None
+        self._redis_namespace = (getattr(self, "id", None) or "openrouter").lower()
+        self._redis_pending_key = f"{self._redis_namespace}:pending"
+        self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
+        self._redis_ttl = max(60, int(self.valves.REDIS_CACHE_TTL_SECONDS or 300))
+        self._cleanup_task = None
+        self._legacy_tool_warning_emitted = False
+        self._maybe_start_log_worker()
+        self._maybe_start_startup_checks()
+
+    # Phase 1: Core Structure -------------------------------------------------
+    def _maybe_start_startup_checks(self) -> None:
+        """Schedule background warmup checks once an event loop is available."""
+        if self._startup_task and not self._startup_task.done():
+            return
+        if self._startup_checks_started and self._startup_task and self._startup_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (import-time). Defer until the first async entrypoint.
+            self._startup_checks_pending = True
+            return
+
+        if self._startup_checks_started and not self._startup_checks_pending:
+            return
+
+        self._startup_checks_started = True
+        self._startup_checks_pending = False
+        self._startup_task = loop.create_task(self._run_startup_checks(), name="openrouter-warmup")
+
+    def _maybe_start_log_worker(self) -> None:
+        """Ensure the async logging queue + worker are started."""  # Fix: async logging
+        cls = type(self)
+        if cls._log_queue is None:
+            cls._log_queue = asyncio.Queue(maxsize=1000)
+            SessionLogger.set_log_queue(cls._log_queue)
+        if cls._log_worker_lock is None:
+            cls._log_worker_lock = asyncio.Lock()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _ensure_worker() -> None:
+            async with cls._log_worker_lock:  # type: ignore[arg-type]
+                if cls._log_worker_task and not cls._log_worker_task.done():
+                    return
+                if cls._log_queue is None:
+                    cls._log_queue = asyncio.Queue(maxsize=1000)
+                    SessionLogger.set_log_queue(cls._log_queue)
+                cls._log_worker_task = loop.create_task(
+                    cls._log_worker_loop(),
+                    name="openrouter-log-worker",
+                )
+
+        loop.create_task(_ensure_worker())
+
+    def _maybe_start_redis(self) -> None:
+        """Initialize Redis cache if enabled (Phase 4)."""
+        if not self._redis_candidate or self._redis_enabled:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._redis_ready_task and not self._redis_ready_task.done():
+            return
+        self._redis_ready_task = loop.create_task(self._init_redis_client(), name="openrouter-redis-init")
+
+    def _maybe_start_cleanup(self) -> None:
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._cleanup_task and self._cleanup_task.done():
+            self._cleanup_task = None
+        self._cleanup_task = loop.create_task(
+            self._artifact_cleanup_worker(),
+            name="openrouter-artifact-cleanup",
+        )
+
+    async def _run_startup_checks(self) -> None:
+        """Warm OpenRouter connections and log readiness without blocking startup."""
+        api_key = EncryptedStr.decrypt(self.valves.API_KEY)
+        if not api_key:
+            self.logger.warning("Skipping OpenRouter warmup: API key missing.")
+            return
+        session: aiohttp.ClientSession | None = None
+        try:
+            session = self._create_http_session()
+            await self._ping_openrouter(session, self.valves.BASE_URL, api_key)
+            self.logger.info("Warmed: success")
+            self._warmup_failed = False
+        except Exception as exc:  # pragma: no cover - depends on IO
+            self.logger.warning("OpenRouter warmup failed: %s", exc)
+            self._warmup_failed = True  # Fix: track failures
+        finally: 
+            if session:
+                with contextlib.suppress(Exception):
+                    await session.close()
+
+    async def _ping_openrouter(
+        self,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        api_key: str,
+    ) -> None:
+        """Issue a lightweight GET to prime DNS/TLS caches."""
+        url = base_url.rstrip("/") + "/models?limit=1"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            reraise=True,
+        ):
+            with attempt:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),  # Fix: explicit ping timeout
+                ) as resp:
+                    resp.raise_for_status()
+                    await resp.read()
+
+    async def _init_redis_client(self) -> None:
+        if not self._redis_candidate or self._redis_enabled or not self._redis_url:
+            return
+        if aioredis is None:
+            self.logger.warning("Redis cache requested but redis-py is unavailable.")
+            return
+        client: Optional[aioredis.Redis] = None
+        try:
+            client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+            await client.ping()
+        except Exception as exc:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    await client.close()
+            self._redis_enabled = False
+            self._redis_client = None
+            self.logger.warning("Phase 4: Redis cache disabled (%s)", exc)
+            return
+
+        self._redis_client = client
+        self._redis_enabled = True
+        self.logger.info("Redis cache enabled for namespace '%s'", self._redis_namespace)
+        loop = asyncio.get_running_loop()
+        self._redis_listener_task = loop.create_task(self._redis_pubsub_listener(), name="openrouter-redis-listener")
+        self._redis_flush_task = loop.create_task(self._redis_periodic_flusher(), name="openrouter-redis-flush")
+
+    async def _redis_pubsub_listener(self) -> None:
+        if not self._redis_client:
+            return
+        pubsub = self._redis_client.pubsub()
+        try:
+            await pubsub.subscribe(_REDIS_FLUSH_CHANNEL)
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                await self._flush_redis_queue()
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+        except Exception as exc:
+            self.logger.warning("Redis pub/sub listener stopped: %s (falling back to timer)", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.close()
+
+    async def _redis_periodic_flusher(self) -> None:
+        while self._redis_enabled:
+            try:
+                await self._flush_redis_queue()
+            except Exception as exc:
+                self.logger.warning("Redis periodic flush failed: %s", exc)
+            await asyncio.sleep(10)
+
+    async def _flush_redis_queue(self) -> None:
+        if not (self._redis_enabled and self._redis_client):
+            return
+        rows: list[dict[str, Any]] = []
+        while len(rows) < 10:
+            data = await self._redis_client.lpop(self._redis_pending_key)
+            if data is None:
+                break
+            try:
+                rows.append(json.loads(data))
+            except json.JSONDecodeError:
+                continue
+        if not rows:
+            return
+        self.logger.debug(
+            "Phase 4: Flushing %s pending artifact rows from Redis",
+            len(rows),
+        )
+        await self._db_persist_direct(rows)
+        self.logger.debug("Phase 4: Flushed %s pending artifact row(s)", len(rows))
+
+    def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
+        if not (chat_id and row_id):
+            return None
+        return f"{self._redis_cache_prefix}:{chat_id}:{row_id}"
+
+    async def _redis_enqueue_rows(self, rows: list[dict[str, Any]]) -> list[str]:
+        if not (self._redis_enabled and self._redis_client):
+            return await self._db_persist_direct(rows)
+        pipe = self._redis_client.pipeline()
+        ulids: list[str] = []
+        for row in rows:
+            row_id = row.get("id") or generate_item_id()
+            row["id"] = row_id
+            ulids.append(row_id)
+            payload = json.dumps(row, ensure_ascii=False)
+            pipe.rpush(self._redis_pending_key, payload)
+            cache_key = self._redis_cache_key(row.get("chat_id"), row_id)
+            if cache_key:
+                pipe.setex(cache_key, self._redis_ttl, payload)
+        await pipe.execute()
+        await self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush")
+        return ulids
+
+    async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: Optional[str] = None) -> None:
+        if not (self._redis_enabled and self._redis_client):
+            return
+        pipe = self._redis_client.pipeline()
+        for row in rows:
+            row_payload = row if "payload" in row else {"payload": row}
+            cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
+            if not cache_key:
+                continue
+            pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
+        await pipe.execute()
+
+    async def _redis_fetch_rows(
+        self,
+        chat_id: Optional[str],
+        item_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        if not (self._redis_enabled and self._redis_client and chat_id and item_ids):
+            return {}
+        keys: list[str] = []
+        id_lookup: list[str] = []
+        for item_id in item_ids:
+            cache_key = self._redis_cache_key(chat_id, item_id)
+            if cache_key:
+                keys.append(cache_key)
+                id_lookup.append(item_id)
+        if not keys:
+            return {}
+        values = await self._redis_client.mget(keys)
+        cached: dict[str, dict[str, Any]] = {}
+        for item_id, raw in zip(id_lookup, values):
+            if not raw:
+                continue
+            try:
+                row_data = json.loads(raw)
+                cached[item_id] = row_data.get("payload", row_data)
+            except json.JSONDecodeError:
+                continue
+        return cached
+
+    async def _artifact_cleanup_worker(self) -> None:
+        while True:
+            try:
+                await self._run_cleanup_once()
+            except asyncio.CancelledError:  # pragma: no cover - shutdown
+                break
+            except Exception as exc:
+                self.logger.warning("Artifact cleanup failed: %s", exc)
+            interval_hours = max(0.5, float(self.valves.ARTIFACT_CLEANUP_INTERVAL_HOURS or 1.0))
+            interval_seconds = interval_hours * 3600
+            jitter = min(600.0, interval_seconds * 0.25)
+            await asyncio.sleep(interval_seconds + random.uniform(0, jitter))  # Fix: configurable cadence
+
+    async def _run_cleanup_once(self) -> None:
+        if not (self._item_model and self._session_factory):
+            return
+        cutoff_days = max(1, int(self.valves.ARTIFACT_CLEANUP_DAYS or 30))
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=cutoff_days)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            self._db_executor,
+            functools.partial(self._cleanup_sync, cutoff),
+        )
+
+    def _cleanup_sync(self, cutoff: datetime.datetime) -> None:
+        if not (self._session_factory and self._item_model):
+            return
+        session: Session = self._session_factory()  # type: ignore[call-arg]
+        try:
+            deleted = (
+                session.query(self._item_model)
+                .filter(self._item_model.created_at < cutoff)
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+            if deleted:
+                self.logger.info("Artifact cleanup removed %s old rows", deleted)
+                self.logger.debug("Phase 4: Cleanup removed %s rows older than %s", deleted, cutoff)
+        except Exception as exc:
+            session.rollback()
+            raise exc
+        finally:
+            session.close()
+
+    async def _ensure_concurrency_controls(self, valves: "Pipe.Valves") -> None:
+        """Lazy-initialize queue worker and semaphore with the latest valves."""
+        cls = type(self)
+        if cls._queue_worker_lock is None:
+            cls._queue_worker_lock = asyncio.Lock()
+
+        async with cls._queue_worker_lock:
+            if cls._request_queue is None:
+                cls._request_queue = asyncio.Queue(maxsize=self._QUEUE_MAXSIZE)
+                self.logger.debug("Created request queue (maxsize=%s)", self._QUEUE_MAXSIZE)
+
+            if cls._queue_worker_task is None or cls._queue_worker_task.done():
+                loop = asyncio.get_running_loop()
+                cls._queue_worker_task = loop.create_task(
+                    cls._request_worker_loop(),
+                    name="openrouter-pipe-dispatch",
+                )
+                self.logger.debug("Started request queue worker")
+
+            target = max(1, valves.MAX_CONCURRENT_REQUESTS)
+            if cls._global_semaphore is None:
+                cls._global_semaphore = asyncio.Semaphore(target)
+                cls._semaphore_limit = target
+                self.logger.debug("Initialized semaphore (limit=%s)", target)
+            elif target > cls._semaphore_limit:
+                delta = target - cls._semaphore_limit
+                for _ in range(delta):
+                    cls._global_semaphore.release()
+                cls._semaphore_limit = target
+                self.logger.info("Increased MAX_CONCURRENT_REQUESTS to %s", target)
+            elif target < cls._semaphore_limit:
+                self.logger.warning(
+                    "Lower MAX_CONCURRENT_REQUESTS (%s→%s) requires restart to take full effect.",
+                    cls._semaphore_limit,
+                    target,
+                )
+
+            target_tool = max(1, valves.MAX_PARALLEL_TOOLS_GLOBAL)
+            if cls._tool_global_semaphore is None:
+                cls._tool_global_semaphore = asyncio.Semaphore(target_tool)
+                cls._tool_global_limit = target_tool
+                self.logger.debug("Initialized tool semaphore (limit=%s)", target_tool)
+            elif target_tool > cls._tool_global_limit:
+                delta = target_tool - cls._tool_global_limit
+                for _ in range(delta):
+                    cls._tool_global_semaphore.release()
+                cls._tool_global_limit = target_tool
+                self.logger.info("Increased MAX_PARALLEL_TOOLS_GLOBAL to %s", target_tool)
+            elif target_tool < cls._tool_global_limit:
+                self.logger.warning(
+                    "Lower MAX_PARALLEL_TOOLS_GLOBAL (%s→%s) requires restart to take full effect.",
+                    cls._tool_global_limit,
+                    target_tool,
+                )
+
+    def _enqueue_job(self, job: _PipeJob) -> bool:
+        """Attempt to enqueue a request, returning False when the queue is full."""
+        queue = type(self)._request_queue
+        if queue is None:
+            raise RuntimeError("Request queue not initialized")
+        try:
+            queue.put_nowait(job)
+            self.logger.debug(
+                "Enqueued request %s (depth=%s)",
+                job.request_id,
+                queue.qsize(),
+            )
+            return True
+        except asyncio.QueueFull:
+            self.logger.warning("Request queue full (max=%s)", queue.maxsize)
+            return False
+
+    @classmethod
+    async def _request_worker_loop(cls) -> None:
+        """Background worker that dequeues jobs and spawns per-request tasks."""
+        queue = cls._request_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                job = await queue.get()
+                task = asyncio.create_task(job.pipe._execute_pipe_job(job))
+
+                def _mark_done(_task: asyncio.Task, q=queue) -> None:
+                    q.task_done()
+
+                task.add_done_callback(_mark_done)
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            return
+
+    async def _stop_request_worker(self) -> None:
+        """Stop the shared queue worker and drain pending items."""
+        cls = type(self)
+        worker = cls._queue_worker_task
+        if worker:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            cls._queue_worker_task = None
+        cls._request_queue = None
+
+    @classmethod
+    async def _log_worker_loop(cls) -> None:
+        """Drain log records asynchronously to keep handlers non-blocking."""  # Fix: async logging
+        queue = cls._log_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                record = await queue.get()
+                try:
+                    SessionLogger.process_record(record)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+        finally:
+            if queue is not None:
+                while not queue.empty():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        record = queue.get_nowait()
+                        SessionLogger.process_record(record)
+                        queue.task_done()
+
+    async def _stop_log_worker(self) -> None:
+        """Stop the log worker and clear the queue."""
+        cls = type(self)
+        worker = cls._log_worker_task
+        if worker:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            cls._log_worker_task = None
+        cls._log_queue = None
+        SessionLogger.set_log_queue(None)
+
+    async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
+        """Gracefully stop per-request tool workers (Phase 3)."""
+        try:
+            worker_count = max(1, len(context.workers) or 1)
+            for _ in range(worker_count):
+                await context.queue.put(None)
+            await context.queue.join()
+        except Exception:
+            pass
+        for task in context.workers:
+            if not task.done():
+                task.cancel()
+        if context.workers:
+            await asyncio.gather(*context.workers, return_exceptions=True)
+
+    async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
+        """Process queued tool calls with batching/timeouts."""
+        pending: list[tuple[_QueuedToolCall | None, bool]] = []
+        batch_cap = 4
+        try:
+            while True:
+                if pending:
+                    item, from_queue = pending.pop(0)
+                else:
+                    queued = await context.queue.get()
+                    item, from_queue = queued, True
+                if item is None:
+                    if from_queue:
+                        context.queue.task_done()
+                    if pending:
+                        continue
+                    break
+
+                batch: list[tuple[_QueuedToolCall, bool]] = [(item, from_queue)]
+                if item.allow_batch:
+                    while len(batch) < batch_cap:
+                        try:
+                            nxt = context.queue.get_nowait()
+                            from_queue_next = True
+                        except asyncio.QueueEmpty:
+                            break
+                        if nxt is None:
+                            pending.insert(0, (None, True))
+                            break
+                        if nxt.allow_batch and self._can_batch_tool_calls(batch[0][0], nxt):
+                            batch.append((nxt, from_queue_next))
+                        else:
+                            pending.insert(0, (nxt, from_queue_next))
+                            break
+
+                await self._execute_tool_batch([itm for itm, _ in batch], context)
+                for _, flag in batch:
+                    if flag:
+                        context.queue.task_done()
+        finally:
+            # Resolve remaining futures if the worker is stopping unexpectedly
+            while pending:
+                leftover, from_queue = pending.pop(0)
+                if from_queue:
+                    context.queue.task_done()
+                if leftover is None:
+                    continue
+                if not leftover.future.done():
+                    leftover.future.set_result(
+                        self._build_tool_output(
+                            leftover.call,
+                            "Tool execution cancelled",
+                            status="cancelled",
+                        )
+                    )
+
+    def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:
+        if first.call.get("name") != candidate.call.get("name"):
+            return False
+
+        dep_keys = {"depends_on", "_depends_on", "sequential", "no_batch"}
+        if any(key in first.args or key in candidate.args for key in dep_keys):
+            return False
+
+        first_id = first.call.get("call_id")
+        candidate_id = candidate.call.get("call_id")
+        if first_id and self._args_reference_call(candidate.args, first_id):
+            return False
+        if candidate_id and self._args_reference_call(first.args, candidate_id):
+            return False
+        return True
+
+    def _args_reference_call(self, args: Any, call_id: str) -> bool:
+        if isinstance(args, str):
+            return call_id in args
+        if isinstance(args, dict):
+            return any(self._args_reference_call(value, call_id) for value in args.values())
+        if isinstance(args, list):
+            return any(self._args_reference_call(item, call_id) for item in args)
+        return False
+
+    async def _execute_tool_batch(
+        self,
+        batch: list[_QueuedToolCall],
+        context: _ToolExecutionContext,
+    ) -> None:
+        if not batch:
+            return
+        self.logger.debug(
+            "Phase 3: Batched %s tool(s) for %s",
+            len(batch),
+            batch[0].call.get("name"),
+        )
+        tasks = [self._invoke_tool_call(item, context) for item in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for item, result in zip(batch, results):
+            if item.future.done():
+                continue
+            if isinstance(result, Exception):
+                payload = self._build_tool_output(
+                    item.call,
+                    f"Tool error: {result}",
+                    status="failed",
+                )
+            else:
+                status, text = result
+                payload = self._build_tool_output(item.call, text, status=status)
+                tool_type = (item.tool_cfg.get("type") or "function").lower()
+                self._reset_tool_failure_type(context.user_id, tool_type)
+            item.future.set_result(payload)
+
+    async def _invoke_tool_call(
+        self,
+        item: _QueuedToolCall,
+        context: _ToolExecutionContext,
+    ) -> tuple[str, str]:
+        tool_type = (item.tool_cfg.get("type") or "function").lower()
+        if not self._tool_type_allows(context.user_id, tool_type):
+            await self._notify_tool_breaker(context, tool_type, item.call.get("name"))
+            return (
+                "skipped",
+                f"Tool '{item.call.get('name')}' temporarily disabled due to repeated errors.",
+            )
+
+        async with context.per_request_semaphore:
+            if context.global_semaphore is not None:
+                async with self._acquire_tool_global(context.global_semaphore, item.call.get("name")):
+                    return await self._run_tool_with_retries(item, context, tool_type)
+            return await self._run_tool_with_retries(item, context, tool_type)
+
+    async def _run_tool_with_retries(
+        self,
+        item: _QueuedToolCall,
+        context: _ToolExecutionContext,
+        tool_type: str,
+    ) -> tuple[str, str]:
+        fn = item.tool_cfg.get("callable")
+        timeout = max(1, int(context.timeout))
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(2),
+            wait=wait_exponential(multiplier=0.2, min=0.2, max=1),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
+        try:
+            async for attempt in retryer:
+                with attempt:
+                    result = await asyncio.wait_for(
+                        self._call_tool_callable(fn, item.args),
+                        timeout=timeout,
+                    )
+                    self._reset_tool_failure_type(context.user_id, tool_type)
+                    text = "" if result is None else str(result)
+                    return ("completed", text)
+        except Exception as exc:
+            self._record_tool_failure_type(context.user_id, tool_type)
+            raise exc
+
+    async def _call_tool_callable(self, fn: Callable, args: dict[str, Any]) -> Any:
+        if inspect.iscoroutinefunction(fn):
+            return await fn(**args)
+        return await asyncio.to_thread(fn, **args)
+
+    @contextlib.asynccontextmanager
+    async def _acquire_tool_global(self, semaphore: asyncio.Semaphore, tool_name: str | None):
+        self.logger.debug("Phase 3: Waiting for global tool slot (%s)", tool_name)
+        await semaphore.acquire()
+        try:
+            yield
+        finally:
+            semaphore.release()
+
+
+    async def _execute_pipe_job(self, job: _PipeJob) -> None:
+        """Isolate per-request context, HTTP session, and semaphore slot."""
+        semaphore = type(self)._global_semaphore
+        if semaphore is None:
+            job.future.set_exception(RuntimeError("Semaphore unavailable"))
+            return
+
+        session: aiohttp.ClientSession | None = None
+        tokens: list[tuple[ContextVar, object]] = []
+        tool_context: _ToolExecutionContext | None = None
+        tool_token: contextvars.Token | None = None  # type: ignore[name-defined]
+        try:
+            async with self._acquire_semaphore(semaphore, job.request_id):
+                session = self._create_http_session()
+                tokens = self._apply_logging_context(job)
+                tool_queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue(maxsize=50)
+                per_request_tool_sem = asyncio.Semaphore(
+                    max(1, job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
+                )
+                tool_context = _ToolExecutionContext(
+                    queue=tool_queue,
+                    per_request_semaphore=per_request_tool_sem,
+                    global_semaphore=type(self)._tool_global_semaphore,
+                    timeout=max(1, job.valves.TOOL_TIMEOUT_SECONDS),
+                    user_id=job.user_id,
+                    event_emitter=job.event_emitter,
+                )
+                worker_count = max(1, job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
+                for worker_idx in range(worker_count):
+                    tool_context.workers.append(
+                        asyncio.create_task(
+                            self._tool_worker_loop(tool_context),
+                            name=f"openrouter-tool-worker-{job.request_id}-{worker_idx}",
+                        )
+                    )
+                tool_token = self._TOOL_CONTEXT.set(tool_context)
+                result = await self._handle_pipe_call(
+                    job.body,
+                    job.user,
+                    job.request,
+                    job.event_emitter,
+                    job.event_call,
+                    job.metadata,
+                    job.tools,
+                    job.task,
+                    job.task_body,
+                    valves=job.valves,
+                    session=session,
+                )
+                if not job.future.done():
+                    job.future.set_result(result)
+                self._reset_failure_counter(job.user_id)
+        except Exception as exc:
+            self._record_failure(job.user_id)
+            if not job.future.done():
+                job.future.set_exception(exc)
+        finally:
+            if tool_context:
+                await self._shutdown_tool_context(tool_context)
+            if tool_token is not None:
+                self._TOOL_CONTEXT.reset(tool_token)
+            for var, token in tokens:
+                with contextlib.suppress(Exception):
+                    var.reset(token)
+            if session:
+                with contextlib.suppress(Exception):
+                    await session.close()
+
+    def _create_http_session(self) -> aiohttp.ClientSession:
+        """Return a fresh ClientSession with sane defaults for per-request use."""
+        connector = aiohttp.TCPConnector(
+            limit=50,
+            limit_per_host=10,
+            keepalive_timeout=75,
+            ttl_dns_cache=300,
+        )
+        timeout = aiohttp.ClientTimeout(total=60, connect=10)
+        return aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            json_serialize=json.dumps,
+        )
+
+    @contextlib.asynccontextmanager
+    async def _acquire_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        request_id: str,
+    ):
+        """Async context manager that logs semaphore acquisition/release."""
+        self.logger.debug("Waiting for semaphore (request=%s)", request_id)
+        await semaphore.acquire()
+        self.logger.debug("Semaphore acquired (request=%s)", request_id)
+        try:
+            yield
+        finally:
+            semaphore.release()
+            self.logger.debug("Semaphore released (request=%s)", request_id)
+
+    def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar, object]]:
+        """Set SessionLogger contextvars based on the incoming request."""
+        session_id = job.session_id or None
+        user_id = job.user_id or None
+        log_level = getattr(logging, str(job.valves.LOG_LEVEL).upper(), logging.INFO)
+        tokens: list[tuple[ContextVar, object]] = []
+        tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
+        tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
+        tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
+        return tokens
+
+    def _breaker_allows(self, user_id: str) -> bool:
+        """Simple per-user breaker: 5 failures per minute."""
+        if not user_id:
+            return True
+        window = self._breaker_records[user_id]
+        now = time.time()
+        while window and now - window[0] > self._breaker_window_seconds:
+            window.popleft()
+        return len(window) < self._breaker_threshold
+
+    def _record_failure(self, user_id: str) -> None:
+        if not user_id:
+            return
+        self._breaker_records[user_id].append(time.time())
+
+    def _reset_failure_counter(self, user_id: str) -> None:
+        if user_id and user_id in self._breaker_records:
+            self._breaker_records[user_id].clear()
+
+    def _tool_type_allows(self, user_id: str, tool_type: str) -> bool:
+        if not user_id or not tool_type:
+            return True
+        window = self._tool_breakers[user_id][tool_type]
+        now = time.time()
+        while window and now - window[0] > self._breaker_window_seconds:
+            window.popleft()
+        return len(window) < self._breaker_threshold
+
+    def _record_tool_failure_type(self, user_id: str, tool_type: str) -> None:
+        if not user_id or not tool_type:
+            return
+        self._tool_breakers[user_id][tool_type].append(time.time())
+
+    def _reset_tool_failure_type(self, user_id: str, tool_type: str) -> None:
+        if user_id and tool_type and user_id in self._tool_breakers:
+            self._tool_breakers[user_id][tool_type].clear()
+
+    async def _notify_tool_breaker(
+        self,
+        context: _ToolExecutionContext,
+        tool_type: str,
+        tool_name: Optional[str],
+    ) -> None:
+        if not context.event_emitter:
+            return
+        try:
+            await context.event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": (
+                            f"Skipping {tool_name or tool_type} tools due to repeated failures"
+                        ),
+                        "done": False,
+                    },
+                }
+            )
+        except Exception:
+            self.logger.debug("Phase 3: Failed to emit breaker notification", exc_info=True)
+
+    def _db_breaker_allows(self, user_id: str) -> bool:
+        if not user_id:
+            return True
+        window = self._db_breakers[user_id]
+        now = time.time()
+        while window and now - window[0] > self._breaker_window_seconds:
+            window.popleft()
+        return len(window) < self._breaker_threshold
+
+    def _record_db_failure(self, user_id: str) -> None:
+        if user_id:
+            self._db_breakers[user_id].append(time.time())
+
+    def _reset_db_failure(self, user_id: str) -> None:
+        if user_id and user_id in self._db_breakers:
+            self._db_breakers[user_id].clear()
 
     def _ensure_artifact_store(self, valves: "Pipe.Valves", pipe_identifier: Optional[str] = None) -> None:
         """Configure encryption/compression + ensure the backing table exists."""
@@ -1311,57 +2313,141 @@ class Pipe:
         if not rows or not self._item_model or not self._session_factory:
             return []
 
-        now = datetime.datetime.utcnow()
-
-        instances = []
-        ulids: list[str] = []
-        for row in rows:
-            payload = row.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            ulid = row.get("id") or generate_item_id()
-            stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
-            instances.append(
-                self._item_model(  # type: ignore[call-arg]
-                    id=ulid,
-                    chat_id=row.get("chat_id"),
-                    message_id=row.get("message_id"),
-                    model_id=row.get("model_id"),
-                    item_type=row.get("item_type"),
-                    payload=stored_payload,
-                    is_encrypted=is_encrypted,
-                    created_at=now,
-                )
-            )
-            ulids.append(ulid)
-
-        if not instances:
-            return []
-
-        session: Session = self._session_factory()  # type: ignore[call-arg]
+        cleanup_rows = False
         try:
-            session.add_all(instances)
-            session.commit()
-        except SQLAlchemyError as exc:  # pragma: no cover - DB-specific errors
-            session.rollback()
-            self.logger.error(
-                "Failed to persist response artifacts: %s",
-                exc,
-                exc_info=self.logger.isEnabledFor(logging.DEBUG),
-            )
-            raise
-        finally:
-            session.close()
+            ulids: list[str] = [
+                row.get("id")
+                for row in rows
+                if row.get("_persisted") and isinstance(row.get("id"), str)
+            ]
+            ulids = [ulid for ulid in ulids if ulid]
+            batch_size = max(5, min(int(self.valves.DB_BATCH_SIZE or 10), 20))  # Fix: configurable batching
+            pending_rows = [row for row in rows if not row.get("_persisted")]
+            if not pending_rows:
+                if ulids:
+                    self.logger.debug(
+                        "Persisted %d response artifact(s) to %s.",
+                        len(ulids),
+                        self._artifact_table_name,
+                    )
+                cleanup_rows = True
+                return ulids
 
-        self.logger.debug("Persisted %d response artifact(s) to %s.", len(instances), self._artifact_table_name)
-        return ulids
+            for start in range(0, len(pending_rows), batch_size):
+                chunk = pending_rows[start : start + batch_size]
+                now = datetime.datetime.utcnow()
+                instances = []
+                chunk_ulids: list[str] = []
+                persisted_rows: list[dict[str, Any]] = []
+                for row in chunk:
+                    payload = row.get("payload")
+                    if not isinstance(payload, dict):
+                        self.logger.warning(
+                            "Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.",
+                            row.get("chat_id"),
+                            row.get("message_id"),
+                        )
+                        continue
+                    ulid = row.get("id") or generate_item_id()
+                    stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
+                    instances.append(
+                        self._item_model(  # type: ignore[call-arg]
+                            id=ulid,
+                            chat_id=row.get("chat_id"),
+                            message_id=row.get("message_id"),
+                            model_id=row.get("model_id"),
+                            item_type=row.get("item_type"),
+                            payload=stored_payload,
+                            is_encrypted=is_encrypted,
+                            created_at=now,
+                        )
+                    )
+                    chunk_ulids.append(ulid)
+                    persisted_rows.append(row)
+
+                if not instances:
+                    continue
+
+                session: Session = self._session_factory()  # type: ignore[call-arg]
+                try:
+                    session.add_all(instances)
+                    session.commit()
+                except SQLAlchemyError as exc:  # pragma: no cover
+                    session.rollback()
+                    self.logger.error(
+                        "Failed to persist response artifacts: %s",
+                        exc,
+                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                    )
+                    raise
+                finally:
+                    session.close()
+
+                for row in persisted_rows:
+                    row["_persisted"] = True
+                ulids.extend(chunk_ulids)
+
+            if ulids:
+                self.logger.debug(
+                    "Persisted %d response artifact(s) to %s.",
+                    len(ulids),
+                    self._artifact_table_name,
+                )
+            cleanup_rows = True
+            return ulids
+        finally:
+            if cleanup_rows:
+                for row in rows:
+                    row.pop("_persisted", None)
 
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
-        """Run :meth:`_db_persist_sync` inside the thread pool executor."""
+        """Persist artifacts, optionally via Redis write-behind (Phase 4)."""
+        if not rows:
+            return []
+
+        user_id = SessionLogger.user_id.get() or ""
+        if not self._db_breaker_allows(user_id):
+            self.logger.warning("DB writes disabled for user_id=%s due to repeated failures", user_id)
+            context = self._TOOL_CONTEXT.get()
+            await self._emit_notification(
+                context.event_emitter if context else None,
+                "DB ops skipped due to repeated errors.",
+                level="warning",
+            )  # Fix: notify on DB breaker
+            self._record_failure(user_id)
+            return []
+
+        for row in rows:
+            row.setdefault("id", generate_item_id())
+
+        try:
+            if self._redis_enabled:
+                return await self._redis_enqueue_rows(rows)
+            return await self._db_persist_direct(rows, user_id=user_id)
+        except Exception as exc:
+            self._record_db_failure(user_id)
+            self.logger.warning("Artifact persist failed: %s", exc)
+            return []
+
+    async def _db_persist_direct(self, rows: list[dict[str, Any]], user_id: str = "") -> list[str]:
         if not rows or not self._db_executor or not self._item_model or not self._session_factory:
             return []
+
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._db_executor, self._db_persist_sync, rows)
+        async for attempt in retryer:
+            with attempt:
+                ulids = await loop.run_in_executor(self._db_executor, self._db_persist_sync, rows)
+                if self._redis_enabled:
+                    await self._redis_cache_rows(rows)
+                self._reset_db_failure(user_id)
+                return ulids
+        return []
 
     def _db_fetch_sync(
         self,
@@ -1413,24 +2499,87 @@ class Pipe:
         message_id: Optional[str],
         item_ids: list[str],
     ) -> dict[str, dict]:
-        """Threaded wrapper around :meth:`_db_fetch_sync` with error handling."""
-        if not (chat_id and item_ids and self._db_executor and self._item_model and self._session_factory):
+        """Fetch artifacts with Redis cache + retries (Phase 4)."""
+        if not (chat_id and item_ids):
             return {}
-        loop = asyncio.get_running_loop()
-        fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids)
+
+        cached: dict[str, dict] = {}
+        if self._redis_enabled:
+            cached = await self._redis_fetch_rows(chat_id, item_ids)
+            missing_ids = [item_id for item_id in item_ids if item_id not in cached]
+        else:
+            missing_ids = item_ids
+
+        if not missing_ids:
+            return cached
+
+        if not (self._db_executor and self._item_model and self._session_factory):
+            return cached
+
+        user_id = SessionLogger.user_id.get() or ""
+        if not self._db_breaker_allows(user_id):
+            self.logger.warning("DB reads disabled for user_id=%s due to repeated failures", user_id)
+            context = self._TOOL_CONTEXT.get()
+            await self._emit_notification(
+                context.event_emitter if context else None,
+                "DB ops skipped due to repeated errors.",
+                level="warning",
+            )  # Fix: notify on DB breaker
+            self._record_failure(user_id)
+            return {}
+
         try:
-            return await loop.run_in_executor(self._db_executor, fetch_call)
+            fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids)
+            if fetched and self._redis_enabled:
+                await self._redis_cache_rows(
+                    [
+                        {
+                            "id": item_id,
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "payload": payload,
+                        }
+                        for item_id, payload in fetched.items()
+                    ],
+                    chat_id=chat_id,
+                )
+            if user_id:
+                self._reset_db_failure(user_id)
+            cached.update(fetched)
         except Exception as exc:
+            self._record_db_failure(user_id)
             self.logger.warning(
                 "Artifact fetch failed: %s",
                 exc,
                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
             )
-            return {}
+        return cached
+
+    async def _db_fetch_direct(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        item_ids: list[str],
+    ) -> dict[str, dict]:
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
+        loop = asyncio.get_running_loop()
+        async for attempt in retryer:
+            with attempt:
+                fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids)
+                return await loop.run_in_executor(self._db_executor, fetch_call)
+        return {}
 
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
-        session = await self._get_or_init_http_session()
+        self._maybe_start_startup_checks()
+        self._maybe_start_redis()
+        self._maybe_start_cleanup()
+        session = self._create_http_session()
         try:
             await OpenRouterModelRegistry.ensure_loaded(
                 session,
@@ -1442,6 +2591,8 @@ class Pipe:
         except ValueError as exc:
             self.logger.error("OpenRouter configuration error: %s", exc)
             return []
+        finally:
+            await session.close()
 
         available_models = OpenRouterModelRegistry.list_models()
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
@@ -1458,6 +2609,91 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
+    ) -> AsyncGenerator[str, None] | str | None | JSONResponse:
+        """Entry point that enqueues work and awaits the isolated job result."""
+
+        self._maybe_start_log_worker()
+        self._maybe_start_startup_checks()
+        self._maybe_start_redis()
+        self._maybe_start_cleanup()
+        user_valves = self.UserValves.model_validate(__user__.get("valves", {}))
+        valves = self._merge_valves(self.valves, user_valves)
+        session_id = str(__metadata__.get("session_id") or "")
+        user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
+
+        if not self._breaker_allows(user_id):  # Fix: user-scoped breaker
+            message = "Temporarily disabled due to repeated errors. Please retry later."
+            if __event_emitter__:
+                await self._emit_notification(__event_emitter__, message, level="warning")
+            SessionLogger.cleanup()
+            return message
+
+        if self._warmup_failed:
+            message = "Service unavailable due to startup issues"
+            if __event_emitter__:
+                await self._emit_error(
+                    __event_emitter__,
+                    message,
+                    show_error_message=True,
+                    done=True,
+                )
+            SessionLogger.cleanup()
+            return message
+
+        await self._ensure_concurrency_controls(valves)
+        queue = type(self)._request_queue
+        if queue is None:
+            raise RuntimeError("request queue not initialized")
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        job = _PipeJob(
+            pipe=self,
+            body=body,
+            user=__user__,
+            request=__request__,
+            event_emitter=__event_emitter__,
+            event_call=__event_call__,
+            metadata=__metadata__,
+            tools=__tools__,
+            task=__task__,
+            task_body=__task_body__,
+            valves=valves,
+            future=future,
+        )
+
+        if not self._enqueue_job(job):
+            self.logger.warning("Request queue full; rejecting request_id=%s", job.request_id)
+            if __event_emitter__:
+                await self._emit_error(
+                    __event_emitter__,
+                    "Server busy (503)",
+                    show_error_message=True,
+                    done=True,
+                )
+            SessionLogger.cleanup()
+            return "Server busy (503)"
+
+        try:
+            result = await future
+            return result
+        finally:
+            SessionLogger.cleanup()
+
+    async def _handle_pipe_call(
+        self,
+        body: dict[str, Any],
+        __user__: dict[str, Any],
+        __request__: Request,
+        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]],
+        __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+        __metadata__: dict[str, Any],
+        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
+        __task__: Optional[dict[str, Any]] = None,
+        __task_body__: Optional[dict[str, Any]] = None,
+        *,
+        valves: "Pipe.Valves" | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> AsyncGenerator[str, None] | str | None:
         """Process a user request and return either a stream or final text.
 
@@ -1465,13 +2701,14 @@ class Pipe:
         ``_run_streaming_loop``.  Otherwise it falls back to
         ``_run_nonstreaming_loop`` and returns the aggregated response.
         """
-        valves = self._merge_valves(self.valves, self.UserValves.model_validate(__user__.get("valves", {})))
+        valves = valves or self._merge_valves(self.valves, self.UserValves.model_validate(__user__.get("valves", {})))
+        if session is None:
+            raise RuntimeError("HTTP session is required for _handle_pipe_call")
 
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
         pipe_identifier_for_artifacts = self._resolve_pipe_identifier(openwebui_model_id)
         self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier_for_artifacts)
 
-        session = await self._get_or_init_http_session()
         try:
             await OpenRouterModelRegistry.ensure_loaded(
                 session,
@@ -1494,70 +2731,99 @@ class Pipe:
 
         # Full model ID, e.g. "<pipe-id>.gpt-4o"
         pipe_identifier = pipe_identifier_for_artifacts
-        ModelFamily._PIPE_ID.set(pipe_identifier)
+        pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
         # Features are nested under the pipe id key – read them dynamically.
         _features_all = __metadata__.get("features", {}) or {}
         features = _features_all.get(pipe_identifier, {})
         # Custom location that this manifold uses to store feature flags
+        user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
 
-        # STEP 0: Set up session logger with session_id and log level
-        SessionLogger.session_id.set(__metadata__.get("session_id", None))
-        SessionLogger.log_level.set(getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO))
+        try:
+            result = await self._process_transformed_request(
+                body,
+                __user__,
+                __event_emitter__,
+                __event_call__,
+                __metadata__,
+                __tools__,
+                __task__,
+                __task_body__,
+                valves,
+                session,
+                openwebui_model_id,
+                pipe_identifier,
+                pipe_identifier_for_artifacts,
+                allowed_norm_ids,
+                features,
+                user_id=user_id,
+            )
+        finally:
+            ModelFamily._PIPE_ID.reset(pipe_token)
+        return result
 
-        # ------------------------------------------------------------------
-        # BONUS: Add support for Multi-line Status Descriptions (plus bold first line)
-        #
-        #  Open WebUI clamps each emitted status description to one line
-        # (Tailwind `line-clamp-1`). This tiny, idempotent CSS patch:
-        #   1) Removes the clamp and enables `white-space: pre-wrap` so "\n"
-        #      render as real line breaks.
-        #   2) Adds gentle, native-feeling emphasis to the *first visual line*
-        #      using semibold (600), not full bold.
-        #
-        # Scope:
-        #   • Affects only elements under `.status-description`
-        #   • No frontend rebuild; injected at runtime via `execute`
-        #   • Runs once per tab (checks for an existing <style> tag)
-        # ------------------------------------------------------------------
-        await __event_call__({
-            "type": "execute",
-            "data": {
-                "code": """
-                (() => {
-                // Only inject once per tab
-                if (document.getElementById("owui-status-unclamp")) return "ok";
 
-                const style = document.createElement("style");
-                style.id = "owui-status-unclamp";
-
-                style.textContent = `
-                    /* Allow multi-line in the status strip */
-                    .status-description .line-clamp-1,
-                    .status-description .text-base.line-clamp-1,
-                    .status-description .text-gray-500.text-base.line-clamp-1 {
-                    display: block !important;
-                    overflow: visible !important;
-                    -webkit-line-clamp: unset !important;
-                    -webkit-box-orient: initial !important;
-                    white-space: pre-wrap !important;  /* render \\n as line breaks */
-                    word-break: break-word;
-                    }
-
-                    /* Bold the first visual line */
-                    .status-description .text-base::first-line,
-                    .status-description .text-gray-500.text-base::first-line {
-                    font-weight: 500 !important;
-                    }
-                `;
-
-                document.head.appendChild(style);
-                return "ok";
-                })();
-                """
-            }
-        })
-        # ------------------------------------------------------------------
-
+    async def _process_transformed_request(
+        self,
+        body: dict[str, Any],
+        __user__: dict[str, Any],
+        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+        __metadata__: dict[str, Any],
+        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
+        __task__: Optional[dict[str, Any]],
+        __task_body__: Optional[dict[str, Any]],
+        valves: "Pipe.Valves",
+        session: aiohttp.ClientSession,
+        openwebui_model_id: str,
+        pipe_identifier: str,
+        pipe_identifier_for_artifacts: str,
+        allowed_norm_ids: set[str],
+        features: dict[str, Any],
+        *,
+        user_id: str = "",
+    ) -> AsyncGenerator[str, None] | str | None:
+        user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
+        # Optional: inject CSS tweak for multi-line statuses when enabled.
+        if valves.ENABLE_STATUS_CSS_PATCH:
+            if __event_call__:
+                payload_user_id = user_id or __metadata__.get("user_id") or __user__.get("id") or "anonymous"
+                try:
+                    await __event_call__({
+                        "type": "execute",
+                        "user_id": str(payload_user_id),
+                        "data": {
+                            "code": """
+                            (() => {
+                                if (document.getElementById("owui-status-unclamp")) return "ok";
+                                const style = document.createElement("style");
+                                style.id = "owui-status-unclamp";
+                                style.textContent = `
+                                    .status-description .line-clamp-1,
+                                    .status-description .text-base.line-clamp-1,
+                                    .status-description .text-gray-500.text-base.line-clamp-1 {
+                                        display: block !important;
+                                        overflow: visible !important;
+                                        -webkit-line-clamp: unset !important;
+                                        -webkit-box-orient: initial !important;
+                                        white-space: pre-wrap !important;
+                                        word-break: break-word;
+                                    }
+                                    .status-description .text-base::first-line,
+                                    .status-description .text-gray-500.text-base::first-line {
+                                        font-weight: 500 !important;
+                                    }
+                                `;
+                                document.head.appendChild(style);
+                                return "ok";
+                            })();
+                            """
+                        }
+                    })
+                except Exception as exc:  # pragma: no cover - UI injection optional
+                    self.logger.debug("Status CSS injection failed: %s", exc)
+                    print("Status CSS injection failed for user_id=%s: %s", payload_user_id, exc)
+            else:
+                self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
 
         # STEP 1: Transform request body (Completions API -> Responses API).
         completions_body = CompletionsBody.model_validate(body)
@@ -1594,6 +2860,7 @@ class Pipe:
             return await self._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
+                session=session,
                 task_context=__task__,
             )  # Placeholder for task handling logic
 
@@ -1651,10 +2918,27 @@ class Pipe:
         # STEP 8: Send to OpenAI Responses API
         if responses_body.stream:
             # Return async generator for partial text
-            return await self._run_streaming_loop(responses_body, valves, __event_emitter__, __metadata__, __tools__)
+            return await self._run_streaming_loop(
+                responses_body,
+                valves,
+                __event_emitter__,
+                __metadata__,
+                __tools__,
+                session=session,
+                user_id=user_id,
+            )
         else:
             # Return final text (non-streaming)
-            return await self._run_nonstreaming_loop(responses_body, valves, __event_emitter__, __metadata__, __tools__)
+            return await self._run_nonstreaming_loop(
+                responses_body,
+                valves,
+                __event_emitter__,
+                __metadata__,
+                __tools__,
+                session=session,
+                user_id=user_id,
+            )
+
 
     def _select_models(self, filter_value: str, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter OpenRouter catalog entries based on the valve string."""
@@ -1690,11 +2974,37 @@ class Pipe:
         event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
         metadata: dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
+        session: aiohttp.ClientSession | None = None,
+        user_id: str = "",
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
         """
-        tools = tools or {}
+        if session is None:
+            raise RuntimeError("HTTP session is required for streaming")
+
+        raw_tools = tools or {}
+        tool_registry: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_tools, dict):
+            tool_registry = raw_tools
+        elif isinstance(raw_tools, list):
+            skipped_no_callable = False
+            for entry in raw_tools:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name and isinstance(entry.get("spec"), dict):
+                    name = entry["spec"].get("name")
+                callable_obj = entry.get("callable")
+                if callable_obj is None:
+                    skipped_no_callable = True
+                    continue
+                if name:
+                    tool_registry[name] = entry
+            if skipped_no_callable and not tool_registry:
+                self.logger.warning(
+                    "Received list-based tools without callables; tool execution will be disabled for this request."
+                )
         openwebui_model = metadata.get("model", {}).get("id", "")
         assistant_message = ""
         pending_ulids: list[str] = []
@@ -1775,9 +3085,12 @@ class Pipe:
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                 async for event in self.send_openai_responses_streaming_request(
+                    session,
                     request_payload,
                     api_key=api_key_value,
                     base_url=valves.BASE_URL,
+                    workers=valves.SSE_WORKERS_PER_REQUEST,
+                    breaker_key=user_id or None,
                 ):
                     etype = event.get("type")
 
@@ -2034,7 +3347,7 @@ class Pipe:
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
                 function_outputs: list[dict[str, Any]] = []
                 if calls:
-                    function_outputs = await self._execute_function_calls(calls, tools)
+                    function_outputs = await self._execute_function_calls(calls, tool_registry)
                     if valves.PERSIST_TOOL_RESULTS:
                         persist_payloads: list[dict] = []
                         for idx, output in enumerate(function_outputs):
@@ -2136,6 +3449,8 @@ class Pipe:
         event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
         metadata: Dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
+        session: aiohttp.ClientSession | None = None,
+        user_id: str = "",
     ) -> str:
         """Unified implementation: reuse the streaming path.
 
@@ -2154,12 +3469,17 @@ class Pipe:
             suppress_completion=False,
         )
 
+        if session is None:
+            raise RuntimeError("HTTP session is required for non-streaming")
+
         return await self._run_streaming_loop(
             body,
             valves,
             wrapped_emitter,
             metadata,
             tools or {},
+            session=session,
+            user_id=user_id,
         )
 
     # 4.4 Task Model Handling
@@ -2168,6 +3488,7 @@ class Pipe:
         body: Dict[str, Any],
         valves: Pipe.Valves,
         *,
+        session: aiohttp.ClientSession | None = None,
         task_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Process a task model request via the Responses API.
@@ -2195,9 +3516,13 @@ class Pipe:
         delay_seconds = 0.2  # keep retries snappy; task models run in latency-sensitive contexts
         last_error: Optional[Exception] = None
 
+        if session is None:
+            raise RuntimeError("HTTP session is required for task model requests")
+
         for attempt in range(1, attempts + 1):
             try:
                 response = await self.send_openai_responses_nonstreaming_request(
+                    session,
                     task_body,
                     api_key=EncryptedStr.decrypt(valves.API_KEY),
                     base_url=valves.BASE_URL,
@@ -2262,20 +3587,15 @@ class Pipe:
     # 4.5 LLM HTTP Request Helpers
     async def send_openai_responses_streaming_request(
         self,
+        session: aiohttp.ClientSession,
         request_body: dict[str, Any],
         api_key: str,
-        base_url: str
+        base_url: str,
+        *,
+        workers: int = 4,
+        breaker_key: Optional[str] = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Yield SSE events from the Responses endpoint as soon as they arrive.
-
-        This low-level helper is tuned for minimal latency when streaming large
-        responses. It buffers multi-line ``data:`` payloads until the blank-line
-        separator arrives, ignores other SSE fields, and intentionally skips any
-        malformed JSON instead of retrying so upstream callers can keep their
-        state machines simple.
-        """
-        # Get or create aiohttp session (aiohttp is used for performance).
-        self.session = await self._get_or_init_http_session()
+        """Phase 2: producer/worker SSE pipeline with delta batching."""
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -2285,74 +3605,209 @@ class Pipe:
         _debug_print_request(headers, request_body)
         url = base_url.rstrip("/") + "/responses"
 
-        buf = bytearray()
-        event_data_parts: list[bytes] = []
-        async with self.session.post(url, json=request_body, headers=headers) as resp:
-            if resp.status >= 400:
-                await _debug_print_error_response(resp)
-            resp.raise_for_status()
+        workers = max(1, min(int(workers or 1), 8))
+        chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=100)
+        event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=100)
+        chunk_sentinel = (None, b"")
+        DELTA_BATCH_THRESHOLD = 50
 
-            async for chunk in resp.content.iter_chunked(4096):
-                buf.extend(chunk)
-                start_idx = 0
-                # Process all complete lines in the buffer
+        async def _producer() -> None:
+            seq = 0
+            retryer = AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+                retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+                reraise=True,
+            )
+            try:
+                async for attempt in retryer:
+                    if breaker_key and not self._breaker_allows(breaker_key):
+                        raise RuntimeError("Breaker open for user during stream")
+                    with attempt:
+                        buf = bytearray()
+                        event_data_parts: list[bytes] = []
+                        stream_complete = False
+                        try:
+                            async with session.post(url, json=request_body, headers=headers) as resp:
+                                if resp.status >= 400:
+                                    await _debug_print_error_response(resp)
+                                    if breaker_key:
+                                        self._record_failure(breaker_key)
+                                    if resp.status < 500:
+                                        raise RuntimeError(
+                                            f"OpenRouter request failed ({resp.status}): {resp.reason}"
+                                        )
+                                resp.raise_for_status()
+
+                                async for chunk in resp.content.iter_chunked(4096):
+                                    view = memoryview(chunk)
+                                    if breaker_key and not self._breaker_allows(breaker_key):
+                                        raise RuntimeError("Breaker open during stream")
+                                    buf.extend(view)
+                                    start_idx = 0
+                                    while True:
+                                        newline_idx = buf.find(b"\n", start_idx)
+                                        if newline_idx == -1:
+                                            break
+                                        line = buf[start_idx:newline_idx]
+                                        start_idx = newline_idx + 1
+                                        stripped = line.strip()
+                                        if not stripped:
+                                            if event_data_parts:
+                                                data_blob = b"\n".join(event_data_parts).strip()
+                                                event_data_parts.clear()
+                                                if not data_blob:
+                                                    continue
+                                                if data_blob == b"[DONE]":
+                                                    stream_complete = True
+                                                    break
+                                                await chunk_queue.put((seq, data_blob))
+                                                self.logger.debug(
+                                                    "Phase 2: Enqueued SSE chunk seq=%s size=%s",
+                                                    seq,
+                                                    len(data_blob),
+                                                )
+                                                seq += 1
+                                            continue
+                                        if stripped.startswith(b":"):
+                                            continue
+                                        if stripped.startswith(b"data:"):
+                                            event_data_parts.append(stripped[5:].lstrip())
+                                            continue
+                                    if start_idx > 0:
+                                        del buf[:start_idx]
+                                    if stream_complete:
+                                        break
+
+                                if event_data_parts and not stream_complete:
+                                    data_blob = b"\n".join(event_data_parts).strip()
+                                    event_data_parts.clear()
+                                    if data_blob and data_blob != b"[DONE]":
+                                        await chunk_queue.put((seq, data_blob))
+                                        self.logger.debug(
+                                            "Phase 2: Enqueued SSE chunk seq=%s size=%s",
+                                            seq,
+                                            len(data_blob),
+                                        )
+                                        seq += 1
+                        except Exception as exc:
+                            if breaker_key:
+                                self._record_failure(breaker_key)
+                            raise
+                        if stream_complete:
+                            break
+            finally:
+                for _ in range(workers):
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await chunk_queue.put(chunk_sentinel)
+
+        async def _worker(worker_idx: int) -> None:
+            try:
                 while True:
-                    newline_idx = buf.find(b"\n", start_idx)
-                    if newline_idx == -1:
-                        break
-
-                    line = buf[start_idx:newline_idx]
-                    start_idx = newline_idx + 1
-
-                    stripped = line.strip()
-                    if not stripped:
-                        if event_data_parts:
-                            data_blob = b"\n".join(event_data_parts).strip()
-                            event_data_parts.clear()
-                            if not data_blob:
-                                continue
-                            if data_blob == b"[DONE]":
-                                return
-                            try:
-                                yield json.loads(data_blob.decode("utf-8"))
-                            except json.JSONDecodeError as exc:
-                                self.logger.warning(
-                                    "Discarding malformed SSE payload: %s", exc
-                                )
-                        continue
-
-                    if stripped.startswith(b":"):
-                        continue
-
-                    if stripped.startswith(b"data:"):
-                        event_data_parts.append(stripped[5:].lstrip())
-                        continue
-                    # Ignore other SSE fields for now
-
-                # Remove processed data from the buffer
-                if start_idx > 0:
-                    del buf[:start_idx]
-
-            if event_data_parts:
-                data_blob = b"\n".join(event_data_parts).strip()
-                if data_blob and data_blob != b"[DONE]":
+                    seq, data = await chunk_queue.get()
                     try:
-                        yield json.loads(data_blob.decode("utf-8"))
-                    except json.JSONDecodeError as exc:
-                        self.logger.warning(
-                            "Discarding malformed SSE payload at stream end: %s", exc
+                        if seq is None:
+                            break
+                        if data == b"[DONE]":
+                            continue
+                        try:
+                            event = json.loads(data.decode("utf-8"))
+                        except json.JSONDecodeError as exc:
+                            self.logger.warning(
+                                "Chunk parse failed (seq=%s): %s",
+                                seq,
+                                exc,
+                            )
+                            continue
+                        await event_queue.put((seq, event))
+                        self.logger.debug(
+                            "Phase 2: Worker %s emitted seq=%s",
+                            worker_idx,
+                            seq,
                         )
+                    finally:
+                        chunk_queue.task_done()
+            finally:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await event_queue.put((None, None))
+
+        producer_task = asyncio.create_task(_producer(), name="openrouter-sse-producer")
+        worker_tasks = [
+            asyncio.create_task(_worker(idx), name=f"openrouter-sse-worker-{idx}")
+            for idx in range(workers)
+        ]
+
+        pending_events: dict[int, dict[str, Any]] = {}
+        next_seq = 0
+        done_workers = 0
+        delta_buffer: list[str] = []
+        delta_template: Optional[dict[str, Any]] = None
+        delta_length = 0
+
+        def flush_delta(force: bool = False) -> Optional[dict[str, Any]]:
+            nonlocal delta_buffer, delta_template, delta_length
+            if delta_buffer and (force or delta_length >= DELTA_BATCH_THRESHOLD):
+                combined = "".join(delta_buffer)
+                base = dict(delta_template or {"type": "response.output_text.delta"})
+                base["delta"] = combined
+                delta_buffer = []
+                delta_template = None
+                delta_length = 0
+                return base
+            return None
+
+        try:
+            while True:
+                seq, event = await event_queue.get()
+                event_queue.task_done()
+                if seq is None:
+                    done_workers += 1
+                    if done_workers >= workers and not pending_events:
+                        break
+                    continue
+                pending_events[seq] = event
+                while next_seq in pending_events:
+                    current = pending_events.pop(next_seq)
+                    next_seq += 1
+                    etype = current.get("type")
+                    if etype == "response.output_text.delta":
+                        delta_chunk = current.get("delta", "")
+                        if delta_chunk:
+                            delta_buffer.append(delta_chunk)
+                            delta_length += len(delta_chunk)
+                            if delta_template is None:
+                                delta_template = {k: v for k, v in current.items() if k != "delta"}
+                        batched = flush_delta()
+                        if batched:
+                            yield batched
+                        continue
+
+                    batched = flush_delta(force=True)
+                    if batched:
+                        yield batched
+                    yield current
+
+            final_delta = flush_delta(force=True)
+            if final_delta:
+                yield final_delta
+
+            await producer_task
+        finally:
+            if not producer_task.done():
+                producer_task.cancel()
+            for task in worker_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
 
     async def send_openai_responses_nonstreaming_request(
         self,
+        session: aiohttp.ClientSession,
         request_params: dict[str, Any],
         api_key: str,
         base_url: str,
     ) -> Dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
-        # Get or create aiohttp session (aiohttp is used for performance).
-        self.session = await self._get_or_init_http_session()
-
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -2360,66 +3815,40 @@ class Pipe:
         _debug_print_request(headers, request_params)
         url = base_url.rstrip("/") + "/responses"
 
-        async with self.session.post(url, json=request_params, headers=headers) as resp:
-            if resp.status >= 400:
-                await _debug_print_error_response(resp)
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
-        """Return a cached ``aiohttp.ClientSession`` instance.
-
-        The session is created with connection pooling and sensible timeouts on
-        first use and is then reused for the lifetime of the process.
-        """
-        # Reuse existing session if available and open
-        if self.session is not None and not self.session.closed:
-            self.logger.debug("Reusing existing aiohttp.ClientSession")
-            return self.session
-
-        self.logger.debug("Creating new aiohttp.ClientSession")
-
-        # Configure TCP connector for connection pooling and DNS caching
-        connector = aiohttp.TCPConnector(
-            limit=50,  # Max total simultaneous connections
-            limit_per_host=10,  # Max connections per host
-            keepalive_timeout=75,  # Seconds to keep idle sockets open
-            ttl_dns_cache=300,  # DNS cache time-to-live in seconds
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            reraise=True,
         )
 
-        # Set reasonable timeouts for connection and socket operations
-        timeout = aiohttp.ClientTimeout(
-            connect=30,  # Max seconds to establish connection
-            sock_connect=30,  # Max seconds for socket connect
-            sock_read=3600,  # Max seconds for reading from socket (1 hour)
-        )
-
-        session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            json_serialize=json.dumps,
-        )
-
-        return session
+        async for attempt in retryer:
+            with attempt:
+                async with session.post(url, json=request_params, headers=headers) as resp:
+                    if resp.status >= 400:
+                        await _debug_print_error_response(resp)
+                        if resp.status < 500:
+                            raise RuntimeError(
+                                f"OpenRouter request failed ({resp.status}): {resp.reason}"
+                            )
+                    resp.raise_for_status()
+                    return await resp.json()
 
     async def close(self) -> None:
-        """Explicitly close the shared aiohttp session."""
+        """Shutdown background resources (DB executor, queue worker)."""
         self.shutdown()
-        session = self.session
-        self.session = None
-        if session and not session.closed:
-            await session.close()
-            self._session_closed = True
+        await self._stop_request_worker()
+        await self._stop_log_worker()
+        await self._stop_redis()
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            self._cleanup_task = None
 
     def __del__(self) -> None:
-        """Best-effort session shutdown to avoid 'Unclosed client session' warnings."""
+        """Best-effort cleanup hook for garbage collection."""
         self.shutdown()
-        if self._session_closed:
-            return
-        session = getattr(self, "session", None)
-        if not session or session.closed:
-            return
-        self.session = None
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -2427,67 +3856,206 @@ class Pipe:
 
         if loop and loop.is_running():
             try:
-                loop.call_soon_threadsafe(lambda: asyncio.create_task(session.close()))
-                self._session_closed = True
+                loop.create_task(self.close())
             except RuntimeError:
                 pass
         else:
             try:
                 new_loop = asyncio.new_event_loop()
                 try:
-                    new_loop.run_until_complete(session.close())
-                    self._session_closed = True
+                    new_loop.run_until_complete(self.close())
                 finally:
                     new_loop.close()
-            except Exception:
+            except RuntimeError:
                 pass
 
-    # 4.6 Tool Execution Logic
-    @staticmethod
+    async def _stop_redis(self) -> None:
+        self._redis_enabled = False
+        tasks = []
+        for task in (self._redis_listener_task, self._redis_flush_task, self._redis_ready_task):
+            if task:
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._redis_listener_task = None
+        self._redis_flush_task = None
+        self._redis_ready_task = None
+        if self._redis_client:
+            with contextlib.suppress(Exception):
+                await self._redis_client.close()
+            self._redis_client = None
+
+    # 4.6 Tool Execution Logic (Phase 3)
     async def _execute_function_calls(
-        calls: list[dict],                      # raw call-items from the LLM
-        tools: dict[str, dict[str, Any]],       # name → {callable, …}
+        self,
+        calls: list[dict],
+        tools: dict[str, dict[str, Any]],
     ) -> list[dict]:
-        """Execute one or more tool calls and return their outputs.
+        """Execute tool calls via the per-request queue/worker pipeline."""
 
-        Each call specification is looked up in the ``tools`` mapping by name
-        and executed concurrently.  The returned list contains synthetic
-        ``function_call_output`` items suitable for feeding back into the LLM.
-        """
-        def _make_task(call):
-            """Return an awaitable for a single tool invocation."""
-            tool_cfg = tools.get(call["name"])
-            if not tool_cfg:                                 # tool missing
-                return asyncio.sleep(0, result="Tool not found")
+        context = self._TOOL_CONTEXT.get()
+        if context is None:
+            self.logger.debug("Phase 3: Using legacy tool execution path")
+            # Fallback: legacy direct execution
+            return await self._execute_function_calls_legacy(calls, tools)
 
-            fn = tool_cfg["callable"]
-            args = json.loads(call["arguments"])
+        loop = asyncio.get_running_loop()
+        pending: list[tuple[dict[str, Any], asyncio.Future]] = []
+        outputs: list[dict[str, Any]] = []
+        enqueued_any = False
+        breaker_only_skips = True
 
-            if inspect.iscoroutinefunction(fn):              # async tool
-                return fn(**args)
-            else:                                            # sync tool
-                return asyncio.to_thread(fn, **args)
+        for call in calls:
+            tool_cfg = tools.get(call.get("name"))
+            if not tool_cfg:
+                breaker_only_skips = False
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        "Tool not found",
+                        status="failed",
+                    )
+                )
+                continue
+            tool_type = (tool_cfg.get("type") or "function").lower()
+            if not self._tool_type_allows(context.user_id, tool_type):  # Fix: breaker before enqueue
+                await self._notify_tool_breaker(context, tool_type, call.get("name"))
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        f"Tool '{call.get('name')}' skipped due to repeated failures.",
+                        status="skipped",
+                    )
+                )
+                continue
+            fn = tool_cfg.get("callable")
+            if fn is None:
+                breaker_only_skips = False
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        f"Tool '{call.get('name')}' has no callable configured.",
+                        status="failed",
+                    )
+                )
+                continue
+            try:
+                raw_args = call.get("arguments") or "{}"
+                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception as exc:
+                breaker_only_skips = False
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        f"Invalid arguments: {exc}",
+                        status="failed",
+                    )
+                )
+                continue
 
-        tasks   = [_make_task(call) for call in calls]       # ← fire & forget
+            future: asyncio.Future = loop.create_future()
+            allow_batch = self._is_batchable_tool_call(args)
+            queued = _QueuedToolCall(
+                call=call,
+                tool_cfg=tool_cfg,
+                args=args,
+                future=future,
+                allow_batch=allow_batch,
+            )
+            await context.queue.put(queued)
+            self.logger.debug(
+                "Phase 3: Enqueued tool %s (batch=%s)",
+                call.get("name"),
+                allow_batch,
+            )
+            pending.append((call, future))
+            enqueued_any = True
+            breaker_only_skips = False
+
+        if not enqueued_any and breaker_only_skips and context.user_id:
+            self._record_failure(context.user_id)
+
+        for call, future in pending:
+            try:
+                result = await future
+            except Exception as exc:  # pragma: no cover - defensive
+                result = self._build_tool_output(
+                    call,
+                    f"Tool error: {exc}",
+                    status="failed",
+                )
+            outputs.append(result)
+
+        return outputs
+
+    async def _execute_function_calls_legacy(
+        self,
+        calls: list[dict],
+        tools: dict[str, dict[str, Any]],
+    ) -> list[dict]:
+        """Legacy direct execution path used when tool context is unavailable."""
+
+        if not self._legacy_tool_warning_emitted:
+            self._legacy_tool_warning_emitted = True
+            self.logger.warning(
+                "Phase 3 tool queue unavailable; falling back to direct execution."
+            )
+
+        tasks: list[Awaitable] = []
+        for call in calls:
+            tool_cfg = tools.get(call.get("name"))
+            if not tool_cfg:
+                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool not found")))
+                continue
+            fn = tool_cfg.get("callable")
+            if fn is None:
+                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool has no callable configured")))
+                continue
+            raw_args = call.get("arguments") or "{}"
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            if inspect.iscoroutinefunction(fn):
+                tasks.append(fn(**args))
+            else:
+                tasks.append(asyncio.to_thread(fn, **args))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
         outputs: list[dict] = []
         for call, result in zip(calls, results):
-            call_id = call.get("call_id") or generate_item_id()
             if isinstance(result, Exception):
+                status = "failed"
                 output_text = f"Tool error: {result}"
             else:
+                status = "completed"
                 output_text = "" if result is None else str(result)
             outputs.append(
-                {
-                    "type":   "function_call_output",
-                    "id":     generate_item_id(),
-                    "status": "completed",
-                    "call_id": call_id,
-                    "output":  output_text,
-                }
+                self._build_tool_output(
+                    call,
+                    output_text,
+                    status=status,
+                )
             )
         return outputs
+
+    def _build_tool_output(
+        self,
+        call: dict[str, Any],
+        output_text: str,
+        *,
+        status: str = "completed",
+    ) -> dict[str, Any]:
+        call_id = call.get("call_id") or generate_item_id()
+        return {
+            "type": "function_call_output",
+            "id": generate_item_id(),
+            "status": status,
+            "call_id": call_id,
+            "output": output_text,
+        }
+
+    def _is_batchable_tool_call(self, args: dict[str, Any]) -> bool:
+        blockers = {"depends_on", "_depends_on", "sequential", "no_batch"}
+        return not any(key in args for key in blockers)
     # 4.7 Emitters (Front-end communication)
     async def _emit_error(
         self,
@@ -2744,9 +4312,13 @@ class SessionLogger:
     """
 
     session_id = ContextVar("session_id", default=None)
+    user_id = ContextVar("user_id", default=None)
     log_level = ContextVar("log_level", default=logging.INFO)
     logs = defaultdict(lambda: deque(maxlen=2000))
     _session_last_seen: Dict[str, float] = {}
+    log_queue: asyncio.Queue[logging.LogRecord] | None = None
+    _console_formatter = logging.Formatter("[%(levelname)s] [session=%(session_label)s] [user=%(user_id)s] %(message)s")
+    _memory_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [user=%(user_id)s] %(message)s")
 
     @classmethod
     def get_logger(cls, name=__name__):
@@ -2770,25 +4342,50 @@ class SessionLogger:
         def filter(record):
             """Attach session metadata and enforce per-session log levels."""
             sid = cls.session_id.get()
+            uid = cls.user_id.get()
             record.session_id = sid
+            record.session_label = sid or "-"
+            record.user_id = uid or "-"
             if sid:
                 cls._session_last_seen[sid] = time.time()
             return record.levelno >= cls.log_level.get()
 
         logger.addFilter(filter)
 
-        # Console handler
-        console = logging.StreamHandler(sys.stdout)
-        console.setFormatter(logging.Formatter("[%(levelname)s] [%(session_id)s] %(message)s"))
-        logger.addHandler(console)
+        async_handler = logging.Handler()
 
-        # Memory handler (appends formatted lines into logs[session_id])
-        mem = logging.Handler()
-        mem.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        mem.emit = lambda r: cls.logs[r.session_id].append(mem.format(r)) if r.session_id else None
-        logger.addHandler(mem)
+        def _emit(record: logging.LogRecord) -> None:  # Fix: enqueue log record
+            cls._enqueue(record)
+
+        async_handler.emit = _emit  # type: ignore[assignment]
+        logger.addHandler(async_handler)
 
         return logger
+
+    @classmethod
+    def set_log_queue(cls, queue: asyncio.Queue[logging.LogRecord] | None) -> None:
+        cls.log_queue = queue
+
+    @classmethod
+    def _enqueue(cls, record: logging.LogRecord) -> None:
+        queue = cls.log_queue
+        if queue is None:
+            cls.process_record(record)
+            return
+        try:
+            queue.put_nowait(record)
+        except asyncio.QueueFull:
+            cls.process_record(record)
+
+    @classmethod
+    def process_record(cls, record: logging.LogRecord) -> None:
+        console_line = cls._console_formatter.format(record)
+        sys.stdout.write(console_line + "\n")
+        sys.stdout.flush()
+        session_id = getattr(record, "session_id", None)
+        if session_id:
+            cls.logs[session_id].append(cls._memory_formatter.format(record))
+            cls._session_last_seen[session_id] = time.time()
 
     @classmethod
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
