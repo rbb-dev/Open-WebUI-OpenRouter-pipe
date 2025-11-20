@@ -1,5 +1,7 @@
 # OpenRouter Responses API Manifold for Open WebUI
 
+## This pipe is under active development, design might change. 
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](https://github.com/rbb-dev/openrouter-responses-pipe) <!-- Update with your repo link -->
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
