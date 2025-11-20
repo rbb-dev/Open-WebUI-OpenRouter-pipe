@@ -316,6 +316,10 @@ class OpenRouterModelRegistry:
     _id_map: Dict[str, str] = {}  # normalized sanitized id -> original id
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
+    _next_refresh_after: float = 0.0
+    _consecutive_failures: int = 0
+    _last_error: Optional[str] = None
+    _last_error_time: float = 0.0
 
     @classmethod
     async def ensure_loaded(
@@ -331,14 +335,29 @@ class OpenRouterModelRegistry:
         if not api_key:
             raise ValueError("OpenRouter API key is required.")
 
-        if cls._specs and (time.time() - cls._last_fetch) < cache_seconds:
+        now = time.time()
+        next_refresh = cls._next_refresh_after or (cls._last_fetch + cache_seconds)
+        if cls._specs and now < next_refresh:
             return
 
         async with cls._lock:
-            if cls._specs and (time.time() - cls._last_fetch) < cache_seconds:
+            now = time.time()
+            next_refresh = cls._next_refresh_after or (cls._last_fetch + cache_seconds)
+            if cls._specs and now < next_refresh:
                 return
-            await cls._refresh(session, base_url=base_url, api_key=api_key, logger=logger)
-            cls._last_fetch = time.time()
+            try:
+                await cls._refresh(session, base_url=base_url, api_key=api_key, logger=logger)
+            except Exception as exc:
+                cls._record_refresh_failure(exc, cache_seconds)
+                if not cls._models:
+                    raise
+                logger.warning(
+                    "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
+                    exc,
+                    len(cls._models),
+                )
+                return
+            cls._record_refresh_success(cache_seconds)
 
     @classmethod
     async def _refresh(
@@ -361,9 +380,7 @@ class OpenRouterModelRegistry:
                 payload = await resp.json()
         except Exception as exc:
             logger.error("Failed to load OpenRouter model catalog: %s", exc)
-            if not cls._specs:
-                raise
-            return
+            raise
 
         data = payload.get("data") or []
         raw_specs: Dict[str, Dict[str, Any]] = {}
@@ -419,12 +436,35 @@ class OpenRouterModelRegistry:
             }
 
         models.sort(key=lambda m: m["name"].lower())
+        if not models:
+            raise RuntimeError("OpenRouter returned an empty model catalog.")
         cls._models = models
         cls._specs = specs
         cls._id_map = id_map
 
         # Share dynamic specs with ModelFamily for downstream feature checks.
         ModelFamily.set_dynamic_specs(specs)
+
+    @classmethod
+    def _record_refresh_success(cls, cache_seconds: int) -> None:
+        now = time.time()
+        cls._last_fetch = now
+        cls._next_refresh_after = now + max(5, cache_seconds)
+        cls._consecutive_failures = 0
+        cls._last_error = None
+        cls._last_error_time = 0.0
+
+    @classmethod
+    def _record_refresh_failure(cls, exc: Exception, cache_seconds: int) -> None:
+        cls._consecutive_failures += 1
+        cls._last_error = str(exc)
+        cls._last_error_time = time.time()
+        exponent = min(cls._consecutive_failures - 1, 5)
+        base_backoff = 5.0
+        raw_backoff = base_backoff * (2 ** exponent)
+        capped_backoff = min(cache_seconds, raw_backoff)
+        backoff_until = cls._last_error_time + max(base_backoff, capped_backoff)
+        cls._next_refresh_after = max(cls._next_refresh_after, backoff_until)
 
     @staticmethod
     def _derive_features(
@@ -2909,6 +2949,7 @@ class Pipe:
         self._maybe_start_redis()
         self._maybe_start_cleanup()
         session = self._create_http_session()
+        refresh_error: Exception | None = None
         try:
             await OpenRouterModelRegistry.ensure_loaded(
                 session,
@@ -2918,12 +2959,23 @@ class Pipe:
                 logger=self.logger,
             )
         except ValueError as exc:
+            refresh_error = exc
             self.logger.error("OpenRouter configuration error: %s", exc)
-            return []
+        except Exception as exc:
+            refresh_error = exc
+            self.logger.warning("OpenRouter catalog refresh failed: %s", exc)
         finally:
             await session.close()
 
         available_models = OpenRouterModelRegistry.list_models()
+        if refresh_error and available_models:
+            self.logger.warning(
+                "Serving %d cached OpenRouter model(s) due to refresh failure.",
+                len(available_models),
+            )
+        if refresh_error and not available_models:
+            return []
+
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
         return [{"id": model["id"], "name": model["name"]} for model in selected_models]
 
