@@ -5,7 +5,7 @@ author_url: https://github.com/rbb-dev
 git_url: https://github.com/
 description: Brings OpenRouter Responses API support to Open WebUI, auto-importing every Responses-capable model from OpenRouter and translating Open WebUI requests into the new API format.
 required_open_webui_version: 0.6.28
-version: 1.0.4
+version: 1.0.5
 requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
 license: MIT
 
@@ -69,7 +69,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine, inspect as sa_inspect
+from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -782,21 +782,14 @@ class ResponsesBody(BaseModel):
                     try:
                         db_artifacts = await artifact_loader(chat_id, msg_id, markers)
                     except Exception:
-                        logger.warning(
-                            "Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True
-                        )
+                        logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
                         db_artifacts = {}
 
                 for segment in segments:
                     if segment["type"] == "marker":
                         payload = db_artifacts.get(segment["marker"])
                         if payload is None:
-                            logger.warning(
-                                "Missing artifact %s for chat_id=%s message_id=%s",
-                                segment["marker"],
-                                chat_id,
-                                msg_id,
-                            )
+                            logger.warning("Missing artifact %s for chat_id=%s message_id=%s", segment["marker"], chat_id, msg_id)
                             continue
                         item = _normalize_persisted_item(payload)
                         if item is not None:
@@ -1001,7 +994,7 @@ class Pipe:
         
         # Tool execution behavior
         PERSIST_TOOL_RESULTS: bool = Field(
-             default=True,
+             default=False,
             description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
         )
         ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
@@ -1116,7 +1109,7 @@ class Pipe:
             description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected.",
         )
         REDIS_CACHE_TTL_SECONDS: int = Field(
-            default=300,
+            default=600,
             ge=60,
             le=3600,
             description="TTL applied to Redis artifact cache entries (seconds).",
@@ -1222,17 +1215,12 @@ class Pipe:
         try:
             uvicorn_workers = int(raw_uvicorn_workers or "1")
         except ValueError:
-            self.logger.warning(
-                "Invalid UVICORN_WORKERS value '%s'; defaulting to 1.",
-                raw_uvicorn_workers,
-            )
+            self.logger.warning("Invalid UVICORN_WORKERS value '%s'; defaulting to 1.", raw_uvicorn_workers)
             uvicorn_workers = 1
         multi_worker = uvicorn_workers > 1
         redis_valve_enabled = bool(self.valves.ENABLE_REDIS_CACHE)
         if multi_worker and not redis_valve_enabled:
-            self.logger.warning(
-                "Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off."
-            )
+            self.logger.warning("Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off.")
         self._redis_candidate = (
             bool(self._redis_url)
             and multi_worker
@@ -1247,6 +1235,7 @@ class Pipe:
         self._redis_namespace = (getattr(self, "id", None) or "openrouter").lower()
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
+        self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
         self._redis_ttl = max(60, int(self.valves.REDIS_CACHE_TTL_SECONDS or 300))
         self._cleanup_task = None
         self._legacy_tool_warning_emitted = False
@@ -1337,7 +1326,7 @@ class Pipe:
         try:
             session = self._create_http_session()
             await self._ping_openrouter(session, self.valves.BASE_URL, api_key)
-            self.logger.info("Warmed: success")
+            self.logger.debug("Warmed: success")
             self._warmup_failed = False
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc)
@@ -1416,33 +1405,133 @@ class Pipe:
                 await pubsub.close()
 
     async def _redis_periodic_flusher(self) -> None:
+        consecutive_failures = 0
+        max_consecutive_failures = 5
+
         while self._redis_enabled:
             try:
+                if not self._redis_client:
+                    break
+
+                queue_depth = await self._redis_client.llen(self._redis_pending_key)
+                if queue_depth > 100:
+                    self.logger.warning("⚠️ Redis pending queue backed up: %d items (threshold: 100)", queue_depth)
+                elif queue_depth > 0:
+                    self.logger.debug("Redis pending queue depth: %d items", queue_depth)
+
                 await self._flush_redis_queue()
+                consecutive_failures = 0
             except Exception as exc:
-                self.logger.warning("Redis periodic flush failed: %s", exc)
+                consecutive_failures += 1
+                self.logger.error("Periodic flush failed (%d/%d consecutive failures): %s", consecutive_failures, max_consecutive_failures, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                if consecutive_failures >= max_consecutive_failures:
+                    self.logger.critical("🚨 Disabling Redis cache after %d consecutive flush failures. Falling back to direct DB writes.", max_consecutive_failures)
+                    self._redis_enabled = False
+                    break
+
             await asyncio.sleep(10)
+
+        self.logger.debug("Redis periodic flusher stopped")
+
+    async def _verify_write_behind_cycle(self, test_chat_id: str) -> None:
+        """TEMPORARY: sanity-check the write-behind cache path end-to-end."""
+        if not test_chat_id:
+            self.logger.error("🧪 Write-behind cache test failed: chat_id is required")
+            return
+
+        self.logger.debug("🧪 Testing write-behind cache cycle...")
+
+        test_row = {
+            "chat_id": test_chat_id,
+            "message_id": "test_msg_" + generate_item_id(),
+            "model_id": "test_model",
+            "item_type": "test",
+            "payload": {"test": "data", "timestamp": time.time()},
+        }
+
+        ulids = await self._redis_enqueue_rows([test_row])
+        ulid = ulids[0] if ulids else None
+        self.logger.debug("✅ Enqueued test artifact, ID: %s", ulid or "FAILED")
+
+        cached = await self._redis_fetch_rows(test_chat_id, ulids)
+        if cached:
+            self.logger.debug("✅ Artifact found in Redis cache immediately")
+        else:
+            self.logger.error("❌ Artifact NOT in Redis cache (enqueue failed?)")
+
+        if self._redis_client:
+            depth = await self._redis_client.llen(self._redis_pending_key)
+            self.logger.debug("📊 Pending queue depth: %d", depth)
+
+        self.logger.debug("⏳ Waiting up to 15 seconds for DB flush...")
+        for i in range(15):
+            await asyncio.sleep(1)
+            if not ulids:
+                break
+            db_rows = await self._db_fetch_direct(test_chat_id, None, ulids)
+            if db_rows:
+                self.logger.debug("✅ Artifact reached DB after %d seconds", i + 1)
+                break
+        else:
+            self.logger.error("❌ Artifact did NOT reach DB within 15 seconds")
+
+        self.logger.debug("🧪 Write-behind cache test complete")
 
     async def _flush_redis_queue(self) -> None:
         if not (self._redis_enabled and self._redis_client):
             return
-        rows: list[dict[str, Any]] = []
-        while len(rows) < 10:
-            data = await self._redis_client.lpop(self._redis_pending_key)
-            if data is None:
-                break
+
+        lock_token = secrets.token_hex(16)
+        lock_acquired = False
+        try:
+            lock_acquired = bool(
+                await self._redis_client.set(
+                    self._redis_flush_lock_key,
+                    lock_token,
+                    nx=True,
+                    ex=5,
+                )
+            )
+            if not lock_acquired:
+                self.logger.debug("Skipping Redis flush: another worker holds the lock")
+                return
+
+            rows: list[dict[str, Any]] = []
+            batch_size = max(5, min(int(self.valves.DB_BATCH_SIZE or 10), 20))
+            while len(rows) < batch_size:
+                data = await self._redis_client.lpop(self._redis_pending_key)
+                if data is None:
+                    break
+                try:
+                    rows.append(json.loads(data))
+                except json.JSONDecodeError as exc:
+                    self.logger.warning("Malformed JSON in pending queue, skipping: %s", exc)
+                    continue
+            if not rows:
+                return
+
+            self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")
             try:
-                rows.append(json.loads(data))
-            except json.JSONDecodeError:
-                continue
-        if not rows:
-            return
-        self.logger.debug(
-            "Flushing %s pending artifact rows from Redis",
-            len(rows),
-        )
-        await self._db_persist_direct(rows)
-        self.logger.debug("Flushed %s pending artifact row(s)", len(rows))
+                await self._db_persist_direct(rows)
+                self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
+            except Exception as exc:
+                self.logger.error("❌ DB flush failed! %d artifacts may be lost: %s", len(rows), exc, exc_info=True)
+        finally:
+            if lock_acquired and self._redis_client:
+                release_script = (
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                    "return redis.call('del', KEYS[1]) "
+                    "else return 0 end"
+                )
+                try:
+                    await self._redis_client.eval(
+                        release_script,
+                        1,
+                        self._redis_flush_lock_key,
+                        lock_token,
+                    )
+                except Exception:
+                    self.logger.debug("Failed to release Redis flush lock", exc_info=self.logger.isEnabledFor(logging.DEBUG))
 
     def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
         if not (chat_id and row_id):
@@ -1450,22 +1539,31 @@ class Pipe:
         return f"{self._redis_cache_prefix}:{chat_id}:{row_id}"
 
     async def _redis_enqueue_rows(self, rows: list[dict[str, Any]]) -> list[str]:
+        """Enqueue artifacts into Redis for asynchronous DB flushing."""
+        if not rows:
+            return []
+
         if not (self._redis_enabled and self._redis_client):
             return await self._db_persist_direct(rows)
-        pipe = self._redis_client.pipeline()
-        ulids: list[str] = []
+
         for row in rows:
-            row_id = row.get("id") or generate_item_id()
-            row["id"] = row_id
-            ulids.append(row_id)
-            payload = json.dumps(row, ensure_ascii=False)
-            pipe.rpush(self._redis_pending_key, payload)
-            cache_key = self._redis_cache_key(row.get("chat_id"), row_id)
-            if cache_key:
-                pipe.setex(cache_key, self._redis_ttl, payload)
-        await pipe.execute()
-        await self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush")
-        return ulids
+            row.setdefault("id", generate_item_id())
+
+        try:
+            pipe = self._redis_client.pipeline()
+            for row in rows:
+                serialized = json.dumps(row, ensure_ascii=False)
+                pipe.rpush(self._redis_pending_key, serialized)
+            await pipe.execute()
+
+            await self._redis_cache_rows(rows)
+            await self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush")
+
+            self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
+            return [row["id"] for row in rows]
+        except Exception as exc:
+            self.logger.warning("Redis enqueue failed, falling back to direct DB write: %s", exc)
+            return await self._db_persist_direct(rows)
 
     async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: Optional[str] = None) -> None:
         if not (self._redis_enabled and self._redis_client):
@@ -1543,8 +1641,7 @@ class Pipe:
             )
             session.commit()
             if deleted:
-                self.logger.info("Artifact cleanup removed %s old rows", deleted)
-                self.logger.debug("PCleanup removed %s rows older than %s", deleted, cutoff)
+                self.logger.debug("Cleanup removed %s rows older than %s", deleted, cutoff)
         except Exception as exc:
             session.rollback()
             raise exc
@@ -2228,6 +2325,10 @@ class Pipe:
         table_name = f"response_items_{table_fragment}_{key_hash[:8]}"
         class_name = f"ResponseItem_{table_fragment}_{key_hash[:4]}"
 
+        existing_table = base.metadata.tables.get(table_name)
+        if existing_table is not None:
+            base.metadata.remove(existing_table)
+
         attrs: dict[str, Any] = {
             "__tablename__": table_name,
             "__table_args__": {"extend_existing": True, "sqlite_autoincrement": False},
@@ -2255,13 +2356,25 @@ class Pipe:
         try:
             item_model.__table__.create(bind=engine, checkfirst=True)
         except Exception as exc:  # pragma: no cover - database-specific errors
-            self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
-            self._engine = None
-            self._session_factory = None
-            self._item_model = None
-            self._artifact_table_name = None
-            self._artifact_store_signature = None
-            return
+            if self._maybe_heal_index_conflict(engine, item_model.__table__, exc):
+                try:
+                    item_model.__table__.create(bind=engine, checkfirst=True)
+                except Exception as retry_exc:
+                    self.logger.warning("Artifact persistence disabled (table init failed after index cleanup): %s", retry_exc)
+                    self._engine = None
+                    self._session_factory = None
+                    self._item_model = None
+                    self._artifact_table_name = None
+                    self._artifact_store_signature = None
+                    return
+            else:
+                self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
+                self._engine = None
+                self._session_factory = None
+                self._item_model = None
+                self._artifact_table_name = None
+                self._artifact_store_signature = None
+                return
 
         self._engine = engine
         self._session_factory = session_factory
@@ -2269,14 +2382,96 @@ class Pipe:
         self._artifact_table_name = table_name
         self._artifact_store_signature = (table_fragment, self._encryption_key)
         if not table_exists:
-            self.logger.info(
-                "Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.",
-                table_name,
-                key_hash[:8],
-            )
+            self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, key_hash[:8])
         if self._db_executor is None:
             self._db_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="responses-db")
         self.logger.debug("Artifact table ready: %s", table_name)
+
+    @staticmethod
+    def _quote_identifier(identifier: str) -> str:
+        """Return a double-quoted identifier safe for direct SQL execution."""
+        value = (identifier or "").replace('"', '""')
+        return f'"{value}"'
+
+    def _maybe_heal_index_conflict(
+        self,
+        engine: Engine | None,
+        table: Any | None,
+        exc: Exception,
+    ) -> bool:
+        """Attempt to drop orphaned indexes when table creation hits duplicates."""
+        if not engine or table is None:
+            return False
+
+        root_exc = getattr(exc, "orig", exc)
+        message = str(root_exc) or str(exc) or ""
+        lowered = message.lower()
+        if "ix_" not in lowered:
+            return False
+
+        raw_index_objects = [
+            idx for idx in getattr(table, "indexes", set()) if getattr(idx, "name", None)
+        ]
+        names_from_metadata = {
+            (idx.name or "").strip()
+            for idx in raw_index_objects
+            if (idx.name or "").strip()
+        }
+        names_from_error = {
+            name.lower()
+            for name in re.findall(r"ix_[0-9a-z_]+", message, flags=re.IGNORECASE)
+        }
+        names_from_columns = {
+            f"ix_{table.name}_{column.name}"
+            for column in getattr(table, "columns", [])
+            if getattr(column, "index", False)
+        }
+        normalized_map = {name.lower(): name for name in names_from_metadata}
+        for column_name in names_from_columns:
+            normalized_map.setdefault(column_name.lower(), column_name)
+
+        names_to_drop: dict[str, str] = {}
+        for lowered, original in normalized_map.items():
+            names_to_drop[lowered] = original
+        for lowered in names_from_error:
+            if lowered not in names_to_drop:
+                names_to_drop[lowered] = lowered
+
+        if not names_to_drop:
+            return False
+
+        dropped: list[str] = []
+        failed_any = False
+        for lowered_name, original_name in names_to_drop.items():
+            if not original_name:
+                continue
+            qualified = self._quote_identifier(original_name)
+            schema = getattr(table, "schema", None)
+            if schema:
+                qualified = f"{self._quote_identifier(schema)}.{qualified}"
+            drop_sql = text(f"DROP INDEX IF EXISTS {qualified}")
+            try:
+                with engine.begin() as connection:
+                    connection.execute(drop_sql)
+                dropped.append(original_name)
+            except SQLAlchemyError as raw_exc:
+                failed_any = True
+                self.logger.warning(
+                    "Failed to drop index %s while healing %s: %s",
+                    original_name,
+                    getattr(table, "name", "?"),
+                    raw_exc,
+                )
+
+        if dropped:
+            self.logger.info("Dropped orphaned index(es) %s before recreating %s.", ", ".join(dropped), getattr(table, "name", "?"))
+            return True
+
+        if failed_any:
+            return False
+
+        # Targets were found but none were dropped (e.g., not mentioned and already gone).
+        return False
 
     def shutdown(self) -> None:
         """Public method to shut down background resources."""
@@ -2557,12 +2752,31 @@ class Pipe:
         loop = asyncio.get_running_loop()
         async for attempt in retryer:
             with attempt:
-                ulids = await loop.run_in_executor(self._db_executor, self._db_persist_sync, rows)
+                try:
+                    ulids = await loop.run_in_executor(
+                        self._db_executor, self._db_persist_sync, rows
+                    )
+                except Exception as exc:
+                    if self._is_duplicate_key_error(exc):
+                        self.logger.debug("Duplicate key detected during DB persist; assuming prior flush succeeded")
+                        return [row.get("id") for row in rows if row.get("id")]
+                    raise
                 if self._redis_enabled:
                     await self._redis_cache_rows(rows)
                 self._reset_db_failure(user_id)
                 return ulids
         return []
+
+    def _is_duplicate_key_error(self, exc: Exception) -> bool:
+        if isinstance(exc, SQLAlchemyError):
+            messages = [str(exc)]
+            orig = getattr(exc, "orig", None)
+            if orig:
+                messages.append(str(orig))
+            lowered = " ".join(messages).lower()
+            keywords = ("duplicate key", "unique constraint", "already exists")
+            return any(keyword in lowered for keyword in keywords)
+        return False
 
     def _db_fetch_sync(
         self,
@@ -2971,7 +3185,7 @@ class Pipe:
 
         # STEP 2: Detect if task model (generate title, generate tags, etc.), handle it separately
         if __task__:
-            self.logger.info("Detected task model: %s", __task__)
+            self.logger.debug("Detected task model: %s", __task__)
             return await self._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
@@ -3098,6 +3312,8 @@ class Pipe:
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
+        self.logger.debug("🔧 PERSIST_TOOL_RESULTS=%s", valves.PERSIST_TOOL_RESULTS)
+
         raw_tools = tools or {}
         tool_registry: dict[str, dict[str, Any]] = {}
         if isinstance(raw_tools, dict):
@@ -3212,11 +3428,7 @@ class Pipe:
                     # Emit OpenRouter SSE frames at DEBUG (non-delta) only; skip delta spam entirely.
                     is_delta_event = bool(etype and etype.endswith(".delta"))
                     if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug("OpenRouter event: %s", etype)
-                        self.logger.debug(
-                            "OpenRouter payload: %s",
-                            json.dumps(event, indent=2, ensure_ascii=False),
-                        )
+                        self.logger.debug("OpenRouter payload: %s",json.dumps(event, indent=2, ensure_ascii=False))
 
                     # ─── Emit partial delta assistant message
                     if etype == "response.output_text.delta":
@@ -3453,10 +3665,12 @@ class Pipe:
                     body.input.extend(call_items)
 
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
+                self.logger.debug("📞 Found %d function_call items in response", len(calls))
                 function_outputs: list[dict[str, Any]] = []
                 if calls:
                     function_outputs = await self._execute_function_calls(calls, tool_registry)
                     if valves.PERSIST_TOOL_RESULTS:
+                        self.logger.debug("💾 Persisting %d tool results", len(function_outputs))
                         persist_payloads: list[dict] = []
                         for idx, output in enumerate(function_outputs):
                             if idx < len(call_items):
@@ -3464,15 +3678,24 @@ class Pipe:
                             persist_payloads.append(output)
 
                         if persist_payloads:
-                            for payload in persist_payloads:
+                            self.logger.debug("🔍 Processing %d persist_payloads", len(persist_payloads))
+                            for idx, payload in enumerate(persist_payloads, start=1):
+                                payload_type = payload.get("type")
+                                self.logger.debug("🔍 [%d/%d] Payload type=%s", idx, len(persist_payloads), payload_type)
                                 normalized_payload = _normalize_persisted_item(payload)
                                 if not normalized_payload:
+                                    self.logger.warning("❌ [%d/%d] Normalization returned None for type=%s", idx, len(persist_payloads), payload_type)
                                     continue
+                                self.logger.debug("✅ [%d/%d] Normalized successfully (type=%s)", idx, len(persist_payloads), payload_type)
                                 row = self._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_payload
                                 )
-                                if row:
-                                    pending_items.append(row)
+                                if not row:
+                                    self.logger.warning("❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)", idx, len(persist_payloads), chat_id, message_id, payload_type)
+                                    continue
+                                self.logger.debug("✅ [%d/%d] Row created; enqueueing for persistence", idx, len(persist_payloads))
+                                pending_items.append(row)
+                            self.logger.debug("📦 Total pending_items after loop: %d", len(pending_items))
                             if thinking_tasks:
                                 cancel_thinking()
                             await _flush_pending("function_outputs")
@@ -3540,9 +3763,13 @@ class Pipe:
 
             await _flush_pending("finalize")
             if pending_ulids:
-                ulid_block = "\n".join(pending_ulids)
-                if assistant_message and not assistant_message.endswith("\n"):
-                    assistant_message += "\n"
+                marker_lines = [_serialize_marker(ulid) for ulid in pending_ulids]
+                ulid_block = "\n".join(marker_lines)
+                if assistant_message:
+                    if not assistant_message.endswith("\n"):
+                        assistant_message += "\n"
+                    if not assistant_message.endswith("\n\n"):
+                        assistant_message += "\n"
                 assistant_message += ulid_block
                 if not assistant_message.endswith("\n"):
                     assistant_message += "\n"
@@ -3770,11 +3997,7 @@ class Pipe:
                                                     stream_complete = True
                                                     break
                                                 await chunk_queue.put((seq, data_blob))
-                                                self.logger.debug(
-                                                    "Enqueued SSE chunk seq=%s size=%s",
-                                                    seq,
-                                                    len(data_blob),
-                                                )
+                                                # self.logger.debug("Enqueued SSE chunk seq=%s size=%s",seq,len(data_blob))
                                                 seq += 1
                                             continue
                                         if stripped.startswith(b":"):
@@ -3792,11 +4015,7 @@ class Pipe:
                                     event_data_parts.clear()
                                     if data_blob and data_blob != b"[DONE]":
                                         await chunk_queue.put((seq, data_blob))
-                                        self.logger.debug(
-                                            "Enqueued SSE chunk seq=%s size=%s",
-                                            seq,
-                                            len(data_blob),
-                                        )
+                                        # self.logger.debug("Enqueued SSE chunk seq=%s size=%s",seq,len(data_blob))
                                         seq += 1
                         except Exception as exc:
                             if breaker_key:
@@ -3828,11 +4047,7 @@ class Pipe:
                             )
                             continue
                         await event_queue.put((seq, event))
-                        self.logger.debug(
-                            "Worker %s emitted seq=%s",
-                            worker_idx,
-                            seq,
-                        )
+                        # self.logger.debug("Worker %s emitted seq=%s",worker_idx,seq)
                     finally:
                         chunk_queue.task_done()
             finally:
@@ -4687,6 +4902,7 @@ ULID_RANDOM_LENGTH = ULID_LENGTH - ULID_TIME_LENGTH
 CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
 _ULID_TIME_MASK = (1 << (ULID_TIME_LENGTH * 5)) - 1
+_MARKER_SUFFIX = "]: #"
 
 def _encode_crockford(value: int, length: int) -> str:
     """Encode an integer into a fixed-width Crockford base32 string."""
@@ -4712,14 +4928,30 @@ def generate_item_id() -> str:
     return f"{time_component}{random_component}"
 
 
+def _serialize_marker(ulid: str) -> str:
+    """Return the hidden marker representation for ``ulid``."""
+    return f"[{ulid}{_MARKER_SUFFIX}"
+
+
+def _extract_marker_ulid(line: str) -> str | None:
+    """Return the ULID embedded in a hidden marker line, if present."""
+    if not line:
+        return None
+    stripped = line.strip()
+    if not stripped.startswith("[") or not stripped.endswith(_MARKER_SUFFIX):
+        return None
+    body = stripped[1 : -len(_MARKER_SUFFIX)]
+    if len(body) != ULID_LENGTH:
+        return None
+    for char in body:
+        if char not in _CROCKFORD_SET:
+            return None
+    return body
+
+
 def is_marker(line: str) -> bool:
     """Return True when the provided line is an inline ULID marker."""
-    if len(line) != ULID_LENGTH:
-        return False
-    for char in line:
-        if char not in _CROCKFORD_SET:
-            return False
-    return True
+    return _extract_marker_ulid(line) is not None
 
 
 def contains_marker(text: str) -> bool:
@@ -4743,14 +4975,15 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
     cursor = 0
     for segment in text.splitlines(True):
         stripped = segment.strip()
-        if stripped and is_marker(stripped):
+        marker_ulid = _extract_marker_ulid(stripped)
+        if marker_ulid:
             offset = segment.find(stripped)
             start = cursor + (offset if offset >= 0 else 0)
             spans.append(
                 {
                     "start": start,
                     "end": start + len(stripped),
-                    "marker": stripped,
+                    "marker": marker_ulid,
                 }
             )
         cursor += len(segment)
@@ -4771,9 +5004,10 @@ def parse_marker(marker: str) -> dict:
     Raises:
         ValueError: If the marker does not conform to the ULID format.
     """
-    if not is_marker(marker):
+    ulid_value = _extract_marker_ulid(marker)
+    if not ulid_value:
         raise ValueError("not a v3 marker")
-    return {"version": "v3", "item_type": None, "ulid": marker, "metadata": {}}
+    return {"version": "v3", "item_type": None, "ulid": ulid_value, "metadata": {}}
 
 
 def split_text_by_markers(text: str) -> list[dict]:
