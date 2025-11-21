@@ -3227,7 +3227,24 @@ class Pipe:
                 done=True,
             )
             return ""
-        available_models = OpenRouterModelRegistry.list_models()
+        except Exception as exc:
+            available_models = OpenRouterModelRegistry.list_models()
+            if not available_models:
+                await self._emit_error(
+                    __event_emitter__,
+                    "OpenRouter model catalog unavailable. Please retry shortly.",
+                    show_error_message=True,
+                    done=True,
+                )
+                self.logger.error("OpenRouter model catalog unavailable: %s", exc)
+                return ""
+            self.logger.warning(
+                "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
+                exc,
+                len(available_models),
+            )
+        else:
+            available_models = OpenRouterModelRegistry.list_models()
         allowed_models = self._select_models(valves.MODEL_ID, available_models) or available_models
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
 
