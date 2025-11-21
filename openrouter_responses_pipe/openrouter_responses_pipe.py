@@ -3390,7 +3390,22 @@ class Pipe:
             )  # Placeholder for task handling logic
 
         # STEP 3: Build OpenAI Tools JSON (from __tools__, valves, and completions_body.extra_tools)
-        __tools__ = await __tools__ if inspect.isawaitable(__tools__) else __tools__  # Await coroutine if needed (required for newer versions of Open WebUI)
+        tools_registry = __tools__
+        if inspect.isawaitable(tools_registry):
+            try:
+                tools_registry = await tools_registry
+            except Exception as exc:
+                self.logger.warning(
+                    "Tool registry unavailable; continuing without tools: %s",
+                    exc,
+                )
+                await self._emit_notification(
+                    __event_emitter__,
+                    "Tool registry unavailable; continuing without tools.",
+                    level="warning",
+                )
+                tools_registry = {}
+        __tools__ = tools_registry
         tools = build_tools(
             responses_body,
             valves,
