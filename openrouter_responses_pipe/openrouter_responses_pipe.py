@@ -1411,7 +1411,7 @@ class Pipe:
         client: Optional[_RedisClient] = None
         try:
             client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
-            await client.ping()
+            await asyncio.wait_for(client.ping(), timeout=5.0)
         except Exception as exc:
             if client is not None:
                 with contextlib.suppress(Exception):
