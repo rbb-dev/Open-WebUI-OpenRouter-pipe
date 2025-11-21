@@ -2423,7 +2423,12 @@ class Pipe:
         explicit_id = getattr(self, "id", None)
         if isinstance(explicit_id, str) and explicit_id.strip():
             return explicit_id.strip()
-        raise RuntimeError("Unable to determine pipe identifier from Open WebUI metadata.")
+        fallback_identifier = "openrouter"
+        self.logger.warning(
+            "Pipe identifier missing from metadata; defaulting to '%s'.",
+            fallback_identifier,
+        )
+        return fallback_identifier
 
     def _init_artifact_store(
         self,
