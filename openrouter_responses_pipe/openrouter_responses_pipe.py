@@ -3165,6 +3165,16 @@ class Pipe:
                 future.cancel()
             self.logger.debug("Pipe request cancelled by caller (request_id=%s)", job.request_id)
             raise
+        except Exception as exc:  # pragma: no cover - defensive top-level guard
+            self.logger.error("Pipe request failed (request_id=%s): %s", job.request_id, exc)
+            if __event_emitter__:
+                await self._emit_error(
+                    __event_emitter__,
+                    f"Pipe request failed: {exc}",
+                    show_error_message=True,
+                    done=True,
+                )
+            return "Request failed. Please retry."
         finally:
             SessionLogger.cleanup()
 
