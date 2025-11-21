@@ -4051,9 +4051,22 @@ class Pipe:
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if (not was_cancelled) and chat_id and message_id and emitted_citations:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    chat_id, message_id, {"sources": emitted_citations}
-                )
+                try:
+                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                        chat_id, message_id, {"sources": emitted_citations}
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to persist citations for chat_id=%s message_id=%s: %s",
+                        chat_id,
+                        message_id,
+                        exc,
+                    )
+                    await self._emit_notification(
+                        event_emitter,
+                        "Unable to save citations for this response. Output was delivered successfully.",
+                        level="warning",
+                    )
 
             if not was_cancelled:
                 await _flush_pending("finalize")
