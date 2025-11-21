@@ -696,6 +696,7 @@ class ResponsesBody(BaseModel):
         artifact_loader: Optional[
             Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
         ] = None,
+        pruning_turns: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -747,10 +748,106 @@ class ResponsesBody(BaseModel):
                     return value
             return None
 
-        for msg in messages:
-            role = msg.get("role")
+        def _compute_turn_indices() -> tuple[list[Optional[int]], int]:
+            indices: list[Optional[int]] = []
+            current_turn = -1
+            max_turn = -1
+            last_dialog_role: Optional[str] = None
+
+            for msg in messages:
+                role = (msg.get("role") or "").lower()
+                turn_idx: Optional[int] = None
+
+                if role == "user":
+                    if last_dialog_role != "user":
+                        current_turn += 1
+                    turn_idx = current_turn
+                    last_dialog_role = "user"
+                elif role == "assistant":
+                    if current_turn < 0:
+                        current_turn = 0
+                    turn_idx = current_turn
+                    last_dialog_role = "assistant"
+                else:
+                    turn_idx = current_turn if current_turn >= 0 else None
+
+                if turn_idx is not None and turn_idx > max_turn:
+                    max_turn = turn_idx
+                indices.append(turn_idx)
+
+            total_turns = max_turn + 1 if max_turn >= 0 else 0
+            return indices, total_turns
+
+        def _is_old_turn(turn_index: Optional[int], *, threshold: Optional[int]) -> bool:
+            return (
+                threshold is not None
+                and turn_index is not None
+                and turn_index < threshold
+            )
+
+        def _prune_tool_output(
+            item: Dict[str, Any],
+            *,
+            marker: Optional[str],
+            turn_index: Optional[int],
+            retention_turns: int,
+        ) -> bool:
+            if item.get("type") != "function_call_output":
+                return False
+
+            output_value = item.get("output")
+            if output_value is None:
+                return False
+            if not isinstance(output_value, str):
+                try:
+                    output_text = json.dumps(output_value, ensure_ascii=False)
+                except Exception:
+                    output_text = str(output_value)
+            else:
+                output_text = output_value
+
+            if len(output_text) < _TOOL_OUTPUT_PRUNE_MIN_LENGTH:
+                return False
+
+            head = output_text[:_TOOL_OUTPUT_PRUNE_HEAD_CHARS].rstrip()
+            tail = output_text[-_TOOL_OUTPUT_PRUNE_TAIL_CHARS:].lstrip()
+            removed_chars = len(output_text) - len(head) - len(tail)
+            if removed_chars <= 0:
+                return False
+
+            ellipsis = "..."
+            turn_label = (
+                f"{retention_turns} turn" if retention_turns == 1 else f"{retention_turns} turns"
+            )
+            note = (
+                f"{ellipsis}\n"
+                f"[tool output pruned: removed {removed_chars} char"
+                f"{'' if removed_chars == 1 else 's'}, older than {turn_label}]\n"
+                f"{ellipsis}"
+            )
+            item["output"] = "\n".join(
+                part for part in (head, note, tail) if part
+            )
+            LOGGER.debug(
+                "Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)",
+                marker,
+                item.get("call_id"),
+                turn_index,
+                removed_chars,
+                retention_turns,
+            )
+            return True
+
+        turn_indices, total_turns = _compute_turn_indices()
+        prune_before_turn: Optional[int] = None
+        if pruning_turns > 0 and total_turns > pruning_turns:
+            prune_before_turn = total_turns - pruning_turns
+
+        for idx, msg in enumerate(messages):
+            role = (msg.get("role") or "").lower()
             raw_content = msg.get("content", "")
             msg_id = msg.get("message_id") or _message_identifier(msg)
+            msg_turn_index = turn_indices[idx]
 
             # -------- system / developer messages --------------------------- #
             if role in {"system", "developer"}:
@@ -814,6 +911,8 @@ class ResponsesBody(BaseModel):
 
             # -------- assistant message ----------------------------------- #
             assistant_text = raw_content if isinstance(raw_content, str) else _extract_plain_text(raw_content)
+            is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
+
             if contains_marker(assistant_text):
                 segments = split_text_by_markers(assistant_text)
                 markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
@@ -834,6 +933,17 @@ class ResponsesBody(BaseModel):
                             continue
                         item = _normalize_persisted_item(payload)
                         if item is not None:
+                            if (
+                                is_old_message
+                                and pruning_turns > 0
+                                and prune_before_turn is not None
+                            ):
+                                _prune_tool_output(
+                                    item,
+                                    marker=segment["marker"],
+                                    turn_index=msg_turn_index,
+                                    retention_turns=pruning_turns,
+                                )
                             openai_input.append(item)
                     elif segment["type"] == "text" and segment["text"].strip():
                         openai_input.append({
@@ -876,6 +986,7 @@ class ResponsesBody(BaseModel):
         artifact_loader: Optional[
             Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
         ] = None,
+        pruning_turns: int = 0,
         **extra_params,
     ) -> "ResponsesBody":
         """
@@ -940,6 +1051,7 @@ class ResponsesBody(BaseModel):
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
                 artifact_loader=artifact_loader,
+                pruning_turns=pruning_turns,
             )
 
         # Build the final ResponsesBody directly
@@ -1128,6 +1240,15 @@ class Pipe:
             ge=1,
             le=50,
             description="Per-request concurrency limit for tool execution workers.",
+        )
+        TOOL_OUTPUT_RETENTION_TURNS: int = Field(
+            default=10,
+            ge=0,
+            description=(
+                "Number of most recent conversation turns whose tool outputs are sent in full. "
+                "Older turns have their persisted tool outputs pruned to save tokens. "
+                "Set to 0 to keep every tool output."
+            ),
         )
         TOOL_TIMEOUT_SECONDS: int = Field(
             default=60,
@@ -3189,6 +3310,7 @@ class Pipe:
             **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
             **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
             artifact_loader=self._db_fetch,
+            pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
 
         )
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
@@ -5047,6 +5169,10 @@ CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
 _ULID_TIME_MASK = (1 << (ULID_TIME_LENGTH * 5)) - 1
 _MARKER_SUFFIX = "]: #"
+
+_TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800
+_TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
+_TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
 
 def _encode_crockford(value: int, length: int) -> str:
     """Encode an integer into a fixed-width Crockford base32 string."""
