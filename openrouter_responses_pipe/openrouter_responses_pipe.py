@@ -511,9 +511,9 @@ def _debug_print_request(headers: Dict[str, str], payload: Optional[Dict[str, An
     if "Authorization" in redacted_headers:
         token = redacted_headers["Authorization"]
         redacted_headers["Authorization"] = f"{token[:10]}..." if len(token) > 10 else "***"
-    LOGGER.debug("[OPENROUTER DEBUG] HEADERS: %s", json.dumps(redacted_headers, indent=2))
+    LOGGER.debug("OpenRouter request headers: %s", json.dumps(redacted_headers, indent=2))
     if payload is not None:
-        LOGGER.debug("[OPENROUTER DEBUG] PAYLOAD: %s", json.dumps(payload, indent=2))
+        LOGGER.debug("OpenRouter request payload: %s", json.dumps(payload, indent=2))
 
 
 async def _debug_print_error_response(resp: aiohttp.ClientResponse) -> None:
@@ -522,18 +522,13 @@ async def _debug_print_error_response(resp: aiohttp.ClientResponse) -> None:
         text = await resp.text()
     except Exception as exc:
         text = f"<<failed to read body: {exc}>>"
-    LOGGER.debug(
-        "[OPENROUTER DEBUG] ERROR RESPONSE: %s",
-        json.dumps(
-            {
-                "status": resp.status,
-                "reason": resp.reason,
-                "url": str(resp.url),
-                "body": text,
-            },
-            indent=2,
-        ),
-    )
+    payload = {
+        "status": resp.status,
+        "reason": resp.reason,
+        "url": str(resp.url),
+        "body": text,
+    }
+    LOGGER.debug("OpenRouter error response: %s", json.dumps(payload, indent=2))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Data Models
@@ -628,17 +623,13 @@ class ResponsesBody(BaseModel):
         if not mcp_json or not mcp_json.strip():
             return []
         if len(mcp_json) > 1_000_000:
-            LOGGER.warning(
-                "REMOTE_MCP_SERVERS_JSON ignored: payload exceeds 1MB."
-            )
+            LOGGER.warning("REMOTE_MCP_SERVERS_JSON ignored: payload exceeds 1MB.")
             return []
 
         try:
             data = json.loads(mcp_json)
         except Exception as exc:                             # malformed JSON
-            LOGGER.warning(
-                "REMOTE_MCP_SERVERS_JSON could not be parsed (%s); ignoring.", exc
-            )
+            LOGGER.warning("REMOTE_MCP_SERVERS_JSON could not be parsed (%s); ignoring.", exc)
             return []
 
         # Accept a single object or a list
@@ -647,30 +638,20 @@ class ResponsesBody(BaseModel):
         valid_tools: list[dict] = []
         for idx, obj in enumerate(items, start=1):
             if not isinstance(obj, dict):
-                LOGGER.warning(
-                    "REMOTE_MCP_SERVERS_JSON item %d ignored: not an object.", idx
-                )
+                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: not an object.", idx)
                 continue
 
             # Minimum viable keys
             label = obj.get("server_label")
             url   = obj.get("server_url")
             if not (label and url):
-                LOGGER.warning(
-                    "REMOTE_MCP_SERVERS_JSON item %d ignored: "
-                    "'server_label' and 'server_url' are required.", idx
-                )
+                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: 'server_label' and 'server_url' are required.", idx)
                 continue
 
             parsed_url = urlparse(url)
             scheme = (parsed_url.scheme or "").lower()
             if scheme not in {"http", "https", "ws", "wss"} or not parsed_url.netloc:
-                LOGGER.warning(
-                    "REMOTE_MCP_SERVERS_JSON item %d ignored: unsupported server_url '%s'. "
-                    "Only http(s) or ws(s) URLs with a host are allowed.",
-                    idx,
-                    url,
-                )
+                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: unsupported server_url '%s'. Only http(s) or ws(s) URLs with a host are allowed.", idx, url)
                 continue
 
             # Whitelist only official MCP keys so users can copy-paste API examples
@@ -828,14 +809,7 @@ class ResponsesBody(BaseModel):
             item["output"] = "\n".join(
                 part for part in (head, note, tail) if part
             )
-            LOGGER.debug(
-                "Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)",
-                marker,
-                item.get("call_id"),
-                turn_index,
-                removed_chars,
-                retention_turns,
-            )
+            LOGGER.debug("Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)", marker, item.get("call_id"), turn_index, removed_chars, retention_turns)
             return True
 
         turn_indices, total_turns = _compute_turn_indices()
@@ -1800,11 +1774,7 @@ class Pipe:
                 cls._semaphore_limit = target
                 self.logger.info("Increased MAX_CONCURRENT_REQUESTS to %s", target)
             elif target < cls._semaphore_limit:
-                self.logger.warning(
-                    "Lower MAX_CONCURRENT_REQUESTS (%s→%s) requires restart to take full effect.",
-                    cls._semaphore_limit,
-                    target,
-                )
+                self.logger.warning("Lower MAX_CONCURRENT_REQUESTS (%s→%s) requires restart to take full effect.", cls._semaphore_limit, target)
 
             target_tool = max(1, valves.MAX_PARALLEL_TOOLS_GLOBAL)
             if cls._tool_global_semaphore is None:
@@ -1818,11 +1788,7 @@ class Pipe:
                 cls._tool_global_limit = target_tool
                 self.logger.info("Increased MAX_PARALLEL_TOOLS_GLOBAL to %s", target_tool)
             elif target_tool < cls._tool_global_limit:
-                self.logger.warning(
-                    "Lower MAX_PARALLEL_TOOLS_GLOBAL (%s→%s) requires restart to take full effect.",
-                    cls._tool_global_limit,
-                    target_tool,
-                )
+                self.logger.warning("Lower MAX_PARALLEL_TOOLS_GLOBAL (%s→%s) requires restart to take full effect.", cls._tool_global_limit, target_tool)
 
     def _enqueue_job(self, job: _PipeJob) -> bool:
         """Attempt to enqueue a request, returning False when the queue is full."""
@@ -1831,11 +1797,7 @@ class Pipe:
             raise RuntimeError("Request queue not initialized")
         try:
             queue.put_nowait(job)
-            self.logger.debug(
-                "Enqueued request %s (depth=%s)",
-                job.request_id,
-                queue.qsize(),
-            )
+            self.logger.debug("Enqueued request %s (depth=%s)", job.request_id, queue.qsize())
             return True
         except asyncio.QueueFull:
             self.logger.warning("Request queue full (max=%s)", queue.maxsize)
@@ -2037,11 +1999,7 @@ class Pipe:
     ) -> None:
         if not batch:
             return
-        self.logger.debug(
-            "Batched %s tool(s) for %s",
-            len(batch),
-            batch[0].call.get("name"),
-        )
+        self.logger.debug("Batched %s tool(s) for %s", len(batch), batch[0].call.get("name"))
         tasks = [self._invoke_tool_call(item, context) for item in batch]
         gather_coro = asyncio.gather(*tasks, return_exceptions=True)
         # TODO: Add soak tests that cover multi-minute batch executions to validate these generous timeouts.
@@ -2173,13 +2131,7 @@ class Pipe:
                 )
                 idle_timeout_value = job.valves.TOOL_IDLE_TIMEOUT_SECONDS
                 idle_timeout = float(max(1, int(idle_timeout_value))) if idle_timeout_value else None
-                self.logger.debug(
-                    "Tool timeouts (request=%s): per_call=%ss batch=%ss idle=%s",
-                    job.request_id,
-                    per_tool_timeout,
-                    batch_timeout,
-                    idle_timeout if idle_timeout is not None else "disabled",
-                )
+                self.logger.debug("Tool timeouts (request=%s): per_call=%ss batch=%ss idle=%s", job.request_id, per_tool_timeout, batch_timeout, idle_timeout if idle_timeout is not None else "disabled")
                 tool_context = _ToolExecutionContext(
                     queue=tool_queue,
                     per_request_semaphore=per_request_tool_sem,
@@ -2251,12 +2203,7 @@ class Pipe:
         if total_timeout is None and sock_read_value:
             sock_read = float(max(1, int(sock_read_value)))
         timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout, sock_read=sock_read)
-        self.logger.debug(
-            "HTTP timeouts: connect=%ss total=%s sock_read=%s",
-            connect_timeout,
-            total_timeout if total_timeout is not None else "disabled",
-            sock_read if sock_read is not None else "disabled",
-        )
+        self.logger.debug("HTTP timeouts: connect=%ss total=%s sock_read=%s", connect_timeout, total_timeout if total_timeout is not None else "disabled", sock_read if sock_read is not None else "disabled")
         return aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
@@ -2378,10 +2325,7 @@ class Pipe:
         wants_compression = bool(valves.ENABLE_LZ4_COMPRESSION)
         compression_enabled = wants_compression and lz4frame is not None
         if wants_compression and lz4frame is None and not self._lz4_warning_emitted:
-            self.logger.warning(
-                "LZ4 compression requested but the 'lz4' package is not available. "
-                "Artifacts will be stored without compression."
-            )
+            self.logger.warning("LZ4 compression requested but the 'lz4' package is not available. Artifacts will be stored without compression.")
             self._lz4_warning_emitted = True
         self._compression_enabled = compression_enabled
 
@@ -2424,10 +2368,7 @@ class Pipe:
         if isinstance(explicit_id, str) and explicit_id.strip():
             return explicit_id.strip()
         fallback_identifier = "openrouter"
-        self.logger.warning(
-            "Pipe identifier missing from metadata; defaulting to '%s'.",
-            fallback_identifier,
-        )
+        self.logger.warning("Pipe identifier missing from metadata; defaulting to '%s'.", fallback_identifier)
         return fallback_identifier
 
     def _init_artifact_store(
@@ -2452,9 +2393,7 @@ class Pipe:
             base = getattr(owui_db, "Base", None)
 
         if not (engine and session_factory and base):
-            self.logger.warning(
-                "Artifact persistence disabled: Open WebUI database helpers are unavailable."
-            )
+            self.logger.warning("Artifact persistence disabled: Open WebUI database helpers are unavailable.")
             self._engine = None
             self._session_factory = None
             self._item_model = None
@@ -2603,12 +2542,7 @@ class Pipe:
                 dropped.append(original_name)
             except SQLAlchemyError as raw_exc:
                 failed_any = True
-                self.logger.warning(
-                    "Failed to drop index %s while healing %s: %s",
-                    original_name,
-                    getattr(table, "name", "?"),
-                    raw_exc,
-                )
+                self.logger.warning("Failed to drop index %s while healing %s: %s", original_name, getattr(table, "name", "?"), raw_exc)
 
         if dropped:
             self.logger.info("Dropped orphaned index(es) %s before recreating %s.", ", ".join(dropped), getattr(table, "name", "?"))
@@ -2662,11 +2596,7 @@ class Pipe:
         try:
             compressed = lz4frame.compress(serialized)
         except Exception as exc:  # pragma: no cover - depends on native lib
-            self.logger.warning(
-                "LZ4 compression failed; disabling compression for the remainder of this process: %s",
-                exc,
-                exc_info=self.logger.isEnabledFor(logging.DEBUG),
-            )
+            self.logger.warning("LZ4 compression failed; disabling compression for the remainder of this process: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
             self._compression_enabled = False
             return serialized, False
         if not compressed or len(compressed) >= len(serialized):
@@ -2749,10 +2679,7 @@ class Pipe:
         if not (chat_id and self._item_model):
             return None
         if not message_id:
-            self.logger.warning(
-                "Skipping artifact persistence for chat_id=%s: missing message_id.",
-                chat_id,
-            )
+            self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
             return None
         if not isinstance(payload, dict):
             return None
@@ -2782,11 +2709,7 @@ class Pipe:
             pending_rows = [row for row in rows if not row.get("_persisted")]
             if not pending_rows:
                 if ulids:
-                    self.logger.debug(
-                        "Persisted %d response artifact(s) to %s.",
-                        len(ulids),
-                        self._artifact_table_name,
-                    )
+                    self.logger.debug("Persisted %d response artifact(s) to %s.", len(ulids), self._artifact_table_name)
                 cleanup_rows = True
                 return ulids
 
@@ -2799,11 +2722,7 @@ class Pipe:
                 for row in chunk:
                     payload = row.get("payload")
                     if not isinstance(payload, dict):
-                        self.logger.warning(
-                            "Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.",
-                            row.get("chat_id"),
-                            row.get("message_id"),
-                        )
+                        self.logger.warning("Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.", row.get("chat_id"), row.get("message_id"))
                         continue
                     ulid = row.get("id") or generate_item_id()
                     stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
@@ -2831,11 +2750,7 @@ class Pipe:
                     session.commit()
                 except SQLAlchemyError as exc:  # pragma: no cover
                     session.rollback()
-                    self.logger.error(
-                        "Failed to persist response artifacts: %s",
-                        exc,
-                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                    )
+                    self.logger.error("Failed to persist response artifacts: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
                     raise
                 finally:
                     session.close()
@@ -2845,11 +2760,7 @@ class Pipe:
                 ulids.extend(chunk_ulids)
 
             if ulids:
-                self.logger.debug(
-                    "Persisted %d response artifact(s) to %s.",
-                    len(ulids),
-                    self._artifact_table_name,
-                )
+                self.logger.debug("Persisted %d response artifact(s) to %s.", len(ulids), self._artifact_table_name)
             cleanup_rows = True
             return ulids
         finally:
@@ -2958,12 +2869,7 @@ class Pipe:
                 try:
                     payload = self._decrypt_payload(ciphertext or "")
                 except Exception as exc:
-                    self.logger.warning(
-                        "Failed to decrypt artifact %s: %s",
-                        row.id,
-                        exc,
-                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                    )
+                    self.logger.warning("Failed to decrypt artifact %s: %s", row.id, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
                     continue
             if isinstance(payload, dict):
                 results[row.id] = payload
@@ -3024,11 +2930,7 @@ class Pipe:
             cached.update(fetched)
         except Exception as exc:
             self._record_db_failure(user_id)
-            self.logger.warning(
-                "Artifact fetch failed: %s",
-                exc,
-                exc_info=self.logger.isEnabledFor(logging.DEBUG),
-            )
+            self.logger.warning("Artifact fetch failed: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
         return cached
 
     async def _db_fetch_direct(
@@ -3076,10 +2978,7 @@ class Pipe:
 
         available_models = OpenRouterModelRegistry.list_models()
         if refresh_error and available_models:
-            self.logger.warning(
-                "Serving %d cached OpenRouter model(s) due to refresh failure.",
-                len(available_models),
-            )
+            self.logger.warning("Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
         if refresh_error and not available_models:
             return []
 
@@ -3244,11 +3143,7 @@ class Pipe:
                 )
                 self.logger.error("OpenRouter model catalog unavailable: %s", exc)
                 return ""
-            self.logger.warning(
-                "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
-                exc,
-                len(available_models),
-            )
+            self.logger.warning("OpenRouter catalog refresh failed (%s). Serving %d cached model(s).", exc, len(available_models))
         else:
             available_models = OpenRouterModelRegistry.list_models()
         allowed_models = self._select_models(valves.MODEL_ID, available_models) or available_models
@@ -3395,10 +3290,7 @@ class Pipe:
             try:
                 tools_registry = await tools_registry
             except Exception as exc:
-                self.logger.warning(
-                    "Tool registry unavailable; continuing without tools: %s",
-                    exc,
-                )
+                self.logger.warning("Tool registry unavailable; continuing without tools: %s", exc)
                 await self._emit_notification(
                     __event_emitter__,
                     "Tool registry unavailable; continuing without tools.",
@@ -3419,11 +3311,7 @@ class Pipe:
             try:
                 model = Models.get_model_by_id(openwebui_model_id)
             except Exception as exc:
-                self.logger.warning(
-                    "Failed to inspect model '%s' for function calling: %s",
-                    openwebui_model_id,
-                    exc,
-                )
+                self.logger.warning("Failed to inspect model '%s' for function calling: %s", openwebui_model_id, exc)
                 await self._emit_notification(
                     __event_emitter__,
                     f"Unable to verify function calling for {openwebui_model_id}. Please ensure it is set to native.",
@@ -3444,11 +3332,7 @@ class Pipe:
                     try:
                         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
                     except Exception as exc:
-                        self.logger.warning(
-                            "Failed to update model '%s' function calling setting: %s",
-                            openwebui_model_id,
-                            exc,
-                        )
+                        self.logger.warning("Failed to update model '%s' function calling setting: %s", openwebui_model_id, exc)
                         await self._emit_notification(
                             __event_emitter__,
                             f"Unable to persist function calling setting for {openwebui_model_id}. Please update it manually.",
@@ -3472,10 +3356,7 @@ class Pipe:
             responses_body.plugins = plugins
 
         # STEP 7: Log the transformed request body
-        self.logger.debug(
-            "Transformed ResponsesBody: %s",
-            json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False),
-        )
+        self.logger.debug("Transformed ResponsesBody: %s", json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False))
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
@@ -3525,10 +3406,7 @@ class Pipe:
         selected = [model for model in available_models if model["norm_id"] in requested]
         missing = requested - {model["norm_id"] for model in selected}
         if missing:
-            self.logger.warning(
-                "Requested models not found in OpenRouter catalog: %s",
-                ", ".join(sorted(missing)),
-            )
+            self.logger.warning("Requested models not found in OpenRouter catalog: %s", ", ".join(sorted(missing)))
         return selected or available_models
 
     # 4.3 Core Multi-Turn Handlers
@@ -3569,9 +3447,7 @@ class Pipe:
                 if name:
                     tool_registry[name] = entry
             if skipped_no_callable and not tool_registry:
-                self.logger.warning(
-                    "Received list-based tools without callables; tool execution will be disabled for this request."
-                )
+                self.logger.warning("Received list-based tools without callables; tool execution will be disabled for this request.")
         openwebui_model = metadata.get("model", {}).get("id", "")
         assistant_message = ""
         pending_ulids: list[str] = []
@@ -3601,12 +3477,7 @@ class Pipe:
             try:
                 ulids = await self._db_persist(rows)
             except Exception as exc:  # pragma: no cover - DB errors handled later
-                self.logger.error(
-                    "Failed to persist response artifacts (%s): %s",
-                    reason,
-                    exc,
-                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                )
+                self.logger.error("Failed to persist response artifacts (%s): %s", reason, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
                 if event_emitter:
                     await event_emitter(
                         {
@@ -4034,11 +3905,7 @@ class Pipe:
                 if session_id:
                     logs = SessionLogger.logs.get(session_id, [])
                     if logs and self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug(
-                            "Collected %d session log entries for session %s.",
-                            len(logs),
-                            session_id,
-                        )
+                        self.logger.debug("Collected %d session log entries for session %s.", len(logs), session_id)
 
             if not was_cancelled:
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
@@ -4056,12 +3923,7 @@ class Pipe:
                         chat_id, message_id, {"sources": emitted_citations}
                     )
                 except Exception as exc:
-                    self.logger.warning(
-                        "Failed to persist citations for chat_id=%s message_id=%s: %s",
-                        chat_id,
-                        message_id,
-                        exc,
-                    )
+                    self.logger.warning("Failed to persist citations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
                     await self._emit_notification(
                         event_emitter,
                         "Unable to save citations for this response. Output was delivered successfully.",
@@ -4181,13 +4043,7 @@ class Pipe:
 
             except Exception as exc:
                 last_error = exc
-                self.logger.warning(
-                    "Task model attempt %d/%d failed: %s",
-                    attempt,
-                    attempts,
-                    exc,
-                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                )
+                self.logger.warning("Task model attempt %d/%d failed: %s", attempt, attempts, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
                 if attempt < attempts:
                     await asyncio.sleep(delay_seconds)
                     delay_seconds = min(delay_seconds * 2, 0.8)
@@ -4348,11 +4204,7 @@ class Pipe:
                         try:
                             event = json.loads(data.decode("utf-8"))
                         except json.JSONDecodeError as exc:
-                            self.logger.warning(
-                                "Chunk parse failed (seq=%s): %s",
-                                seq,
-                                exc,
-                            )
+                            self.logger.warning("Chunk parse failed (seq=%s): %s", seq, exc)
                             continue
                         await event_queue.put((seq, event))
                         # self.logger.debug("Worker %s emitted seq=%s",worker_idx,seq)
@@ -4595,11 +4447,7 @@ class Pipe:
                 allow_batch=allow_batch,
             )
             await context.queue.put(queued)
-            self.logger.debug(
-                "Enqueued tool %s (batch=%s)",
-                call.get("name"),
-                allow_batch,
-            )
+            self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
             pending.append((call, future))
             enqueued_any = True
             breaker_only_skips = False
@@ -4644,9 +4492,7 @@ class Pipe:
 
         if not self._legacy_tool_warning_emitted:
             self._legacy_tool_warning_emitted = True
-            self.logger.warning(
-                "Tool queue unavailable; falling back to direct execution."
-            )
+            self.logger.warning("Tool queue unavailable; falling back to direct execution.")
 
         tasks: list[Awaitable] = []
         for call in calls:
@@ -4773,15 +4619,9 @@ class Pipe:
             logs = SessionLogger.logs.get(session_id, [])
             if logs:
                 if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(
-                        "Error logs for session %s:\n%s",
-                        session_id,
-                        "\n".join(logs),
-                    )
+                    self.logger.debug("Error logs for session %s:\n%s", session_id, "\n".join(logs))
             else:
-                self.logger.warning(
-                    "No debug logs found for session_id %s", session_id
-                )
+                self.logger.warning("No debug logs found for session_id %s", session_id)
 
     async def _emit_citation(
         self,

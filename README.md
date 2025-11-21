@@ -45,6 +45,17 @@ This pipe builds on jrkropp's foundational OpenAI Responses Manifold, which prov
 
 These changes maintain the original's efficiency while tailoring it for OpenRouter's ecosystem and enhancing security/scalability.
 
+## Operational Architecture
+
+This pipe is tuned for multi-user deployments and adds several protective layers on top of Open WebUI's standard execution:
+
+- **Request queue + global semaphore**: every request acquires a slot from a process-wide semaphore, so bursts are back-pressured with a 503 "Server busy" instead of crashing the worker.
+- **Redis write-behind cache (optional)**: when Redis is detected, tool artifacts are enqueued through a pending queue guarded by distributed locks. A background flusher persists batched rows to the Open WebUI database without blocking the hot path.
+- **Breakers and batching**: per-user/per-tool breaker windows prevent runaway retries, while the tool executor batches compatible calls and enforces per-call, per-batch, and idle timeouts.
+- **Resilient event emitters**: every status/SSE emitter is wrapped so client disconnects or slow browsers cannot crash the pipe; failures are logged while the request finishes cleanup.
+
+These mechanisms keep the manifold responsive under load spikes, unreliable tools, or flaky networks.
+
 ## Installation
 
 1. **Prerequisites**:
@@ -79,6 +90,16 @@ Adjust in Open WebUI:
 - **LOG_LEVEL**: Set verbosity (e.g., "DEBUG").
 
 Full schema in the code.
+
+## Testing
+
+Unit tests live under `tests/` and include a `conftest.py` that stubs Open WebUI, pydantic v2 hooks, pydantic-core, SQLAlchemy, and tenacity so the pipe can be imported outside of an OWUI runtime. To run the current regression suite (which covers the guard rails added in this release):
+
+```bash
+pytest tests/test_pipe_guards.py
+```
+
+Extend the suite with additional files under `tests/` when contributing new features or bug fixes.
 
 ## Acknowledgments
 
