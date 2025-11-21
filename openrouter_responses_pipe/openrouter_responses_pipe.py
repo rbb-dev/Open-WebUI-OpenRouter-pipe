@@ -1245,9 +1245,10 @@ class Pipe:
             default=10,
             ge=0,
             description=(
-                "Number of most recent conversation turns whose tool outputs are sent in full. "
-                "Older turns have their persisted tool outputs pruned to save tokens. "
-                "Set to 0 to keep every tool output."
+                "Number of most recent logical turns whose tool outputs are sent in full. "
+                "A turn starts when a user speaks and includes the assistant/tool responses "
+                "that follow until the next user message. Older turns have their persisted "
+                "tool outputs pruned to save tokens. Set to 0 to keep every tool output."
             ),
         )
         TOOL_TIMEOUT_SECONDS: int = Field(
