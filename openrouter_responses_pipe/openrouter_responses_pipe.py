@@ -2403,10 +2403,21 @@ class Pipe:
             table_fragment=table_fragment,
         )
 
-    def _resolve_pipe_identifier(self, openwebui_model_id: Optional[str] = None) -> str:
+    def _resolve_pipe_identifier(
+        self,
+        openwebui_model_id: Optional[str] = None,
+        *,
+        fallback_model_id: Optional[str] = None,
+    ) -> str:
         """Derive the pipe identifier prefix used for storage namespaces."""
-        if isinstance(openwebui_model_id, str):
-            candidate = openwebui_model_id.split(".", 1)[0].strip()
+        def _extract_prefix(value: Optional[str]) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            candidate = value.split(".", 1)[0].strip()
+            return candidate or None
+
+        for source in (openwebui_model_id, fallback_model_id):
+            candidate = _extract_prefix(source)
             if candidate:
                 return candidate
         explicit_id = getattr(self, "id", None)
@@ -3183,7 +3194,11 @@ class Pipe:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
 
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
-        pipe_identifier_for_artifacts = self._resolve_pipe_identifier(openwebui_model_id)
+        request_model_id = body.get("model") if isinstance(body.get("model"), str) else None
+        pipe_identifier_for_artifacts = self._resolve_pipe_identifier(
+            openwebui_model_id,
+            fallback_model_id=request_model_id,
+        )
         self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier_for_artifacts)
 
         try:
