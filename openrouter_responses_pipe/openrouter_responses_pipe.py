@@ -892,9 +892,33 @@ class ResponsesBody(BaseModel):
                 markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
                 db_artifacts: dict[str, dict] = {}
+                valid_call_ids: set[str] = set()
+                orphaned_call_ids: set[str] = set()
+                orphaned_output_ids: set[str] = set()
                 if artifact_loader and chat_id and openwebui_model_id and markers:
                     try:
                         db_artifacts = await artifact_loader(chat_id, msg_id, markers)
+                        (
+                            valid_call_ids,
+                            orphaned_call_ids,
+                            orphaned_output_ids,
+                        ) = _classify_function_call_artifacts(db_artifacts)
+                        if orphaned_call_ids:
+                            logger.warning(
+                                "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
+                                len(orphaned_call_ids),
+                                chat_id,
+                                msg_id,
+                                sorted(orphaned_call_ids),
+                            )
+                        if orphaned_output_ids:
+                            logger.warning(
+                                "Dropping %d persisted function_call_output artifact(s) missing calls (chat_id=%s message_id=%s call_ids=%s)",
+                                len(orphaned_output_ids),
+                                chat_id,
+                                msg_id,
+                                sorted(orphaned_output_ids),
+                            )
                     except Exception:
                         logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
                         db_artifacts = {}
@@ -907,6 +931,29 @@ class ResponsesBody(BaseModel):
                             continue
                         item = _normalize_persisted_item(payload)
                         if item is not None:
+                            item_type = item.get("type")
+                            if (
+                                item_type == "function_call"
+                                and item.get("call_id") in orphaned_call_ids
+                            ):
+                                logger.debug(
+                                    "Skipping orphaned function_call artifact (call_id=%s chat_id=%s message_id=%s)",
+                                    item.get("call_id"),
+                                    chat_id,
+                                    msg_id,
+                                )
+                                continue
+                            if (
+                                item_type == "function_call_output"
+                                and item.get("call_id") in orphaned_output_ids
+                            ):
+                                logger.debug(
+                                    "Skipping orphaned function_call_output artifact (call_id=%s chat_id=%s message_id=%s)",
+                                    item.get("call_id"),
+                                    chat_id,
+                                    msg_id,
+                                )
+                                continue
                             if (
                                 is_old_message
                                 and pruning_turns > 0
@@ -5115,6 +5162,40 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[s
         return normalized
 
     return item
+
+
+def _classify_function_call_artifacts(
+    artifacts: Dict[str, Dict[str, Any]]
+) -> tuple[set[str], set[str], set[str]]:
+    """
+    Inspect persisted artifacts and return three identifier sets:
+
+    - valid_ids: call_ids that have both a function_call and function_call_output
+    - orphaned_calls: call_ids that only have a function_call entry
+    - orphaned_outputs: call_ids that only have a function_call_output entry
+    """
+    call_ids: set[str] = set()
+    output_ids: set[str] = set()
+
+    for payload in artifacts.values():
+        if not isinstance(payload, dict):
+            continue
+        call_id = payload.get("call_id")
+        if not isinstance(call_id, str):
+            continue
+        call_id = call_id.strip()
+        if not call_id:
+            continue
+        payload_type = (payload.get("type") or "").lower()
+        if payload_type == "function_call":
+            call_ids.add(call_id)
+        elif payload_type == "function_call_output":
+            output_ids.add(call_id)
+
+    valid_ids = call_ids & output_ids
+    orphaned_calls = call_ids - valid_ids
+    orphaned_outputs = output_ids - valid_ids
+    return valid_ids, orphaned_calls, orphaned_outputs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
