@@ -334,6 +334,17 @@ class ModelFamily:
         return feature in cls.features(model_id)
 
     @classmethod
+    def supported_parameters(cls, model_id: str) -> frozenset[str]:
+        """Return the raw `supported_parameters` set from the OpenRouter catalog."""
+        spec = cls._lookup_spec(model_id)
+        params = spec.get("supported_parameters")
+        if isinstance(params, frozenset):
+            return params
+        if isinstance(params, (set, list, tuple)):
+            return frozenset(params)
+        return frozenset()
+
+    @classmethod
     def set_dynamic_specs(cls, specs: Dict[str, Dict[str, Any]] | None) -> None:
         """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
         cls._DYNAMIC_SPECS = specs or {}
@@ -481,14 +492,16 @@ class OpenRouterModelRegistry:
         # Finalize specs shared with ModelFamily (features + max completion tokens).
         specs: Dict[str, Dict[str, Any]] = {}
         for norm_id, spec in raw_specs.items():
+            supported_parameters = spec.get("supported_parameters") or set()
             features = cls._derive_features(
-                spec.get("supported_parameters") or set(),
+                supported_parameters,
                 spec.get("architecture") or {},
                 spec.get("pricing") or {},
             )
             specs[norm_id] = {
                 "features": features,
                 "max_completion_tokens": spec.get("max_completion_tokens"),
+                "supported_parameters": frozenset(supported_parameters),
             }
 
         models.sort(key=lambda m: m["name"].lower())
@@ -729,6 +742,7 @@ class ResponsesBody(BaseModel):
             Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
         ] = None,
         pruning_turns: int = 0,
+        replayed_reasoning_refs: Optional[List[Tuple[str, str]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -741,6 +755,9 @@ class ResponsesBody(BaseModel):
 
         When provided, `artifact_loader` is awaited with `(chat_id, message_id, ulids)`
         for each assistant message so database-backed artifacts can be replayed.
+        When `replayed_reasoning_refs` is supplied, the function appends each
+        `(chat_id, artifact_id)` pair for reasoning items so the caller can clean
+        them up after they have been replayed once.
 
         Returns
         -------
@@ -980,6 +997,12 @@ class ResponsesBody(BaseModel):
                         if payload is None:
                             logger.warning("Missing artifact %s for chat_id=%s message_id=%s", segment["marker"], chat_id, msg_id)
                             continue
+                        if (
+                            payload.get("type") == "reasoning"
+                            and replayed_reasoning_refs is not None
+                            and chat_id
+                        ):
+                            replayed_reasoning_refs.append((chat_id, segment["marker"]))
                         item = _normalize_persisted_item(payload)
                         if item is not None:
                             item_type = item.get("type")
@@ -1118,13 +1141,17 @@ class ResponsesBody(BaseModel):
         # Transform input messages to OpenAI Responses API format
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
+            replayed_reasoning_refs: list[Tuple[str, str]] = []
             sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
                 completions_dict.get("messages", []),
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
                 artifact_loader=artifact_loader,
                 pruning_turns=pruning_turns,
+                replayed_reasoning_refs=replayed_reasoning_refs,
             )
+            if replayed_reasoning_refs:
+                sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs
 
         # Build the final ResponsesBody directly
         return ResponsesBody(
@@ -1140,6 +1167,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "temperature",
     "top_p",
     "reasoning",
+    "include_reasoning",
     "tools",
     "tool_choice",
     "plugins",
@@ -1155,8 +1183,9 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(value, dict):
                 continue
             allowed_reasoning = {}
-            if value.get("effort"):
-                allowed_reasoning["effort"] = value["effort"]
+            for field_name in ("effort", "max_tokens", "exclude", "enabled", "summary"):
+                if field_name in value:
+                    allowed_reasoning[field_name] = value[field_name]
             if not allowed_reasoning:
                 continue
             value = allowed_reasoning
@@ -1212,15 +1241,32 @@ class Pipe:
             description="How long to cache the OpenRouter model catalog (in seconds) before refreshing.",
         )
 
-        PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
-            default="disabled",
-            description="Control whether encrypted reasoning tokens are requested from the model (response | conversation | disabled). Tokens are requested only if the model supports reasoning.",
+        ENABLE_REASONING: bool = Field(
+            default=True,
+            title="Show live reasoning",
+            description="Request live reasoning traces whenever the selected model supports them.",
+        )
+        REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+            default="medium",
+            title="Reasoning effort",
+            description="Default reasoning effort to request from supported models. Higher effort spends more tokens to think through tough problems.",
+        )
+        REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
+            default="auto",
+            title="Reasoning summary",
+            description="Controls the reasoning summary emitted by supported models (auto/concise/detailed). Set to 'disabled' to skip requesting reasoning summaries.",
+        )
+        PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
+            default="conversation",
+            title="Reasoning retention",
+            description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history.",
         )
         
         # Tool execution behavior
         PERSIST_TOOL_RESULTS: bool = Field(
-            default=False,
-            description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
+            default=True,
+            title="Keep tool results",
+            description="Persist tool call results across conversation turns. When disabled, tool results stay ephemeral.",
         )
         ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
             default="",
@@ -1383,6 +1429,17 @@ class Pipe:
 
     class UserValves(BaseModel):
         """Per-user valve overrides."""
+        @model_validator(mode="before")
+        @classmethod
+        def _normalize_inherit(cls, values):
+            """Treat the literal string 'inherit' (any case) as an unset value."""
+            if isinstance(values, dict):
+                return {
+                    key: (None if isinstance(val, str) and val.strip().lower() == "inherit" else val)
+                    for key, val in values.items()
+                }
+            return values
+
         LOG_LEVEL: Literal[
             "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"
         ] = Field(
@@ -1391,7 +1448,32 @@ class Pipe:
         )
         SHOW_FINAL_USAGE_STATUS: Optional[bool] = Field(
             default=None,
-            description="Override whether the final status message includes usage stats.",
+            description="Override whether the final status message includes usage stats (set to Inherit to reuse the workspace default).",
+        )
+        ENABLE_REASONING: Optional[bool] = Field(
+            default=None,
+            title="Show live reasoning",
+            description="Request live reasoning traces when the model supports them (set to Inherit to reuse the workspace default).",
+        )
+        REASONING_EFFORT: Optional[Literal["minimal", "low", "medium", "high"]] = Field(
+            default=None,
+            title="Reasoning effort",
+            description="Preferred reasoning effort for supported models (set to Inherit to reuse the workspace default).",
+        )
+        REASONING_SUMMARY_MODE: Optional[Literal["auto", "concise", "detailed", "disabled"]] = Field(
+            default=None,
+            title="Reasoning summary",
+            description="Override how reasoning summaries are requested (auto/concise/detailed/disabled). Set to Inherit to reuse the workspace default.",
+        )
+        PERSIST_REASONING_TOKENS: Optional[Literal["disabled", "next_reply", "conversation"]] = Field(
+            default=None,
+            title="Reasoning retention",
+            description="Reasoning retention preference (Off, Only for the next reply, or Entire conversation). Set to Inherit to reuse the workspace default.",
+        )
+        PERSIST_TOOL_RESULTS: Optional[bool] = Field(
+            default=None,
+            title="Keep tool results",
+            description="Persist tool call outputs for later turns (set to Inherit to reuse the workspace default).",
         )
 
     # Core Structure — shared concurrency primitives
@@ -3050,6 +3132,39 @@ class Pipe:
                 return await loop.run_in_executor(self._db_executor, fetch_call)
         return {}
 
+    def _delete_artifacts_sync(self, artifact_ids: list[str]) -> None:
+        """Synchronously delete artifacts by ULID."""
+        if not (artifact_ids and self._session_factory and self._item_model):
+            return
+        session: Session = self._session_factory()  # type: ignore[call-arg]
+        try:
+            (
+                session.query(self._item_model)
+                .filter(self._item_model.id.in_(artifact_ids))
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    async def _delete_artifacts(self, refs: list[Tuple[str, str]]) -> None:
+        """Delete persisted artifacts (and cached copies) once they have been replayed."""
+        if not refs:
+            return
+        ids = sorted({artifact_id for _, artifact_id in refs if artifact_id})
+        if not ids or not self._db_executor:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._db_executor, functools.partial(self._delete_artifacts_sync, ids))
+        if self._redis_enabled and self._redis_client:
+            keys = [self._redis_cache_key(chat_id, artifact_id) for chat_id, artifact_id in refs]
+            keys = [key for key in keys if key]
+            if keys:
+                await self._redis_client.delete(*keys)
+
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
         self._maybe_start_startup_checks()
@@ -3354,6 +3469,7 @@ class Pipe:
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
 
         )
+        self._apply_reasoning_preferences(responses_body, valves)
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
             if responses_body.max_output_tokens is None:
                 default_max = ModelFamily.max_completion_tokens(responses_body.model)
@@ -3484,6 +3600,39 @@ class Pipe:
             )
 
 
+    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
+        """Automatically request reasoning traces when supported and enabled."""
+        if not valves.ENABLE_REASONING:
+            return
+
+        supported = ModelFamily.supported_parameters(responses_body.model)
+        supports_reasoning = "reasoning" in supported
+        supports_include = "include_reasoning" in supported
+        summary_mode = (getattr(valves, "REASONING_SUMMARY_MODE", "auto") or "auto").strip().lower()
+        valid_summary_modes = {"auto", "concise", "detailed"}
+        requested_summary: Optional[str] = None
+        if summary_mode != "disabled":
+            requested_summary = summary_mode if summary_mode in valid_summary_modes else "auto"
+
+        if supports_reasoning:
+            cfg = responses_body.reasoning or {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            if valves.REASONING_EFFORT and "effort" not in cfg:
+                cfg["effort"] = valves.REASONING_EFFORT
+            if requested_summary and "summary" not in cfg:
+                cfg["summary"] = requested_summary
+            cfg.setdefault("enabled", True)
+            if cfg:
+                responses_body.reasoning = cfg
+        elif supports_include:
+            if getattr(responses_body, "include_reasoning", None) is None:
+                setattr(responses_body, "include_reasoning", True)
+            responses_body.reasoning = None
+        else:
+            responses_body.reasoning = None
+
+
     def _select_models(self, filter_value: str, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Filter OpenRouter catalog entries based on the valve string."""
         if not available_models:
@@ -3551,6 +3700,9 @@ class Pipe:
         pending_ulids: list[str] = []
         pending_items: list[dict[str, Any]] = []
         total_usage: dict[str, Any] = {}
+        reasoning_buffer = ""
+        reasoning_completed_emitted = False
+        reasoning_stream_active = False
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
         chat_id = metadata.get("chat_id")
@@ -3562,6 +3714,54 @@ class Pipe:
         generation_last_event_at: float | None = None
         response_completed_at: float | None = None
         stream_started_at: float | None = None
+        surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
+
+        def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
+            """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
+            prev = surrogate_carry.get(bucket, "")
+            combined = f"{prev}{text or ''}"
+            if not combined:
+                surrogate_carry[bucket] = ""
+                return ""
+            new_carry = ""
+            try:
+                normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16")
+            except UnicodeDecodeError:
+                if combined:
+                    last_char = combined[-1]
+                    if 0xD800 <= ord(last_char) <= 0xDBFF:
+                        new_carry = last_char
+                        combined = combined[:-1]
+                normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+            surrogate_carry[bucket] = new_carry
+            return normalized
+
+        def _extract_reasoning_text(event: dict[str, Any]) -> str:
+            """Return best-effort reasoning text from assorted event payloads."""
+            if not isinstance(event, dict):
+                return ""
+            for key in ("delta", "text"):
+                value = event.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            part = event.get("part")
+            if isinstance(part, dict):
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text:
+                    return part_text
+                content = part.get("content")
+                if isinstance(content, list):
+                    fragments: list[str] = []
+                    for entry in content:
+                        if isinstance(entry, dict):
+                            text_val = entry.get("text")
+                            if isinstance(text_val, str):
+                                fragments.append(text_val)
+                        elif isinstance(entry, str):
+                            fragments.append(entry)
+                    if fragments:
+                        return "".join(fragments)
+            return ""
 
         async def _flush_pending(reason: str) -> None:
             """Persist buffered artifacts and emit a warning when the DB fails."""
@@ -3666,12 +3866,59 @@ class Pipe:
                     if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug("OpenRouter payload: %s",json.dumps(event, indent=2, ensure_ascii=False))
 
+                    if etype:
+                        is_reasoning_event = (
+                            etype.startswith("response.reasoning")
+                            and etype != "response.reasoning_summary_text.done"
+                        )
+                        part = event.get("part") if isinstance(event, dict) else None
+                        reasoning_part_types = {"reasoning_text", "reasoning_summary_text", "summary_text"}
+                        is_reasoning_part_event = (
+                            etype.startswith("response.content_part")
+                            and isinstance(part, dict)
+                            and part.get("type") in reasoning_part_types
+                        )
+                        if is_reasoning_event or is_reasoning_part_event:
+                            reasoning_stream_active = True
+                            delta_text = _extract_reasoning_text(event)
+                            normalized_delta = _normalize_surrogate_chunk(delta_text, "reasoning") if delta_text else ""
+                            if normalized_delta:
+                                note_generation_activity()
+                                reasoning_buffer += normalized_delta
+                                if event_emitter:
+                                    await event_emitter(
+                                        {
+                                            "type": "reasoning:delta",
+                                            "data": {
+                                                "content": reasoning_buffer,
+                                                "delta": normalized_delta,
+                                                "event": etype,
+                                            },
+                                        }
+                                    )
+                            if etype.endswith(".done") or etype.endswith(".completed"):
+                                if event_emitter:
+                                    await event_emitter(
+                                        {
+                                            "type": "reasoning:completed",
+                                            "data": {"content": reasoning_buffer},
+                                        }
+                                    )
+                                reasoning_completed_emitted = True
+                            continue
+
                     # ─── Emit partial delta assistant message
                     if etype == "response.output_text.delta":
-                        delta = event.get("delta", "")
-                        if delta:
+                        delta = event.get("delta") or ""
+                        normalized_delta = _normalize_surrogate_chunk(delta, "assistant") if delta else ""
+                        if normalized_delta:
                             note_generation_activity()
-                            if not provider_status_seen and not responding_status_sent and event_emitter:
+                            if (
+                                not provider_status_seen
+                                and not responding_status_sent
+                                and not reasoning_stream_active
+                                and event_emitter
+                            ):
                                 provider_status_seen = True
                                 responding_status_sent = True
                                 await event_emitter(
@@ -3680,7 +3927,7 @@ class Pipe:
                                         "data": {"description": "Responding to the user…"},
                                     }
                                 )
-                            assistant_message += delta
+                            assistant_message += normalized_delta
                             await event_emitter({"type": "chat:message", "data": {"content": assistant_message}})
                         continue
 
@@ -3762,7 +4009,7 @@ class Pipe:
 
                         if item_type == "message" and item_status == "in_progress":
                             provider_status_seen = True
-                            if (not responding_status_sent) and event_emitter:
+                            if (not responding_status_sent) and (not reasoning_stream_active) and event_emitter:
                                 responding_status_sent = True
                                 await event_emitter(
                                     {
@@ -3785,8 +4032,8 @@ class Pipe:
                         # Decide persistence policy
                         should_persist = False
                         if item_type == "reasoning":
-                            # Persist reasoning only when explicitly allowed
-                            should_persist = valves.PERSIST_REASONING_TOKENS == "conversation"
+                            # Persist reasoning when retention is enabled
+                            should_persist = valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
 
                         elif item_type in ("message", "web_search_call"):
                             # Never persist assistant/user messages or ephemeral search calls
@@ -3874,6 +4121,18 @@ class Pipe:
                             title = "Let me query the MCP server…"
                         elif item_type == "reasoning":
                             title = None # Don't emit a title for reasoning items
+                            if (
+                                event_emitter
+                                and reasoning_buffer
+                                and not reasoning_completed_emitted
+                            ):
+                                await event_emitter(
+                                    {
+                                        "type": "reasoning:completed",
+                                        "data": {"content": reasoning_buffer},
+                                    }
+                                )
+                                reasoning_completed_emitted = True
 
                         # Log the status with prepared title and detailed content instead of emitting it
                         if title:
@@ -3973,6 +4232,23 @@ class Pipe:
             for t in thinking_tasks:
                 with contextlib.suppress(Exception):
                     await t
+            if (
+                reasoning_buffer
+                and reasoning_stream_active
+                and not reasoning_completed_emitted
+                and event_emitter
+            ):
+                await event_emitter(
+                    {
+                        "type": "reasoning:completed",
+                        "data": {"content": reasoning_buffer},
+                    }
+                )
+                reasoning_completed_emitted = True
+            surrogate_carry["assistant"] = ""
+            surrogate_carry["reasoning"] = ""
+            if (not error_occurred) and (not was_cancelled):
+                await self._cleanup_replayed_reasoning(body, valves)
             if (not error_occurred) and (not was_cancelled) and event_emitter:
                 effective_start = stream_started_at or request_started_at
                 elapsed = max(0.0, perf_counter() - effective_start)
@@ -4044,6 +4320,16 @@ class Pipe:
 
         # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
         return assistant_message
+
+    async def _cleanup_replayed_reasoning(self, body: ResponsesBody, valves: Pipe.Valves) -> None:
+        """Delete once-used reasoning artifacts when retention is limited to the next reply."""
+        if valves.PERSIST_REASONING_TOKENS != "next_reply":
+            return
+        refs = getattr(body, "_replayed_reasoning_refs", None)
+        if not refs:
+            return
+        setattr(body, "_replayed_reasoning_refs", [])
+        await self._delete_artifacts(refs)
 
     async def _run_nonstreaming_loop(
         self,
