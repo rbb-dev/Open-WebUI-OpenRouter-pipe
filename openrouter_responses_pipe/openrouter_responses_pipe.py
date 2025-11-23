@@ -16,7 +16,7 @@ license: MIT
 - Optional Redis cache (auto-detected via ENV/multi-worker): Write-behind with pub/sub/timed flushes, TTL for fast artifact reads.
 - Secure artifact persistence: User-key encryption, LZ4 compression for large payloads, ULID markers for context replay.
 - Tool execution: Per-request FIFO queues, parallel workers with semaphores/timeouts, per-user/type breakers, batching non-dependent calls.
-- Streams SSE with producer-multi-consumer workers, delta batching/zero-copy, inline citations, and usage metrics.
+- Streams SSE with producer-multi-consumer workers, configurable delta batching/zero-copy, inline citations, and usage metrics.
 - Strictifies tool schemas (Open WebUI/MCP/plugins) for predictable function calling; deduplicates definitions.
 - Auto-enables web search plugin if model-supported; configurable MCP servers for global tools.
 - Exposes valves for concurrency limits, logging levels, Redis/cache settings, tool timeouts, cleanup intervals, and more.
@@ -96,6 +96,35 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _StreamingPreferences:
+    """Normalized streaming controls for SSE batching."""
+
+    char_limit: int
+    idle_flush_ms: int
+
+
+_STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
+    "quick": _StreamingPreferences(char_limit=10, idle_flush_ms=100),
+    "normal": _StreamingPreferences(char_limit=20, idle_flush_ms=250),
+    "slow": _StreamingPreferences(char_limit=80, idle_flush_ms=600),
+}
+
+
+def _coerce_streaming_char_limit(value: int) -> int:
+    """Clamp streaming delta size to a safe range (10-500)."""
+
+    return max(10, min(int(value), 500))
+
+
+def _coerce_idle_flush_ms(value: int) -> int:
+    """Return 0 (disabled) or clamp idle flush interval to 50-2000 ms."""
+
+    if value <= 0:
+        return 0
+    return max(50, min(int(value), 2000))
 
 
 def _model_validate_compat(model_cls: Type[BaseModel], data: Any) -> BaseModel:
@@ -1257,7 +1286,7 @@ class Pipe:
             description="Controls the reasoning summary emitted by supported models (auto/concise/detailed). Set to 'disabled' to skip requesting reasoning summaries.",
         )
         PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
-            default="conversation",
+            default="next_reply",
             title="Reasoning retention",
             description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history.",
         )
@@ -1347,6 +1376,27 @@ class Pipe:
             le=8,
             description="Number of per-request SSE worker tasks that parse streamed chunks.",
         )
+        STREAMING_UPDATE_PROFILE: Optional[Literal["quick", "normal", "slow"]] = Field(
+            default=None,
+            description=(
+                "Optional preset for streaming responsiveness. 'quick' prioritizes low latency, "
+                "'normal' balances responsiveness, and 'slow' reduces event volume for constrained clients."
+            ),
+        )
+        STREAMING_UPDATE_CHAR_LIMIT: int = Field(
+            default=20,
+            ge=10,
+            le=500,
+            description="Maximum characters to batch per streaming update. Lower values improve perceived latency.",
+        )
+        STREAMING_IDLE_FLUSH_MS: int = Field(
+            default=250,
+            ge=0,
+            le=2000,
+            description=(
+                "Milliseconds to wait before flushing buffered text when the model pauses. Set to 0 to disable the idle flush watchdog."
+            ),
+        )
         MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
             default=200,
             ge=1,
@@ -1435,7 +1485,11 @@ class Pipe:
             """Treat the literal string 'inherit' (any case) as an unset value."""
             if isinstance(values, dict):
                 return {
-                    key: (None if isinstance(val, str) and val.strip().lower() == "inherit" else val)
+                    key: (
+                        None
+                        if isinstance(val, str) and val.strip().lower() == "inherit"
+                        else val
+                    )
                     for key, val in values.items()
                 }
             return values
@@ -1446,34 +1500,50 @@ class Pipe:
             default="INHERIT",
             description="Select logging level. 'INHERIT' uses the pipe default.",
         )
-        SHOW_FINAL_USAGE_STATUS: Optional[bool] = Field(
-            default=None,
+        SHOW_FINAL_USAGE_STATUS: bool = Field(
+            default=True,
             description="Override whether the final status message includes usage stats (set to Inherit to reuse the workspace default).",
         )
-        ENABLE_REASONING: Optional[bool] = Field(
-            default=None,
+        ENABLE_REASONING: bool = Field(
+            default=True,
             title="Show live reasoning",
             description="Request live reasoning traces when the model supports them (set to Inherit to reuse the workspace default).",
         )
-        REASONING_EFFORT: Optional[Literal["minimal", "low", "medium", "high"]] = Field(
-            default=None,
+        REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+            default="medium",
             title="Reasoning effort",
             description="Preferred reasoning effort for supported models (set to Inherit to reuse the workspace default).",
         )
-        REASONING_SUMMARY_MODE: Optional[Literal["auto", "concise", "detailed", "disabled"]] = Field(
-            default=None,
+        REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
+            default="auto",
             title="Reasoning summary",
             description="Override how reasoning summaries are requested (auto/concise/detailed/disabled). Set to Inherit to reuse the workspace default.",
         )
-        PERSIST_REASONING_TOKENS: Optional[Literal["disabled", "next_reply", "conversation"]] = Field(
-            default=None,
+        next_reply: Literal["disabled", "next_reply", "conversation"] = Field(
+            default="next_reply",
             title="Reasoning retention",
             description="Reasoning retention preference (Off, Only for the next reply, or Entire conversation). Set to Inherit to reuse the workspace default.",
         )
-        PERSIST_TOOL_RESULTS: Optional[bool] = Field(
-            default=None,
+        PERSIST_TOOL_RESULTS: bool = Field(
+            default=True,
             title="Keep tool results",
             description="Persist tool call outputs for later turns (set to Inherit to reuse the workspace default).",
+        )
+        STREAMING_UPDATE_PROFILE: Literal["quick", "normal", "slow"] = Field(
+            default="normal",
+            description="Override the streaming preset (Quick/Normal/Slow) for this user only.",
+        )
+        STREAMING_UPDATE_CHAR_LIMIT: int = Field(
+            default=20,
+            ge=10,
+            le=500,
+            description="User override for streaming update character limit (10-500).",
+        )
+        STREAMING_IDLE_FLUSH_MS: int = Field(
+            default=250,
+            ge=0,
+            le=2000,
+            description="User override for the idle flush interval in milliseconds (0 disables).",
         )
 
     # Core Structure — shared concurrency primitives
@@ -1526,6 +1596,7 @@ class Pipe:
         self._startup_task: asyncio.Task | None = None
         self._startup_checks_started = False
         self._startup_checks_pending = False
+        self._startup_checks_complete = False
         self._warmup_failed = False  # Fix: track warmup failures
         self._redis_url = os.getenv("REDIS_URL")
         raw_uvicorn_workers = (os.getenv("UVICORN_WORKERS") or "1").strip()
@@ -1562,9 +1633,18 @@ class Pipe:
     # Core Structure -------------------------------------------------
     def _maybe_start_startup_checks(self) -> None:
         """Schedule background warmup checks once an event loop is available."""
+        if self._startup_checks_complete:
+            return
         if self._startup_task and not self._startup_task.done():
             return
-        if self._startup_checks_started and self._startup_task and self._startup_task.done():
+        if self._startup_task and self._startup_task.done():
+            self._startup_task = None
+        api_key_available = bool(EncryptedStr.decrypt(self.valves.API_KEY))
+        if not api_key_available:
+            if not self._startup_checks_pending:
+                self.logger.debug("Deferring OpenRouter warmup until an API key is configured.")
+            self._startup_checks_pending = True
+            self._startup_checks_started = False
             return
         try:
             loop = asyncio.get_running_loop()
@@ -1636,23 +1716,30 @@ class Pipe:
 
     async def _run_startup_checks(self) -> None:
         """Warm OpenRouter connections and log readiness without blocking startup."""
-        api_key = EncryptedStr.decrypt(self.valves.API_KEY)
-        if not api_key:
-            self.logger.warning("Skipping OpenRouter warmup: API key missing.")
-            return
         session: aiohttp.ClientSession | None = None
         try:
+            api_key = EncryptedStr.decrypt(self.valves.API_KEY)
+            if not api_key:
+                self.logger.debug("Skipping OpenRouter warmup: API key missing (will retry when configured).")
+                self._startup_checks_pending = True
+                return
             session = self._create_http_session()
             await self._ping_openrouter(session, self.valves.BASE_URL, api_key)
             self.logger.debug("Warmed: success")
             self._warmup_failed = False
+            self._startup_checks_complete = True
+            self._startup_checks_pending = False
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc)
             self._warmup_failed = True  # Fix: track failures
+            self._startup_checks_complete = False
+            self._startup_checks_pending = True
         finally: 
             if session:
                 with contextlib.suppress(Exception):
                     await session.close()
+            self._startup_checks_started = False
+            self._startup_task = None
 
     async def _ping_openrouter(
         self,
@@ -2551,6 +2638,22 @@ class Pipe:
         self.logger.warning("Pipe identifier missing from metadata; defaulting to '%s'.", fallback_identifier)
         return fallback_identifier
 
+    def _streaming_preferences(self, valves: "Pipe.Valves") -> _StreamingPreferences:
+        """Return sanitized streaming controls after applying optional presets."""
+
+        char_limit = valves.STREAMING_UPDATE_CHAR_LIMIT
+        idle_flush_ms = valves.STREAMING_IDLE_FLUSH_MS
+        preset_name = getattr(valves, "STREAMING_UPDATE_PROFILE", None)
+        if preset_name:
+            preset = _STREAMING_PRESETS.get(preset_name)
+            if preset:
+                char_limit = preset.char_limit
+                idle_flush_ms = preset.idle_flush_ms
+        return _StreamingPreferences(
+            char_limit=_coerce_streaming_char_limit(char_limit),
+            idle_flush_ms=_coerce_idle_flush_ms(idle_flush_ms),
+        )
+
     def _init_artifact_store(
         self,
         pipe_identifier: Optional[str] = None,
@@ -3317,7 +3420,11 @@ class Pipe:
         ``_run_streaming_loop``.  Otherwise it falls back to
         ``_run_nonstreaming_loop`` and returns the aggregated response.
         """
-        valves = valves or self._merge_valves(self.valves, _model_validate_compat(self.UserValves, __user__.get("valves", {})))
+        if valves is None:
+            valves = self._merge_valves(
+                self.valves,
+                _model_validate_compat(self.UserValves, __user__.get("valves", {})),
+            )
         if session is None:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
 
@@ -3370,6 +3477,7 @@ class Pipe:
         features = _features_all.get(pipe_identifier, {})
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
+        streaming_preferences = self._streaming_preferences(valves)
 
         try:
             result = await self._process_transformed_request(
@@ -3388,6 +3496,7 @@ class Pipe:
                 pipe_identifier_for_artifacts,
                 allowed_norm_ids,
                 features,
+                streaming_preferences=streaming_preferences,
                 user_id=user_id,
             )
         finally:
@@ -3412,10 +3521,12 @@ class Pipe:
         pipe_identifier_for_artifacts: str,
         allowed_norm_ids: set[str],
         features: dict[str, Any],
+        streaming_preferences: _StreamingPreferences | None = None,
         *,
         user_id: str = "",
     ) -> AsyncGenerator[str, None] | str | None:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
+        effective_streaming_prefs = streaming_preferences or self._streaming_preferences(valves)
         # Optional: inject CSS tweak for multi-line statuses when enabled.
         if valves.ENABLE_STATUS_CSS_PATCH:
             if __event_call__:
@@ -3586,6 +3697,7 @@ class Pipe:
                 __tools__,
                 session=session,
                 user_id=user_id,
+                streaming_preferences=effective_streaming_prefs,
             )
         else:
             # Return final text (non-streaming)
@@ -3597,6 +3709,7 @@ class Pipe:
                 __tools__,
                 session=session,
                 user_id=user_id,
+                streaming_preferences=effective_streaming_prefs,
             )
 
 
@@ -3666,6 +3779,8 @@ class Pipe:
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
+        *,
+        streaming_preferences: _StreamingPreferences | None = None,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -3674,6 +3789,12 @@ class Pipe:
             raise RuntimeError("HTTP session is required for streaming")
 
         self.logger.debug("🔧 PERSIST_TOOL_RESULTS=%s", valves.PERSIST_TOOL_RESULTS)
+        prefs = streaming_preferences or self._streaming_preferences(valves)
+        self.logger.debug(
+            "Streaming config: char_limit=%s idle_flush_ms=%s",
+            prefs.char_limit,
+            prefs.idle_flush_ms,
+        )
 
         raw_tools = tools or {}
         tool_registry: dict[str, dict[str, Any]] = {}
@@ -3854,6 +3975,8 @@ class Pipe:
                     base_url=valves.BASE_URL,
                     workers=valves.SSE_WORKERS_PER_REQUEST,
                     breaker_key=user_id or None,
+                    delta_char_limit=prefs.char_limit,
+                    idle_flush_ms=prefs.idle_flush_ms,
                 ):
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
@@ -4340,6 +4463,8 @@ class Pipe:
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
+        *,
+        streaming_preferences: _StreamingPreferences | None = None,
     ) -> str:
         """Unified implementation: reuse the streaming path.
 
@@ -4369,6 +4494,7 @@ class Pipe:
             tools or {},
             session=session,
             user_id=user_id,
+            streaming_preferences=streaming_preferences,
         )
 
     # 4.4 Task Model Handling
@@ -4477,8 +4603,10 @@ class Pipe:
         *,
         workers: int = 4,
         breaker_key: Optional[str] = None,
+        delta_char_limit: int = 50,
+        idle_flush_ms: int = 0,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Producer/worker SSE pipeline with delta batching."""
+        """Producer/worker SSE pipeline with configurable delta batching."""
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -4492,7 +4620,8 @@ class Pipe:
         chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=100)
         event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=100)
         chunk_sentinel = (None, b"")
-        DELTA_BATCH_THRESHOLD = 50
+        delta_batch_threshold = max(1, int(delta_char_limit))
+        idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
 
         async def _producer() -> None:
             seq = 0
@@ -4613,7 +4742,7 @@ class Pipe:
 
         def flush_delta(force: bool = False) -> Optional[dict[str, Any]]:
             nonlocal delta_buffer, delta_template, delta_length
-            if delta_buffer and (force or delta_length >= DELTA_BATCH_THRESHOLD):
+            if delta_buffer and (force or delta_length >= delta_batch_threshold):
                 combined = "".join(delta_buffer)
                 base = dict(delta_template or {"type": "response.output_text.delta"})
                 base["delta"] = combined
@@ -4625,7 +4754,22 @@ class Pipe:
 
         try:
             while True:
-                seq, event = await event_queue.get()
+                timeout = idle_flush_seconds if (idle_flush_seconds and delta_buffer) else None
+                timed_out = False
+                if timeout is not None:
+                    try:
+                        seq, event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                else:
+                    seq, event = await event_queue.get()
+
+                if timed_out:
+                    batched = flush_delta(force=True)
+                    if batched:
+                        yield batched
+                    continue
+
                 event_queue.task_done()
                 if seq is None:
                     done_workers += 1
