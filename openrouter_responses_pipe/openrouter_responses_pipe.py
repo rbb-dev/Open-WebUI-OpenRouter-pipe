@@ -2,8 +2,10 @@
 title: OpenRouter Responses API Manifold
 author: rbb-dev
 author_url: https://github.com/rbb-dev
-git_url: https://github.com/
-description: Brings OpenRouter Responses API support to Open WebUI, auto-importing every Responses-capable model from OpenRouter and translating Open WebUI requests into the new API format.
+git_url: https://github.com/rbb-dev/openrouter_responses_pipe/
+original_author: jrkropp
+original_author_url: https://github.com/jrkropp/open-webui-developer-toolkit
+description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
 version: 1.0.5
 requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
@@ -225,6 +227,7 @@ class _ToolExecutionContext:
     idle_timeout: float | None
     user_id: str
     event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
+    batch_cap: int
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
 
@@ -1376,6 +1379,18 @@ class Pipe:
             le=8,
             description="Number of per-request SSE worker tasks that parse streamed chunks.",
         )
+        STREAMING_CHUNK_QUEUE_MAXSIZE: int = Field(
+            default=100,
+            ge=10,
+            le=5000,
+            description="Maximum number of raw SSE chunks buffered before applying backpressure to the OpenRouter stream.",
+        )
+        STREAMING_EVENT_QUEUE_MAXSIZE: int = Field(
+            default=100,
+            ge=10,
+            le=5000,
+            description="Maximum number of parsed SSE events buffered ahead of downstream processing.",
+        )
         STREAMING_UPDATE_PROFILE: Optional[Literal["quick", "normal", "slow"]] = Field(
             default=None,
             description=(
@@ -1408,6 +1423,12 @@ class Pipe:
             ge=1,
             le=50,
             description="Per-request concurrency limit for tool execution workers.",
+        )
+        TOOL_BATCH_CAP: int = Field(
+            default=4,
+            ge=1,
+            le=32,
+            description="Maximum number of compatible tool calls that may be executed in a single batch.",
         )
         TOOL_OUTPUT_RETENTION_TURNS: int = Field(
             default=10,
@@ -1444,6 +1465,18 @@ class Pipe:
             ge=60,
             le=3600,
             description="TTL applied to Redis artifact cache entries (seconds).",
+        )
+        REDIS_PENDING_WARN_THRESHOLD: int = Field(
+            default=100,
+            ge=1,
+            le=10000,
+            description="Emit a warning when the Redis pending queue exceeds this number of artifacts.",
+        )
+        REDIS_FLUSH_FAILURE_LIMIT: int = Field(
+            default=5,
+            ge=1,
+            le=50,
+            description="Disable Redis caching after this many consecutive flush failures (falls back to direct DB writes).",
         )
         ARTIFACT_CLEANUP_DAYS: int = Field(
             default=90,
@@ -1811,16 +1844,17 @@ class Pipe:
 
     async def _redis_periodic_flusher(self) -> None:
         consecutive_failures = 0
-        max_consecutive_failures = 5
 
         while self._redis_enabled:
+            warn_threshold = max(1, int(self.valves.REDIS_PENDING_WARN_THRESHOLD or 1))
+            failure_limit = max(1, int(self.valves.REDIS_FLUSH_FAILURE_LIMIT or 1))
             try:
                 if not self._redis_client:
                     break
 
                 queue_depth = await self._redis_client.llen(self._redis_pending_key)
-                if queue_depth > 100:
-                    self.logger.warning("⚠️ Redis pending queue backed up: %d items (threshold: 100)", queue_depth)
+                if queue_depth > warn_threshold:
+                    self.logger.warning("⚠️ Redis pending queue backed up: %d items (threshold: %d)", queue_depth, warn_threshold)
                 elif queue_depth > 0:
                     self.logger.debug("Redis pending queue depth: %d items", queue_depth)
 
@@ -1828,9 +1862,9 @@ class Pipe:
                 consecutive_failures = 0
             except Exception as exc:
                 consecutive_failures += 1
-                self.logger.error("Periodic flush failed (%d/%d consecutive failures): %s", consecutive_failures, max_consecutive_failures, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
-                if consecutive_failures >= max_consecutive_failures:
-                    self.logger.critical("🚨 Disabling Redis cache after %d consecutive flush failures. Falling back to direct DB writes.", max_consecutive_failures)
+                self.logger.error("Periodic flush failed (%d/%d consecutive failures): %s", consecutive_failures, failure_limit, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                if consecutive_failures >= failure_limit:
+                    self.logger.critical("🚨 Disabling Redis cache after %d consecutive flush failures. Falling back to direct DB writes.", failure_limit)
                     self._redis_enabled = False
                     break
 
@@ -2164,7 +2198,7 @@ class Pipe:
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
         """Process queued tool calls with batching/timeouts."""
         pending: list[tuple[_QueuedToolCall | None, bool]] = []
-        batch_cap = 4
+        batch_cap = max(1, int(context.batch_cap))
         idle_timeout = context.idle_timeout
         try:
             while True:
@@ -2408,6 +2442,7 @@ class Pipe:
                     idle_timeout=idle_timeout,
                     user_id=job.user_id,
                     event_emitter=job.event_emitter,
+                    batch_cap=max(1, int(job.valves.TOOL_BATCH_CAP or 1)),
                 )
                 worker_count = max(1, job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 for worker_idx in range(worker_count):
@@ -3977,6 +4012,8 @@ class Pipe:
                     breaker_key=user_id or None,
                     delta_char_limit=prefs.char_limit,
                     idle_flush_ms=prefs.idle_flush_ms,
+                    chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
+                    event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
                 ):
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
@@ -4605,6 +4642,8 @@ class Pipe:
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 50,
         idle_flush_ms: int = 0,
+        chunk_queue_maxsize: int = 100,
+        event_queue_maxsize: int = 100,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
@@ -4617,8 +4656,10 @@ class Pipe:
         url = base_url.rstrip("/") + "/responses"
 
         workers = max(1, min(int(workers or 1), 8))
-        chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=100)
-        event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=100)
+        chunk_queue_size = max(0, int(chunk_queue_maxsize))
+        event_queue_size = max(0, int(event_queue_maxsize))
+        chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=chunk_queue_size)
+        event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=event_queue_size)
         chunk_sentinel = (None, b"")
         delta_batch_threshold = max(1, int(delta_char_limit))
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
