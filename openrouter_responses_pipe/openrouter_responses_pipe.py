@@ -60,7 +60,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, Optional, Type, Union, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Type, TypedDict, Union, TYPE_CHECKING
 from urllib.parse import urlparse
 import ast
 
@@ -129,55 +129,75 @@ def _coerce_idle_flush_ms(value: int) -> int:
     return max(50, min(int(value), 2000))
 
 
-def _model_validate_compat(model_cls: Type[BaseModel], data: Any) -> BaseModel:
-    """Backport-friendly wrapper for ``BaseModel.model_validate``."""
-
-    validator = getattr(model_cls, "model_validate", None)
-    if callable(validator):
-        return validator(data)
-    parser = getattr(model_cls, "parse_obj", None)
-    if callable(parser):
-        return parser(data)
-    # Fallback: rely on constructor to coerce dict-like payloads.
-    payload = data or {}
-    if not isinstance(payload, dict):
-        raise TypeError(f"Unsupported payload type for {model_cls.__name__}: {type(payload).__name__}")
-    return model_cls(**payload)
+# ─────────────────────────────────────────────────────────────────────────────
+# TypedDict Definitions for Type Safety
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-def _model_dump_compat(model: BaseModel, *, exclude_none: bool = False) -> dict[str, Any]:
-    """Return a model dict compatible with both Pydantic v1 and v2."""
-
-    dumper = getattr(model, "model_dump", None)
-    if callable(dumper):
-        return dumper(exclude_none=exclude_none)
-    parser = getattr(model, "dict", None)
-    if callable(parser):
-        kwargs = {"exclude_none": True} if exclude_none else {}
-        return parser(**kwargs)
-    data = {}
-    for key, value in getattr(model, "__dict__", {}).items():
-        if key.startswith("_"):
-            continue
-        if exclude_none and value is None:
-            continue
-        data[key] = value
-    return data
+class FunctionCall(TypedDict):
+    """Represents a function call within a tool call."""
+    name: str
+    arguments: str  # JSON-encoded string
 
 
-def _model_copy_compat(model: BaseModel, *, update: Optional[dict[str, Any]] = None) -> BaseModel:
-    """Return a copy of ``model`` with optional updates (Pydantic v1/v2)."""
+class ToolCall(TypedDict):
+    """Represents a single tool/function call."""
+    id: str
+    type: Literal["function"]
+    function: FunctionCall
 
-    update = update or {}
-    copier = getattr(model, "model_copy", None)
-    if callable(copier):
-        return copier(update=update)
-    legacy = getattr(model, "copy", None)
-    if callable(legacy):
-        return legacy(update=update)
-    payload = _model_dump_compat(model)
-    payload.update(update)
-    return type(model)(**payload)
+
+class Message(TypedDict):
+    """Represents a chat message in OpenAI/OpenRouter format."""
+    role: Literal["user", "assistant", "system", "tool"]
+    content: NotRequired[Optional[str]]
+    name: NotRequired[str]
+    tool_calls: NotRequired[list[ToolCall]]
+    tool_call_id: NotRequired[str]
+
+
+class FunctionSchema(TypedDict):
+    """Represents a function schema for tool definitions."""
+    name: str
+    description: NotRequired[str]
+    parameters: dict[str, Any]  # JSON Schema
+    strict: NotRequired[bool]
+
+
+class ToolDefinition(TypedDict):
+    """Represents a tool definition for OpenAI/OpenRouter."""
+    type: Literal["function"]
+    function: FunctionSchema
+
+
+class MCPServerConfig(TypedDict):
+    """Represents an MCP server configuration."""
+    server_label: str
+    server_url: str
+    require_approval: NotRequired[Literal["never", "always", "auto"]]
+    allowed_tools: NotRequired[list[str]]
+
+
+class UsageStats(TypedDict, total=False):
+    """Token usage statistics from API responses."""
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    prompt_tokens_details: dict[str, Any]
+    completion_tokens_details: dict[str, Any]
+
+
+class ArtifactPayload(TypedDict, total=False):
+    """Represents a persisted artifact (reasoning or tool result)."""
+    type: str
+    content: Any
+    tool_call_id: str
+    name: str
+    arguments: dict[str, Any]
+    output: str
+    timestamp: float
+
+
 
 
 @dataclass(slots=True)
@@ -289,7 +309,13 @@ class EncryptedStr(str):
             fernet = Fernet(key)
             decrypted = fernet.decrypt(encrypted_part.encode())
             return decrypted.decode()
-        except (InvalidToken, Exception):
+        except InvalidToken:
+            # Invalid encryption key or corrupted data - return original value
+            LOGGER.warning("Failed to decrypt value: invalid token or key mismatch")
+            return value
+        except (ValueError, UnicodeDecodeError) as e:
+            # Decoding or encoding error - return original value
+            LOGGER.warning(f"Failed to decrypt value: {type(e).__name__}: {e}")
             return value
 
     @classmethod
@@ -447,6 +473,7 @@ class OpenRouterModelRegistry:
             try:
                 await cls._refresh(session, base_url=base_url, api_key=api_key, logger=logger)
             except Exception as exc:
+                # Catch all refresh errors (network, JSON, API errors) to use cache if available
                 cls._record_refresh_failure(exc, cache_seconds)
                 if not cls._models:
                     raise
@@ -724,8 +751,11 @@ class ResponsesBody(BaseModel):
 
         try:
             data = json.loads(mcp_json)
-        except Exception as exc:                             # malformed JSON
-            LOGGER.warning("REMOTE_MCP_SERVERS_JSON could not be parsed (%s); ignoring.", exc)
+        except json.JSONDecodeError as exc:  # malformed JSON
+            LOGGER.warning("REMOTE_MCP_SERVERS_JSON could not be parsed (invalid JSON): %s", exc)
+            return []
+        except (TypeError, ValueError) as exc:  # wrong type or other parsing error
+            LOGGER.warning("REMOTE_MCP_SERVERS_JSON parsing failed: %s", exc)
             return []
 
         # Accept a single object or a list
@@ -882,7 +912,8 @@ class ResponsesBody(BaseModel):
             if not isinstance(output_value, str):
                 try:
                     output_text = json.dumps(output_value, ensure_ascii=False)
-                except Exception:
+                except (TypeError, ValueError):
+                    # Fallback to str() if object isn't JSON serializable
                     output_text = str(output_value)
             else:
                 output_text = output_value
@@ -1020,6 +1051,7 @@ class ResponsesBody(BaseModel):
                                 sorted(orphaned_output_ids),
                             )
                     except Exception:
+                        # Catch all loader errors (DB, network, etc.) - pipe must continue
                         logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
                         db_artifacts = {}
 
@@ -1126,7 +1158,7 @@ class ResponsesBody(BaseModel):
         - Allows explicit overrides via kwargs.
         - Replays persisted artifacts by awaiting `artifact_loader` when provided.
         """
-        completions_dict = _model_dump_compat(completions_body, exclude_none=True)
+        completions_dict = completions_body.model_dump(exclude_none=True)
 
         # Step 1: Remove unsupported fields
         unsupported_fields = {
@@ -1927,6 +1959,7 @@ class Pipe:
                         lock_token,
                     )
                 except Exception:
+                    # Redis errors during lock release are non-fatal - continue pipe operation
                     self.logger.debug("Failed to release Redis flush lock", exc_info=self.logger.isEnabledFor(logging.DEBUG))
 
     def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
@@ -2188,6 +2221,7 @@ class Pipe:
                     await context.queue.put(None)
                 await context.queue.join()
         except Exception:
+            # Ignore errors during graceful shutdown - workers will be cancelled anyway
             pass
         for task in context.workers:
             if not task.done():
@@ -2597,6 +2631,7 @@ class Pipe:
                 }
             )
         except Exception:
+            # Event emitter failures (client disconnect, etc.) shouldn't stop pipe
             self.logger.debug("Failed to emit breaker notification", exc_info=True)
 
     def _db_breaker_allows(self, user_id: str) -> bool:
@@ -2702,7 +2737,7 @@ class Pipe:
 
         try:
             from open_webui.internal import db as owui_db  # type: ignore
-        except Exception:  # pragma: no cover - optional dependency
+        except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
             owui_db = None
 
         if owui_db is not None:
@@ -2944,7 +2979,7 @@ class Pipe:
                 body = payload_bytes
         try:
             return json.loads(body.decode("utf-8"))
-        except Exception as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("Unable to decode persisted artifact payload.") from exc
 
     def _lz4_decompress(self, data: bytes) -> bytes:
@@ -3282,7 +3317,8 @@ class Pipe:
                 .delete(synchronize_session=False)
             )
             session.commit()
-        except Exception:
+        except SQLAlchemyError:
+            # Rollback on any database error, then re-raise
             session.rollback()
             raise
         finally:
@@ -3354,7 +3390,7 @@ class Pipe:
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
-        user_valves = _model_validate_compat(self.UserValves, __user__.get("valves", {}))
+        user_valves = self.UserValves.model_validate(__user__.get("valves", {}))
         valves = self._merge_valves(self.valves, user_valves)
         session_id = str(__metadata__.get("session_id") or "")
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
@@ -3458,7 +3494,7 @@ class Pipe:
         if valves is None:
             valves = self._merge_valves(
                 self.valves,
-                _model_validate_compat(self.UserValves, __user__.get("valves", {})),
+                self.UserValves.model_validate(__user__.get("valves", {})),
             )
         if session is None:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
@@ -3604,7 +3640,7 @@ class Pipe:
                 self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
 
         # STEP 1: Transform request body (Completions API -> Responses API).
-        completions_body = _model_validate_compat(CompletionsBody, body)
+        completions_body = CompletionsBody.model_validate(body)
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
@@ -3638,7 +3674,7 @@ class Pipe:
         if __task__:
             self.logger.debug("Detected task model: %s", __task__)
             return await self._run_task_model_request(
-                _model_dump_compat(responses_body),
+                responses_body.model_dump(),
                 valves,
                 session=session,
                 task_context=__task__,
@@ -3687,7 +3723,7 @@ class Pipe:
                         level="info"
                     )
                     params["function_calling"] = "native"
-                    form_data = _model_dump_compat(model)
+                    form_data = model.model_dump()
                     form_data["params"] = params
                     try:
                         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
@@ -3716,7 +3752,7 @@ class Pipe:
             responses_body.plugins = plugins
 
         # STEP 7: Log the transformed request body
-        self.logger.debug("Transformed ResponsesBody: %s", json.dumps(_model_dump_compat(responses_body, exclude_none=True), indent=2, ensure_ascii=False))
+        self.logger.debug("Transformed ResponsesBody: %s", json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False))
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
@@ -3995,7 +4031,7 @@ class Pipe:
         try:
             for _ in range(valves.MAX_FUNCTION_CALL_LOOPS):
                 final_response: dict[str, Any] | None = None
-                request_payload = _model_dump_compat(body, exclude_none=True)
+                request_payload = body.model_dump(exclude_none=True)
                 api_model_override = getattr(body, "api_model", None)
                 if api_model_override:
                     request_payload["model"] = api_model_override
@@ -5396,10 +5432,10 @@ class Pipe:
         # Merge: update only fields not set to "INHERIT"
         update = {
             k: v
-            for k, v in _model_dump_compat(user_valves).items()
+            for k, v in user_valves.model_dump().items()
             if v is not None and str(v).lower() != "inherit"
         }
-        return _model_copy_compat(global_valves, update=update)
+        return global_valves.model_copy(update=update)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Utility & Helper Layer (organized, consistent docstrings)
@@ -5648,7 +5684,8 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[s
         if not isinstance(arguments, str):
             try:
                 normalized["arguments"] = json.dumps(arguments)
-            except Exception:
+            except (TypeError, ValueError):
+                # Fallback to str() if arguments aren't JSON serializable
                 normalized["arguments"] = str(arguments)
         normalized["call_id"] = normalized.get("call_id") or generate_item_id()
         _ensure_identity()
