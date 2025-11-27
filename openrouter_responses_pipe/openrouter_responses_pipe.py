@@ -3893,6 +3893,7 @@ class Pipe:
         pending_items: list[dict[str, Any]] = []
         total_usage: dict[str, Any] = {}
         reasoning_buffer = ""
+        reasoning_status_last_len = 0  # Track buffer length at last status emission
         reasoning_completed_emitted = False
         reasoning_stream_active = False
         ordinal_by_url: dict[str, int] = {}
@@ -4054,8 +4055,9 @@ class Pipe:
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
                     etype = event.get("type")
-                    if etype:
-                        note_model_activity()
+                    # Note: Don't call note_model_activity() here for ALL events.
+                    # We only want to cancel thinking tasks when actual output or action starts,
+                    # not during reasoning phases. Moved to specific event handlers below.
 
                     # Emit OpenRouter SSE frames at DEBUG (non-delta) only; skip delta spam entirely.
                     is_delta_event = bool(etype and etype.endswith(".delta"))
@@ -4082,6 +4084,7 @@ class Pipe:
                                 note_generation_activity()
                                 reasoning_buffer += normalized_delta
                                 if event_emitter:
+                                    # Emit reasoning:delta for components that support it
                                     await event_emitter(
                                         {
                                             "type": "reasoning:delta",
@@ -4092,6 +4095,21 @@ class Pipe:
                                             },
                                         }
                                     )
+                                    # Also emit as status so it's visible in Open WebUI
+                                    # Only emit every 50 chars to avoid status spam
+                                    if len(reasoning_buffer) - reasoning_status_last_len >= 50:
+                                        reasoning_status_last_len = len(reasoning_buffer)
+                                        # Truncate to last 500 chars to avoid status overflow
+                                        preview = reasoning_buffer[-500:] if len(reasoning_buffer) > 500 else reasoning_buffer
+                                        await event_emitter(
+                                            {
+                                                "type": "status",
+                                                "data": {
+                                                    "description": f"💭 Reasoning…\n{preview}",
+                                                    "done": False,
+                                                },
+                                            }
+                                        )
                             if etype.endswith(".done") or etype.endswith(".completed"):
                                 if event_emitter:
                                     await event_emitter(
@@ -4105,6 +4123,7 @@ class Pipe:
 
                     # ─── Emit partial delta assistant message
                     if etype == "response.output_text.delta":
+                        note_model_activity()  # Cancel thinking tasks when actual output starts
                         delta = event.get("delta") or ""
                         normalized_delta = _normalize_surrogate_chunk(delta, "assistant") if delta else ""
                         if normalized_delta:
@@ -4341,6 +4360,7 @@ class Pipe:
 
                     # ─── Capture final response payload for this loop
                     if etype == "response.completed":
+                        note_model_activity()  # Ensure thinking tasks are cancelled when response completes
                         final_response = event.get("response", {})
                         response_completed_at = perf_counter()
                         if generation_started_at is not None:
@@ -4368,6 +4388,7 @@ class Pipe:
                         if normalized_call:
                             call_items.append(normalized_call)
                 if call_items:
+                    note_model_activity()  # Cancel thinking tasks when function calls begin
                     body.input.extend(call_items)
 
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
