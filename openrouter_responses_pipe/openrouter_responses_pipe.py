@@ -3894,6 +3894,7 @@ class Pipe:
         total_usage: dict[str, Any] = {}
         reasoning_buffer = ""
         reasoning_status_last_len = 0  # Track buffer length at last status emission
+        reasoning_status_last_time = 0.0  # Track time of last status emission
         reasoning_completed_emitted = False
         reasoning_stream_active = False
         ordinal_by_url: dict[str, int] = {}
@@ -4096,16 +4097,21 @@ class Pipe:
                                         }
                                     )
                                     # Also emit as status so it's visible in Open WebUI
-                                    # Only emit every 50 chars to avoid status spam
-                                    if len(reasoning_buffer) - reasoning_status_last_len >= 50:
+                                    # Throttle aggressively: emit only every 1000 chars AND at least 5 seconds apart
+                                    current_time = perf_counter()
+                                    chars_since_last = len(reasoning_buffer) - reasoning_status_last_len
+                                    time_since_last = current_time - reasoning_status_last_time if reasoning_status_last_time > 0 else 999
+
+                                    if chars_since_last >= 1000 and time_since_last >= 5.0:
                                         reasoning_status_last_len = len(reasoning_buffer)
-                                        # Truncate to last 500 chars to avoid status overflow
-                                        preview = reasoning_buffer[-500:] if len(reasoning_buffer) > 500 else reasoning_buffer
+                                        reasoning_status_last_time = current_time
+                                        # Show simple progress indicator instead of full text
+                                        char_count = len(reasoning_buffer)
                                         await event_emitter(
                                             {
                                                 "type": "status",
                                                 "data": {
-                                                    "description": f"💭 Reasoning…\n{preview}",
+                                                    "description": f"💭 Reasoning… ({char_count} chars)",
                                                     "done": False,
                                                 },
                                             }
