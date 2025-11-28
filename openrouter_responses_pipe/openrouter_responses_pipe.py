@@ -1110,9 +1110,6 @@ class ResponsesBody(BaseModel):
                     Handles file content blocks from multiple sources, downloading remote files
                     and saving base64 data to OWUI storage for persistence.
 
-                    **Audio File Detection**: If the file has an audio MIME type (audio/wav, audio/mp3),
-                    it will be automatically converted to input_audio format required by audio models.
-
                     Responses API File Input Fields (per OpenAPI spec):
                         - type: "input_file" (required)
                         - file_id: string | null (optional)
@@ -1124,21 +1121,23 @@ class ResponsesBody(BaseModel):
                         block: Content block from Open WebUI message
 
                     Returns:
-                        Responses API input_file block (or input_audio if audio MIME detected)
+                        Responses API input_file block with all available fields
 
                     Processing Flow:
                         1. Extract fields from nested or flat block structure
-                        2. Check MIME type - if audio, redirect to audio handler
-                        3. If file_data is data URL: Parse, upload to OWUI storage, set file_url
-                        4. If file_data is remote URL: Download, upload to OWUI storage, set file_url
-                        5. If file_id: Keep as-is (already in OWUI storage)
-                        6. Return all available fields to Responses API
+                        2. If file_data is data URL: Parse, upload to OWUI storage, set file_url
+                        3. If file_data is remote URL: Download, upload to OWUI storage, set file_url
+                        4. If file_id: Keep as-is (already in OWUI storage)
+                        5. Return all available fields to Responses API
 
                     Note:
                         All errors are caught and logged with status emissions.
                         Failed processing returns minimal valid block rather than crashing.
+                        10MB size limit enforced (practical limit for request payloads).
                     """
                     try:
+                        result = {"type": "input_file"}
+
                         # Check for nested "file" object (Chat Completions format)
                         nested_file = block.get("file")
                         source = nested_file if isinstance(nested_file, dict) else block
@@ -1148,24 +1147,6 @@ class ResponsesBody(BaseModel):
                         file_data = source.get("file_data")
                         filename = source.get("filename")
                         file_url = source.get("file_url")
-                        mime_type = source.get("mimeType") or source.get("mime_type") or ""
-
-                        # Detect audio files - route to audio handler instead
-                        if mime_type.lower().startswith("audio/"):
-                            logger.debug(f"Detected audio file (MIME: {mime_type}), routing to audio handler")
-                            # Create an audio block from the file data and let _to_input_audio handle it
-                            audio_block = {
-                                "type": "audio",
-                                "data": file_data,  # base64 data if available
-                                "mimeType": mime_type,
-                                "filename": filename,
-                                "file_id": file_id,
-                                "file_url": file_url,
-                            }
-                            return await _to_input_audio(audio_block)
-
-                        # Not audio - proceed with normal file handling
-                        result = {"type": "input_file"}
 
                         # Process file_data if it's a data URL or remote URL
                         if file_data and isinstance(file_data, str):
