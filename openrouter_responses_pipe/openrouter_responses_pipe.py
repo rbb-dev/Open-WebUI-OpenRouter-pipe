@@ -3893,8 +3893,7 @@ class Pipe:
         pending_items: list[dict[str, Any]] = []
         total_usage: dict[str, Any] = {}
         reasoning_buffer = ""
-        reasoning_status_last_len = 0  # Track buffer length at last status emission
-        reasoning_status_last_time = 0.0  # Track time of last status emission
+        reasoning_chunk = ""  # Accumulate tokens until we have a meaningful chunk to display
         reasoning_completed_emitted = False
         reasoning_stream_active = False
         ordinal_by_url: dict[str, int] = {}
@@ -4079,11 +4078,16 @@ class Pipe:
                         )
                         if is_reasoning_event or is_reasoning_part_event:
                             reasoning_stream_active = True
+                            # Stop "Thinking..." placeholders when reasoning starts
+                            note_model_activity()
+
                             delta_text = _extract_reasoning_text(event)
                             normalized_delta = _normalize_surrogate_chunk(delta_text, "reasoning") if delta_text else ""
                             if normalized_delta:
                                 note_generation_activity()
                                 reasoning_buffer += normalized_delta
+                                reasoning_chunk += normalized_delta
+
                                 if event_emitter:
                                     # Emit reasoning:delta for components that support it
                                     await event_emitter(
@@ -4096,28 +4100,40 @@ class Pipe:
                                             },
                                         }
                                     )
-                                    # Also emit as status so it's visible in Open WebUI
-                                    # Throttle aggressively: emit only every 1000 chars AND at least 5 seconds apart
-                                    current_time = perf_counter()
-                                    chars_since_last = len(reasoning_buffer) - reasoning_status_last_len
-                                    time_since_last = current_time - reasoning_status_last_time if reasoning_status_last_time > 0 else 999
 
-                                    if chars_since_last >= 1000 and time_since_last >= 5.0:
-                                        reasoning_status_last_len = len(reasoning_buffer)
-                                        reasoning_status_last_time = current_time
-                                        # Show simple progress indicator instead of full text
-                                        char_count = len(reasoning_buffer)
+                                    # Emit status with accumulated chunk when we have enough content
+                                    # Emit on sentence boundaries (. ! ?) or when chunk reaches ~150 chars
+                                    should_emit = (
+                                        normalized_delta.rstrip().endswith(('.', '!', '?', ':', '\n')) or
+                                        len(reasoning_chunk) >= 150
+                                    )
+
+                                    if should_emit and reasoning_chunk.strip():
                                         await event_emitter(
                                             {
                                                 "type": "status",
                                                 "data": {
-                                                    "description": f"💭 Reasoning… ({char_count} chars)",
+                                                    "description": reasoning_chunk.strip(),
                                                     "done": False,
                                                 },
                                             }
                                         )
+                                        reasoning_chunk = ""  # Reset chunk after emitting
                             if etype.endswith(".done") or etype.endswith(".completed"):
                                 if event_emitter:
+                                    # Emit any remaining chunk before completing
+                                    if reasoning_chunk.strip():
+                                        await event_emitter(
+                                            {
+                                                "type": "status",
+                                                "data": {
+                                                    "description": reasoning_chunk.strip(),
+                                                    "done": False,
+                                                },
+                                            }
+                                        )
+                                        reasoning_chunk = ""
+
                                     await event_emitter(
                                         {
                                             "type": "reasoning:completed",
