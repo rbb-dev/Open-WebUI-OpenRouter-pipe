@@ -5,6 +5,9 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 import socket
 import ipaddress
 
+# Configure pytest-asyncio
+pytest_plugins = ('pytest_asyncio',)
+
 
 class TestSSRFProtection:
     """Test SSRF (Server-Side Request Forgery) protection."""
