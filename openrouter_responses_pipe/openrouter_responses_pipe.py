@@ -8,7 +8,7 @@ original_author_url: https://github.com/jrkropp/open-webui-developer-toolkit
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
 version: 1.0.5
-requirements: aiohttp, cryptography, fastapi, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
+requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
 license: MIT
 
 - Auto-discovers and imports full OpenRouter Responses model catalog with capabilities and identifiers.
@@ -94,7 +94,18 @@ else:
 # Open WebUI internals
 from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
+from open_webui.models.files import Files
+from open_webui.models.users import Users
+from open_webui.routers.files import upload_file_handler
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+# Additional imports for file/image handling
+import io
+import uuid
+import httpx
+from fastapi import UploadFile, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 
 
 LOGGER = logging.getLogger(__name__)
@@ -971,34 +982,391 @@ class ResponsesBody(BaseModel):
                 instruction_prefix = "\n\n".join(pending_instructions).strip()
 
                 # Only transform known types; leave all others unchanged
-                def _to_input_image(block: dict) -> dict:
-                    """Convert an Open WebUI image block into Responses format."""
-                    image_payload = block.get("image_url")
-                    detail: Optional[str] = None
-                    if isinstance(image_payload, dict):
-                        url = image_payload.get("url", "")
-                        detail = image_payload.get("detail")
-                    elif isinstance(image_payload, str):
-                        url = image_payload
-                    else:
-                        url = ""
-                    result: dict[str, Any] = {"type": "input_image", "image_url": url}
-                    if isinstance(detail, str) and detail in {"auto", "low", "high"}:
-                        result["detail"] = detail
-                    elif url:
-                        result["detail"] = "auto"
-                    return result
+                async def _to_input_image(block: dict) -> dict:
+                    """Convert Open WebUI image block into Responses format.
 
+                    Handles image URLs and base64 data URLs, downloading remote images and
+                    saving all images to OWUI storage to prevent data loss.
+
+                    Supported Image Formats (per OpenRouter docs):
+                        - image/png
+                        - image/jpeg
+                        - image/webp
+                        - image/gif
+
+                    Args:
+                        block: Content block from Open WebUI message
+
+                    Returns:
+                        Responses API input_image block with internal OWUI storage URL
+
+                    Processing Flow:
+                        1. Extract image URL from block (nested or flat structure)
+                        2. If data URL: Parse, upload to OWUI storage
+                        3. If remote URL: Download, upload to OWUI storage
+                        4. If OWUI file reference: Keep as-is
+                        5. Return Responses API format with detail level
+
+                    Note:
+                        All errors are caught and logged with status emissions.
+                        Failed processing returns empty image_url rather than crashing.
+                    """
+                    try:
+                        image_payload = block.get("image_url")
+                        detail: Optional[str] = None
+                        url: str = ""
+
+                        if isinstance(image_payload, dict):
+                            url = image_payload.get("url", "")
+                            detail = image_payload.get("detail")
+                        elif isinstance(image_payload, str):
+                            url = image_payload
+
+                        if not url:
+                            return {"type": "input_image", "image_url": "", "detail": "auto"}
+
+                        # Handle data URLs (base64)
+                        if url.startswith("data:"):
+                            try:
+                                parsed = self._parse_data_url(url)
+                                if parsed and user_obj:
+                                    # Save to OWUI storage to prevent loss
+                                    ext = parsed["mime_type"].split("/")[-1]
+                                    internal_url = await self._upload_to_owui_storage(
+                                        request=__request__,
+                                        user=user_obj,
+                                        file_data=parsed["data"],
+                                        filename=f"image-{uuid.uuid4().hex}.{ext}",
+                                        mime_type=parsed["mime_type"]
+                                    )
+                                    if internal_url:
+                                        url = internal_url
+                                        await self._emit_status(
+                                            event_emitter,
+                                            "📥 Saved base64 image to storage",
+                                            done=False
+                                        )
+                            except Exception as exc:
+                                self.logger.error(f"Failed to process base64 image: {exc}")
+                                await self._emit_error(
+                                    event_emitter,
+                                    f"Failed to save base64 image: {exc}",
+                                    show_error_message=False
+                                )
+
+                        # Handle remote URLs (download and save to prevent deletion)
+                        elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
+                            try:
+                                downloaded = await self._download_remote_url(url)
+                                if downloaded and user_obj:
+                                    # Save to OWUI storage to prevent remote deletion
+                                    filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
+                                    if "." not in filename:
+                                        ext = downloaded["mime_type"].split("/")[-1]
+                                        filename = f"{filename}.{ext}"
+
+                                    internal_url = await self._upload_to_owui_storage(
+                                        request=__request__,
+                                        user=user_obj,
+                                        file_data=downloaded["data"],
+                                        filename=filename,
+                                        mime_type=downloaded["mime_type"]
+                                    )
+                                    if internal_url:
+                                        url = internal_url
+                                        await self._emit_status(
+                                            event_emitter,
+                                            f"📥 Downloaded and saved image from remote URL",
+                                            done=False
+                                        )
+                            except Exception as exc:
+                                self.logger.error(f"Failed to download remote image {url}: {exc}")
+                                await self._emit_error(
+                                    event_emitter,
+                                    f"Failed to download image: {exc}",
+                                    show_error_message=False
+                                )
+
+                        result: dict[str, Any] = {"type": "input_image", "image_url": url}
+                        if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+                            result["detail"] = detail
+                        elif url:
+                            result["detail"] = "auto"
+
+                        return result
+
+                    except Exception as exc:
+                        self.logger.error(f"Error in _to_input_image: {exc}")
+                        await self._emit_error(
+                            event_emitter,
+                            f"Image processing error: {exc}",
+                            show_error_message=False
+                        )
+                        return {"type": "input_image", "image_url": "", "detail": "auto"}
+
+                async def _to_input_file(block: dict) -> dict:
+                    """Convert Open WebUI file blocks into Responses API format.
+
+                    Handles file content blocks from multiple sources, downloading remote files
+                    and saving base64 data to OWUI storage for persistence.
+
+                    Responses API File Input Fields (per OpenAPI spec):
+                        - type: "input_file" (required)
+                        - file_id: string | null (optional)
+                        - file_data: string (optional) - base64 or data URL
+                        - filename: string (optional) - for model context
+                        - file_url: string (optional) - URL to file
+
+                    Args:
+                        block: Content block from Open WebUI message
+
+                    Returns:
+                        Responses API input_file block with all available fields
+
+                    Processing Flow:
+                        1. Extract fields from nested or flat block structure
+                        2. If file_data is data URL: Parse, upload to OWUI storage, set file_url
+                        3. If file_data is remote URL: Download, upload to OWUI storage, set file_url
+                        4. If file_id: Keep as-is (already in OWUI storage)
+                        5. Return all available fields to Responses API
+
+                    Note:
+                        All errors are caught and logged with status emissions.
+                        Failed processing returns minimal valid block rather than crashing.
+                        10MB size limit enforced (practical limit for request payloads).
+                    """
+                    try:
+                        result = {"type": "input_file"}
+
+                        # Check for nested "file" object (Chat Completions format)
+                        nested_file = block.get("file")
+                        source = nested_file if isinstance(nested_file, dict) else block
+
+                        # Extract all available fields
+                        file_id = source.get("file_id")
+                        file_data = source.get("file_data")
+                        filename = source.get("filename")
+                        file_url = source.get("file_url")
+
+                        # Process file_data if it's a data URL or remote URL
+                        if file_data and isinstance(file_data, str):
+                            # Handle data URL (base64)
+                            if file_data.startswith("data:"):
+                                try:
+                                    parsed = self._parse_data_url(file_data)
+                                    if parsed and user_obj:
+                                        # Save to OWUI storage
+                                        fname = filename or f"file-{uuid.uuid4().hex}"
+                                        if "." not in fname and parsed["mime_type"]:
+                                            ext = parsed["mime_type"].split("/")[-1]
+                                            fname = f"{fname}.{ext}"
+
+                                        internal_url = await self._upload_to_owui_storage(
+                                            request=__request__,
+                                            user=user_obj,
+                                            file_data=parsed["data"],
+                                            filename=fname,
+                                            mime_type=parsed["mime_type"]
+                                        )
+                                        if internal_url:
+                                            file_url = internal_url
+                                            file_data = None  # Clear base64, use URL instead
+                                            await self._emit_status(
+                                                event_emitter,
+                                                f"📥 Saved base64 file to storage: {filename or fname}",
+                                                done=False
+                                            )
+                                except Exception as exc:
+                                    self.logger.error(f"Failed to process base64 file: {exc}")
+                                    await self._emit_error(
+                                        event_emitter,
+                                        f"Failed to save base64 file: {exc}",
+                                        show_error_message=False
+                                    )
+
+                            # Handle remote URL (not OWUI file reference)
+                            elif file_data.startswith(("http://", "https://")) and not ("/api/v1/files/" in file_data or "/files/" in file_data):
+                                try:
+                                    downloaded = await self._download_remote_url(file_data)
+                                    if downloaded and user_obj:
+                                        fname = filename or file_data.split("/")[-1].split("?")[0] or f"file-{uuid.uuid4().hex}"
+                                        if "." not in fname and downloaded["mime_type"]:
+                                            ext = downloaded["mime_type"].split("/")[-1]
+                                            fname = f"{fname}.{ext}"
+
+                                        internal_url = await self._upload_to_owui_storage(
+                                            request=__request__,
+                                            user=user_obj,
+                                            file_data=downloaded["data"],
+                                            filename=fname,
+                                            mime_type=downloaded["mime_type"]
+                                        )
+                                        if internal_url:
+                                            file_url = internal_url
+                                            file_data = None  # Clear, use URL instead
+                                            await self._emit_status(
+                                                event_emitter,
+                                                f"📥 Downloaded and saved file: {fname}",
+                                                done=False
+                                            )
+                                except Exception as exc:
+                                    self.logger.error(f"Failed to download remote file: {exc}")
+                                    await self._emit_error(
+                                        event_emitter,
+                                        f"Failed to download file: {exc}",
+                                        show_error_message=False
+                                    )
+
+                        # Build result with all available fields (per Responses API spec)
+                        if file_id:
+                            result["file_id"] = file_id
+                        if file_data:
+                            result["file_data"] = file_data
+                        if filename:
+                            result["filename"] = filename
+                        if file_url:
+                            result["file_url"] = file_url
+
+                        return result
+
+                    except Exception as exc:
+                        self.logger.error(f"Error in _to_input_file: {exc}")
+                        await self._emit_error(
+                            event_emitter,
+                            f"File processing error: {exc}",
+                            show_error_message=False
+                        )
+                        return {"type": "input_file"}
+
+                async def _to_input_audio(block: dict) -> dict:
+                    """Convert Open WebUI audio blocks into Responses API format.
+
+                    Handles audio content blocks, transforming various input formats into
+                    the Responses API audio input format.
+
+                    Responses API Audio Input Format (per OpenAPI spec):
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": "<base64_audio_data>",
+                                "format": "mp3" | "wav"
+                            }
+                        }
+
+                    OpenRouter Audio Requirements (per documentation):
+                        - Audio must be base64-encoded (URLs NOT supported)
+                        - Supported formats: wav, mp3 only
+                        - See: https://openrouter.ai/docs/guides/overview/multimodal/audio
+
+                    Input Formats Handled:
+                        1. Chat Completions: {"type": "input_audio", "input_audio": "<base64>"}
+                        2. Tool output: {"type": "audio", "mimeType": "audio/mp3", "data": "<base64>"}
+                        3. Already correct: {"type": "input_audio", "input_audio": {"data": "...", "format": "..."}}
+
+                    Args:
+                        block: Content block from Open WebUI message
+
+                    Returns:
+                        Responses API input_audio block with data and format
+
+                    MIME Type to Format Mapping:
+                        - audio/mpeg, audio/mp3 → "mp3"
+                        - audio/wav, audio/wave, audio/x-wav → "wav"
+                        - Unknown types default to "mp3"
+
+                    Note:
+                        All errors are caught and logged with status emissions.
+                        Failed processing returns minimal valid block rather than crashing.
+                    """
+                    try:
+                        audio_payload = block.get("input_audio") or block.get("data") or block.get("blob")
+
+                        # If already in correct format, return as-is
+                        if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
+                            return {
+                                "type": "input_audio",
+                                "input_audio": audio_payload
+                            }
+
+                        # Need to convert to Responses format
+                        if isinstance(audio_payload, str):
+                            # Determine format from MIME type or default to mp3
+                            mime_type = block.get("mimeType", "audio/mp3")
+                            format_map = {
+                                "audio/mpeg": "mp3",
+                                "audio/mp3": "mp3",
+                                "audio/wav": "wav",
+                                "audio/wave": "wav",
+                                "audio/x-wav": "wav"
+                            }
+                            audio_format = format_map.get(mime_type.lower(), "mp3")
+
+                            return {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": audio_payload,
+                                    "format": audio_format
+                                }
+                            }
+
+                        # Invalid/empty
+                        self.logger.warning("Invalid audio payload format, returning empty audio block")
+                        return {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": "",
+                                "format": "mp3"
+                            }
+                        }
+
+                    except Exception as exc:
+                        self.logger.error(f"Error in _to_input_audio: {exc}")
+                        await self._emit_error(
+                            event_emitter,
+                            f"Audio processing error: {exc}",
+                            show_error_message=False
+                        )
+                        return {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": "",
+                                "format": "mp3"
+                            }
+                        }
+
+                # Block transformers (async functions for image/file processing)
                 block_transform = {
                     "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
                     "image_url":  _to_input_image,
-                    "input_file": lambda b: {"type": "input_file",  "file_id": b.get("file_id")},
+                    "input_file": _to_input_file,
+                    "file":       _to_input_file,  # Chat Completions format
+                    "input_audio": _to_input_audio,  # Responses API audio format
+                    "audio":      _to_input_audio,   # Open WebUI tool audio output format
                 }
 
-                converted_blocks = [
-                    block_transform.get(block.get("type"), lambda b: b)(block)
-                    for block in content_blocks if block
-                ]
+                # Process blocks (handle async transformers)
+                converted_blocks = []
+                for block in content_blocks:
+                    if not block:
+                        continue
+                    block_type = block.get("type")
+                    transformer = block_transform.get(block_type, lambda b: b)
+
+                    try:
+                        if asyncio.iscoroutinefunction(transformer):
+                            result = await transformer(block)
+                        else:
+                            result = transformer(block)
+                        converted_blocks.append(result)
+                    except Exception as exc:
+                        self.logger.error(f"Failed to transform block type '{block_type}': {exc}")
+                        await self._emit_error(
+                            event_emitter,
+                            f"Block transformation error for '{block_type}': {exc}",
+                            show_error_message=False
+                        )
+                        # Keep original block to avoid data loss
+                        converted_blocks.append(block)
 
                 if instruction_prefix:
                     pending_instructions.clear()
@@ -1168,7 +1536,6 @@ class ResponsesBody(BaseModel):
             "response_format", # Replaced with 'text' in Responses API
             "suffix", # Responses API does not support suffix
             "stream_options", # Responses API does not support stream options
-            "audio", # Responses API does not support audio input
             "function_call", # Deprecated in favor of 'tool_choice'.
             "functions", # Deprecated in favor of 'tools'.
 
@@ -1289,6 +1656,26 @@ class Pipe:
             default=300,
             ge=1,
             description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors UX for slow providers.",
+        )
+
+        # Remote File/Image Download Settings
+        REMOTE_DOWNLOAD_MAX_RETRIES: int = Field(
+            default=3,
+            ge=0,
+            le=10,
+            description="Maximum number of retry attempts for downloading remote images and files. Set to 0 to disable retries.",
+        )
+        REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS: int = Field(
+            default=5,
+            ge=1,
+            le=60,
+            description="Initial delay in seconds before the first retry attempt. Subsequent retries use exponential backoff (delay * 2^attempt).",
+        )
+        REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS: int = Field(
+            default=45,
+            ge=5,
+            le=300,
+            description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded.",
         )
 
         # Models
@@ -3338,6 +3725,387 @@ class Pipe:
             keys = [key for key in keys if key]
             if keys:
                 await self._redis_client.delete(*keys)
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # File and Image Handling Helpers
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    async def _get_user_by_id(self, user_id: str):
+        """Fetch user record from database for file upload operations.
+
+        Args:
+            user_id: The unique identifier for the user
+
+        Returns:
+            UserModel object if found, None otherwise
+
+        Note:
+            Uses run_in_threadpool to avoid blocking async operations.
+            Failures are logged but do not raise exceptions.
+        """
+        try:
+            return await run_in_threadpool(Users.get_user_by_id, user_id)
+        except Exception as exc:
+            self.logger.error(f"Failed to load user {user_id}: {exc}")
+            return None
+
+    async def _get_file_by_id(self, file_id: str):
+        """Look up file metadata from Open WebUI's file storage.
+
+        Args:
+            file_id: The unique identifier for the file
+
+        Returns:
+            FileModel object if found, None otherwise
+
+        Note:
+            Uses run_in_threadpool to avoid blocking async operations.
+            Failures are logged but do not raise exceptions.
+        """
+        try:
+            return await run_in_threadpool(Files.get_file_by_id, file_id)
+        except Exception as exc:
+            self.logger.error(f"Failed to load file {file_id}: {exc}")
+            return None
+
+    async def _upload_to_owui_storage(
+        self,
+        request: Request,
+        user,
+        file_data: bytes,
+        filename: str,
+        mime_type: str
+    ) -> Optional[str]:
+        """Upload file or image to Open WebUI storage and return internal URL.
+
+        This method ensures that files and images are persistently stored in Open WebUI's
+        file system, preventing data loss from:
+        - Remote URLs that may become inaccessible
+        - Base64 data that is temporary
+        - External image hosts that delete images after a period
+
+        Args:
+            request: FastAPI Request object for URL generation
+            user: UserModel object representing the file owner
+            file_data: Raw bytes of the file content
+            filename: Desired filename (will be prefixed with UUID)
+            mime_type: MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
+
+        Returns:
+            Internal URL path to the uploaded file (e.g., '/api/v1/files/{id}'),
+            or None if upload fails
+
+        Note:
+            - File processing is disabled (process=False) to avoid unnecessary overhead
+            - Uses run_in_threadpool to prevent blocking async event loop
+            - Failures are logged but return None rather than raising exceptions
+
+        Example:
+            >>> url = await self._upload_to_owui_storage(
+            ...     request, user, image_bytes, "photo.jpg", "image/jpeg"
+            ... )
+            >>> # url = '/api/v1/files/abc123...'
+        """
+        try:
+            file_item = await run_in_threadpool(
+                upload_file_handler,
+                request=request,
+                file=UploadFile(
+                    file=io.BytesIO(file_data),
+                    filename=filename,
+                    headers=Headers({"content-type": mime_type}),
+                ),
+                metadata={"mime_type": mime_type},
+                process=False,  # Disable processing to avoid overhead
+                process_in_background=False,
+                user=user,
+                background_tasks=BackgroundTasks(),
+            )
+            # Generate internal URL path
+            internal_url = request.app.url_path_for("get_file_content_by_id", id=file_item.id)
+            self.logger.info(
+                f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: {internal_url}"
+            )
+            return internal_url
+        except Exception as exc:
+            self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
+            return None
+
+    async def _download_remote_url(
+        self,
+        url: str,
+        timeout_seconds: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Download file or image from remote URL with exponential backoff retry logic.
+
+        This method fetches content from HTTP/HTTPS URLs with automatic retry on transient
+        failures using exponential backoff. Retry behavior is configurable via valves.
+
+        Args:
+            url: The HTTP or HTTPS URL to download
+            timeout_seconds: Optional timeout in seconds per attempt (defaults to valve setting, max 60s)
+
+        Returns:
+            Dictionary containing:
+                - 'data': Raw bytes of the downloaded content
+                - 'mime_type': Normalized MIME type from Content-Type header
+                - 'url': Original URL for reference
+            Returns None if download fails or URL is invalid
+
+        Retry Behavior (configurable via valves):
+            - REMOTE_DOWNLOAD_MAX_RETRIES: Maximum retry attempts (default: 3)
+            - REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS: Initial delay before first retry (default: 5s)
+            - REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS: Maximum total retry time (default: 45s)
+            - Uses exponential backoff: delay * 2^attempt
+
+        Retryable Errors:
+            - Network errors (connection timeout, DNS failure, etc.)
+            - HTTP 5xx server errors
+            - HTTP 429 rate limit errors
+
+        Non-Retryable Errors:
+            - HTTP 4xx client errors (except 429)
+            - Invalid URLs
+            - Files exceeding 10MB size limit
+
+        Size Limits:
+            - Maximum 10MB per file (practical limit for request payloads)
+            - Files exceeding this limit are rejected with a warning
+
+        Supported Protocols:
+            - http:// and https:// only
+            - Other protocols return None
+
+        MIME Type Normalization:
+            - 'image/jpg' is normalized to 'image/jpeg'
+            - MIME type extracted from Content-Type header (charset ignored)
+
+        Note:
+            - Timeout is capped at 60 seconds per attempt to prevent hanging requests
+            - All exceptions are caught and logged, returning None
+            - Empty or non-HTTP URLs return None immediately
+            - Retry delays use exponential backoff to be respectful of remote servers
+
+        Example:
+            >>> result = await self._download_remote_url(
+            ...     "https://example.com/image.jpg"
+            ... )
+            >>> if result:
+            ...     print(f"Downloaded {len(result['data'])} bytes")
+            ...     print(f"MIME type: {result['mime_type']}")
+        """
+        url = (url or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return None
+
+        # Get retry configuration from valves
+        max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
+        initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
+        max_retry_time = self.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS
+
+        # Cap timeout at 60 seconds per attempt
+        if timeout_seconds is None:
+            timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
+        timeout_seconds = min(timeout_seconds, 60)
+
+        # Define retryable exceptions
+        def is_retryable_exception(exc: Exception) -> bool:
+            """Determine if exception should trigger a retry."""
+            # Always retry network-level errors
+            if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException)):
+                return True
+
+            # Retry HTTP 5xx server errors and 429 rate limits
+            if isinstance(exc, httpx.HTTPStatusError):
+                status_code = exc.response.status_code
+                return status_code >= 500 or status_code == 429
+
+            # Don't retry other errors
+            return False
+
+        attempt = 0
+        start_time = time.perf_counter()
+
+        try:
+            # Use tenacity for retry logic with exponential backoff
+            async for attempt_info in AsyncRetrying(
+                retry=retry_if_exception_type((httpx.NetworkError, httpx.TimeoutException, httpx.HTTPStatusError)),
+                stop=stop_after_attempt(max_retries + 1),  # +1 because first attempt doesn't count as retry
+                wait=wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time),
+                reraise=True
+            ):
+                with attempt_info:
+                    attempt += 1
+
+                    # Check if we've exceeded max retry time
+                    elapsed = time.perf_counter() - start_time
+                    if attempt > 1 and elapsed > max_retry_time:
+                        self.logger.warning(
+                            f"Download retry timeout exceeded for {url} after {elapsed:.1f}s"
+                        )
+                        return None
+
+                    # Log retry attempts
+                    if attempt > 1:
+                        self.logger.info(
+                            f"Retry attempt {attempt - 1}/{max_retries} for {url} after {elapsed:.1f}s"
+                        )
+
+                    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                        response = await client.get(url)
+                        response.raise_for_status()
+
+                    # Extract and normalize MIME type
+                    mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                    if mime_type == "image/jpg":
+                        mime_type = "image/jpeg"
+
+                    # Enforce 10MB size limit (practical limit for request payloads)
+                    if len(response.content) > 10 * 1024 * 1024:
+                        self.logger.warning(
+                            f"Remote file {url} exceeds 10MB ({len(response.content):,} bytes), skipping"
+                        )
+                        return None
+
+                    # Success
+                    if attempt > 1:
+                        elapsed = time.perf_counter() - start_time
+                        self.logger.info(
+                            f"Successfully downloaded {url} after {attempt} attempt(s) in {elapsed:.1f}s"
+                        )
+
+                    return {
+                        "data": response.content,
+                        "mime_type": mime_type,
+                        "url": url
+                    }
+
+        except httpx.HTTPStatusError as exc:
+            # Check if it was a retryable HTTP error
+            if not is_retryable_exception(exc):
+                self.logger.error(
+                    f"Failed to download {url}: HTTP {exc.response.status_code} (non-retryable)"
+                )
+            else:
+                elapsed = time.perf_counter() - start_time
+                self.logger.error(
+                    f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: HTTP {exc.response.status_code}"
+                )
+            return None
+        except Exception as exc:
+            elapsed = time.perf_counter() - start_time
+            self.logger.error(
+                f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
+            )
+            return None
+
+    def _parse_data_url(self, data_url: str) -> Optional[Dict[str, Any]]:
+        """Extract base64 data from data URL.
+
+        Parses data URLs in the format: data:<mime_type>;base64,<base64_data>
+
+        Args:
+            data_url: Data URL string to parse
+
+        Returns:
+            Dictionary containing:
+                - 'data': Decoded bytes from base64
+                - 'mime_type': Normalized MIME type
+                - 'b64': Original base64 string (without prefix)
+            Returns None if parsing fails or format is invalid
+
+        Format Requirements:
+            - Must start with 'data:'
+            - Must contain ';base64,' separator
+            - Base64 data must be valid
+
+        MIME Type Normalization:
+            - 'image/jpg' is normalized to 'image/jpeg'
+            - MIME type extracted from prefix (e.g., 'data:image/png;base64,...')
+
+        Note:
+            - Invalid base64 data results in None return
+            - All exceptions are caught and logged
+            - Non-data URLs return None immediately
+
+        Example:
+            >>> result = self._parse_data_url(
+            ...     "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
+            ... )
+            >>> if result:
+            ...     print(f"MIME: {result['mime_type']}")
+            ...     print(f"Size: {len(result['data'])} bytes")
+        """
+        try:
+            if not data_url or not data_url.startswith("data:"):
+                return None
+
+            parts = data_url.split(";base64,", 1)
+            if len(parts) != 2:
+                return None
+
+            # Extract and normalize MIME type
+            mime_type = parts[0].replace("data:", "", 1).lower().strip()
+            if mime_type == "image/jpg":
+                mime_type = "image/jpeg"
+
+            b64_data = parts[1]
+            file_data = base64.b64decode(b64_data)
+
+            return {
+                "data": file_data,
+                "mime_type": mime_type,
+                "b64": b64_data
+            }
+        except Exception as exc:
+            self.logger.error(f"Failed to parse data URL: {exc}")
+            return None
+
+    async def _emit_status(
+        self,
+        event_emitter: Optional[Callable[[dict], Awaitable[None]]],
+        message: str,
+        done: bool = False
+    ):
+        """Emit status updates to the Open WebUI client.
+
+        Sends progress indicators to the UI during file/image processing operations.
+
+        Args:
+            event_emitter: Async callable for sending events to the client,
+                          or None if no emitter available
+            message: Status message to display (supports emoji for visual indicators)
+            done: Whether this status represents completion (default: False)
+
+        Status Message Conventions:
+            - 📥 Download/upload in progress
+            - ✅ Successful completion
+            - ⚠️ Warning or non-critical error
+            - 🔴 Critical error
+
+        Note:
+            - If event_emitter is None, this method is a no-op
+            - Errors during emission are caught and logged
+            - Does not interrupt processing flow
+
+        Example:
+            >>> await self._emit_status(
+            ...     emitter,
+            ...     "📥 Downloading remote image...",
+            ...     done=False
+            ... )
+        """
+        if event_emitter:
+            try:
+                await event_emitter({
+                    "type": "status",
+                    "data": {
+                        "description": message,
+                        "done": done
+                    }
+                })
+            except Exception as exc:
+                self.logger.error(f"Failed to emit status: {exc}")
 
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
