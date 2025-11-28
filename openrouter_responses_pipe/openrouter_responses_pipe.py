@@ -60,7 +60,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Type, TypedDict, Union, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypedDict, Union, TYPE_CHECKING
 from urllib.parse import urlparse
 import ast
 
