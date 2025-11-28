@@ -531,24 +531,12 @@ class OpenRouterModelRegistry:
 
             sanitized = sanitize_model_id(original_id)
             norm_id = ModelFamily.base_model(sanitized)
-            supported = set(item.get("supported_parameters") or [])
-            architecture = dict(item.get("architecture") or {})
-            pricing = dict(item.get("pricing") or {})
-            limits = item.get("limits")
-            max_completion_tokens: Optional[int] = None
-            if isinstance(limits, dict):
-                max_completion_tokens = limits.get("max_completion_tokens")
-            if max_completion_tokens is None:
-                top_provider = item.get("top_provider")
-                if isinstance(top_provider, dict):
-                    max_completion_tokens = top_provider.get("max_completion_tokens")
 
-            raw_specs[norm_id] = {
-                "supported_parameters": supported,
-                "architecture": architecture,
-                "pricing": pricing,
-                "max_completion_tokens": max_completion_tokens,
-            }
+            # Store the FULL model object - it's only 3.5MB total for all models
+            # This gives us access to: description, context_length, created, canonical_slug,
+            # hugging_face_id, per_request_limits, default_parameters, and everything else
+            raw_specs[norm_id] = dict(item)
+
             id_map[norm_id] = original_id
             models.append(
                 {
@@ -560,18 +548,45 @@ class OpenRouterModelRegistry:
             )
 
         # Finalize specs shared with ModelFamily (features + max completion tokens).
+        # Now we keep the FULL model object plus derived features for fast lookups
         specs: Dict[str, Dict[str, Any]] = {}
-        for norm_id, spec in raw_specs.items():
-            supported_parameters = spec.get("supported_parameters") or set()
+        for norm_id, full_model in raw_specs.items():
+            supported_parameters = set(full_model.get("supported_parameters") or [])
+            architecture = full_model.get("architecture") or {}
+            pricing = full_model.get("pricing") or {}
+
+            # Derive feature flags from model metadata
             features = cls._derive_features(
                 supported_parameters,
-                spec.get("architecture") or {},
-                spec.get("pricing") or {},
+                architecture,
+                pricing,
             )
+
+            # Extract max_completion_tokens from limits or top_provider
+            max_completion_tokens: Optional[int] = None
+            limits = full_model.get("limits")
+            if isinstance(limits, dict):
+                max_completion_tokens = limits.get("max_completion_tokens")
+            if max_completion_tokens is None:
+                top_provider = full_model.get("top_provider")
+                if isinstance(top_provider, dict):
+                    max_completion_tokens = top_provider.get("max_completion_tokens")
+
+            # Store full model + derived data for downstream use
             specs[norm_id] = {
+                # Derived features for fast capability checks
                 "features": features,
-                "max_completion_tokens": spec.get("max_completion_tokens"),
+                "max_completion_tokens": max_completion_tokens,
                 "supported_parameters": frozenset(supported_parameters),
+
+                # Keep full model object for any future needs
+                "full_model": full_model,
+
+                # Quick access to commonly used fields
+                "context_length": full_model.get("context_length"),
+                "description": full_model.get("description"),
+                "pricing": pricing,
+                "architecture": architecture,
             }
 
         models.sort(key=lambda m: m["name"].lower())
@@ -611,19 +626,49 @@ class OpenRouterModelRegistry:
         architecture: Dict[str, Any],
         pricing: Dict[str, Any],
     ) -> set[str]:
-        """Translate OpenRouter metadata into capability flags."""
+        """Translate OpenRouter metadata into capability flags.
+
+        Features include:
+        - function_calling: Model supports tools/function calling
+        - reasoning: Model supports extended reasoning
+        - reasoning_summary: Model supports reasoning summaries
+        - web_search_tool: Model has web search capability
+        - image_gen_tool: Model can generate images (output)
+        - vision: Model accepts image inputs
+        - audio_input: Model accepts audio inputs
+        - video_input: Model accepts video inputs
+        - file_input: Model accepts file/document inputs
+        """
         features: set[str] = set()
+
+        # Check supported parameters for function calling and reasoning
         if {"tools", "tool_choice"} & supported_parameters:
             features.add("function_calling")
         if "reasoning" in supported_parameters:
             features.add("reasoning")
         if "include_reasoning" in supported_parameters:
             features.add("reasoning_summary")
+
+        # Check pricing for built-in tools
         if pricing.get("web_search") is not None:
             features.add("web_search_tool")
+
+        # Check output modalities
         output_modalities = architecture.get("output_modalities") or []
         if "image" in output_modalities:
             features.add("image_gen_tool")
+
+        # Check input modalities - CRITICAL for multimodal support validation
+        input_modalities = architecture.get("input_modalities") or []
+        if "image" in input_modalities:
+            features.add("vision")
+        if "audio" in input_modalities:
+            features.add("audio_input")
+        if "video" in input_modalities:
+            features.add("video_input")
+        if "file" in input_modalities:
+            features.add("file_input")
+
         return features
 
     @classmethod
@@ -1334,6 +1379,100 @@ class ResponsesBody(BaseModel):
                             }
                         }
 
+                async def _to_input_video(block: dict) -> dict:
+                    """Convert Open WebUI video blocks into Chat Completions video format.
+
+                    Note: The Responses API doesn't have explicit `input_video` type.
+                    Videos use the Chat Completions `video_url` format, which OpenRouter
+                    handles internally.
+
+                    Video Support by Provider (per OpenRouter docs):
+                        - Gemini AI Studio: YouTube links only
+                        - Most providers: Limited or no video support
+                        - Check model's input_modalities for "video" capability
+
+                    Supported Video Formats:
+                        - Remote URLs: YouTube links, direct video URLs
+                        - Data URLs: data:video/mp4;base64,... (rarely used due to size)
+                        - OWUI file references: /api/v1/files/...
+
+                    Chat Completions Video Format:
+                        {
+                            "type": "video_url",
+                            "video_url": {
+                                "url": "https://youtube.com/..." or "data:video/mp4;base64,..."
+                            }
+                        }
+
+                    Input Formats Handled:
+                        1. {"type": "video_url", "video_url": {"url": "..."}}
+                        2. {"type": "video_url", "video_url": "..."}
+                        3. {"type": "video", "url": "...", "mimeType": "video/mp4"}
+
+                    Args:
+                        block: Content block from Open WebUI message
+
+                    Returns:
+                        Chat Completions video_url block
+
+                    Note:
+                        Videos are NOT downloaded/stored due to large size.
+                        URL validation is minimal - OpenRouter will validate provider support.
+                    """
+                    try:
+                        video_payload = block.get("video_url")
+                        url: str = ""
+
+                        # Handle nested video_url object
+                        if isinstance(video_payload, dict):
+                            url = video_payload.get("url", "")
+                        elif isinstance(video_payload, str):
+                            url = video_payload
+
+                        # Fallback: check for direct URL in block
+                        if not url:
+                            url = block.get("url", "")
+
+                        if not url:
+                            self.logger.warning("Video block has no URL")
+                            return {"type": "video_url", "video_url": {"url": ""}}
+
+                        # Log video input for visibility
+                        if url.startswith("data:"):
+                            await self._emit_status(
+                                event_emitter,
+                                "🎥 Processing base64 video input",
+                                done=False
+                            )
+                        elif "youtube.com" in url or "youtu.be" in url:
+                            await self._emit_status(
+                                event_emitter,
+                                "🎥 Processing YouTube video input",
+                                done=False
+                            )
+                        else:
+                            await self._emit_status(
+                                event_emitter,
+                                f"🎥 Processing video input",
+                                done=False
+                            )
+
+                        return {
+                            "type": "video_url",
+                            "video_url": {
+                                "url": url
+                            }
+                        }
+
+                    except Exception as exc:
+                        self.logger.error(f"Error in _to_input_video: {exc}")
+                        await self._emit_error(
+                            event_emitter,
+                            f"Video processing error: {exc}",
+                            show_error_message=False
+                        )
+                        return {"type": "video_url", "video_url": {"url": ""}}
+
                 # Block transformers (async functions for image/file processing)
                 block_transform = {
                     "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
@@ -1342,6 +1481,8 @@ class ResponsesBody(BaseModel):
                     "file":       _to_input_file,  # Chat Completions format
                     "input_audio": _to_input_audio,  # Responses API audio format
                     "audio":      _to_input_audio,   # Open WebUI tool audio output format
+                    "video_url":  _to_input_video,   # Chat Completions video format
+                    "video":      _to_input_video,   # Alternative video format
                 }
 
                 # Process blocks (handle async transformers)
