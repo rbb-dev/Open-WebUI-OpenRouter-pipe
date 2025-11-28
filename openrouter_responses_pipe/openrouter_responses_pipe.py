@@ -877,8 +877,8 @@ class ResponsesBody(BaseModel):
 
         return valid_tools
     
-    @staticmethod
     async def transform_messages_to_input(
+        self,
         messages: List[Dict[str, Any]],
         chat_id: Optional[str] = None,
         openwebui_model_id: Optional[str] = None,
@@ -887,6 +887,9 @@ class ResponsesBody(BaseModel):
         ] = None,
         pruning_turns: int = 0,
         replayed_reasoning_refs: Optional[List[Tuple[str, str]]] = None,
+        __request__: Optional[Request] = None,
+        user_obj: Optional[Any] = None,
+        event_emitter: Optional[Callable] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -1779,7 +1782,10 @@ class ResponsesBody(BaseModel):
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
             replayed_reasoning_refs: list[Tuple[str, str]] = []
-            sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
+            # Note: transform_messages_to_input is now an instance method but called on ResponsesBody class
+            # The __request__, user_obj, event_emitter parameters are not available in this static context
+            # and will remain None (which is acceptable - the nested functions check for None)
+            sanitized_params["input"] = await ResponsesBody().transform_messages_to_input(
                 completions_dict.get("messages", []),
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
