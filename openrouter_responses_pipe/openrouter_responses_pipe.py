@@ -141,6 +141,32 @@ def _coerce_idle_flush_ms(value: int) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Status Message Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class StatusMessages:
+    """Centralized status messages for multimodal processing."""
+
+    # Image processing
+    IMAGE_BASE64_SAVED = "📥 Saved base64 image to storage"
+    IMAGE_REMOTE_SAVED = "📥 Downloaded and saved image from remote URL"
+
+    # File processing
+    FILE_BASE64_SAVED = "📥 Saved base64 file to storage"
+    FILE_REMOTE_SAVED = "📥 Downloaded and saved file from remote URL"
+
+    # Video processing
+    VIDEO_BASE64 = "🎥 Processing base64 video input"
+    VIDEO_YOUTUBE = "🎥 Processing YouTube video input"
+    VIDEO_REMOTE = "🎥 Processing video input"
+
+    # Audio processing
+    AUDIO_BASE64_SAVED = "🎵 Saved base64 audio to storage"
+    AUDIO_REMOTE_SAVED = "🎵 Downloaded and saved audio from remote URL"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TypedDict Definitions for Type Safety
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1088,7 +1114,7 @@ class ResponsesBody(BaseModel):
                                         url = internal_url
                                         await self._emit_status(
                                             event_emitter,
-                                            "📥 Saved base64 image to storage",
+                                            StatusMessages.IMAGE_BASE64_SAVED,
                                             done=False
                                         )
                             except Exception as exc:
@@ -1121,7 +1147,7 @@ class ResponsesBody(BaseModel):
                                         url = internal_url
                                         await self._emit_status(
                                             event_emitter,
-                                            f"📥 Downloaded and saved image from remote URL",
+                                            StatusMessages.IMAGE_REMOTE_SAVED,
                                             done=False
                                         )
                             except Exception as exc:
@@ -1218,7 +1244,7 @@ class ResponsesBody(BaseModel):
                                             file_data = None  # Clear base64, use URL instead
                                             await self._emit_status(
                                                 event_emitter,
-                                                f"📥 Saved base64 file to storage: {filename or fname}",
+                                                StatusMessages.FILE_BASE64_SAVED,
                                                 done=False
                                             )
                                 except Exception as exc:
@@ -1251,7 +1277,7 @@ class ResponsesBody(BaseModel):
                                             file_data = None  # Clear, use URL instead
                                             await self._emit_status(
                                                 event_emitter,
-                                                f"📥 Downloaded and saved file: {fname}",
+                                                StatusMessages.FILE_REMOTE_SAVED,
                                                 done=False
                                             )
                                 except Exception as exc:
@@ -1437,23 +1463,62 @@ class ResponsesBody(BaseModel):
                             self.logger.warning("Video block has no URL")
                             return {"type": "video_url", "video_url": {"url": ""}}
 
-                        # Log video input for visibility
+                        # Validate data URL size for base64 videos
                         if url.startswith("data:"):
+                            # Estimate base64 size before processing
+                            if "," in url:
+                                b64_data = url.split(",", 1)[1]
+                                # Estimate decoded size (base64 is ~33% larger than raw)
+                                estimated_size_bytes = (len(b64_data) * 3) // 4
+                                max_size_bytes = self.valves.VIDEO_MAX_SIZE_MB * 1024 * 1024
+                                if estimated_size_bytes > max_size_bytes:
+                                    estimated_size_mb = estimated_size_bytes / (1024 * 1024)
+                                    self.logger.warning(
+                                        f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
+                                        f"({self.valves.VIDEO_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
+                                    )
+                                    await self._emit_error(
+                                        event_emitter,
+                                        f"Video too large (~{estimated_size_mb:.1f}MB, max: {self.valves.VIDEO_MAX_SIZE_MB}MB)",
+                                        show_error_message=True
+                                    )
+                                    return {"type": "video_url", "video_url": {"url": ""}}
+
                             await self._emit_status(
                                 event_emitter,
-                                "🎥 Processing base64 video input",
+                                StatusMessages.VIDEO_BASE64,
                                 done=False
                             )
-                        elif "youtube.com" in url or "youtu.be" in url:
+                        # Validate YouTube URLs
+                        elif self._is_youtube_url(url):
+                            # Note: YouTube videos only work with Gemini models (per OpenRouter docs)
                             await self._emit_status(
                                 event_emitter,
-                                "🎥 Processing YouTube video input",
+                                StatusMessages.VIDEO_YOUTUBE,
+                                done=False
+                            )
+                        # Validate remote URLs (SSRF protection)
+                        elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
+                            # Apply SSRF protection for non-OWUI URLs
+                            if not self._is_safe_url(url):
+                                self.logger.error(f"SSRF protection blocked video URL: {url}")
+                                await self._emit_error(
+                                    event_emitter,
+                                    "Video URL blocked by security policy (private network)",
+                                    show_error_message=True
+                                )
+                                return {"type": "video_url", "video_url": {"url": ""}}
+
+                            await self._emit_status(
+                                event_emitter,
+                                StatusMessages.VIDEO_REMOTE,
                                 done=False
                             )
                         else:
+                            # OWUI file reference or other format
                             await self._emit_status(
                                 event_emitter,
-                                f"🎥 Processing video input",
+                                StatusMessages.VIDEO_REMOTE,
                                 done=False
                             )
 
@@ -1830,6 +1895,16 @@ class Pipe:
             ge=1,
             le=500,
             description="Maximum size in MB for base64-encoded files/images before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
+        )
+        VIDEO_MAX_SIZE_MB: int = Field(
+            default=100,
+            ge=1,
+            le=1000,
+            description="Maximum size in MB for video files (remote URLs or data URLs). Videos exceeding this limit will be rejected to prevent memory and bandwidth issues.",
+        )
+        ENABLE_SSRF_PROTECTION: bool = Field(
+            default=True,
+            description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, 192.168.x.x, 10.x.x.x, etc.) to prevent internal network probing.",
         )
 
         # Models
@@ -3985,6 +4060,136 @@ class Pipe:
             self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
             return None
 
+    def _is_safe_url(self, url: str) -> bool:
+        """Validate URL is not targeting internal/private networks (SSRF protection).
+
+        This method protects against Server-Side Request Forgery (SSRF) attacks by
+        preventing requests to private IP ranges, localhost, and link-local addresses.
+
+        Protected IP Ranges:
+            - Loopback: 127.0.0.0/8 (localhost)
+            - Private networks: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+            - Link-local: 169.254.0.0/16 (APIPA, AWS metadata)
+            - Multicast: 224.0.0.0/4
+            - Reserved: 240.0.0.0/4
+
+        Args:
+            url: The URL to validate (http:// or https:// only)
+
+        Returns:
+            True if URL is safe to access (public internet),
+            False if URL targets private/internal networks
+
+        Attack Scenarios Prevented:
+            - http://localhost:6379/ → Redis probing
+            - http://169.254.169.254/latest/meta-data/ → AWS metadata leak
+            - http://192.168.1.1/admin → Internal network scanning
+            - http://10.0.0.5:8080/api → Private service access
+
+        Note:
+            - Can be disabled via ENABLE_SSRF_PROTECTION valve (default: True)
+            - DNS resolution failures are treated as unsafe
+            - IPv6 addresses are not yet validated (future improvement)
+
+        Example:
+            >>> self._is_safe_url("https://example.com/image.jpg")
+            True
+            >>> self._is_safe_url("http://127.0.0.1/")
+            False
+        """
+        # Check if SSRF protection is enabled
+        if not self.valves.ENABLE_SSRF_PROTECTION:
+            return True
+
+        try:
+            import socket
+            import ipaddress
+
+            parsed = urlparse(url)
+            host = parsed.hostname
+
+            if not host:
+                self.logger.warning(f"URL has no hostname: {url}")
+                return False
+
+            # Resolve hostname to IP address
+            try:
+                ip_str = socket.gethostbyname(host)
+                ip = ipaddress.ip_address(ip_str)
+            except socket.gaierror:
+                # DNS resolution failed - treat as unsafe
+                self.logger.warning(f"DNS resolution failed for: {host}")
+                return False
+            except ValueError:
+                # Invalid IP format
+                self.logger.warning(f"Invalid IP address format: {host}")
+                return False
+
+            # Check against private IP ranges
+            if ip.is_private:
+                self.logger.warning(f"Blocked SSRF attempt to private IP: {url} ({ip})")
+                return False
+
+            if ip.is_loopback:
+                self.logger.warning(f"Blocked SSRF attempt to loopback: {url} ({ip})")
+                return False
+
+            if ip.is_link_local:
+                self.logger.warning(f"Blocked SSRF attempt to link-local IP: {url} ({ip})")
+                return False
+
+            if ip.is_multicast:
+                self.logger.warning(f"Blocked SSRF attempt to multicast IP: {url} ({ip})")
+                return False
+
+            if ip.is_reserved:
+                self.logger.warning(f"Blocked SSRF attempt to reserved IP: {url} ({ip})")
+                return False
+
+            return True
+
+        except Exception as exc:
+            # Defensive: treat validation errors as unsafe
+            self.logger.error(f"URL safety validation failed for {url}: {exc}")
+            return False
+
+    def _is_youtube_url(self, url: str) -> bool:
+        """Check if URL is a valid YouTube video URL.
+
+        Supports both standard and short YouTube URL formats:
+            - https://www.youtube.com/watch?v=VIDEO_ID
+            - https://youtu.be/VIDEO_ID
+            - http://youtube.com/watch?v=VIDEO_ID (http variant)
+
+        Args:
+            url: URL to validate
+
+        Returns:
+            True if URL matches YouTube video pattern, False otherwise
+
+        Note:
+            - Does not validate that the video ID exists or is accessible
+            - Only checks URL format, not video availability
+            - Query parameters (like &t=30s) are allowed
+
+        Example:
+            >>> self._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            True
+            >>> self._is_youtube_url("https://youtu.be/dQw4w9WgXcQ")
+            True
+            >>> self._is_youtube_url("https://vimeo.com/123456")
+            False
+        """
+        if not url:
+            return False
+
+        patterns = [
+            r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=[\w-]+',
+            r'(?:https?://)?(?:www\.)?youtu\.be/[\w-]+',
+        ]
+
+        return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
+
     async def _download_remote_url(
         self,
         url: str,
@@ -4050,6 +4255,11 @@ class Pipe:
         """
         url = (url or "").strip()
         if not url.lower().startswith(("http://", "https://")):
+            return None
+
+        # SSRF protection: Validate URL is not targeting private networks
+        if not self._is_safe_url(url):
+            self.logger.error(f"SSRF protection blocked download from: {url}")
             return None
 
         # Get retry configuration from valves
