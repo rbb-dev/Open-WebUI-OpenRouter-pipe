@@ -20,7 +20,7 @@ def _run_transform(messages, artifacts):
         return {ulid: artifacts.get(ulid) for ulid in ulids if ulid in artifacts}
 
     return asyncio.run(
-        ResponsesBody.transform_messages_to_input(
+        ResponsesBody(model="test-model", input=[]).transform_messages_to_input(
             messages,
             chat_id="chat-1",
             openwebui_model_id="model-1",
