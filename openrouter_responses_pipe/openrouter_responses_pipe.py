@@ -1678,6 +1678,19 @@ class Pipe:
             description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded.",
         )
 
+        REMOTE_FILE_MAX_SIZE_MB: int = Field(
+            default=50,
+            ge=1,
+            le=500,
+            description="Maximum size in MB for downloading remote files/images. Files exceeding this limit will be rejected with a warning. This protects against excessive network usage and storage consumption.",
+        )
+        BASE64_MAX_SIZE_MB: int = Field(
+            default=50,
+            ge=1,
+            le=500,
+            description="Maximum size in MB for base64-encoded files/images before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
+        )
+
         # Models
         MODEL_ID: str = Field(
             default="auto",
@@ -3866,10 +3879,10 @@ class Pipe:
         Non-Retryable Errors:
             - HTTP 4xx client errors (except 429)
             - Invalid URLs
-            - Files exceeding 10MB size limit
+            - Files exceeding configured size limit (REMOTE_FILE_MAX_SIZE_MB)
 
         Size Limits:
-            - Maximum 10MB per file (practical limit for request payloads)
+            - Maximum size configurable via REMOTE_FILE_MAX_SIZE_MB valve (default: 50MB)
             - Files exceeding this limit are rejected with a warning
 
         Supported Protocols:
@@ -3960,10 +3973,13 @@ class Pipe:
                     if mime_type == "image/jpg":
                         mime_type = "image/jpeg"
 
-                    # Enforce 10MB size limit (practical limit for request payloads)
-                    if len(response.content) > 10 * 1024 * 1024:
+                    # Enforce configurable size limit (per REMOTE_FILE_MAX_SIZE_MB valve)
+                    max_size_bytes = self.valves.REMOTE_FILE_MAX_SIZE_MB * 1024 * 1024
+                    if len(response.content) > max_size_bytes:
+                        size_mb = len(response.content) / (1024 * 1024)
                         self.logger.warning(
-                            f"Remote file {url} exceeds 10MB ({len(response.content):,} bytes), skipping"
+                            f"Remote file {url} exceeds configured limit "
+                            f"({size_mb:.1f}MB > {self.valves.REMOTE_FILE_MAX_SIZE_MB}MB), skipping"
                         )
                         return None
 
@@ -3999,6 +4015,48 @@ class Pipe:
             )
             return None
 
+    def _validate_base64_size(self, b64_data: str) -> bool:
+        """Validate base64 data size is within configured limits.
+
+        Estimates the decoded size of base64 data and compares it against the
+        configured BASE64_MAX_SIZE_MB valve to prevent memory issues from huge payloads.
+
+        Args:
+            b64_data: Base64-encoded string to validate
+
+        Returns:
+            True if within limits, False if too large
+
+        Note:
+            Base64 encoding increases size by approximately 33% (4/3 ratio).
+            This method estimates the original size before validation to avoid
+            decoding potentially huge strings just to reject them.
+
+        Example:
+            >>> if self._validate_base64_size(huge_base64_string):
+            ...     decoded = base64.b64decode(huge_base64_string)
+            ... else:
+            ...     # Reject without decoding
+            ...     return None
+        """
+        if not b64_data:
+            return True  # Empty string is valid
+
+        # Base64 is ~1.33x the original size (4/3 ratio)
+        # Estimate original size: (base64_length * 3) / 4
+        estimated_size_bytes = (len(b64_data) * 3) / 4
+        max_size_bytes = self.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
+
+        if estimated_size_bytes > max_size_bytes:
+            estimated_size_mb = estimated_size_bytes / (1024 * 1024)
+            self.logger.warning(
+                f"Base64 data size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
+                f"({self.valves.BASE64_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
+            )
+            return False
+
+        return True
+
     def _parse_data_url(self, data_url: str) -> Optional[Dict[str, Any]]:
         """Extract base64 data from data URL.
 
@@ -4018,13 +4076,20 @@ class Pipe:
             - Must start with 'data:'
             - Must contain ';base64,' separator
             - Base64 data must be valid
+            - Size must not exceed BASE64_MAX_SIZE_MB valve (default: 50MB)
 
         MIME Type Normalization:
             - 'image/jpg' is normalized to 'image/jpeg'
             - MIME type extracted from prefix (e.g., 'data:image/png;base64,...')
 
+        Size Validation:
+            - Validates size before decoding to prevent memory issues
+            - Uses BASE64_MAX_SIZE_MB valve for limit
+            - Returns None if size exceeds limit
+
         Note:
             - Invalid base64 data results in None return
+            - Oversized data results in None return
             - All exceptions are caught and logged
             - Non-data URLs return None immediately
 
@@ -4050,6 +4115,11 @@ class Pipe:
                 mime_type = "image/jpeg"
 
             b64_data = parts[1]
+
+            # Validate base64 size before decoding to prevent memory issues
+            if not self._validate_base64_size(b64_data):
+                return None  # Size validation failed, already logged
+
             file_data = base64.b64decode(b64_data)
 
             return {
