@@ -923,6 +923,8 @@ class ResponsesBody(BaseModel):
     tool_choice: Optional[Dict[str, Any]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
+    response_format: Optional[Dict[str, Any]] = None
+    parallel_tool_calls: Optional[bool] = None
 
     class Config:
         """Permit passthrough of additional OpenAI parameters automatically."""
@@ -2100,7 +2102,6 @@ class ResponsesBody(BaseModel):
             # Fields that are not supported by OpenAI Responses API
             "frequency_penalty", "presence_penalty", "seed", "logit_bias",
             "logprobs", "top_logprobs", "n", "stop",
-            "response_format", # Replaced with 'text' in Responses API
             "suffix", # Responses API does not support suffix
             "stream_options", # Responses API does not support stream options
             "function_call", # Deprecated in favor of 'tool_choice'.
@@ -2114,7 +2115,7 @@ class ResponsesBody(BaseModel):
             "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
 
             # Fields not documented in OpenRouter's Responses API reference
-            "instructions", "store", "parallel_tool_calls", "truncation",
+            "instructions", "store", "truncation",
             "user",
         }
         sanitized_params = {}
@@ -2181,6 +2182,8 @@ ALLOWED_OPENROUTER_FIELDS = {
     "tools",
     "tool_choice",
     "plugins",
+    "response_format",
+    "parallel_tool_calls",
 }
 
 def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
