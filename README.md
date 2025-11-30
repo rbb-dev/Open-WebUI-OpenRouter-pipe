@@ -1,106 +1,126 @@
 # OpenRouter Responses API Manifold for Open WebUI
 
-## This pipe is under active development, design might change. 
+## This pipe is under active development, design might change.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](https://github.com/rbb-dev/openrouter-responses-pipe) <!-- Update with your repo link -->
+[![Version](https://img.shields.io/badge/version-1.0.5-blue.svg)](https://github.com/rbb-dev/openrouter-responses-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
-This pipe provides seamless integration between Open WebUI and OpenRouter's Responses API. It automatically discovers and imports all Responses-capable models from OpenRouter, translates Open WebUI requests into the Responses format, and manages persistent storage of conversation artifacts. Designed for developers building robust AI applications, it ensures secure, efficient handling of multi-turn interactions, tools, and reasoning while leveraging Open WebUI's ecosystem.
+This manifold is tailored to OpenRouter’s Responses API. It specializes in (1) catalog-smart routing against OpenRouter’s rich model metadata, (2) durable multimodal artifact handling with encryption + compression, and (3) high-throughput streaming/tool orchestration backed by breakers, Redis, and deep telemetry. Everything—from model registry to SSE emitters—was re-architected with these production requirements in mind.
 
 ![clean](https://github.com/user-attachments/assets/65a23a29-33b9-485d-9d0b-7caeca502ae6)
 
 ## Overview
 
-Open WebUI is a versatile platform for AI-driven interfaces. This pipe extends it by bridging to OpenRouter's Responses API, which supports advanced features like structured reasoning, tool calling, and plugins. It handles request transformation, model capabilities detection, and artifact persistence in Open WebUI's database—ensuring compatibility across various database backends (e.g., SQLite, PostgreSQL).
+This pipe focuses on the capabilities unique to OpenRouter Responses deployments:
+- **Model intelligence**: Imports the full `/models` payload (not just names) and derives modality/tool flags, context limits, and supported parameters so Open WebUI exposes exactly what each model can do.
+- **Artifact durability**: Every remote/file upload is saved into Open WebUI storage, inline payloads are size-guarded, and reasoning/tool outputs land in per-pipe SQL tables with optional Fernet + LZ4 to keep chats recoverable months later.
+- **Streaming + tool orchestration**: Dedicated SSE workers, breaker-aware tool queues, and usage-rich emitters keep long-running reasoning/tool chains responsive while surfacing time/cost/token telemetry to operators.
 
-Key capabilities include:
-- Dynamic model import from OpenRouter's catalog.
-- Secure storage of reasoning traces and tool results with encryption and compression.
-- Optimized tool schemas for predictable function calling.
-- Real-time streaming with citations and usage metrics.
+### Feature Highlights
+- **Catalog-smart Responses import** – Async registry fetches `/models`, derives modality/tool flags, and backs off automatically when OpenRouter throttles.
+- **Multimodal intake with guard rails** – Remote downloads flow through SSRF filters, retries, and MB caps, while base64/audio/video payloads are validated before decoding.
+- **Secure persistence** – Per-pipe SQLAlchemy tables, optional Fernet encryption, ULID markers, and LZ4 compression keep reasoning/tool artifacts safe yet replayable.
+- **Resilient tool + streaming pipeline** – FIFO tool queues with breaker windows, SSE worker pools, and telemetry-rich emitters keep multi-minute reasoning/tool chains responsive without starving other users.
+- **Operational safeguards** – Request queue + global semaphore, auto-detected Redis write-behind cache, artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
 
-This project is an extension of the original [OpenAI Responses Manifold](https://github.com/jrkropp/open-webui-developer-toolkit/tree/development/functions/pipes/openai_responses_manifold) by jrkropp, adapted and enhanced for OpenRouter.
+## Documentation
+- **[Multimodal Input Pipeline](MULTIMODAL_IMPLEMENTATION.md)** – end-to-end walkthrough of image/file/audio handling, SSRF protections, and persistence.
+- **[Valve Reference](VALVES_REFERENCE.md)** – full catalog of every system and user valve with defaults, ranges, and tuning guidance.
 
 ## Features
 
-- **Model Auto-Discovery**: Fetches OpenRouter's model catalog via the `/models` endpoint, importing all Responses-capable models with detailed metadata (e.g., function calling, reasoning, plugin support). This provides more granular feature detection than OpenAI's equivalent, enabling precise tool integration.
-- **Request Translation**: Converts Open WebUI's Completions-style requests to Responses format, supporting tools, plugins, and reasoning parameters.
-- **Artifact Persistence**: Stores reasoning traces and tool results in Open WebUI's internal database (via `open_webui.internal.db`) using SQLAlchemy. Artifacts are saved in a dedicated, per-pipe table for isolation and scalability.
-- **Security**: Encrypts artifacts using a user-provided key (via `ARTIFACT_ENCRYPTION_KEY`). Changing the key creates a new table by design, rendering old artifacts inaccessible to prevent unauthorized access.
-- **Efficiency**: Applies LZ4 compression for large payloads; auto-installs dependencies via Open WebUI's `requirements:` header.
-- **Tool Management**: Strictifies schemas for reliable function calling; deduplicates tools; supports MCP servers and web search plugins.
-- **Streaming and Metrics**: Handles SSE streaming with delta optimization, inline citations, and final usage reports (e.g., tokens, cost).
-- **Configurable Valves**: Expose settings for logging, compression thresholds, tool persistence, and loop limits.
-- **Future Enhancements**: Planned scheduler for cleaning unused tables (e.g., drop after 30 days of inactivity, configurable via valves) to manage storage.
+### Model & Request Pipeline
+- **Dynamic catalog import**: The registry fetches OpenRouter's `/models` endpoint, normalizes IDs, and caches feature flags (vision, audio, reasoning, web search, MCP, etc.).
+- **Capability-aware routing**: `ModelFamily` helpers (e.g., `supports("function_calling")`) ensure the pipe only enables features the selected model can honor.
+- **Completions → Responses transforms**: `ResponsesBody.from_completions` rewrites Open WebUI messages into Responses `input[]`, injects persisted ULID artifacts, and preserves reasoning/tool state turn after turn.
 
-## Improvements Over the Original
+### Multimodal Intake & Storage
+- **Remote download safeguards**: HTTP downloads enforce SSRF bans, configurable retries/backoff, and a MB limit that also honors Open WebUI's RAG upload ceiling when one is configured.
+- **Base64/video validation**: `_validate_base64_size` and `_parse_data_url` reject oversized inline payloads before decoding so large files can't exhaust memory.
+- **Open WebUI storage integration**: Images/files are saved through Open WebUI's own storage endpoints, preventing link rot and keeping chat history portable.
+- **Encrypted, compressed artifacts**: Per-pipe SQLAlchemy tables are created automatically; artifacts can be encrypted with `ARTIFACT_ENCRYPTION_KEY`, optionally LZ4-compressed above `MIN_COMPRESS_BYTES`, and tagged with ULIDs for replay/pruning.
 
-This pipe builds on jrkropp's foundational OpenAI Responses Manifold, which provided efficient request handling and basic persistence. Key extensions include:
-- **OpenRouter Adaptation**: Added dynamic catalog fetching from OpenRouter's `/models` endpoint (richer than OpenAI's), model normalization, and support for OpenRouter-specific features like web search plugins.
-- **Enhanced Persistence**: Integrated with Open WebUI's internal DB connection (`open_webui.internal.db`) for all operations, removing fallback logic and ensuring compatibility with OWUI's configured backend (e.g., SQLite or PostgreSQL). Added encryption with key rotation (new tables on change for security) and LZ4 compression.
-- **Tool Optimizations**: Introduced schema strictification, deduplication, and MCP server support, leveraging OpenRouter's detailed metadata for more accurate feature detection.
-- **Security and Reliability**: Expanded error handling, logging, and metrics; version bumped to 1.0.4 with removal of standalone DB fallbacks to fully rely on OWUI's infrastructure.
-- **Other**: Improved async handling, multi-line status updates via CSS injection, and configurable valves for finer control.
+### Tooling & Streaming
+- **Strict tool schemas**: Open WebUI registry entries are strictified for deterministic tool calling and deduped so the latest definition wins.
+- **MCP + OpenRouter plugins**: Remote MCP servers (via JSON definition) and OpenRouter's `web` plugin are attached automatically for models that declare support.
+- **Tool executor with breakers**: Each request gets a FIFO queue, per-request semaphore, global semaphore, batch cap, idle timeout, and per-user/per-tool breaker windows to prevent runaway retries.
+- **Streaming worker pool**: Configurable SSE worker count plus chunk/event queues keep streams flowing while `_wrap_event_emitter` shields emitters from client disconnects.
+- **Telemetry-rich emitters**: Citations, notifications, and the final completion frame include elapsed time, cost, tokens, and tokens-per-second when `SHOW_FINAL_USAGE_STATUS` is enabled, giving operators insight without extra dashboards.
 
-These changes maintain the original's efficiency while tailoring it for OpenRouter's ecosystem and enhancing security/scalability.
+### Security & Resilience
+- **Session-aware logging**: `SessionLogger` ties every log line to a request via contextvars so troubleshooting output can optionally be surfaced as citations.
+- **Request queue + semaphores**: A bounded queue and process-wide semaphore return HTTP 503 when the manifold is saturated instead of crashing workers.
+- **Redis write-behind cache**: When Redis + multiple workers are detected, artifacts flush through a pending queue guarded by distributed locks; repeated failures automatically fall back to direct DB writes.
+- **Artifact cleanup & size controls**: Scheduled cleanup removes stale rows while configurable caps for remote/base64/video payloads keep disk and RAM usage predictable.
+
+### Roadmap
+- Health endpoint exposing queue depth, breaker stats, and error rates.
+- Dead-letter queue for unrecoverable tool outputs.
+- Optional ProcessPool offload for CPU-bound or blocking tools.
+- Prometheus-friendly metrics export (latency, TPS, cache hit rate).
 
 ## Operational Architecture
 
-This pipe is tuned for multi-user deployments and adds several protective layers on top of Open WebUI's standard execution:
-
-- **Request queue + global semaphore**: every request acquires a slot from a process-wide semaphore, so bursts are back-pressured with a 503 "Server busy" instead of crashing the worker.
-- **Redis write-behind cache (optional)**: when Redis is detected, tool artifacts are enqueued through a pending queue guarded by distributed locks. A background flusher persists batched rows to the Open WebUI database without blocking the hot path.
-- **Breakers and batching**: per-user/per-tool breaker windows prevent runaway retries, while the tool executor batches compatible calls and enforces per-call, per-batch, and idle timeouts.
-- **Resilient event emitters**: every status/SSE emitter is wrapped so client disconnects or slow browsers cannot crash the pipe; failures are logged while the request finishes cleanup.
-
-These mechanisms keep the manifold responsive under load spikes, unreliable tools, or flaky networks.
+This pipe is tuned for multi-user workloads:
+- **Request queue + semaphore**: Incoming jobs must acquire a global slot; overflow results in 503 "server busy" responses rather than worker crashes.
+- **Redis write-behind cache**: Auto-detects Redis + multi-worker deployments, batches artifacts through pending queues, and guards flushes with distributed locks; repeated failures automatically fall back to direct DB writes.
+- **Breakers and batching**: Per-user/per-tool breaker windows cap consecutive failures, while compatible tool calls can batch together, each bounded by per-call, per-batch, and idle timeouts.
+- **Resilient emitters**: SSE/notification/citation emitters are wrapped so slow or disconnected clients never crash the request; errors are logged and processing continues.
+- **Payload controls**: Remote downloads honor the configured MB ceiling (and Open WebUI's own upload limit when defined) while base64/video payloads are validated before decoding.
+- **Usage-forward finalizer**: A closing completion event summarizes elapsed time, tokens, throughput, and cost so admins can monitor efficiency without extra instrumentation.
 
 ## Installation
 
-1. **Prerequisites**:
-   - Open WebUI version 0.6.28 or later.
-   - OpenRouter API key (set via valves or environment).
+1. **Prerequisites**
+   - Open WebUI 0.6.28 or later.
+   - OpenRouter API key (set via valves or environment variables).
 
-2. **Add the pipe in Open WebUI**:
-   - Go to Admin > Functions -> New Function.
-   - Upload the pipe Python file from this repository.
+2. **Add the pipe in Open WebUI**
+   - Admin → Functions → New Function.
+   - Upload the `openrouter_responses_pipe.py` file.
 
-3. **Dependencies**: Automatically installed by Open WebUI via the `requirements:` header in the code (e.g., `aiohttp`, `cryptography`, etc.).
+3. **Dependencies**
+   - Automatically installed by Open WebUI via the `requirements:` header (`aiohttp`, `cryptography`, `fastapi`, `httpx`, `lz4`, `pydantic`, `sqlalchemy`, `tenacity`, etc.).
 
-4. **Restart Open WebUI**: Imported models will appear in the model selection UI.
+4. **Restart Open WebUI**
+   - Newly imported models appear in the model selector.
 
 ## Usage
 
-- **Model Selection**: Choose an imported OpenRouter model in Open WebUI (e.g., "openrouter.gpt-4o").
-- **Conversations**: Send messages; features like tools or reasoning activate if supported by the model. Artifacts persist in OWUI's DB for context retention.
-- **Tools/Plugins**: Enable via valves (e.g., web search); results are stored securely.
-- **Monitoring**: Observe streaming updates, citations, and usage metrics in the UI.
+- **Model selection**: Pick any imported OpenRouter model (e.g., `openrouter.gpt-4o-mini`) inside Open WebUI.
+- **Conversations**: Send messages; the pipe injects reasoning/tool settings automatically if the model supports them and persists artifacts for future turns.
+- **Tools & plugins**: Enable registered tools, web search, or MCP servers via valves. Tool outputs are stored securely and replayed when needed.
+- **Monitoring**: Watch streaming deltas, citations, notifications, and the final usage/status summary in the UI.
 
-For persistence: Configure `ARTIFACT_ENCRYPTION_KEY` in valves. Note that key changes create new tables (by design for security)—old data becomes inaccessible.
+Configure `ARTIFACT_ENCRYPTION_KEY` if you need encrypted storage. Changing the key intentionally rotates to a new table and makes older artifacts inaccessible (defense-in-depth).
 
 ## Configuration (Valves)
 
-Adjust in Open WebUI:
-- **API_KEY**: OpenRouter API key (encrypted).
-- **MODEL_ID**: CSV of models to import ("auto" for all).
-- **PERSIST_TOOL_RESULTS**: Enable/disable tool storage.
-- **ARTIFACT_ENCRYPTION_KEY**: Encryption key (min 16 chars).
-- **ENABLE_WEB_SEARCH_TOOL**: Activate web search.
-- **LOG_LEVEL**: Set verbosity (e.g., "DEBUG").
+See **[VALVES_REFERENCE.md](VALVES_REFERENCE.md)** for the full system + user valve catalog. Common knobs:
 
-Full schema in the code.
+| Valve | Purpose |
+| --- | --- |
+| `API_KEY` | Encrypted OpenRouter credential injected into every request. |
+| `MODEL_ID` | Comma-separated list of catalog IDs (`auto` imports everything). |
+| `ARTIFACT_ENCRYPTION_KEY` | Enables encrypted reasoning/tool storage; key changes rotate tables. |
+| `REMOTE_FILE_MAX_SIZE_MB` | Caps remote downloads and matches Open WebUI's upload ceiling when RAG uploads are enabled. |
+| `ENABLE_REDIS_CACHE` | Turns Redis write-behind mode on/off when `REDIS_URL` is defined. |
+| `LOG_LEVEL` | Pipe-level logging verbosity (DEBUG / INFO / …). |
+
+Per-user overrides (log level, reasoning effort, streaming profile, etc.) are also documented in `VALVES_REFERENCE.md`.
 
 ## Testing
 
-Unit tests live under `tests/` and include a `conftest.py` that stubs Open WebUI, pydantic v2 hooks, pydantic-core, SQLAlchemy, and tenacity so the pipe can be imported outside of an OWUI runtime. To run the current regression suite (which covers the guard rails added in this release):
+`tests/conftest.py` stubs Open WebUI, FastAPI, SQLAlchemy, pydantic-core, and tenacity so the pipe can be imported without the full server.
 
 ```bash
-pytest tests/test_pipe_guards.py
+PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py   # multimodal + size guard coverage
+PYTHONPATH=. .venv/bin/pytest tests/test_pipe_guards.py         # request + valve guard coverage
 ```
 
 Extend the suite with additional files under `tests/` when contributing new features or bug fixes.
 
 ## Acknowledgments
 
-This project extends the [OpenAI Responses Manifold](https://github.com/jrkropp/open-webui-developer-toolkit/tree/development/functions/p
+This project builds on the [OpenAI Responses Manifold](https://github.com/jrkropp/open-webui-developer-toolkit/tree/development/functions/pipes/openai_responses_manifold) by jrkropp while adapting it for OpenRouter's ecosystem and adding the operational hardening needed for production deployments.
