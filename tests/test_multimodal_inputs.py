@@ -95,6 +95,27 @@ async def _transform_single_block(
     return transformed[0]["content"][0]
 
 
+def _make_stream_context(response=None, error=None):
+    class _StreamContext:
+        async def __aenter__(self):
+            if error:
+                raise error
+            return response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    return _StreamContext()
+
+
+def _set_aiter_bytes(mock_response, chunks):
+    async def _iterator():
+        for chunk in chunks:
+            yield chunk
+
+    mock_response.aiter_bytes = _iterator
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper Method Tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -154,13 +175,11 @@ class TestRemoteURLDownloading:
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
-            mock_response.content = test_content
             mock_response.headers = {"content-type": "image/jpeg"}
             mock_response.raise_for_status = Mock()
-
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=mock_response
-            )
+            _set_aiter_bytes(mock_response, [test_content])
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
             result = await pipe_instance._download_remote_url(
                 "https://example.com/image.jpg"
@@ -176,13 +195,11 @@ class TestRemoteURLDownloading:
         """Should normalize image/jpg to image/jpeg."""
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
-            mock_response.content = b"data"
             mock_response.headers = {"content-type": "image/jpg; charset=utf-8"}
             mock_response.raise_for_status = Mock()
-
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=mock_response
-            )
+            _set_aiter_bytes(mock_response, [b"data"])
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
             result = await pipe_instance._download_remote_url(
                 "https://example.com/image.jpg"
@@ -198,13 +215,11 @@ class TestRemoteURLDownloading:
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
-            mock_response.content = large_content
             mock_response.headers = {"content-type": "image/jpeg"}
             mock_response.raise_for_status = Mock()
-
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=mock_response
-            )
+            _set_aiter_bytes(mock_response, [large_content])
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
             result = await pipe_instance._download_remote_url(
                 "https://example.com/huge.jpg"
@@ -223,9 +238,8 @@ class TestRemoteURLDownloading:
     async def test_download_network_error_returns_none(self, pipe_instance):
         """Should return None on network errors."""
         with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                side_effect=Exception("Network error")
-            )
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.stream = Mock(side_effect=Exception("Network error"))
 
             result = await pipe_instance._download_remote_url(
                 "https://example.com/image.jpg"
@@ -242,13 +256,17 @@ class TestRemoteURLDownloading:
         error = httpx.HTTPStatusError("Forbidden", request=request, response=response)
 
         with patch("httpx.AsyncClient") as mock_client:
+            mock_response = Mock()
+            mock_response.headers = {"content-type": "image/jpeg"}
+            mock_response.raise_for_status = Mock(side_effect=error)
+            _set_aiter_bytes(mock_response, [b"x"])
             client_ctx = mock_client.return_value.__aenter__.return_value
-            client_ctx.get = AsyncMock(side_effect=error)
+            client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
             result = await pipe_instance._download_remote_url(url)
 
             assert result is None
-            assert client_ctx.get.await_count == 1
+            assert client_ctx.stream.call_count == 1
 
 
 class TestSSRFIPv6Validation:
