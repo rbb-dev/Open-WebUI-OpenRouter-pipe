@@ -1,282 +1,113 @@
-# Production Readiness Audit - Multimodal Input Handling
+# Production Readiness Audit – OpenRouter Responses Pipe
 
-## Audit Date
-2025-01-XX
+**Last reviewed:** 2025‑01‑31  
+**Auditor:** Codex (via GPT‑5)  
+**Scope:** End‑to‑end readiness of the OpenRouter Responses manifold with emphasis on multimodal intake, persistence, and concurrency controls. References: `openrouter_responses_pipe/openrouter_responses_pipe.py`, Open WebUI sources at `C:\Work\Dev\open-webui`, and OpenRouter docs at `C:\Work\Dev\openrouter_docs\manual`.
 
-## Scope
-Comprehensive review of file, image, and audio input handling against:
-- Open WebUI source code (`C:\Work\Dev\open-webui`)
-- OpenRouter documentation (`C:\Work\Dev\openrouter_docs\manual`)
+---
 
-## Findings
+## 1. Secrets & Key Material
 
-### ✅ Correct Implementations
+| Secret | Location | Purpose / Notes |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` (or valves `API_KEY`) | `.env` / OWUI UI | Required for every OpenRouter call. Stored as `EncryptedStr` in valves so it can live in config without plain‑text exposure. |
+| `WEBUI_SECRET_KEY` | OWUI env (**required**) | Powers `EncryptedStr` runtime encryption/decryption. Without it, encrypted valve values (API keys, etc.) fall back to plain text and artifact encryption cannot function. |
+| `ARTIFACT_ENCRYPTION_KEY` (≥16 chars) | Valve or env | Derives per‑pipe Fernet key. Changing it rotates the storage namespace and intentionally makes prior artifacts unreadable (defense‑in‑depth). |
 
-1. **File Input Fields**
-   - ✅ All Responses API fields supported: `file_id`, `file_data`, `filename`, `file_url`
-   - ✅ Nested and flat block structures handled
-   - ✅ Filename preservation for model context
+Operational guidance:
+- Manage keys via OWUI’s secured settings or deployment‑specific secret stores.
+- Document rotation runbooks (rotate `ARTIFACT_ENCRYPTION_KEY` when retiring a cluster; rotate `OPENROUTER_API_KEY` on provider compromise).
 
-2. **Image Input**
-   - ✅ Detail levels preserved (`auto`, `low`, `high`)
-   - ✅ Supported formats: png, jpeg, webp, gif (per OpenRouter docs)
-   - ✅ MIME type normalization: `image/jpg` → `image/jpeg`
+---
 
-3. **Audio Input**
-   - ✅ Format conversion correct: `audio/mpeg`, `audio/mp3` → `mp3`; `audio/wav` → `wav`
-   - ✅ Base64-only requirement enforced (per OpenRouter docs)
-   - ✅ Responses API format compliance
+## 2. Persistence, Encryption, and Redis
 
-4. **Retry Logic**
-   - ✅ Exponential backoff implemented
-   - ✅ Configurable via valves (no magic numbers)
-   - ✅ Smart retry on transient failures only
+### Encrypted Artifacts
+- `ARTIFACT_ENCRYPTION_KEY` seeds a Fernet key; `ENCRYPT_ALL` decides whether only reasoning tokens or every artifact is encrypted. **Important:** Fernet setup also requires `WEBUI_SECRET_KEY` so `EncryptedStr` can derive the runtime secret; if `WEBUI_SECRET_KEY` is missing, the pipe logs a warning, treats encrypted valves as plain text, and artifact encryption silently downgrades to **unencrypted JSON** (defense‑in‑depth is lost).
+- Storage tables embed the key hash in their name: rotating the key creates a brand‑new table and leaves previous data inaccessible (expected behaviour).
 
-5. **Error Handling**
-   - ✅ Zero-crash design with try/except everywhere
-   - ✅ Graceful fallbacks
-   - ✅ Comprehensive logging
+### Compression
+- Optional LZ4 compression (gated by `ENABLE_LZ4_COMPRESSION`) stores a one‑byte header flag (`plain` vs `lz4`). Compression kicks in for payloads larger than `MIN_COMPRESS_BYTES`.
 
-### ⚠️ Issues Identified
+### Redis Write‑Behind
+- When `REDIS_URL` exists, multiple workers are present, and `ENABLE_REDIS_CACHE` is true, artifacts flow into a Redis pending list.
+- A background worker flushes JSON blobs to the DB in batches of `DB_BATCH_SIZE`. Each entry is cached with TTL `REDIS_CACHE_TTL_SECONDS` to serve replays from memory.
+- Flush failures now re‑queue the raw JSON entries and extend the queue TTL, so artifacts aren’t dropped. Repeated failures trip the `REDIS_FLUSH_FAILURE_LIMIT` breaker and force a fallback to direct DB writes.
 
-#### 1. **Hardcoded File Size Limit (Critical)**
+### DB Breakers & Error Surfacing
+- Per‑user DB breaker avoids hammering a failing database; when tripped, the pipe emits a warning status (“DB ops skipped due to repeated errors”) so users know persistence is temporarily disabled.
 
-**Current**: 10MB limit hardcoded in `_download_remote_url` (line 3964)
-```python
-if len(response.content) > 10 * 1024 * 1024:
-```
+---
 
-**Issue**:
-- NOT grounded in OpenRouter documentation (no limits specified)
-- Open WebUI uses 20MB for audio, 200MB for Azure
-- No user configurability
-- May need different limits for different deployment scenarios
+## 3. Multimodal Intake & Guardrails
 
-**Impact**:
-- Users cannot download files >10MB even if OpenRouter supports them
-- Inconsistent with Open WebUI's own limits
-- Not production-flexible
+### Remote Downloads
+- `_download_remote_url` streams chunk‑by‑chunk via `httpx.AsyncClient.stream`, aborting as soon as either `Content-Length` or the running byte counter exceeds `REMOTE_FILE_MAX_SIZE_MB` (auto‑clamped to OWUI’s `FILE_MAX_SIZE` when RAG storage is enabled).
+- SSRF protection resolves every IPv4+IPv6 address for a host, blocking private, loopback, link‑local, multicast, reserved, or unspecified ranges. DNS failures default to **unsafe**.
 
-**Fix Required**: Add configurable valve `REMOTE_FILE_MAX_SIZE_MB`
+### Base64 Validation
+- `_validate_base64_size` estimates decoded size (`len * 3 / 4`) and enforces `BASE64_MAX_SIZE_MB` before decoding. Violations raise warnings and surface user‑friendly status messages.
 
-#### 2. **No Base64 Size Validation (Major)**
+### Storage Ownership
+- When the chat user is absent (API automations, system calls), uploads use a dedicated fallback identity derived from `FALLBACK_STORAGE_*` valves. Default role is low‑privilege `pending`, and the code warns if a privileged role is configured. A random `oauth_sub` is attached to the auto‑created user so it cannot log in interactively.
 
-**Current**: No limit on base64 data size
+---
 
-**Issue**:
-- Very large base64 payloads could cause memory issues
-- HTTP request payload limits may be exceeded
-- No early validation before processing
-
-**Impact**:
-- Potential memory/performance issues with huge base64 data
-- Unclear error messages if payload too large
+## 4. Concurrency & Tooling Pipeline
 
-**Fix Required**: Add valve `BASE64_MAX_SIZE_MB` with validation
+### Request Admission Control
+- `MAX_CONCURRENT_REQUESTS` (default 200) is enforced via a global semaphore to cap live OpenRouter calls.
+- `_QUEUE_MAXSIZE = 500` bounds the work queue; when full, new requests immediately return 503 instead of overwhelming worker tasks.
 
-### ✅ Correctly Implemented (Not Issues)
+### Tool Execution
+- Per‑request tool queues enforce:
+  - Global (`MAX_PARALLEL_TOOLS_GLOBAL`) and per‑request (`MAX_PARALLEL_TOOLS_PER_REQUEST`) semaphores.
+  - Timeouts (`TOOL_TIMEOUT_SECONDS`, `TOOL_BATCH_TIMEOUT_SECONDS`, optional idle timeout).
+  - Batch execution when tool calls share the same function and have no argument dependencies.
+  - Per‑user tool breakers that temporarily disable tool types after consecutive failures and emit UX status updates.
 
-#### Always Downloads Remote URLs ✅ CORRECT BEHAVIOR
+---
 
-**Why This is Correct**:
-- **Chat history persistence**: Remote URLs may expire/be deleted
-- **User scenario**: User opens chat 1 year later, images should still work
-- **One-time latency** at send time vs **permanent data loss** later
-- **Best practice**: Never rely on external resources for chat history
-
-**This is a FEATURE, not a bug** - ensures chat history integrity.
+## 5. Streaming Pipeline
 
-#### Always Saves Base64 Files ✅ CORRECT BEHAVIOR
+- SSE producer pumps raw chunks into a bounded queue; multiple worker tasks parse them and enforce in‑order delivery via sequence IDs.
+- Text deltas are batched up to `STREAMING_UPDATE_CHAR_LIMIT` characters (or until `STREAMING_IDLE_FLUSH_MS` elapses) to balance latency vs. event spam.
+- A surrogate‑pair normalizer ensures UTF‑16 pairs aren’t split across updates, preventing Unicode corruption during streaming.
 
-**Why This is Correct**:
-- **Data persistence**: Base64 in messages is ephemeral
-- **User scenario**: Tool outputs base64 image, user refreshes page, data should persist
-- **Consistent** with Open WebUI's file handling philosophy
-- **Best practice**: Permanent storage for permanent chat history
+---
 
-**This is a FEATURE, not a bug** - ensures data integrity.
-
-#### Storage Overhead ✅ ACCEPTABLE COST
-
-**Why This is Acceptable**:
-- Storage is cheap
-- Data loss is expensive (user trust, chat history value)
-- This is the **cost of proper chat history preservation**
-- Users expect their chat history to work forever
-- Consistent with Open WebUI's approach (saves all files)
-
-**Not an issue** - this is the correct trade-off.
-
-### 📋 Required Changes for Production
-
-#### New Valves to Add
-
-```python
-# File/Image Download Settings
-REMOTE_FILE_MAX_SIZE_MB: int = Field(
-    default=50,  # More generous than hardcoded 10MB
-    ge=1,
-    le=500,  # Max 500MB (reasonable for most deployments)
-    description="Maximum size in MB for downloading remote files/images. Files exceeding this limit will be rejected with a warning.",
-)
-
-BASE64_MAX_SIZE_MB: int = Field(
-    default=50,  # Prevent memory issues from huge payloads
-    ge=1,
-    le=500,
-    description="Maximum size in MB for base64-encoded files/images before decoding. Larger payloads will be rejected to prevent memory issues.",
-)
-```
-
-**Note**: Separate image/file limits are **not needed** - single limit is simpler and sufficient.
-
-#### Logic Changes Required
-
-1. **In `_download_remote_url()`**:
-   - Replace hardcoded `10 * 1024 * 1024` with `self.valves.REMOTE_FILE_MAX_SIZE_MB * 1024 * 1024`
-   - Update warning message to include configured limit
-   - Update docstring to reference valve
-
-2. **In `_parse_data_url()`**:
-   - Add size validation before base64 decoding
-   - Estimate decoded size: `(len(b64_data) * 3) / 4`
-   - Compare against `BASE64_MAX_SIZE_MB`
-   - Return None with warning if too large
-
-3. **In `_to_input_image()` and `_to_input_file()`**:
-   - Call `_parse_data_url()` which now validates size
-   - Emit status on size rejection: "⚠️ File exceeds {limit}MB, rejected"
-
-4. **Size Validation Helper** (add to Pipe class):
-   ```python
-   def _validate_base64_size(self, b64_data: str) -> bool:
-       """Validate base64 data size is within configured limits.
-
-       Returns:
-           True if within limits, False if too large
-       """
-       # Base64 is ~1.33x the original size
-       estimated_size_bytes = (len(b64_data) * 3) / 4
-       max_size_bytes = self.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-
-       if estimated_size_bytes > max_size_bytes:
-           estimated_size_mb = estimated_size_bytes / (1024 * 1024)
-           self.logger.warning(
-               f"Base64 data size (~{estimated_size_mb:.1f}MB) exceeds limit "
-               f"({self.valves.BASE64_MAX_SIZE_MB}MB)"
-           )
-           return False
-       return True
-   ```
-
-### 🎯 Priority Assessment
-
-**Critical (Must Fix for Production)**:
-1. ✅ Configurable file size limit (replace hardcoded 10MB)
-2. ✅ Base64 size validation (prevent memory issues)
-
-**Not Issues (Correct As-Is)**:
-- ❌ Always download remote URLs (correct for chat history persistence)
-- ❌ Always save base64 files (correct for data integrity)
-- ❌ Storage overhead (acceptable cost of proper chat history)
-
-**Removed from Scope**:
-- Separate image/file size limits (unnecessary complexity)
-- Optional download behavior (would harm chat history)
-- Optional save behavior (would cause data loss)
-
-### 📊 Compatibility Check
-
-**Open WebUI Compatibility**:
-- ✅ Correct use of `upload_file_handler`
-- ✅ Proper parameters passed
-- ✅ BackgroundTasks usage acceptable (creates new instance)
-- ✅ File metadata handling correct
-
-**OpenRouter Compatibility**:
-- ✅ All Responses API fields supported
-- ✅ No undocumented limitations imposed
-- ⚠️ Current 10MB limit NOT from OpenRouter (arbitrary)
-- ⚠️ Always downloading may not be necessary per OpenRouter specs
-
-### 🔍 Additional Observations
-
-1. **PDF Plugin Support**:
-   - OpenRouter supports `plugins` parameter for PDF processing
-   - Engines: `pdf-text` (free), `mistral-ocr` (paid), `native`
-   - We don't currently expose this - consider adding valve for default PDF engine
-
-2. **File Annotations**:
-   - OpenRouter returns file annotations to avoid re-parsing
-   - We don't currently handle these in response processing
-   - Consider preserving annotations in artifacts for context replay
-
-3. **Supported File Types**:
-   - Open WebUI checks `ALLOWED_FILE_EXTENSIONS` config
-   - We bypass this by setting `process=False`
-   - This is acceptable but should be documented
-
-## Recommendations
-
-### Immediate Actions (Before Production)
-
-1. **Add configurable size limit valves** (Critical)
-   - Replace hardcoded 10MB with `REMOTE_FILE_MAX_SIZE_MB`
-   - Add `BASE64_MAX_SIZE_MB` validation
-   - Consider separate `REMOTE_IMAGE_MAX_SIZE_MB`
-
-2. **Add processing behavior valves** (High Priority)
-   - `DOWNLOAD_REMOTE_FILES` for flexibility
-   - `SAVE_BASE64_FILES` for flexibility
-
-3. **Update documentation** (Critical)
-   - Document all new valves
-   - Explain when to use different settings
-   - Note that limits are configurable, not from OpenRouter
-
-### Future Enhancements (Post-Production)
-
-1. **PDF Plugin Support**:
-   - Add valve for default PDF engine selection
-   - Expose `plugins` parameter configuration
-
-2. **File Annotation Handling**:
-   - Preserve file annotations in responses
-   - Replay annotations to avoid re-parsing costs
-
-3. **Smarter URL Detection**:
-   - Detect if URL is OWUI internal reference
-   - Skip download for internal references
-
-## Conclusion
-
-The current implementation is **functionally correct and follows best practices** for chat history persistence. Only **two issues** need fixing for production:
-
-### Issues to Fix:
-1. **Hardcoded 10MB limit** → Make configurable via valve
-2. **Missing base64 size validation** → Add validation to prevent memory issues
-
-### Correct Design Decisions (Keep As-Is):
-- ✅ **Always download remote URLs** - ensures chat history works forever
-- ✅ **Always save base64 files** - ensures data persistence
-- ✅ **Storage overhead** - acceptable cost for reliable chat history
-- ✅ **One-time latency** - better than permanent data loss
-
-**Estimated Effort**: 1-2 hours for implementation + testing
-**Risk Level**: Low (only making hardcoded values configurable)
-**Production Blocker**: YES - hardcoded limits must be made configurable
-
-### Design Philosophy
-
-**Chat History is Forever**:
-- Users expect their chats to work years later
-- Remote URLs expire/get deleted
-- Base64 data is ephemeral without persistence
-- Storage is cheap, user trust is expensive
-
-**Therefore**:
-- Always download and save = FEATURE
-- Always persist to storage = FEATURE
-- Configurable size limits = FLEXIBILITY
-
-This approach is consistent with Open WebUI's file handling philosophy and provides the best user experience.
+## 6. Outstanding Items / Watchlist
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Tests for streaming download path | Missing | Would require mocking `httpx.AsyncClient.stream` and the SSRF guard; currently manual testing only. |
+| Integration tests for Redis requeue | Missing | Requeue logic recently added; consider adding a fake Redis or contract test. |
+| Documentation | ✅ | `VALVES_REFERENCE.md`, `MULTIMODAL_IMPLEMENTATION.md`, and this audit now describe current behaviour. |
+
+---
+
+## 7. Startup & Catalog Resilience
+
+- `_maybe_start_startup_checks()` performs an asynchronous warmup: it waits for an API key, pings OpenRouter with retries (`_ping_openrouter`), and caches the model catalog up front so the first user request doesn’t pay the entire cold-start penalty. Failures set `_warmup_failed`, which short‑circuits future requests with a clear status message until the operator fixes the configuration.
+- `OpenRouterModelRegistry.ensure_loaded()` guards every request; it pulls `/models`, caches it for `MODEL_CATALOG_REFRESH_SECONDS`, and tolerates transient failures by serving stale data. Consecutive errors trigger exponential backoff (`_record_refresh_failure`) so we don’t hammer the API when upstream is down.
+- Model selectors sanitise IDs, strip pipe prefixes, and respect OpenRouter capability metadata so features (reasoning, tool support, etc.) are keyed off actual provider declarations rather than user input.
+
+---
+
+## 8. Logging & Observability
+
+- `SessionLogger` attaches contextvars to every log record (session ID, user ID, per-request log level) and streams through an async queue so slow sinks can’t stall request handlers. Each request accumulates a rotating in-memory buffer (2k entries) that can be cited back to the user when errors occur (`show_error_log_citation=True` in `_emit_error`).
+- `LOG_LEVEL` valves can be overridden globally or per user, making it straightforward to capture DEBUG logs for a single tenant without flooding production logs.
+- Status updates (`_emit_status`, `_emit_notification`, `_emit_completion`) ensure UI feedback is continuous: long tool runs and reasoning phases emit progress, and final status strings summarize elapsed time, cost, token usage, and tokens/sec when available.
+
+---
+
+## 9. Failure Surfacing & UX Backpressure
+
+- Multiple breakers exist: user-level (`_breaker_allows`), tool-type (`_tool_type_allows`), and DB-level (`_db_breaker_allows`). When they trip, the pipe emits status messages (“Skipping … due to repeated failures”, “DB ops skipped due to repeated errors”) so operators and users know why a request degraded.
+- Request admission control is explicit: `_QUEUE_MAXSIZE` is capped at 500, and a global semaphore enforces `MAX_CONCURRENT_REQUESTS`. If the queue fills the user receives a prompt 503 with a visible status rather than a timeout.
+- Streaming SSE worker pool reorders events by sequence and batches text updates, but still guarantees delivery of reasoning deltas, citations, and final usage stats—even when the downstream client disconnects mid-stream we still flush pending artifacts (`_flush_pending`) before tearing down the job.
+
+---
+
+**Conclusion:** With size limits, SSRF defenses, encryption, and the reworked Redis durability, the manifold meets the production requirements outlined above. Remaining gaps are in automated coverage rather than runtime safeguards. Add the noted tests when bandwidth allows, but the operational story is now consistent and documented.
