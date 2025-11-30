@@ -24,6 +24,7 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` (int) | 5 | 1 / 60 | Initial backoff delay; subsequent retries double the delay to stay polite with remote servers. |
 | `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` (int) | 45 | 5 / 300 | Hard ceiling on total retry time to keep queues moving during repeated failures. |
 | `REMOTE_FILE_MAX_SIZE_MB` (int) | 50 | 1 / 500 | Cap for remote downloads *and* remote image/file blocks. When Open WebUI RAG uploads enforce `FILE_MAX_SIZE`, the effective cap auto-aligns to avoid ingesting larger files than RAG can store. |
+| `SAVE_REMOTE_FILE_URLS` (bool) | `False` | n/a | When enabled, remote `file_url` inputs (including data URLs) are downloaded and re-hosted inside Open WebUI storage; when disabled the URLs are passed through untouched. Use this to control storage growth and trust boundaries. |
 | `BASE64_MAX_SIZE_MB` (int) | 50 | 1 / 500 | Validates inline base64 payloads before decoding to prevent memory spikes from oversized uploads. |
 | `VIDEO_MAX_SIZE_MB` (int) | 100 | 1 / 1000 | Maximum size for video payloads (remote URLs or data URLs). Protects against huge video inputs that exceed typical worker resources. |
 | `ENABLE_SSRF_PROTECTION` (bool) | `True` | n/a | Blocks remote downloads that resolve to private networks (localhost, RFC1918 ranges) to guard against SSRF attacks. Disable only if you deliberately fetch from an internal host. |

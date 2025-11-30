@@ -1390,8 +1390,12 @@ class ResponsesBody(BaseModel):
                                         show_error_message=False
                                     )
 
-                        # Process file_url when it's provided and points to remote or base64 data
-                        if file_url and isinstance(file_url, str):
+                        # Process file_url when it's provided and valve permits re-hosting
+                        if (
+                            file_url
+                            and isinstance(file_url, str)
+                            and self.valves.SAVE_REMOTE_FILE_URLS
+                        ):
                             if file_url.startswith("data:"):
                                 try:
                                     parsed = self._parse_data_url(file_url)
@@ -2043,6 +2047,10 @@ class Pipe:
             ge=1,
             le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
             description="Maximum size in MB for downloading remote files/images. Files exceeding this limit are skipped. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI's FILE_MAX_SIZE (if set).",
+        )
+        SAVE_REMOTE_FILE_URLS: bool = Field(
+            default=False,
+            description="When True, remote file_url references are downloaded and re-hosted in Open WebUI storage. When False, file_url values are passed through untouched (recommended default to avoid unexpected storage growth).",
         )
         BASE64_MAX_SIZE_MB: int = Field(
             default=50,

@@ -26,7 +26,7 @@ This document describes the comprehensive file, image, and audio input handling 
   - `filename`: Filename for model context
   - `file_url`: URL to file
 - **Base64 files**: Automatically saved to OWUI storage
-- **Remote file URLs**: Downloaded and saved locally
+- **Remote file URLs**: **Opt-in** download & local storage via `SAVE_REMOTE_FILE_URLS` valve (default: disabled)
 - **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB)
 - **Base64 validation**: Configurable via `BASE64_MAX_SIZE_MB` valve (default: 50MB)
 
@@ -163,7 +163,8 @@ Converts Open WebUI file blocks into Responses API format.
 2. If `file_data` is data URL: Parse, upload to OWUI storage, set `file_url`
 3. If `file_data` is remote URL: Download, upload to OWUI storage, set `file_url`
 4. If `file_id`: Keep as-is (already in OWUI storage)
-5. Return all available fields to Responses API
+5. If `SAVE_REMOTE_FILE_URLS` valve is enabled, treat `file_url` entries like `file_data` (download + store); otherwise leave them untouched unless already internal
+6. Return all available fields to Responses API
 
 **Error handling**: All errors caught and logged with status emissions. Returns minimal valid block rather than crashing.
 
@@ -267,6 +268,18 @@ if not self._validate_base64_size(b64_data):
 - Rejected with descriptive warning log including configured limit
 - Return `None` from helper methods
 - Processing continues for other content blocks without crashing
+
+### Remote `file_url` Persistence
+
+**Valve**: `SAVE_REMOTE_FILE_URLS`
+- **Default**: `False` (pass remote URLs through unchanged)
+- **Purpose**: Gives admins control over whether third-party file URLs should be downloaded, stored in OWUI, and rewritten to internal `/api/v1/files/...` links.
+- **When enabled**:
+  - Remote HTTP(S) `file_url` inputs are fetched with the same retry/size guards as `file_data`.
+  - Base64/data-URL `file_url` inputs are validated and stored just like inline base64 attachments.
+- **When disabled**:
+  - `file_url` values are left untouched unless they already reference OWUI storage.
+  - `file_data` processing (base64/remote) continues to run regardless of this valve.
 
 ## Documentation Compliance
 

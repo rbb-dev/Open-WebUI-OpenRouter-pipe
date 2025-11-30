@@ -316,6 +316,7 @@ class TestFileTransformer:
         """Remote file_url inputs should be downloaded and re-hosted in OWUI."""
         remote_url = "https://example.com/manual.pdf"
         stored_url = "/api/v1/files/remote123"
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
 
         download_mock = AsyncMock(
             return_value={
@@ -371,6 +372,52 @@ class TestFileTransformer:
             StatusMessages.FILE_REMOTE_SAVED,
             done=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_file_remote_url_passthrough_when_disabled(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        monkeypatch,
+    ):
+        """Remote file_url should pass through when valve disabled."""
+        remote_url = "https://example.com/manual.pdf"
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = False
+
+        download_mock = AsyncMock()
+        upload_mock = AsyncMock()
+        status_mock = AsyncMock()
+
+        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "file_url": remote_url,
+                    }
+                ],
+            }
+        ]
+
+        transformed = await ResponsesBody.transform_messages_to_input(
+            pipe_instance,
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=None,
+        )
+
+        file_block = transformed[0]["content"][0]
+        assert file_block["file_url"] == remote_url
+        download_mock.assert_not_called()
+        upload_mock.assert_not_called()
+        status_mock.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
