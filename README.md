@@ -33,7 +33,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 ### Model & Request Pipeline
 - **Dynamic catalog import**: The registry fetches OpenRouter's `/models` endpoint, normalizes IDs, and caches feature flags (vision, audio, reasoning, web search, MCP, etc.).
 - **Capability-aware routing**: `ModelFamily` helpers (e.g., `supports("function_calling")`) ensure the pipe only enables features the selected model can honor.
-- **Completions → Responses transforms**: `ResponsesBody.from_completions` rewrites Open WebUI messages into Responses `input[]`, injects persisted ULID artifacts, and preserves reasoning/tool state turn after turn.
+- **Completions → Responses transforms**: `ResponsesBody.from_completions` rewrites Open WebUI messages into Responses `input[]`, preserves `response_format`/`parallel_tool_calls`, injects persisted ULID artifacts, and keeps reasoning/tool state turn after turn.
 
 ### Multimodal Intake & Storage
 - **Remote download safeguards**: HTTP downloads enforce SSRF bans, configurable retries/backoff, and a MB limit that also honors Open WebUI's RAG upload ceiling when one is configured.
