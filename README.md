@@ -41,6 +41,13 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 - **Open WebUI storage integration**: Images/files are saved through Open WebUI's own storage endpoints, preventing link rot and keeping chat history portable.
 - **Encrypted, compressed artifacts**: Per-pipe SQLAlchemy tables are created automatically; artifacts can be encrypted with `ARTIFACT_ENCRYPTION_KEY`, optionally LZ4-compressed above `MIN_COMPRESS_BYTES`, and tagged with ULIDs for replay/pruning.
 
+### Artifact Persistence Flow
+- **Per-pipe namespaces**: Artifact tables are named `response_items_<pipe>_<hash>` where the hash includes the encryption key. Rotating `ARTIFACT_ENCRYPTION_KEY` intentionally creates a new table so older ciphertexts remain unreadable.
+- **ULID-based replay**: Every reasoning/tool payload is stored with a ULID marker so `_transform_messages_to_input()` can replay prior turns verbatim (and prune older ones when retention rules say so).
+- **Selective encryption + compression**: Reasoning payloads are encrypted by default (or all artifacts when `ENCRYPT_ALL` is true); each payload carries a tiny header indicating whether it was LZ4-compressed.
+- **Redis-backed write-behind**: When Redis + multi-worker are detected, artifacts are queued into a pending list, flushed in batches by a background worker, cached with TTLs for fast replays, and evicted once the DB confirms persistence. Breakers disable Redis after repeated failures and fall back to direct DB writes.
+- **Cleanup + retention**: Scheduled jobs delete stale artifacts (based on `ARTIFACT_CLEANUP_*` valves) and retention settings (e.g., “reasoning only until next reply”) trigger `_delete_artifacts` to purge rows + cache entries once they have been replayed.
+
 ### Tooling & Streaming
 - **Strict tool schemas**: Open WebUI registry entries are strictified for deterministic tool calling and deduped so the latest definition wins.
 - **MCP + OpenRouter plugins**: Remote MCP servers (via JSON definition) and OpenRouter's `web` plugin are attached automatically for models that declare support.
