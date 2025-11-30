@@ -102,12 +102,12 @@ Uploads file or image to Open WebUI storage and returns internal URL.
 #### `_resolve_storage_context(request, user_obj)`
 Resolves the `(request, user)` tuple used for uploads.
 - **Primary path**: Returns the provided FastAPI `Request` along with the resolved chat `user_obj`.
-- **Fallback**: When `user_obj` is missing (API callers, automations), lazily calls `_ensure_storage_user()` to obtain the dedicated service account.
+- **Fallback**: When `user_obj` is missing (API callers, automations), lazily calls `_ensure_storage_user()` to obtain the dedicated service account defined via the `FALLBACK_STORAGE_*` valves.
 - **Failure**: Returns `(None, None)` only when no FastAPI request is available, allowing transformers to gracefully skip uploads in synthetic/offline contexts.
 
 #### `_ensure_storage_user()`
 Creates (once) or loads the fallback storage owner.
-- **Identity**: Configurable via `OPENROUTER_STORAGE_USER_EMAIL/NAME/ROLE` env vars (defaults to `openrouter-pipe@system.local`).
+- **Identity**: Configurable via valves `FALLBACK_STORAGE_EMAIL`, `FALLBACK_STORAGE_NAME`, and `FALLBACK_STORAGE_ROLE` (each seeded from matching `OPENROUTER_STORAGE_*` env vars, falling back to sensible defaults).
 - **Implementation**: Looks up the user by email and inserts a new DB row if needed, caching the result for subsequent uploads.
 - **Usage**: Only invoked when a real chat user isn’t available; regular chats still upload under the originating user so permissions remain intuitive.
 

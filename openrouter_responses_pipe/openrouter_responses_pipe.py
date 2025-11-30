@@ -129,10 +129,6 @@ _STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 
-_STORAGE_FALLBACK_EMAIL = os.getenv("OPENROUTER_STORAGE_USER_EMAIL", "openrouter-pipe@system.local")
-_STORAGE_FALLBACK_NAME = os.getenv("OPENROUTER_STORAGE_USER_NAME", "OpenRouter Pipe Storage")
-_STORAGE_FALLBACK_ROLE = os.getenv("OPENROUTER_STORAGE_USER_ROLE", "system")
-
 _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
 
@@ -2202,6 +2198,18 @@ class Pipe:
             ge=1,
             le=1000,
             description="Maximum size in MB for video files (remote URLs or data URLs). Videos exceeding this limit will be rejected to prevent memory and bandwidth issues.",
+        )
+        FALLBACK_STORAGE_EMAIL: str = Field(
+            default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
+            description="Owner email used when multimodal uploads occur without a chat user (e.g., API automations).",
+        )
+        FALLBACK_STORAGE_NAME: str = Field(
+            default=(os.getenv("OPENROUTER_STORAGE_USER_NAME") or "OpenRouter Pipe Storage"),
+            description="Display name for the fallback storage owner.",
+        )
+        FALLBACK_STORAGE_ROLE: str = Field(
+            default=(os.getenv("OPENROUTER_STORAGE_USER_ROLE") or "system"),
+            description="Role assigned to the fallback storage account when auto-created.",
         )
         ENABLE_SSRF_PROTECTION: bool = Field(
             default=True,
@@ -4394,10 +4402,14 @@ class Pipe:
             if self._storage_user_cache is not None:
                 return self._storage_user_cache
 
+            fallback_email = (self.valves.FALLBACK_STORAGE_EMAIL or "").strip() or "openrouter-pipe@system.local"
+            fallback_name = (self.valves.FALLBACK_STORAGE_NAME or "").strip() or "OpenRouter Pipe Storage"
+            fallback_role = (self.valves.FALLBACK_STORAGE_ROLE or "").strip() or "system"
+
             try:
                 fallback_user = await run_in_threadpool(
                     Users.get_user_by_email,
-                    _STORAGE_FALLBACK_EMAIL,
+                    fallback_email,
                 )
             except Exception as exc:  # pragma: no cover - defensive guard
                 self.logger.error("Failed to load fallback storage user: %s", exc)
@@ -4409,16 +4421,16 @@ class Pipe:
                     fallback_user = await run_in_threadpool(
                         Users.insert_new_user,
                         user_id,
-                        _STORAGE_FALLBACK_NAME,
-                        _STORAGE_FALLBACK_EMAIL,
+                        fallback_name,
+                        fallback_email,
                         "/user.png",
-                        _STORAGE_FALLBACK_ROLE or "pending",
+                        fallback_role or "pending",
                         None,
                     )
                     self.logger.info(
                         "Created fallback storage user '%s' (%s) for multimodal uploads.",
-                        _STORAGE_FALLBACK_NAME,
-                        _STORAGE_FALLBACK_EMAIL,
+                        fallback_name,
+                        fallback_email,
                     )
                 except Exception as exc:  # pragma: no cover - defensive guard
                     self.logger.error("Failed to create fallback storage user: %s", exc)

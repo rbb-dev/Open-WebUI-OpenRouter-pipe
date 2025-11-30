@@ -27,6 +27,9 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `SAVE_REMOTE_FILE_URLS` (bool) | `False` | n/a | When enabled, remote `file_url` inputs (including data URLs) are downloaded and re-hosted inside Open WebUI storage; when disabled the URLs are passed through untouched. Use this to control storage growth and trust boundaries. |
 | `BASE64_MAX_SIZE_MB` (int) | 50 | 1 / 500 | Validates inline base64 payloads before decoding to prevent memory spikes from oversized uploads. |
 | `VIDEO_MAX_SIZE_MB` (int) | 100 | 1 / 1000 | Maximum size for video payloads (remote URLs or data URLs). Protects against huge video inputs that exceed typical worker resources. |
+| `FALLBACK_STORAGE_EMAIL` (str) | `OPENROUTER_STORAGE_USER_EMAIL` env or `openrouter-pipe@system.local` | n/a | Email assigned to the service user that owns uploads when no chat user exists (e.g., automation callers). |
+| `FALLBACK_STORAGE_NAME` (str) | `OPENROUTER_STORAGE_USER_NAME` env or `"OpenRouter Pipe Storage"` | n/a | Display name for the fallback storage owner shown in OWUI’s file listings. |
+| `FALLBACK_STORAGE_ROLE` (str) | `OPENROUTER_STORAGE_USER_ROLE` env or `"system"` | n/a | Role applied to the fallback storage user if the pipe needs to auto-create it. Adjust for permission scoping. |
 | `ENABLE_SSRF_PROTECTION` (bool) | `True` | n/a | Blocks remote downloads that resolve to private networks (localhost, RFC1918 ranges) to guard against SSRF attacks. Disable only if you deliberately fetch from an internal host. |
 
 ### Model Catalog & Reasoning Preferences
