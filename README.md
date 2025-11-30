@@ -119,7 +119,7 @@ Per-user overrides (log level, reasoning effort, streaming profile, etc.) are al
 
 ## Testing
 
-`tests/conftest.py` stubs Open WebUI, FastAPI, SQLAlchemy, pydantic-core, and tenacity so the pipe can be imported without the full server.
+`tests/conftest.py` stubs Open WebUI, FastAPI, SQLAlchemy, pydantic-core, and tenacity so the pipe can be imported without the full server. Because the pytest plugin `openrouter_responses_pipe.pytest_bootstrap` lives inside this repository, set `PYTHONPATH=.` (or install the package in editable mode) whenever you run the suite; otherwise pytest cannot locate the plugin.
 
 ```bash
 PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py   # multimodal + size guard coverage

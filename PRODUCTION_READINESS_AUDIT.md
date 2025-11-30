@@ -108,6 +108,11 @@ Operational guidance:
 - Request admission control is explicit: `_QUEUE_MAXSIZE` is capped at 500, and a global semaphore enforces `MAX_CONCURRENT_REQUESTS`. If the queue fills the user receives a prompt 503 with a visible status rather than a timeout.
 - Streaming SSE worker pool reorders events by sequence and batches text updates, but still guarantees delivery of reasoning deltas, citations, and final usage stats—even when the downstream client disconnects mid-stream we still flush pending artifacts (`_flush_pending`) before tearing down the job.
 
+## 10. Testing Notes
+
+- The pytest plugin `openrouter_responses_pipe.pytest_bootstrap` lives at the repo root, so developers must set `PYTHONPATH=.` (or install the repo with `pip install -e .`) before running `pytest`. Without that, Python cannot import the plugin and collection fails with `ModuleNotFoundError: openrouter_responses_pipe`.
+- `tests/conftest.py` provides lightweight stubs for Open WebUI, FastAPI, SQLAlchemy, pydantic-core, and tenacity. No external services are required; just activate the `.venv` (Python 3.12) and run the suite.
+
 ---
 
 **Conclusion:** With size limits, SSRF defenses, encryption, and the reworked Redis durability, the manifold meets the production requirements outlined above. Remaining gaps are in automated coverage rather than runtime safeguards. Add the noted tests when bandwidth allows, but the operational story is now consistent and documented.
