@@ -7812,10 +7812,12 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
                 props = {}
                 node["properties"] = props
 
-            original_required = set(node.get("required") or [])
+            original_required_list = list(node.get("required") or [])
+            filtered_required = [name for name in original_required_list if name in props]
+            original_required = set(filtered_required)
 
             node["additionalProperties"] = False
-            node["required"] = list(props.keys())
+            node["required"] = filtered_required
 
             for name, p in props.items():
                 if not isinstance(p, dict):
