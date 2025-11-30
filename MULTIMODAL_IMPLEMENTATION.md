@@ -7,8 +7,8 @@ This document describes the comprehensive file, image, and audio input handling 
 ## Features Implemented
 
 ### ✅ Image Input Support
-- **Base64 images**: Automatically persisted to OWUI storage for every caller. When a chat user context is missing, the pipe transparently falls back to a dedicated service owner.
-- **Remote image URLs**: Downloaded and re-hosted before hitting OpenRouter so links never rot, no matter who initiated the request.
+- **Base64 images**: Automatically persisted to OWUI storage for every caller. When a chat user context is missing, the pipe transparently falls back to a dedicated low-privilege service owner.
+- **Remote image URLs**: Downloaded and re-hosted before hitting OpenRouter so links never rot, no matter who initiated the request. Downloads stream chunk-by-chunk with strict byte-accounting to avoid large transient allocations.
 - **Supported formats** (per OpenRouter docs):
   - `image/png`
   - `image/jpeg`
@@ -26,7 +26,7 @@ This document describes the comprehensive file, image, and audio input handling 
   - `filename`: Filename for model context
   - `file_url`: URL to file
 - **Base64 files**: Always uploaded to OWUI storage (uses the real user when available, else the fallback service owner).
-- **Remote `file_data` URLs**: Always fetched, validated, and re-hosted with the same guardrails as base64.
+- **Remote `file_data` URLs**: Always fetched, validated, and re-hosted with the same guardrails as base64. The download path streams and aborts immediately once the configured size cap is exceeded.
 - **Remote file URLs**: **Opt-in** download & local storage via `SAVE_REMOTE_FILE_URLS` valve (default: disabled)
 - **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB)
 - **Base64 validation**: Configurable via `BASE64_MAX_SIZE_MB` valve (default: 50MB)
@@ -101,12 +101,13 @@ Uploads file or image to Open WebUI storage and returns internal URL.
 #### `_resolve_storage_context(request, user_obj)`
 Resolves the `(request, user)` tuple used for uploads.
 - **Primary path**: Returns the provided FastAPI `Request` along with the resolved chat `user_obj`.
-- **Fallback**: When `user_obj` is missing (API callers, automations), lazily calls `_ensure_storage_user()` to obtain the dedicated service account defined via the `FALLBACK_STORAGE_*` valves.
+- **Fallback**: When `user_obj` is missing (API callers, automations), lazily calls `_ensure_storage_user()` to obtain the dedicated service account defined via the `FALLBACK_STORAGE_*` valves. This account now defaults to the low-privilege `pending` role so uploads can succeed without granting elevated permissions.
 - **Failure**: Returns `(None, None)` only when no FastAPI request is available, allowing transformers to gracefully skip uploads in synthetic/offline contexts.
 
 #### `_ensure_storage_user()`
 Creates (once) or loads the fallback storage owner.
-- **Identity**: Configurable via valves `FALLBACK_STORAGE_EMAIL`, `FALLBACK_STORAGE_NAME`, and `FALLBACK_STORAGE_ROLE` (each seeded from matching `OPENROUTER_STORAGE_*` env vars, falling back to sensible defaults).
+- **Identity**: Configurable via valves `FALLBACK_STORAGE_EMAIL`, `FALLBACK_STORAGE_NAME`, and `FALLBACK_STORAGE_ROLE` (each seeded from matching `OPENROUTER_STORAGE_*` env vars, falling back to sensible defaults). The default role is `pending`, and the pipe logs a warning if you override it with a highly privileged role.
+- **Auth hardening**: Newly created fallback accounts are stamped with a unique `oauth_sub` so they cannot be used for interactive login flows.
 - **Implementation**: Looks up the user by email and inserts a new DB row if needed, caching the result for subsequent uploads.
 - **Usage**: Only invoked when a real chat user isn’t available; regular chats still upload under the originating user so permissions remain intuitive.
 
@@ -131,6 +132,7 @@ Downloads file or image from remote HTTP/HTTPS URL with automatic retry using ex
 - SSRF-protected URLs (`_is_safe_url` guard)
 
 **Additional Features**:
+- **Streaming downloads**: Uses `httpx` streaming so only a bounded buffer is held in memory; aborts immediately if the running byte count or the `Content-Length` header exceeds the configured limit.
 - **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB); automatically capped to Open WebUI's `FILE_MAX_SIZE` when RAG uploads are enabled
 - **Timeout**: Capped at 60 seconds per attempt to prevent hanging requests
 - **MIME type normalization**: `image/jpg` → `image/jpeg`

@@ -29,8 +29,10 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `VIDEO_MAX_SIZE_MB` (int) | 100 | 1 / 1000 | Maximum size for video payloads (remote URLs or data URLs). Protects against huge video inputs that exceed typical worker resources. |
 | `FALLBACK_STORAGE_EMAIL` (str) | `OPENROUTER_STORAGE_USER_EMAIL` env or `openrouter-pipe@system.local` | n/a | Email assigned to the service user that owns uploads when no chat user exists (e.g., automation callers). |
 | `FALLBACK_STORAGE_NAME` (str) | `OPENROUTER_STORAGE_USER_NAME` env or `"OpenRouter Pipe Storage"` | n/a | Display name for the fallback storage owner shown in OWUI’s file listings. |
-| `FALLBACK_STORAGE_ROLE` (str) | `OPENROUTER_STORAGE_USER_ROLE` env or `"system"` | n/a | Role applied to the fallback storage user if the pipe needs to auto-create it. Adjust for permission scoping. |
+| `FALLBACK_STORAGE_ROLE` (str) | `OPENROUTER_STORAGE_USER_ROLE` env or `"pending"` | n/a | Role applied to the fallback storage user if the pipe needs to auto-create it. Defaults to the low-privilege `"pending"` role; bump only when your Open WebUI permissions require a different service account scope. |
 | `ENABLE_SSRF_PROTECTION` (bool) | `True` | n/a | Blocks remote downloads that resolve to private networks (localhost, RFC1918 ranges) to guard against SSRF attacks. Disable only if you deliberately fetch from an internal host. |
+
+> **Security tip:** If you override `FALLBACK_STORAGE_ROLE` to a privileged value (`admin`, `system`, etc.), the pipe now emits a warning at runtime. Keep the fallback account least-privileged unless you explicitly need elevated storage permissions.
 
 ### Model Catalog & Reasoning Preferences
 | Valve | Default | Min / Max | Usage & Rationale |

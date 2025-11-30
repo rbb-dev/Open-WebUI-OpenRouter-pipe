@@ -2288,8 +2288,8 @@ class Pipe:
             description="Display name for the fallback storage owner.",
         )
         FALLBACK_STORAGE_ROLE: str = Field(
-            default=(os.getenv("OPENROUTER_STORAGE_USER_ROLE") or "system"),
-            description="Role assigned to the fallback storage account when auto-created.",
+            default=(os.getenv("OPENROUTER_STORAGE_USER_ROLE") or "pending"),
+            description="Role assigned to the fallback storage account when auto-created. Defaults to the low-privilege 'pending' role; override if your deployment needs a custom service role.",
         )
         ENABLE_SSRF_PROTECTION: bool = Field(
             default=True,
@@ -2699,6 +2699,7 @@ class Pipe:
         self._legacy_tool_warning_emitted = False
         self._storage_user_cache: Optional[Any] = None
         self._storage_user_lock: Optional[asyncio.Lock] = None
+        self._storage_role_warning_emitted: bool = False
         self._maybe_start_log_worker()
         self._maybe_start_startup_checks()
 
@@ -2932,17 +2933,22 @@ class Pipe:
                 return
 
             rows: list[dict[str, Any]] = []
+            raw_entries: list[str] = []
             batch_size = max(5, min(int(self.valves.DB_BATCH_SIZE or 10), 20))
             while len(rows) < batch_size:
                 data = await self._redis_client.lpop(self._redis_pending_key)
                 if data is None:
                     break
+                raw_entries.append(data)
                 try:
                     rows.append(json.loads(data))
                 except json.JSONDecodeError as exc:
                     self.logger.warning("Malformed JSON in pending queue, skipping: %s", exc)
                     continue
+            if not raw_entries:
+                return
             if not rows:
+                self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", len(raw_entries))
                 return
 
             self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")
@@ -2950,7 +2956,12 @@ class Pipe:
                 await self._db_persist_direct(rows)
                 self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
             except Exception as exc:
-                self.logger.error("❌ DB flush failed! %d artifacts may be lost: %s", len(rows), exc, exc_info=True)
+                self.logger.error("❌ DB flush failed! %d artifacts could not be persisted: %s", len(rows), exc, exc_info=True)
+                try:
+                    await self._redis_requeue_entries(raw_entries)
+                    self.logger.debug("Re-queued %d artifact(s) back to Redis pending queue after DB failure", len(raw_entries))
+                except Exception as requeue_exc:  # pragma: no cover - defensive
+                    self.logger.critical("Failed to re-queue %d artifact(s) after DB failure: %s", len(raw_entries), requeue_exc)
         finally:
             if lock_acquired and self._redis_client:
                 release_script = (
@@ -3011,6 +3022,16 @@ class Pipe:
             if not cache_key:
                 continue
             pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
+        await pipe.execute()
+
+    async def _redis_requeue_entries(self, entries: list[str]) -> None:
+        """Push raw JSON entries back onto the pending queue after a DB failure."""
+        if not (entries and self._redis_client):
+            return
+        pipe = self._redis_client.pipeline()
+        for payload in reversed(entries):
+            pipe.lpush(self._redis_pending_key, payload)
+        pipe.expire(self._redis_pending_key, max(self._redis_ttl, 60))
         await pipe.execute()
 
     async def _redis_fetch_rows(
@@ -4484,7 +4505,17 @@ class Pipe:
 
             fallback_email = (self.valves.FALLBACK_STORAGE_EMAIL or "").strip() or "openrouter-pipe@system.local"
             fallback_name = (self.valves.FALLBACK_STORAGE_NAME or "").strip() or "OpenRouter Pipe Storage"
-            fallback_role = (self.valves.FALLBACK_STORAGE_ROLE or "").strip() or "system"
+            fallback_role = (self.valves.FALLBACK_STORAGE_ROLE or "").strip() or "pending"
+
+            if (
+                fallback_role.lower() in {"admin", "system", "owner"}
+                and not self._storage_role_warning_emitted
+            ):
+                self.logger.warning(
+                    "Fallback storage role '%s' is highly privileged. Configure FALLBACK_STORAGE_ROLE to a least-privilege service role if possible.",
+                    fallback_role,
+                )
+                self._storage_role_warning_emitted = True
 
             try:
                 fallback_user = await run_in_threadpool(
@@ -4498,6 +4529,7 @@ class Pipe:
             if fallback_user is None:
                 user_id = f"openrouter-pipe-{uuid.uuid4().hex}"
                 try:
+                    oauth_marker = f"openrouter-pipe-storage:{uuid.uuid4().hex}"
                     fallback_user = await run_in_threadpool(
                         Users.insert_new_user,
                         user_id,
@@ -4505,7 +4537,7 @@ class Pipe:
                         fallback_email,
                         "/user.png",
                         fallback_role or "pending",
-                        None,
+                        oauth_marker,
                     )
                     self.logger.info(
                         "Created fallback storage user '%s' (%s) for multimodal uploads.",
@@ -4548,7 +4580,7 @@ class Pipe:
         Note:
             - Can be disabled via ENABLE_SSRF_PROTECTION valve (default: True)
             - DNS resolution failures are treated as unsafe
-            - IPv6 addresses are not yet validated (future improvement)
+            - All resolved IPv4/IPv6 addresses must be public (any private hit blocks the request)
 
         Example:
             >>> self._is_safe_url("https://example.com/image.jpg")
@@ -4561,8 +4593,8 @@ class Pipe:
             return True
 
         try:
-            import socket
             import ipaddress
+            import socket
 
             parsed = urlparse(url)
             host = parsed.hostname
@@ -4571,38 +4603,66 @@ class Pipe:
                 self.logger.warning(f"URL has no hostname: {url}")
                 return False
 
-            # Resolve hostname to IP address
+            ip_objects: list[ipaddress._BaseAddress] = []
+            seen_ips: set[str] = set()
+
+            def _record_ip(candidate: ipaddress._BaseAddress) -> None:
+                comp = candidate.compressed
+                if comp not in seen_ips:
+                    seen_ips.add(comp)
+                    ip_objects.append(candidate)
+
+            # Fast-path literal IPv4/IPv6 hosts
             try:
-                ip_str = socket.gethostbyname(host)
-                ip = ipaddress.ip_address(ip_str)
-            except socket.gaierror:
-                # DNS resolution failed - treat as unsafe
-                self.logger.warning(f"DNS resolution failed for: {host}")
-                return False
+                literal_ip = ipaddress.ip_address(host)
             except ValueError:
-                # Invalid IP format
-                self.logger.warning(f"Invalid IP address format: {host}")
+                literal_ip = None
+            else:
+                _record_ip(literal_ip)
+
+            # Resolve hostname to all available IPs (IPv4 + IPv6) when not a literal
+            if literal_ip is None:
+                try:
+                    addrinfo = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                except (socket.gaierror, UnicodeError):
+                    self.logger.warning(f"DNS resolution failed for: {host}")
+                    return False
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    self.logger.error(f"Unexpected DNS error for {host}: {exc}")
+                    return False
+
+                for _, _, _, _, sockaddr in addrinfo:
+                    if not sockaddr:
+                        continue
+                    ip_str = sockaddr[0]
+                    try:
+                        resolved_ip = ipaddress.ip_address(ip_str)
+                    except ValueError:
+                        self.logger.warning(f"Invalid IP address format: {ip_str}")
+                        return False
+                    _record_ip(resolved_ip)
+
+            if not ip_objects:
+                self.logger.warning(f"No IP addresses resolved for: {host}")
                 return False
 
-            # Check against private IP ranges
-            if ip.is_private:
-                self.logger.warning(f"Blocked SSRF attempt to private IP: {url} ({ip})")
-                return False
+            for ip in ip_objects:
+                if ip.is_private:
+                    reason = "private"
+                elif ip.is_loopback:
+                    reason = "loopback"
+                elif ip.is_link_local:
+                    reason = "link-local"
+                elif ip.is_multicast:
+                    reason = "multicast"
+                elif ip.is_reserved:
+                    reason = "reserved"
+                elif ip.is_unspecified:
+                    reason = "unspecified"
+                else:
+                    continue
 
-            if ip.is_loopback:
-                self.logger.warning(f"Blocked SSRF attempt to loopback: {url} ({ip})")
-                return False
-
-            if ip.is_link_local:
-                self.logger.warning(f"Blocked SSRF attempt to link-local IP: {url} ({ip})")
-                return False
-
-            if ip.is_multicast:
-                self.logger.warning(f"Blocked SSRF attempt to multicast IP: {url} ({ip})")
-                return False
-
-            if ip.is_reserved:
-                self.logger.warning(f"Blocked SSRF attempt to reserved IP: {url} ({ip})")
+                self.logger.warning(f"Blocked SSRF attempt to {reason} IP: {url} ({ip})")
                 return False
 
             return True
@@ -4761,30 +4821,51 @@ class Pipe:
                         )
 
                     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                        response = await client.get(url)
-                        try:
-                            response.raise_for_status()
-                        except httpx.HTTPStatusError as exc:
-                            retryable, retry_after = _classify_retryable_http_error(exc)
-                            if retryable:
-                                raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
-                            raise
+                        async with client.stream("GET", url) as response:
+                            try:
+                                response.raise_for_status()
+                            except httpx.HTTPStatusError as exc:
+                                retryable, retry_after = _classify_retryable_http_error(exc)
+                                if retryable:
+                                    raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
+                                raise
 
-                    # Extract and normalize MIME type
-                    mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
-                    if mime_type == "image/jpg":
-                        mime_type = "image/jpeg"
+                            # Extract and normalize MIME type
+                            mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                            if mime_type == "image/jpg":
+                                mime_type = "image/jpeg"
 
-                    # Enforce configurable size limit (valve + optional RAG cap)
-                    effective_limit_mb = self._get_effective_remote_file_limit_mb()
-                    max_size_bytes = effective_limit_mb * 1024 * 1024
-                    if len(response.content) > max_size_bytes:
-                        size_mb = len(response.content) / (1024 * 1024)
-                        self.logger.warning(
-                            f"Remote file {url} exceeds configured limit "
-                            f"({size_mb:.1f}MB > {effective_limit_mb}MB), skipping"
-                        )
-                        return None
+                            # Enforce configurable size limit (valve + optional RAG cap)
+                            effective_limit_mb = self._get_effective_remote_file_limit_mb()
+                            max_size_bytes = effective_limit_mb * 1024 * 1024
+
+                            content_length = response.headers.get("content-length")
+                            if content_length:
+                                try:
+                                    if int(content_length) > max_size_bytes:
+                                        self.logger.warning(
+                                            "Remote file %s exceeds configured limit based on Content-Length header "
+                                            "(%s bytes > %s bytes); aborting download.",
+                                            url,
+                                            content_length,
+                                            max_size_bytes,
+                                        )
+                                        return None
+                                except ValueError:
+                                    pass
+
+                            payload = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                if not chunk:
+                                    continue
+                                payload.extend(chunk)
+                                if len(payload) > max_size_bytes:
+                                    size_mb = len(payload) / (1024 * 1024)
+                                    self.logger.warning(
+                                        f"Remote file {url} exceeds configured limit "
+                                        f"({size_mb:.1f}MB > {effective_limit_mb}MB), aborting download."
+                                    )
+                                    return None
 
                     # Success
                     if attempt > 1:
@@ -4794,7 +4875,7 @@ class Pipe:
                         )
 
                     return {
-                        "data": response.content,
+                        "data": bytes(payload),
                         "mime_type": mime_type,
                         "url": url
                     }

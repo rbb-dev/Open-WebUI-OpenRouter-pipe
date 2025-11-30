@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import socket
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -248,6 +249,42 @@ class TestRemoteURLDownloading:
 
             assert result is None
             assert client_ctx.get.await_count == 1
+
+
+class TestSSRFIPv6Validation:
+    """Ensure _is_safe_url handles IPv6 and mixed DNS responses."""
+
+    def test_blocks_private_ipv6_literal(self, pipe_instance):
+        """IPv6 literals in unique-local ranges should be rejected."""
+        assert pipe_instance._is_safe_url("http://[fd00::1]/") is False
+
+    def test_allows_global_ipv6_literal(self, pipe_instance):
+        """Public IPv6 literals should be considered safe."""
+        assert pipe_instance._is_safe_url("https://[2001:4860:4860::8888]/foo")
+
+    def test_blocks_domain_with_private_ipv6_record(self, pipe_instance, monkeypatch):
+        """Hosts resolving to any private IPv6 addresses are rejected."""
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("fd00::abcd", 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
+            ]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        assert pipe_instance._is_safe_url("https://example.com/resource") is False
+
+    def test_allows_domain_with_public_ips_only(self, pipe_instance, monkeypatch):
+        """Hosts resolving exclusively to public IPv4/IPv6 addresses pass the guard."""
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("2001:4860:4860::8888", 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0)),
+            ]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        assert pipe_instance._is_safe_url("https://example.com/resource")
 
 
 class TestRemoteFileLimitResolution:
