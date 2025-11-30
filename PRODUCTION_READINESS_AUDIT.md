@@ -30,7 +30,7 @@ Operational guidance:
 - Optional LZ4 compression (gated by `ENABLE_LZ4_COMPRESSION`) stores a one-byte header flag (`plain` vs `lz4`). By default the pipe always attempts compression and keeps it only when the LZ4 output is smaller, though operators can raise `MIN_COMPRESS_BYTES` to skip tiny payloads.
 
 ### Redis Write‑Behind
-- When `REDIS_URL` exists, multiple workers are present, and `ENABLE_REDIS_CACHE` is true, artifacts flow into a Redis pending list.
+- When Open WebUI is configured for multi-worker Redis (`UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL`) and `ENABLE_REDIS_CACHE` is true, artifacts flow into a Redis pending list.
 - A background worker flushes JSON blobs to the DB in batches of `DB_BATCH_SIZE`. Each entry is cached with TTL `REDIS_CACHE_TTL_SECONDS` to serve replays from memory.
 - Flush failures now re‑queue the raw JSON entries and extend the queue TTL, so artifacts aren’t dropped. Repeated failures trip the `REDIS_FLUSH_FAILURE_LIMIT` breaker and force a fallback to direct DB writes.
 

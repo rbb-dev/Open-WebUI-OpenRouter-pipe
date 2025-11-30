@@ -22,7 +22,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 - **Multimodal intake with guard rails** – Remote downloads flow through SSRF filters, retries, and MB caps, while base64/audio/video payloads are validated before decoding.
 - **Secure persistence** – Per-pipe SQLAlchemy tables, optional Fernet encryption, ULID markers, and LZ4 compression keep reasoning/tool artifacts safe yet replayable.
 - **Resilient tool + streaming pipeline** – FIFO tool queues with breaker windows, SSE worker pools, and telemetry-rich emitters keep multi-minute reasoning/tool chains responsive without starving other users.
-- **Operational safeguards** – Request queue + global semaphore, auto-detected Redis write-behind cache, artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
+- **Operational safeguards** – Request queue + global semaphore, Redis write-behind cache (auto-enables only when Open WebUI sets `UVICORN_WORKERS>1`, `REDIS_URL`, and `WEBSOCKET_REDIS_URL`), artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
 
 ## Documentation
 - **[Multimodal Input Pipeline](MULTIMODAL_IMPLEMENTATION.md)** – end-to-end walkthrough of image/file/audio handling, SSRF protections, and persistence.
@@ -45,7 +45,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 - **Per-pipe namespaces**: Artifact tables are named `response_items_<pipe>_<hash>` where the hash includes the encryption key. Rotating `ARTIFACT_ENCRYPTION_KEY` intentionally creates a new table so older ciphertexts remain unreadable.
 - **ULID-based replay**: Every reasoning/tool payload is stored with a ULID marker so `_transform_messages_to_input()` can replay prior turns verbatim (and prune older ones when retention rules say so).
 - **Selective encryption + compression**: Reasoning payloads are encrypted by default (or all artifacts when `ENCRYPT_ALL` is true); each payload carries a tiny header indicating whether it was LZ4-compressed.
-- **Redis-backed write-behind**: When Redis + multi-worker are detected, artifacts are queued into a pending list, flushed in batches by a background worker, cached with TTLs for fast replays, and evicted once the DB confirms persistence. Breakers disable Redis after repeated failures and fall back to direct DB writes.
+- **Redis-backed write-behind**: When Open WebUI runs multiple workers *and* provides both `REDIS_URL` and `WEBSOCKET_REDIS_URL` (with `WEBSOCKET_MANAGER=redis`), artifacts queue into Redis, flush in batches, cache with TTLs for fast replays, and fall back to direct DB writes if breakers trip.
 - **Cleanup + retention**: Scheduled jobs delete stale artifacts (based on `ARTIFACT_CLEANUP_*` valves) and retention settings (e.g., “reasoning only until next reply”) trigger `_delete_artifacts` to purge rows + cache entries once they have been replayed.
 
 ### Tooling & Streaming
@@ -58,7 +58,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 ### Security & Resilience
 - **Session-aware logging**: `SessionLogger` ties every log line to a request via contextvars so troubleshooting output can optionally be surfaced as citations.
 - **Request queue + semaphores**: A bounded queue and process-wide semaphore return HTTP 503 when the manifold is saturated instead of crashing workers.
-- **Redis write-behind cache**: When Redis + multiple workers are detected, artifacts flush through a pending queue guarded by distributed locks; repeated failures automatically fall back to direct DB writes.
+- **Redis write-behind cache**: Auto-detects when Open WebUI is configured for multi-worker Redis ( `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL` ), batches artifacts through pending queues, and guards flushes with distributed locks; repeated failures automatically fall back to direct DB writes.
 - **Artifact cleanup & size controls**: Scheduled cleanup removes stale rows while configurable caps for remote/base64/video payloads keep disk and RAM usage predictable.
 
 ### Roadmap
@@ -71,7 +71,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 
 This pipe is tuned for multi-user workloads:
 - **Request queue + semaphore**: Incoming jobs must acquire a global slot; overflow results in 503 "server busy" responses rather than worker crashes.
-- **Redis write-behind cache**: Auto-detects Redis + multi-worker deployments, batches artifacts through pending queues, and guards flushes with distributed locks; repeated failures automatically fall back to direct DB writes.
+- **Redis write-behind cache**: Auto-detects Redis-backed multi-worker deployments ( `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL` ) and batches artifacts through pending queues guarded by distributed locks; repeated failures automatically fall back to direct DB writes.
 - **Breakers and batching**: Per-user/per-tool breaker windows cap consecutive failures, while compatible tool calls can batch together, each bounded by per-call, per-batch, and idle timeouts.
 - **Resilient emitters**: SSE/notification/citation emitters are wrapped so slow or disconnected clients never crash the request; errors are logged and processing continues.
 - **Payload controls**: Remote downloads honor the configured MB ceiling (and Open WebUI's own upload limit when defined) while base64/video payloads are validated before decoding.
@@ -112,7 +112,7 @@ See **[VALVES_REFERENCE.md](VALVES_REFERENCE.md)** for the full system + user va
 | `MODEL_ID` | Comma-separated list of catalog IDs (`auto` imports everything). |
 | `ARTIFACT_ENCRYPTION_KEY` | Enables encrypted reasoning/tool storage; key changes rotate tables. |
 | `REMOTE_FILE_MAX_SIZE_MB` | Caps remote downloads and matches Open WebUI's upload ceiling when RAG uploads are enabled. |
-| `ENABLE_REDIS_CACHE` | Turns Redis write-behind mode on/off when `REDIS_URL` is defined. |
+| `ENABLE_REDIS_CACHE` | Governs Redis write-behind mode (requires `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, and `WEBSOCKET_REDIS_URL`). |
 | `LOG_LEVEL` | Pipe-level logging verbosity (DEBUG / INFO / …). |
 
 Per-user overrides (log level, reasoning effort, streaming profile, etc.) are also documented in `VALVES_REFERENCE.md`.

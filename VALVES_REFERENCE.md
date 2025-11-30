@@ -84,7 +84,7 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 ### Redis, Persistence, and Maintenance
 | Valve | Default | Min / Max | Usage & Rationale |
 | --- | --- | --- | --- |
-| `ENABLE_REDIS_CACHE` (bool) | `True` | n/a | Enables the Redis write-behind cache when `REDIS_URL` and multiple workers are detected. |
+| `ENABLE_REDIS_CACHE` (bool) | `True` | n/a | Enables the Redis write-behind cache once Open WebUI is running multiple workers with `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, and `WEBSOCKET_REDIS_URL`. |
 | `REDIS_CACHE_TTL_SECONDS` (int) | 600 | 60 / 3600 | TTL for cached artifacts stored in Redis to serve multi-worker lookups quickly. |
 | `REDIS_PENDING_WARN_THRESHOLD` (int) | 100 | 1 / 10000 | Emits warnings if pending Redis flush queue exceeds this size. |
 | `REDIS_FLUSH_FAILURE_LIMIT` (int) | 5 | 1 / 50 | Disables Redis caching after N consecutive flush failures, falling back to direct DB writes. |
