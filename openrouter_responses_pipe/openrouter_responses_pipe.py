@@ -2554,17 +2554,27 @@ class Pipe:
         @model_validator(mode="before")
         @classmethod
         def _normalize_inherit(cls, values):
-            """Treat the literal string 'inherit' (any case) as an unset value."""
-            if isinstance(values, dict):
-                return {
-                    key: (
-                        None
-                        if isinstance(val, str) and val.strip().lower() == "inherit"
-                        else val
-                    )
-                    for key, val in values.items()
-                }
-            return values
+            """Treat the literal string 'inherit' (any case) as an unset value.
+
+            ``LOG_LEVEL`` is the lone field whose Literal includes ``"INHERIT"``.
+            Keep that string (upper-cased) so validation still succeeds.
+            """
+            if not isinstance(values, dict):
+                return values
+
+            normalized: dict[str, Any] = {}
+            for key, val in values.items():
+                if isinstance(val, str):
+                    stripped = val.strip()
+                    lowered = stripped.lower()
+                    if key == "LOG_LEVEL":
+                        normalized[key] = stripped.upper()
+                        continue
+                    if lowered == "inherit":
+                        normalized[key] = None
+                        continue
+                normalized[key] = val
+            return normalized
 
         LOG_LEVEL: Literal[
             "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"
