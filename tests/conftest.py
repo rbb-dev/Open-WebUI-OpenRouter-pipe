@@ -96,6 +96,17 @@ def _install_open_webui_stubs() -> None:
     open_webui.models = models_pkg
     open_webui.routers = routers_pkg
 
+    config_mod = _ensure_module("open_webui.config")
+
+    class _ConfigValue:
+        def __init__(self, value):
+            self.value = value
+
+    config_mod.RAG_FILE_MAX_SIZE = _ConfigValue(None)
+    config_mod.FILE_MAX_SIZE = _ConfigValue(None)
+    config_mod.BYPASS_EMBEDDING_AND_RETRIEVAL = _ConfigValue(False)
+    open_webui.config = config_mod
+
 
 
 def _install_pydantic_core_stub() -> None:

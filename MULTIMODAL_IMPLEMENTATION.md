@@ -49,7 +49,7 @@ This document describes the comprehensive file, image, and audio input handling 
   - `REMOTE_DOWNLOAD_MAX_RETRIES`: Maximum retry attempts (default: 3, range: 0-10)
   - `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS`: Initial delay before first retry (default: 5s, range: 1-60s)
   - `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS`: Maximum total retry time (default: 45s, range: 5-300s)
-  - `REMOTE_FILE_MAX_SIZE_MB`: Maximum file size for downloads (default: 50MB, range: 1-500MB)
+  - `REMOTE_FILE_MAX_SIZE_MB`: Maximum file size for downloads (default: 50MB, range: 1-500MB). When RAG uploads are enabled in Open WebUI, the effective limit auto-aligns with the configured `FILE_MAX_SIZE`.
   - `BASE64_MAX_SIZE_MB`: Maximum base64 data size (default: 50MB, range: 1-500MB)
 - **Smart retry logic**:
   - Retries network errors, HTTP 5xx errors, and 429 rate limits
@@ -59,7 +59,7 @@ This document describes the comprehensive file, image, and audio input handling 
 
 ### ✅ Production-Ready Size Limits
 - **Configurable limits**: No magic numbers, all limits via valves
-- **File download size**: `REMOTE_FILE_MAX_SIZE_MB` (default: 50MB, up to 500MB)
+- **File download size**: `REMOTE_FILE_MAX_SIZE_MB` (default: 50MB, up to 500MB) with automatic alignment to Open WebUI's `FILE_MAX_SIZE` when RAG uploads are enabled
 - **Base64 data size**: `BASE64_MAX_SIZE_MB` (default: 50MB, up to 500MB)
 - **Early validation**: Base64 size checked before decoding to prevent memory issues
 - **Clear error messages**: Size limit violations logged with specific valve values
@@ -110,7 +110,7 @@ Downloads file or image from remote HTTP/HTTPS URL with automatic retry using ex
 - Files exceeding configured size limit
 
 **Additional Features**:
-- **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB)
+- **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB); automatically capped to Open WebUI's `FILE_MAX_SIZE` when RAG uploads are enabled
 - **Timeout**: Capped at 60 seconds per attempt to prevent hanging requests
 - **MIME type normalization**: `image/jpg` → `image/jpeg`
 - **Retry logging**: Logs each retry attempt with timing information

@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
 
+import openrouter_responses_pipe.openrouter_responses_pipe as pipe_module
 from openrouter_responses_pipe.openrouter_responses_pipe import Pipe
 
 
@@ -157,9 +160,10 @@ class TestRemoteURLDownloading:
             assert result["mime_type"] == "image/jpeg"
 
     @pytest.mark.asyncio
-    async def test_download_rejects_files_over_10mb(self, pipe_instance):
-        """Should reject files larger than 10MB."""
-        large_content = b"x" * (10 * 1024 * 1024 + 1)  # 10MB + 1 byte
+    async def test_download_rejects_files_over_default_limit(self, pipe_instance):
+        """Should reject files larger than the configured limit (default 50MB)."""
+        limit_bytes = pipe_instance._get_effective_remote_file_limit_mb() * 1024 * 1024
+        large_content = b"x" * (limit_bytes + 1)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -197,6 +201,61 @@ class TestRemoteURLDownloading:
             )
 
             assert result is None
+
+
+class TestRemoteFileLimitResolution:
+    """Tests for resolving the effective remote download size limit."""
+
+    def _prepare_config(self, monkeypatch):
+        config = sys.modules["open_webui.config"]
+        monkeypatch.setattr(
+            pipe_module,
+            "_OPEN_WEBUI_CONFIG_MODULE",
+            config,
+            raising=False,
+        )
+        return config
+
+    def test_uses_valve_when_rag_disabled(self, pipe_instance, monkeypatch):
+        config = self._prepare_config(monkeypatch)
+        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", True, raising=False)
+        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 200, raising=False)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 60
+
+        assert pipe_instance._get_effective_remote_file_limit_mb() == 60
+
+    def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):
+        config = self._prepare_config(monkeypatch)
+        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
+        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 25, raising=False)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
+
+        assert pipe_instance._get_effective_remote_file_limit_mb() == 25
+
+    def test_adopts_rag_when_default_and_larger(self, pipe_instance, monkeypatch):
+        config = self._prepare_config(monkeypatch)
+        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
+        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 120, raising=False)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
+
+        assert pipe_instance._get_effective_remote_file_limit_mb() == 120
+
+    def test_respects_custom_limit_when_lower_than_rag(self, pipe_instance, monkeypatch):
+        config = self._prepare_config(monkeypatch)
+        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
+        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 150, raising=False)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 80
+
+        assert pipe_instance._get_effective_remote_file_limit_mb() == 80
+
+    def test_falls_back_to_file_max_size_when_rag_missing(self, pipe_instance, monkeypatch):
+        config = self._prepare_config(monkeypatch)
+        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
+        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", None, raising=False)
+        monkeypatch.setattr(config.FILE_MAX_SIZE, "value", 180, raising=False)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
+
+        assert pipe_instance._get_effective_remote_file_limit_mb() == 180
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,7 +420,7 @@ class TestOpenRouterCompliance:
         pass
 
     def test_file_size_limit_enforced(self):
-        """Should enforce 10MB size limit (practical limit)."""
+        """Should enforce the documented size limit (default 50MB)."""
         pass
 
 

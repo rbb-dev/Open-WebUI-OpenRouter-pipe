@@ -125,6 +125,82 @@ _STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
     "slow": _StreamingPreferences(char_limit=80, idle_flush_ms=600),
 }
 
+_REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
+_REMOTE_FILE_MAX_SIZE_MAX_MB = 500
+
+_OPEN_WEBUI_CONFIG_MODULE: Any | None = None
+
+
+def _get_open_webui_config_module() -> Any | None:
+    """Return the cached open_webui.config module if available."""
+    global _OPEN_WEBUI_CONFIG_MODULE
+    if _OPEN_WEBUI_CONFIG_MODULE is not None:
+        return _OPEN_WEBUI_CONFIG_MODULE
+    try:
+        import open_webui.config as ow_config  # type: ignore
+    except Exception:
+        return None
+    _OPEN_WEBUI_CONFIG_MODULE = ow_config
+    return ow_config
+
+
+def _unwrap_config_value(value: Any) -> Any:
+    """Return the raw value from a PersistentConfig-like object."""
+    if value is None:
+        return None
+    return getattr(value, "value", value)
+
+
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    """Convert strings/bools into positive integers (MB)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return None
+    return coerced if coerced > 0 else None
+
+
+def _coerce_bool(value: Any) -> Optional[bool]:
+    """Best-effort coercion of truthy string/int flags into booleans."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _read_rag_file_constraints() -> tuple[bool, Optional[int]]:
+    """Return (rag_enabled, rag_file_size_mb) gleaned from Open WebUI config."""
+    module = _get_open_webui_config_module()
+    if module is None:
+        return False, None
+
+    bypass_raw = _unwrap_config_value(getattr(module, "BYPASS_EMBEDDING_AND_RETRIEVAL", None))
+    bypass_bool = _coerce_bool(bypass_raw)
+    rag_enabled = True if bypass_bool is None else not bypass_bool
+
+    limit_mb: Optional[int] = None
+    for attr_name in ("RAG_FILE_MAX_SIZE", "FILE_MAX_SIZE"):
+        attr_value = _unwrap_config_value(getattr(module, attr_name, None))
+        limit_mb = _coerce_positive_int(attr_value)
+        if limit_mb is not None:
+            break
+
+    if limit_mb is not None:
+        limit_mb = min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
+
+    return rag_enabled, limit_mb
+
 
 def _coerce_streaming_char_limit(value: int) -> int:
     """Clamp streaming delta size to a safe range (10-500)."""
@@ -1203,7 +1279,7 @@ class ResponsesBody(BaseModel):
                     Note:
                         All errors are caught and logged with status emissions.
                         Failed processing returns minimal valid block rather than crashing.
-                        10MB size limit enforced (practical limit for request payloads).
+                        Size limits follow BASE64_MAX_SIZE_MB (default 50MB) for inline payloads.
                     """
                     try:
                         result = {"type": "input_file"}
@@ -1719,6 +1795,7 @@ class ResponsesBody(BaseModel):
             Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
         ] = None,
         pruning_turns: int = 0,
+        transformer_context: Optional[Any] = None,
         **extra_params,
     ) -> "ResponsesBody":
         """
@@ -1778,10 +1855,16 @@ class ResponsesBody(BaseModel):
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
             replayed_reasoning_refs: list[Tuple[str, str]] = []
-            # Note: transform_messages_to_input is now an instance method but called on ResponsesBody class
-            # The __request__, user_obj, event_emitter parameters are not available in this static context
-            # and will remain None (which is acceptable - the nested functions check for None)
-            sanitized_params["input"] = await ResponsesBody().transform_messages_to_input(
+            # Resolve the transformer context. When provided, the transformer_context is typically
+            # the Pipe instance so helper methods (upload, emit_status, etc.) are available.
+            if transformer_context is None:
+                raise RuntimeError(
+                    "ResponsesBody.from_completions requires a transformer_context (usually the Pipe instance) "
+                    "so multimodal helpers (file uploads, status events, etc.) are available."
+                )
+            transformer_owner = transformer_context
+            sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
+                transformer_owner,
                 completions_dict.get("messages", []),
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
@@ -1887,10 +1970,10 @@ class Pipe:
         )
 
         REMOTE_FILE_MAX_SIZE_MB: int = Field(
-            default=50,
+            default=_REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
             ge=1,
-            le=500,
-            description="Maximum size in MB for downloading remote files/images. Files exceeding this limit will be rejected with a warning. This protects against excessive network usage and storage consumption.",
+            le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
+            description="Maximum size in MB for downloading remote files/images. Files exceeding this limit are skipped. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI's FILE_MAX_SIZE (if set).",
         )
         BASE64_MAX_SIZE_MB: int = Field(
             default=50,
@@ -4231,7 +4314,8 @@ class Pipe:
 
         Size Limits:
             - Maximum size configurable via REMOTE_FILE_MAX_SIZE_MB valve (default: 50MB)
-            - Files exceeding this limit are rejected with a warning
+            - When Open WebUI RAG uploads enforce FILE_MAX_SIZE, the limit auto-aligns (never exceeding 500MB)
+            - Files exceeding the effective limit are rejected with a warning
 
         Supported Protocols:
             - http:// and https:// only
@@ -4326,13 +4410,14 @@ class Pipe:
                     if mime_type == "image/jpg":
                         mime_type = "image/jpeg"
 
-                    # Enforce configurable size limit (per REMOTE_FILE_MAX_SIZE_MB valve)
-                    max_size_bytes = self.valves.REMOTE_FILE_MAX_SIZE_MB * 1024 * 1024
+                    # Enforce configurable size limit (valve + optional RAG cap)
+                    effective_limit_mb = self._get_effective_remote_file_limit_mb()
+                    max_size_bytes = effective_limit_mb * 1024 * 1024
                     if len(response.content) > max_size_bytes:
                         size_mb = len(response.content) / (1024 * 1024)
                         self.logger.warning(
                             f"Remote file {url} exceeds configured limit "
-                            f"({size_mb:.1f}MB > {self.valves.REMOTE_FILE_MAX_SIZE_MB}MB), skipping"
+                            f"({size_mb:.1f}MB > {effective_limit_mb}MB), skipping"
                         )
                         return None
 
@@ -4349,24 +4434,31 @@ class Pipe:
                         "url": url
                     }
 
-        except httpx.HTTPStatusError as exc:
-            # Check if it was a retryable HTTP error
-            if not is_retryable_exception(exc):
-                self.logger.error(
-                    f"Failed to download {url}: HTTP {exc.response.status_code} (non-retryable)"
-                )
-            else:
-                elapsed = time.perf_counter() - start_time
-                self.logger.error(
-                    f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: HTTP {exc.response.status_code}"
-                )
-            return None
         except Exception as exc:
             elapsed = time.perf_counter() - start_time
             self.logger.error(
                 f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
             )
             return None
+
+    def _get_effective_remote_file_limit_mb(self) -> int:
+        """Return the active remote download limit, honoring RAG constraints."""
+        base_limit_mb = int(self.valves.REMOTE_FILE_MAX_SIZE_MB)
+        rag_enabled, rag_limit_mb = _read_rag_file_constraints()
+        if not rag_enabled or rag_limit_mb is None:
+            return base_limit_mb
+
+        # Never exceed Open WebUI's configured FILE_MAX_SIZE when RAG is active.
+        if base_limit_mb > rag_limit_mb:
+            return rag_limit_mb
+
+        # If the valve is still using the default, upgrade to the RAG cap for consistency.
+        if (
+            base_limit_mb == _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
+            and rag_limit_mb > base_limit_mb
+        ):
+            return rag_limit_mb
+        return base_limit_mb
 
     def _validate_base64_size(self, b64_data: str) -> bool:
         """Validate base64 data size is within configured limits.
@@ -4840,6 +4932,7 @@ class Pipe:
             **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
             artifact_loader=self._db_fetch,
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
+            transformer_context=self,
 
         )
         self._apply_reasoning_preferences(responses_body, valves)
