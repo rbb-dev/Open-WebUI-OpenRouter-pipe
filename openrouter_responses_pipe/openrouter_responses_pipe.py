@@ -109,6 +109,15 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 
 
+class _RetryableHTTPStatusError(Exception):
+    """Wrapper that marks an HTTPStatusError as retryable."""
+
+    def __init__(self, original: httpx.HTTPStatusError):
+        self.original = original
+        status_code = getattr(original.response, "status_code", "unknown")
+        super().__init__(f"Retryable HTTP error ({status_code})")
+
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -128,6 +137,7 @@ _STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
 
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
+
 
 _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
@@ -4652,28 +4662,13 @@ class Pipe:
             timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
         timeout_seconds = min(timeout_seconds, 60)
 
-        # Define retryable exceptions
-        def is_retryable_exception(exc: Exception) -> bool:
-            """Determine if exception should trigger a retry."""
-            # Always retry network-level errors
-            if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException)):
-                return True
-
-            # Retry HTTP 5xx server errors and 429 rate limits
-            if isinstance(exc, httpx.HTTPStatusError):
-                status_code = exc.response.status_code
-                return status_code >= 500 or status_code == 429
-
-            # Don't retry other errors
-            return False
-
         attempt = 0
         start_time = time.perf_counter()
 
         try:
             # Use tenacity for retry logic with exponential backoff
             async for attempt_info in AsyncRetrying(
-                retry=retry_if_exception_type((httpx.NetworkError, httpx.TimeoutException, httpx.HTTPStatusError)),
+                retry=retry_if_exception_type((_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)),
                 stop=stop_after_attempt(max_retries + 1),  # +1 because first attempt doesn't count as retry
                 wait=wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time),
                 reraise=True
@@ -4697,7 +4692,13 @@ class Pipe:
 
                     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                         response = await client.get(url)
-                        response.raise_for_status()
+                        try:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            status_code = exc.response.status_code
+                            if status_code >= 500 or status_code in {408, 429}:
+                                raise _RetryableHTTPStatusError(exc) from exc
+                            raise
 
                     # Extract and normalize MIME type
                     mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()

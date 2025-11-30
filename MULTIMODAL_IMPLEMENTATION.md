@@ -61,8 +61,7 @@ This document describes the comprehensive file, image, and audio input handling 
   - `REMOTE_FILE_MAX_SIZE_MB`: Maximum file size for downloads (default: 50MB, range: 1-500MB). When RAG uploads are enabled in Open WebUI, the effective limit auto-aligns with the configured `FILE_MAX_SIZE`.
   - `BASE64_MAX_SIZE_MB`: Maximum base64 data size (default: 50MB, range: 1-500MB)
 - **Smart retry logic**:
-  - Retries network errors, all `httpx.HTTPStatusError` exceptions (currently includes HTTP 4xx + 5xx), and 429 rate limits
-  - Planned enhancement: filter out non-retryable 4xx codes when `is_retryable_exception` helper is wired into Tenacity
+  - Retries network errors, HTTP 5xx responses, and HTTP 408/429 while skipping other HTTP 4xx
   - Logs each retry attempt with timing information
   - Respects remote servers with exponential backoff delays
 
@@ -123,8 +122,8 @@ Downloads file or image from remote HTTP/HTTPS URL with automatic retry using ex
 
 **Retryable Errors**:
 - Network errors (connection timeout, DNS failure, etc.)
-- `httpx.HTTPStatusError` raised by `response.raise_for_status()` (currently includes HTTP 4xx and 5xx responses)
-- HTTP 429 rate limit errors (handled via the same status-error retry path)
+- `httpx.HTTPStatusError` raised by `response.raise_for_status()` when the status is ≥500
+- HTTP 408/429 rate limit + timeout errors (handled via the same status-error retry path)
 
 **Non-Retryable Errors**:
 - Invalid URLs

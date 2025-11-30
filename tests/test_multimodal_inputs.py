@@ -17,6 +17,7 @@ import base64
 import sys
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 import openrouter_responses_pipe.openrouter_responses_pipe as pipe_module
@@ -228,6 +229,23 @@ class TestRemoteURLDownloading:
             )
 
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_does_not_retry_on_client_errors(self, pipe_instance):
+        """Should not retry on non-429 HTTP 4xx errors."""
+        url = "https://example.com/forbidden.png"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(status_code=403, request=request)
+        error = httpx.HTTPStatusError("Forbidden", request=request, response=response)
+
+        with patch("httpx.AsyncClient") as mock_client:
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.get = AsyncMock(side_effect=error)
+
+            result = await pipe_instance._download_remote_url(url)
+
+            assert result is None
+            assert client_ctx.get.await_count == 1
 
 
 class TestRemoteFileLimitResolution:
