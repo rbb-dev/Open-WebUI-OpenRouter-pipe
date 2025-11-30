@@ -129,6 +129,10 @@ _STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 
+_STORAGE_FALLBACK_EMAIL = os.getenv("OPENROUTER_STORAGE_USER_EMAIL", "openrouter-pipe@system.local")
+_STORAGE_FALLBACK_NAME = os.getenv("OPENROUTER_STORAGE_USER_NAME", "OpenRouter Pipe Storage")
+_STORAGE_FALLBACK_ROLE = os.getenv("OPENROUTER_STORAGE_USER_ROLE", "system")
+
 _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
 
@@ -1172,27 +1176,48 @@ class ResponsesBody(BaseModel):
                         if not url:
                             return {"type": "input_image", "image_url": "", "detail": "auto"}
 
+                        storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
+
+                        async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+                            nonlocal storage_context
+                            if storage_context is None:
+                                storage_context = await self._resolve_storage_context(__request__, user_obj)
+                            return storage_context
+
+                        async def _save_image_bytes(
+                            payload: bytes,
+                            mime_type: str,
+                            preferred_name: str,
+                            status_message: str,
+                        ) -> Optional[str]:
+                            upload_request, upload_user = await _get_storage_context()
+                            if not (upload_request and upload_user):
+                                return None
+                            internal_url = await self._upload_to_owui_storage(
+                                request=upload_request,
+                                user=upload_user,
+                                file_data=payload,
+                                filename=preferred_name,
+                                mime_type=mime_type,
+                            )
+                            if internal_url:
+                                await self._emit_status(event_emitter, status_message, done=False)
+                            return internal_url
+
                         # Handle data URLs (base64)
                         if url.startswith("data:"):
                             try:
                                 parsed = self._parse_data_url(url)
-                                if parsed and user_obj:
-                                    # Save to OWUI storage to prevent loss
+                                if parsed:
                                     ext = parsed["mime_type"].split("/")[-1]
-                                    internal_url = await self._upload_to_owui_storage(
-                                        request=__request__,
-                                        user=user_obj,
-                                        file_data=parsed["data"],
-                                        filename=f"image-{uuid.uuid4().hex}.{ext}",
-                                        mime_type=parsed["mime_type"]
+                                    internal_url = await _save_image_bytes(
+                                        parsed["data"],
+                                        parsed["mime_type"],
+                                        f"image-{uuid.uuid4().hex}.{ext}",
+                                        StatusMessages.IMAGE_BASE64_SAVED,
                                     )
                                     if internal_url:
                                         url = internal_url
-                                        await self._emit_status(
-                                            event_emitter,
-                                            StatusMessages.IMAGE_BASE64_SAVED,
-                                            done=False
-                                        )
                             except Exception as exc:
                                 self.logger.error(f"Failed to process base64 image: {exc}")
                                 await self._emit_error(
@@ -1205,27 +1230,20 @@ class ResponsesBody(BaseModel):
                         elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
                             try:
                                 downloaded = await self._download_remote_url(url)
-                                if downloaded and user_obj:
-                                    # Save to OWUI storage to prevent remote deletion
+                                if downloaded:
                                     filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
                                     if "." not in filename:
                                         ext = downloaded["mime_type"].split("/")[-1]
                                         filename = f"{filename}.{ext}"
 
-                                    internal_url = await self._upload_to_owui_storage(
-                                        request=__request__,
-                                        user=user_obj,
-                                        file_data=downloaded["data"],
-                                        filename=filename,
-                                        mime_type=downloaded["mime_type"]
+                                    internal_url = await _save_image_bytes(
+                                        downloaded["data"],
+                                        downloaded["mime_type"],
+                                        filename,
+                                        StatusMessages.IMAGE_REMOTE_SAVED,
                                     )
                                     if internal_url:
                                         url = internal_url
-                                        await self._emit_status(
-                                            event_emitter,
-                                            StatusMessages.IMAGE_REMOTE_SAVED,
-                                            done=False
-                                        )
                             except Exception as exc:
                                 self.logger.error(f"Failed to download remote image {url}: {exc}")
                                 await self._emit_error(
@@ -1298,6 +1316,14 @@ class ResponsesBody(BaseModel):
                         def _is_internal_storage(url: str) -> bool:
                             return isinstance(url, str) and ("/api/v1/files/" in url or "/files/" in url)
 
+                        storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
+
+                        async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+                            nonlocal storage_context
+                            if storage_context is None:
+                                storage_context = await self._resolve_storage_context(__request__, user_obj)
+                            return storage_context
+
                         async def _save_bytes_to_storage(
                             payload: bytes,
                             mime_type: str,
@@ -1305,7 +1331,8 @@ class ResponsesBody(BaseModel):
                             preferred_name: Optional[str],
                             status_message: str,
                         ) -> Optional[str]:
-                            if not (user_obj and __request__):
+                            upload_request, upload_user = await _get_storage_context()
+                            if not (upload_request and upload_user):
                                 return None
                             safe_mime = mime_type or "application/octet-stream"
                             fname = preferred_name or filename or f"file-{uuid.uuid4().hex}"
@@ -1314,8 +1341,8 @@ class ResponsesBody(BaseModel):
                                 fname = f"{fname}.{ext}"
 
                             internal_url = await self._upload_to_owui_storage(
-                                request=__request__,
-                                user=user_obj,
+                                request=upload_request,
+                                user=upload_user,
                                 file_data=payload,
                                 filename=fname,
                                 mime_type=safe_mime,
@@ -1333,8 +1360,6 @@ class ResponsesBody(BaseModel):
                             *,
                             name_hint: Optional[str] = None,
                         ) -> Optional[str]:
-                            if not (user_obj and __request__):
-                                return None
                             downloaded = await self._download_remote_url(remote_url)
                             if not downloaded:
                                 return None
@@ -2584,6 +2609,8 @@ class Pipe:
         self._redis_ttl = max(60, int(self.valves.REDIS_CACHE_TTL_SECONDS or 300))
         self._cleanup_task = None
         self._legacy_tool_warning_emitted = False
+        self._storage_user_cache: Optional[Any] = None
+        self._storage_user_lock: Optional[asyncio.Lock] = None
         self._maybe_start_log_worker()
         self._maybe_start_startup_checks()
 
@@ -4335,6 +4362,70 @@ class Pipe:
         except Exception as exc:
             self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
             return None
+
+    async def _resolve_storage_context(
+        self,
+        request: Optional[Request],
+        user_obj: Optional[Any],
+    ) -> tuple[Optional[Request], Optional[Any]]:
+        """Return a `(request, user)` tuple suitable for OWUI uploads."""
+        if request is None:
+            if user_obj:
+                self.logger.debug("Storage upload skipped: request context missing.")
+            return None, None
+        if user_obj is not None:
+            return request, user_obj
+
+        fallback_user = await self._ensure_storage_user()
+        if fallback_user is None:
+            return None, None
+        self.logger.debug("Using fallback storage user '%s' for upload.", fallback_user.email)
+        return request, fallback_user
+
+    async def _ensure_storage_user(self) -> Optional[Any]:
+        """Ensure the fallback storage user exists (lazy creation)."""
+        if self._storage_user_cache is not None:
+            return self._storage_user_cache
+
+        if self._storage_user_lock is None:
+            self._storage_user_lock = asyncio.Lock()
+
+        async with self._storage_user_lock:
+            if self._storage_user_cache is not None:
+                return self._storage_user_cache
+
+            try:
+                fallback_user = await run_in_threadpool(
+                    Users.get_user_by_email,
+                    _STORAGE_FALLBACK_EMAIL,
+                )
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self.logger.error("Failed to load fallback storage user: %s", exc)
+                return None
+
+            if fallback_user is None:
+                user_id = f"openrouter-pipe-{uuid.uuid4().hex}"
+                try:
+                    fallback_user = await run_in_threadpool(
+                        Users.insert_new_user,
+                        user_id,
+                        _STORAGE_FALLBACK_NAME,
+                        _STORAGE_FALLBACK_EMAIL,
+                        "/user.png",
+                        _STORAGE_FALLBACK_ROLE or "pending",
+                        None,
+                    )
+                    self.logger.info(
+                        "Created fallback storage user '%s' (%s) for multimodal uploads.",
+                        _STORAGE_FALLBACK_NAME,
+                        _STORAGE_FALLBACK_EMAIL,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    self.logger.error("Failed to create fallback storage user: %s", exc)
+                    return None
+
+            self._storage_user_cache = fallback_user
+            return fallback_user
 
     def _is_safe_url(self, url: str) -> bool:
         """Validate URL is not targeting internal/private networks (SSRF protection).

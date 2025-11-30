@@ -285,6 +285,50 @@ class TestRemoteFileLimitResolution:
         assert pipe_instance._get_effective_remote_file_limit_mb() == 180
 
 
+class TestStorageContext:
+    """Tests for storage context resolution."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_storage_context_prefers_existing_user(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+    ):
+        request, user = await pipe_instance._resolve_storage_context(
+            mock_request,
+            mock_user,
+        )
+        assert request is mock_request
+        assert user is mock_user
+
+    @pytest.mark.asyncio
+    async def test_resolve_storage_context_uses_fallback_user(
+        self,
+        pipe_instance,
+        mock_request,
+    ):
+        fallback_user = Mock()
+        fallback_user.email = "fallback@example.com"
+        pipe_instance._ensure_storage_user = AsyncMock(return_value=fallback_user)
+
+        request, user = await pipe_instance._resolve_storage_context(mock_request, None)
+        assert request is mock_request
+        assert user is fallback_user
+        pipe_instance._ensure_storage_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resolve_storage_context_without_request(
+        self,
+        pipe_instance,
+    ):
+        pipe_instance._ensure_storage_user = AsyncMock()
+        request, user = await pipe_instance._resolve_storage_context(None, None)
+        assert request is None
+        assert user is None
+        pipe_instance._ensure_storage_user.assert_not_called()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Image Transformer Tests
 # ─────────────────────────────────────────────────────────────────────────────
