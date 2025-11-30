@@ -5932,7 +5932,7 @@ class Pipe:
                                 )
                         continue
 
-                    # ─── Citations from inline annotations (simple, no helpers) ───────────────
+                    # ─── Citations from inline annotations (emit metadata only) ───────────────
                     if etype == "response.output_text.annotation.added":
                         ann = event.get("annotation") or {}
                         if ann.get("type") == "url_citation":
@@ -5942,45 +5942,25 @@ class Pipe:
                                 url = url[: -len("?utm_source=openai")]
                             title = (ann.get("title") or url).strip()
 
-                            # Stable [n] per unique URL
                             if url in ordinal_by_url:
-                                n = ordinal_by_url[url]
-                            else:
-                                n = len(ordinal_by_url) + 1
-                                ordinal_by_url[url] = n
+                                continue
 
-                                # First time seeing this URL → emit a 'source' event
-                                # Minimal domain extraction (no urlparse)
-                                host = url.split("//", 1)[-1].split("/", 1)[0].lower().lstrip("www.")
-                                citation = {
-                                    "source": {"name": host or "source", "url": url},
-                                    "document": [title],
-                                    "metadata": [{
-                                        "source": url,
-                                        "date_accessed": datetime.date.today().isoformat(),
-                                    }],
-                                }
-                                await self._emit_citation(event_emitter, citation)
-                                emitted_citations.append(citation)
+                            ordinal_by_url[url] = len(ordinal_by_url) + 1
 
-                            # TODO: Add support for insert citation markers.
-                            marker = f" [{n}]"
-                            end_idx = ann.get("end_index")
-                            if isinstance(end_idx, int) and 0 <= end_idx <= len(assistant_message):
-                                assistant_message = (
-                                    assistant_message[:end_idx]
-                                    + marker
-                                    + assistant_message[end_idx:]
-                                )
-                            else:
-                                assistant_message += marker
-                            if event_emitter:
-                                await event_emitter(
-                                    {
-                                        "type": "chat:message",
-                                        "data": {"content": assistant_message},
-                                    }
-                                )
+                            # Emit a citation event so Open WebUI can render
+                            # references in the footer instead of mutating the
+                            # streaming text (which was causing inline [n] markers).
+                            host = url.split("//", 1)[-1].split("/", 1)[0].lower().lstrip("www.")
+                            citation = {
+                                "source": {"name": host or "source", "url": url},
+                                "document": [title],
+                                "metadata": [{
+                                    "source": url,
+                                    "date_accessed": datetime.date.today().isoformat(),
+                                }],
+                            }
+                            await self._emit_citation(event_emitter, citation)
+                            emitted_citations.append(citation)
 
                         continue
 
