@@ -27,7 +27,7 @@ Operational guidance:
 - Storage tables embed the key hash in their name: rotating the key creates a brand‑new table and leaves previous data inaccessible (expected behaviour).
 
 ### Compression
-- Optional LZ4 compression (gated by `ENABLE_LZ4_COMPRESSION`) stores a one‑byte header flag (`plain` vs `lz4`). Compression kicks in for payloads larger than `MIN_COMPRESS_BYTES`.
+- Optional LZ4 compression (gated by `ENABLE_LZ4_COMPRESSION`) stores a one-byte header flag (`plain` vs `lz4`). By default the pipe always attempts compression and keeps it only when the LZ4 output is smaller, though operators can raise `MIN_COMPRESS_BYTES` to skip tiny payloads.
 
 ### Redis Write‑Behind
 - When `REDIS_URL` exists, multiple workers are present, and `ENABLE_REDIS_CACHE` is true, artifacts flow into a Redis pending list.

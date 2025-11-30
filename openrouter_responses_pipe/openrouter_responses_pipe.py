@@ -2350,9 +2350,9 @@ class Pipe:
             description="When True (and lz4 is available), compress large encrypted artifacts to reduce database read/write overhead.",
         )
         MIN_COMPRESS_BYTES: int = Field(
-            default=512,
+            default=0,
             ge=0,
-            description="Payloads at or above this size (in bytes) are candidates for LZ4 compression before encryption. Set to 0 to disable size-based gating.",
+            description="Payloads at or above this size (in bytes) are candidates for LZ4 compression before encryption. The default 0 always attempts compression; raise the value to skip tiny payloads.",
         )
 
         ENABLE_STRICT_TOOL_CALLING: bool = Field(

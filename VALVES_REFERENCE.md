@@ -51,7 +51,7 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `ARTIFACT_ENCRYPTION_KEY` (EncryptedStr) | `""` | ≥16 chars recommended | Derives the Fernet key protecting persisted reasoning/tool artifacts. Changing the key creates a new table namespace. |
 | `ENCRYPT_ALL` (bool) | `False` | n/a | When `True`, encrypts *all* artifacts; otherwise only reasoning tokens are encrypted. |
 | `ENABLE_LZ4_COMPRESSION` (bool) | `True` | n/a | Compresses large encrypted blobs (when `lz4` is installed) to reduce I/O. |
-| `MIN_COMPRESS_BYTES` (int) | 512 | 0 / n/a | Size threshold (bytes) before LZ4 compression is attempted. Set to 0 to always attempt compression. |
+| `MIN_COMPRESS_BYTES` (int) | 0 | 0 / n/a | Size threshold (bytes) before LZ4 compression is attempted. Default 0 always tries compression; raise the value if you want to skip tiny payloads. |
 | `ENABLE_STRICT_TOOL_CALLING` (bool) | `True` | n/a | Converts Open WebUI tool schemas to strict JSON Schema before sending to OpenRouter, improving tool-call determinism. |
 | `MAX_FUNCTION_CALL_LOOPS` (int) | 10 | 1 / n/a | Safety net preventing runaway function-call loops when a model keeps requesting tools. |
 | `ENABLE_WEB_SEARCH_TOOL` (bool) | `True` | n/a | Auto-attaches OpenRouter’s `web` plugin for models that advertise the capability. |
