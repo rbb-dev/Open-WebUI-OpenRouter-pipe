@@ -24,8 +24,9 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` (int) | 5 | 1 / 60 | Initial backoff delay; subsequent retries double the delay to stay polite with remote servers. |
 | `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` (int) | 45 | 5 / 300 | Hard ceiling on total retry time to keep queues moving during repeated failures. |
 | `REMOTE_FILE_MAX_SIZE_MB` (int) | 50 | 1 / 500 | Cap for remote downloads *and* remote image/file blocks. When Open WebUI RAG uploads enforce `FILE_MAX_SIZE`, the effective cap auto-aligns to avoid ingesting larger files than RAG can store. |
-| `SAVE_REMOTE_FILE_URLS` (bool) | `False` | n/a | When enabled, remote `file_url` inputs (including data URLs) are downloaded and re-hosted inside Open WebUI storage; when disabled the URLs are passed through untouched. Use this to control storage growth and trust boundaries. |
+| `SAVE_REMOTE_FILE_URLS` (bool) | `False` | n/a | Governs only the `file_url` field. When enabled, any remote `file_url` (including `data:` URLs) is downloaded, size-checked, and re-hosted inside Open WebUI storage; when disabled the URLs are passed through untouched. Base64 payloads in `file_data` are always stored internally so chat history doesn’t balloon with inline blobs. Use this valve to control storage growth and trust boundaries for URLs supplied by users. |
 | `BASE64_MAX_SIZE_MB` (int) | 50 | 1 / 500 | Validates inline base64 payloads before decoding to prevent memory spikes from oversized uploads. |
+| `IMAGE_UPLOAD_CHUNK_BYTES` (int) | 1 MB | 64 KB / 8 MB | Limits how many bytes the pipe buffers at a time when inlining Open WebUI-hosted images (e.g., `/api/v1/files/...`). Tuning this guards RAM usage when dozens of users edit large images simultaneously. |
 | `VIDEO_MAX_SIZE_MB` (int) | 100 | 1 / 1000 | Maximum size for video payloads (remote URLs or data URLs). Protects against huge video inputs that exceed typical worker resources. |
 | `FALLBACK_STORAGE_EMAIL` (str) | `OPENROUTER_STORAGE_USER_EMAIL` env or `openrouter-pipe@system.local` | n/a | Email assigned to the service user that owns uploads when no chat user exists (e.g., automation callers). |
 | `FALLBACK_STORAGE_NAME` (str) | `OPENROUTER_STORAGE_USER_NAME` env or `"OpenRouter Pipe Storage"` | n/a | Display name for the fallback storage owner shown in OWUI’s file listings. |
@@ -43,6 +44,8 @@ Each entry lists the default value, allowed range, and a short explanation of *h
 | `REASONING_EFFORT` (Literal) | `"medium"` | `"minimal"`…`"high"` | Default reasoning effort OpenRouter should spend (higher effort ⇒ more reasoning tokens). |
 | `REASONING_SUMMARY_MODE` (Literal) | `"auto"` | `"auto" / "concise" / "detailed" / "disabled"` | Controls how the pipe asks for reasoning summaries when available. |
 | `PERSIST_REASONING_TOKENS` (Literal) | `"next_reply"` | `"disabled" / "next_reply" / "conversation"` | Governs how long reasoning artifacts stay in the conversation store. |
+| `MAX_INPUT_IMAGES_PER_REQUEST` (int) | 5 | 1 / 20 | Upper bound on how many `input_image` blocks the pipe forwards per request. Applies to user attachments plus any fallback images from the assistant. |
+| `IMAGE_INPUT_SELECTION` (Literal) | `"user_then_assistant"` | `"user_turn_only" / "user_then_assistant"` | Selection policy for choosing which images accompany the next request. The default sends the current user’s attachments when present, otherwise falls back to the most recent assistant-generated images. |
 
 ### Tool Execution & Artifact Storage
 | Valve | Default | Min / Max | Usage & Rationale |

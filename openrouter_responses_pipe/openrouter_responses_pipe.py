@@ -104,6 +104,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 # Additional imports for file/image handling
 import io
 import uuid
+from pathlib import Path
 import httpx
 from fastapi import UploadFile, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
@@ -138,6 +139,8 @@ _STREAMING_PRESETS: dict[str, _StreamingPreferences] = {
 
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
+_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)/")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 
 
 class _RetryableHTTPStatusError(Exception):
@@ -586,6 +589,14 @@ class ModelFamily:
         return feature in cls.features(model_id)
 
     @classmethod
+    def capabilities(cls, model_id: str) -> dict[str, bool]:
+        """Return derived capability checkboxes for the given model."""
+        spec = cls._lookup_spec(model_id)
+        caps = spec.get("capabilities") or {}
+        # Return a shallow copy so downstream code can mutate safely.
+        return dict(caps)
+
+    @classmethod
     def supported_parameters(cls, model_id: str) -> frozenset[str]:
         """Return the raw `supported_parameters` set from the OpenRouter catalog."""
         spec = cls._lookup_spec(model_id)
@@ -744,6 +755,10 @@ class OpenRouterModelRegistry:
                 architecture,
                 pricing,
             )
+            capabilities = cls._derive_capabilities(
+                architecture,
+                pricing,
+            )
 
             # Extract max_completion_tokens from top_provider
             max_completion_tokens: Optional[int] = None
@@ -755,6 +770,7 @@ class OpenRouterModelRegistry:
             specs[norm_id] = {
                 # Derived features for fast capability checks
                 "features": features,
+                "capabilities": capabilities,
                 "max_completion_tokens": max_completion_tokens,
                 "supported_parameters": frozenset(supported_parameters),
 
@@ -850,10 +866,63 @@ class OpenRouterModelRegistry:
 
         return features
 
+    @staticmethod
+    def _supports_web_search(pricing: Dict[str, Any]) -> bool:
+        """Return True when the provider exposes paid web-search support."""
+        value = pricing.get("web_search")
+        if value is None:
+            return False
+        if isinstance(value, str):
+            value = value.strip() or "0"
+        try:
+            return float(value) > 0.0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _derive_capabilities(
+        architecture: Dict[str, Any],
+        pricing: Dict[str, Any],
+    ) -> dict[str, bool]:
+        """Translate metadata into Open WebUI capability checkboxes."""
+
+        def _normalize(values: list[Any]) -> set[str]:
+            normalized: set[str] = set()
+            for item in values:
+                if isinstance(item, str):
+                    normalized.add(item.strip().lower())
+            return normalized
+
+        input_modalities = _normalize(architecture.get("input_modalities") or [])
+        output_modalities = _normalize(architecture.get("output_modalities") or [])
+
+        vision_capable = "image" in input_modalities or "video" in input_modalities
+        file_upload_capable = "file" in input_modalities
+        image_generation_capable = "image" in output_modalities
+        web_search_capable = OpenRouterModelRegistry._supports_web_search(pricing)
+
+        return {
+            "vision": vision_capable,
+            "file_upload": file_upload_capable,
+            "web_search": web_search_capable,
+            "image_generation": image_generation_capable,
+            "code_interpreter": True,
+            "citations": True,
+            "status_updates": True,
+            "usage": True,
+        }
+
     @classmethod
     def list_models(cls) -> list[dict[str, Any]]:
         """Return a shallow copy of the cached catalog."""
-        return list(cls._models)
+        enriched: list[dict[str, Any]] = []
+        for model in cls._models:
+            item = dict(model)
+            spec = cls._specs.get(model["norm_id"])
+            if spec and spec.get("capabilities"):
+                item["capabilities"] = dict(spec["capabilities"])
+            enriched.append(item)
+        return enriched
 
 
     @classmethod
@@ -1045,6 +1114,9 @@ class ResponsesBody(BaseModel):
         __request__: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         event_emitter: Optional[Callable] = None,
+        *,
+        model_id: Optional[str] = None,
+        valves: Optional["Pipe.Valves"] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -1087,9 +1159,21 @@ class ResponsesBody(BaseModel):
             return str(content or "")
 
         logger = LOGGER
+        active_valves = valves or self.valves
+        image_limit = max(0, int(getattr(active_valves, "MAX_INPUT_IMAGES_PER_REQUEST", 5) or 0))
+        selection_mode = getattr(active_valves, "IMAGE_INPUT_SELECTION", "user_then_assistant") or "user_then_assistant"
+        chunk_size = int(getattr(active_valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1 * 1024 * 1024) or (1 * 1024 * 1024))
+        chunk_size = max(64 * 1024, chunk_size)
+        max_inline_bytes = max(1, int(getattr(active_valves, "BASE64_MAX_SIZE_MB", self.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024)
+        target_model_id = model_id or openwebui_model_id or ""
+        if target_model_id:
+            vision_supported = ModelFamily.supports("vision", target_model_id)
+        else:
+            vision_supported = True
 
         pending_instructions: list[str] = []
         openai_input: list[dict] = []
+        last_assistant_images: list[dict[str, Any]] = []
 
         def _message_identifier(entry: dict[str, Any]) -> Optional[str]:
             """Return the most specific identifier available on ``entry``."""
@@ -1128,6 +1212,15 @@ class ResponsesBody(BaseModel):
 
             total_turns = max_turn + 1 if max_turn >= 0 else 0
             return indices, total_turns
+
+        def _markdown_images_from_text(text: str) -> list[str]:
+            if not isinstance(text, str):
+                return []
+            return [
+                match.group("url").strip()
+                for match in _MARKDOWN_IMAGE_RE.finditer(text)
+                if match.group("url").strip()
+            ]
 
         def _is_old_turn(turn_index: Optional[int], *, threshold: Optional[int]) -> bool:
             return (
@@ -1237,6 +1330,11 @@ class ResponsesBody(BaseModel):
                         5. Return Responses API format with detail level
 
                     Note:
+                        Image data URLs and remote URLs are ALWAYS saved to storage
+                        to prevent chat history bloat, similar to the default behavior of
+                        SAVE_FILE_DATA_CONTENT for file inputs. This cannot be disabled
+                        via valve configuration as inline image payloads significantly
+                        degrade UI performance and storage efficiency.
                         All errors are caught and logged with status emissions.
                         Failed processing returns empty image_url rather than crashing.
                     """
@@ -1305,7 +1403,7 @@ class ResponsesBody(BaseModel):
                                 )
 
                         # Handle remote URLs (download and save to prevent deletion)
-                        elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
+                        elif url.startswith(("http://", "https://")) and not _is_internal_file_url(url):
                             try:
                                 downloaded = await self._download_remote_url(url)
                                 if downloaded:
@@ -1329,6 +1427,14 @@ class ResponsesBody(BaseModel):
                                     f"Failed to download image: {exc}",
                                     show_error_message=False
                                 )
+                        elif _is_internal_file_url(url):
+                            inlined = await self._inline_internal_file_url(
+                                url,
+                                chunk_size=chunk_size,
+                                max_bytes=max_inline_bytes,
+                            )
+                            if inlined:
+                                url = inlined
 
                         result: dict[str, Any] = {"type": "input_image", "image_url": url}
                         if isinstance(detail, str) and detail in {"auto", "low", "high"}:
@@ -1368,9 +1474,13 @@ class ResponsesBody(BaseModel):
 
                     Processing Flow:
                         1. Extract fields from nested or flat block structure
-                        2. If file_data is data URL: Parse, upload to OWUI storage, set file_url
-                        3. If file_data is remote URL: Download, upload to OWUI storage, set file_url
-                        4. If file_id: Keep as-is (already in OWUI storage)
+                        2. If file_data provided AND SAVE_FILE_DATA_CONTENT enabled:
+                           - If data URL: Parse, upload to OWUI storage, set file_url
+                           - If remote URL: Download, upload to OWUI storage, set file_url
+                        3. If file_id: Keep as-is (already in OWUI storage)
+                        4. If file_url provided AND SAVE_REMOTE_FILE_URLS enabled:
+                           - If data URL: Parse, upload to OWUI storage
+                           - If remote URL: Download, upload to OWUI storage
                         5. Return all available fields to Responses API
 
                     Note:
@@ -1454,7 +1564,11 @@ class ResponsesBody(BaseModel):
                             )
 
                         # Process file_data if it's a data URL or remote URL
-                        if file_data and isinstance(file_data, str):
+                        if (
+                            file_data
+                            and isinstance(file_data, str)
+                            and self.valves.SAVE_FILE_DATA_CONTENT
+                        ):
                             # Handle data URL (base64)
                             if file_data.startswith("data:"):
                                 try:
@@ -1910,18 +2024,45 @@ class ResponsesBody(BaseModel):
                 }
 
                 # Process blocks (handle async transformers)
-                converted_blocks = []
+                converted_blocks: list[dict[str, Any]] = []
+                user_images_used = 0
+                dropped_images = 0
+                encountered_user_images = False
+                vision_warning_sent = False
+                latest_user_message = role == "user" and idx == len(messages) - 1
+                include_user_images = (
+                    latest_user_message and vision_supported and image_limit > 0
+                )
+
                 for block in content_blocks:
                     if not block:
                         continue
                     block_type = block.get("type")
                     transformer = block_transform.get(block_type, lambda b: b)
+                    is_image_block = block_type in {"image_url", "input_image"}
+
+                    if is_image_block:
+                        encountered_user_images = True
+                        if not include_user_images:
+                            if latest_user_message and not vision_supported and not vision_warning_sent:
+                                await self._emit_status(
+                                    event_emitter,
+                                    "Model does not accept image inputs; skipping user attachments.",
+                                    done=False,
+                                )
+                                vision_warning_sent = True
+                            continue
+                        if user_images_used >= image_limit:
+                            dropped_images += 1
+                            continue
 
                     try:
                         if asyncio.iscoroutinefunction(transformer):
                             result = await transformer(block)
                         else:
                             result = transformer(block)
+                        if is_image_block and result:
+                            user_images_used += 1
                         converted_blocks.append(result)
                     except Exception as exc:
                         self.logger.error(f"Failed to transform block type '{block_type}': {exc}")
@@ -1930,8 +2071,45 @@ class ResponsesBody(BaseModel):
                             f"Block transformation error for '{block_type}': {exc}",
                             show_error_message=False
                         )
-                        # Keep original block to avoid data loss
-                        converted_blocks.append(block)
+                        if not is_image_block:
+                            converted_blocks.append(block)
+
+                if (
+                    latest_user_message
+                    and selection_mode == "user_then_assistant"
+                    and include_user_images
+                    and user_images_used == 0
+                    and last_assistant_images
+                ):
+                    fallback_slots = min(image_limit, len(last_assistant_images))
+                    fallback_blocks: list[dict[str, Any]] = []
+                    for source_block in last_assistant_images[:fallback_slots]:
+                        try:
+                            transformed = await _to_input_image(source_block)
+                            fallback_blocks.append(transformed)
+                        except Exception as exc:
+                            self.logger.error("Failed to reuse assistant image: %s", exc)
+                    if fallback_blocks:
+                        converted_blocks = fallback_blocks + converted_blocks
+                        user_images_used = len(fallback_blocks)
+
+                if dropped_images and latest_user_message:
+                    await self._emit_status(
+                        event_emitter,
+                        f"Dropped {dropped_images} extra image{'s' if dropped_images != 1 else ''}; limit is {image_limit}.",
+                        done=False,
+                    )
+                if (
+                    latest_user_message
+                    and encountered_user_images
+                    and not vision_supported
+                    and not vision_warning_sent
+                ):
+                    await self._emit_status(
+                        event_emitter,
+                        "Model does not accept image inputs; skipping user attachments.",
+                        done=False,
+                    )
 
                 if instruction_prefix:
                     pending_instructions.clear()
@@ -1950,6 +2128,14 @@ class ResponsesBody(BaseModel):
             # -------- assistant message ----------------------------------- #
             assistant_text = raw_content if isinstance(raw_content, str) else _extract_plain_text(raw_content)
             is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
+            assistant_image_urls = _markdown_images_from_text(assistant_text)
+            if assistant_image_urls:
+                last_assistant_images = [
+                    {"type": "image_url", "image_url": url, "detail": "auto"}
+                    for url in assistant_image_urls
+                ]
+            else:
+                last_assistant_images = []
 
             if contains_marker(assistant_text):
                 segments = split_text_by_markers(assistant_text)
@@ -2083,6 +2269,7 @@ class ResponsesBody(BaseModel):
         ] = None,
         pruning_turns: int = 0,
         transformer_context: Optional[Any] = None,
+        transformer_valves: Optional["Pipe.Valves"] = None,
         **extra_params,
     ) -> "ResponsesBody":
         """
@@ -2160,6 +2347,8 @@ class ResponsesBody(BaseModel):
                 __request__=request,
                 user_obj=user_obj,
                 event_emitter=event_emitter,
+                model_id=completions_dict.get("model"),
+                valves=transformer_valves or getattr(transformer_owner, "valves", None),
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs
@@ -2268,13 +2457,23 @@ class Pipe:
         )
         SAVE_REMOTE_FILE_URLS: bool = Field(
             default=False,
-            description="When True, remote file_url references are downloaded and re-hosted in Open WebUI storage. When False, file_url values are passed through untouched (recommended default to avoid unexpected storage growth).",
+            description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage. When False, file_url values pass through untouched. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior. Recommended: Keep disabled to avoid unexpected storage growth.",
+        )
+        SAVE_FILE_DATA_CONTENT: bool = Field(
+            default=True,
+            description="When True, base64 content and URLs in the file_data field are parsed/downloaded and re-hosted in Open WebUI storage to prevent chat history bloat. When False, file_data values pass through untouched. Recommended: Keep enabled to avoid large inline payloads in chat history.",
         )
         BASE64_MAX_SIZE_MB: int = Field(
             default=50,
             ge=1,
             le=500,
             description="Maximum size in MB for base64-encoded files/images before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
+        )
+        IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
+            default=1 * 1024 * 1024,
+            ge=64 * 1024,
+            le=8 * 1024 * 1024,
+            description="Maximum number of bytes to buffer at a time when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage when multiple users edit images concurrently.",
         )
         VIDEO_MAX_SIZE_MB: int = Field(
             default=100,
@@ -2548,6 +2747,20 @@ class Pipe:
             default=True,
             description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",
         )
+        MAX_INPUT_IMAGES_PER_REQUEST: int = Field(
+            default=5,
+            ge=1,
+            le=20,
+            description="Maximum number of image inputs (user attachments plus assistant fallbacks) to include in a single provider request.",
+        )
+        IMAGE_INPUT_SELECTION: Literal["user_turn_only", "user_then_assistant"] = Field(
+            default="user_then_assistant",
+            description=(
+                "Controls which images are forwarded to the provider. "
+                "'user_turn_only' restricts inputs to the images supplied with the current user message. "
+                "'user_then_assistant' falls back to the most recent assistant-generated images when the user did not attach any."
+            ),
+        )
 
 
     class UserValves(BaseModel):
@@ -2633,6 +2846,10 @@ class Pipe:
             le=2000,
             description="User override for the idle flush interval in milliseconds (0 disables).",
         )
+
+    async def transform_messages_to_input(self, *args, **kwargs):
+        """Backward-compatible shim; delegates to ResponsesBody helper."""
+        return await ResponsesBody.transform_messages_to_input(self, *args, **kwargs)
 
     # Core Structure — shared concurrency primitives
     _QUEUE_MAXSIZE = 500
@@ -4442,6 +4659,132 @@ class Pipe:
             self.logger.error(f"Failed to load file {file_id}: {exc}")
             return None
 
+    def _infer_file_mime_type(self, file_obj: Any) -> str:
+        """Return the best-known MIME type for a stored Open WebUI file."""
+        candidates = [
+            getattr(file_obj, "mime_type", None),
+            getattr(file_obj, "content_type", None),
+        ]
+        meta = getattr(file_obj, "meta", None) or {}
+        if isinstance(meta, dict):
+            candidates.extend(
+                [
+                    meta.get("content_type"),
+                    meta.get("mimeType"),
+                    meta.get("mime_type"),
+                ]
+            )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                normalized = candidate.strip().lower()
+                if normalized == "image/jpg":
+                    return "image/jpeg"
+                return normalized
+        return "application/octet-stream"
+
+    async def _inline_internal_file_url(
+        self,
+        url: str,
+        *,
+        chunk_size: int,
+        max_bytes: int,
+    ) -> Optional[str]:
+        """Convert an Open WebUI file URL into a data URL for providers."""
+        file_id = _extract_internal_file_id(url)
+        if not file_id:
+            return None
+        file_obj = await self._get_file_by_id(file_id)
+        if not file_obj:
+            return None
+        mime_type = self._infer_file_mime_type(file_obj)
+        try:
+            b64 = await self._read_file_record_base64(file_obj, chunk_size, max_bytes)
+        except ValueError as exc:
+            self.logger.warning("Failed to inline file %s: %s", file_id, exc)
+            return None
+        if not b64:
+            return None
+        return f"data:{mime_type};base64,{b64}"
+
+    async def _read_file_record_base64(
+        self,
+        file_obj: Any,
+        chunk_size: int,
+        max_bytes: int,
+    ) -> Optional[str]:
+        """Return a base64 string for a stored Open WebUI file."""
+        if max_bytes <= 0:
+            raise ValueError("BASE64_MAX_SIZE_MB must be greater than zero")
+
+        def _from_bytes(raw: bytes) -> str:
+            if len(raw) > max_bytes:
+                raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
+            return base64.b64encode(raw).decode("ascii")
+
+        data_field = getattr(file_obj, "data", None)
+        if isinstance(data_field, dict):
+            for key in ("b64", "base64", "data"):
+                inline_value = data_field.get(key)
+                if isinstance(inline_value, str) and inline_value.strip():
+                    if not self._validate_base64_size(inline_value):
+                        raise ValueError("Stored base64 payload exceeds configured limit")
+                    return inline_value.strip()
+            blob_value = data_field.get("bytes")
+            if isinstance(blob_value, (bytes, bytearray)):
+                return _from_bytes(bytes(blob_value))
+
+        prefer_paths = [
+            getattr(file_obj, attr, None)
+            for attr in (
+                "path",
+                "file_path",
+                "absolute_path",
+            )
+        ]
+        for candidate in prefer_paths:
+            if not isinstance(candidate, str):
+                continue
+            path = Path(candidate)
+            if not path.exists():
+                continue
+            return await self._encode_file_path_base64(path, chunk_size, max_bytes)
+
+        raw_bytes = None
+        for attr in ("content", "blob", "data"):
+            value = getattr(file_obj, attr, None)
+            if isinstance(value, (bytes, bytearray)):
+                raw_bytes = bytes(value)
+                break
+        if raw_bytes is not None:
+            return _from_bytes(raw_bytes)
+        return None
+
+    async def _encode_file_path_base64(
+        self,
+        path: Path,
+        chunk_size: int,
+        max_bytes: int,
+    ) -> str:
+        """Read ``path`` in chunks and return a base64 string."""
+        chunk_size = max(64 * 1024, min(chunk_size, max_bytes))
+
+        def _encode_stream() -> str:
+            total = 0
+            buffer = io.StringIO()
+            with path.open("rb") as source:
+                while True:
+                    chunk = source.read(chunk_size)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
+                    buffer.write(base64.b64encode(chunk).decode("ascii"))
+            return buffer.getvalue()
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _encode_stream)
+
     async def _upload_to_owui_storage(
         self,
         request: Request,
@@ -4708,6 +5051,7 @@ class Pipe:
         ]
 
         return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
+
 
     async def _download_remote_url(
         self,
@@ -5099,7 +5443,15 @@ class Pipe:
             return []
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
-        return [{"id": model["id"], "name": model["name"]} for model in selected_models]
+        enriched: list[dict[str, Any]] = []
+        for model in selected_models:
+            capabilities = ModelFamily.capabilities(model["id"])
+            entry: dict[str, Any] = {"id": model["id"], "name": model["name"]}
+            if capabilities:
+                entry["capabilities"] = capabilities
+                entry["meta"] = {"capabilities": capabilities}
+            enriched.append(entry)
+        return enriched
 
     async def pipe(
         self,
@@ -5274,7 +5626,7 @@ class Pipe:
         pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
         # Features are nested under the pipe id key – read them dynamically.
         _features_all = __metadata__.get("features", {}) or {}
-        features = _features_all.get(pipe_identifier, {})
+        features = dict(_features_all.get(pipe_identifier, {}) or {})
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
         streaming_preferences = self._streaming_preferences(valves)
@@ -5392,6 +5744,7 @@ class Pipe:
             request=__request__,
             user_obj=user_model,
             event_emitter=__event_emitter__,
+            transformer_valves=valves,
 
         )
         self._apply_reasoning_preferences(responses_body, valves)
@@ -5412,6 +5765,13 @@ class Pipe:
                 done=True,
             )
             return ""
+        if not features:
+            fallback_caps = (
+                ModelFamily.capabilities(openwebui_model_id or "")
+                or ModelFamily.capabilities(responses_body.model)
+            )
+            if fallback_caps:
+                features = dict(fallback_caps)
 
         # STEP 2: Detect if task model (generate title, generate tags, etc.), handle it separately
         if __task__:
@@ -5515,6 +5875,8 @@ class Pipe:
                 __tools__,
                 session=session,
                 user_id=user_id,
+                request_context=__request__,
+                user_obj=user_model,
                 streaming_preferences=effective_streaming_prefs,
             )
         else:
@@ -5527,6 +5889,8 @@ class Pipe:
                 __tools__,
                 session=session,
                 user_id=user_id,
+                request_context=__request__,
+                user_obj=user_model,
                 streaming_preferences=effective_streaming_prefs,
             )
 
@@ -5598,6 +5962,8 @@ class Pipe:
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
+        request_context: Optional[Request] = None,
+        user_obj: Optional[Any] = None,
         streaming_preferences: _StreamingPreferences | None = None,
     ):
         """
@@ -5655,6 +6021,144 @@ class Pipe:
         response_completed_at: float | None = None
         stream_started_at: float | None = None
         surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
+        storage_context_cache: Optional[tuple[Optional[Request], Optional[Any]]] = None
+        processed_image_item_ids: set[str] = set()
+        generated_image_count = 0
+
+        async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+            nonlocal storage_context_cache
+            if storage_context_cache is None:
+                storage_context_cache = await self._resolve_storage_context(request_context, user_obj)
+            return storage_context_cache or (None, None)
+
+        async def _persist_generated_image(data: bytes, mime_type: str) -> Optional[str]:
+            upload_request, upload_user = await _get_storage_context()
+            if not upload_request or not upload_user:
+                return None
+            ext = "png"
+            if isinstance(mime_type, str) and "/" in mime_type:
+                ext = mime_type.split("/")[-1] or "png"
+            if ext == "jpg":
+                ext = "jpeg"
+            filename = f"generated-image-{uuid.uuid4().hex}.{ext}"
+            return await self._upload_to_owui_storage(
+                request=upload_request,
+                user=upload_user,
+                file_data=data,
+                filename=filename,
+                mime_type=mime_type,
+            )
+
+        async def _materialize_image_from_str(data_str: str) -> Optional[str]:
+            text = (data_str or "").strip()
+            if not text:
+                return None
+            if text.startswith("data:"):
+                parsed = self._parse_data_url(text)
+                if parsed:
+                    stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
+                    if stored:
+                        await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                        return stored
+                    return text
+                return None
+            if text.startswith(("http://", "https://", "/")):
+                return text
+            cleaned = text
+            if "," in cleaned and ";base64" in cleaned.split(",", 1)[0]:
+                cleaned = cleaned.split(",", 1)[1]
+            cleaned = cleaned.strip()
+            if not cleaned:
+                return None
+            if not self._validate_base64_size(cleaned):
+                return None
+            try:
+                decoded = base64.b64decode(cleaned, validate=True)
+            except (binascii.Error, ValueError):
+                return None
+            mime_type = "image/png"
+            stored = await _persist_generated_image(decoded, mime_type)
+            if stored:
+                await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                return stored
+            return f"data:{mime_type};base64,{cleaned}"
+
+        async def _materialize_image_entry(entry: Any) -> Optional[str]:
+            if entry is None:
+                return None
+            if isinstance(entry, str):
+                return await _materialize_image_from_str(entry)
+            if isinstance(entry, dict):
+                for key in ("url", "image_url", "imageUrl", "content_url"):
+                    candidate = entry.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate.strip()
+                    if isinstance(candidate, dict):
+                        nested = await _materialize_image_entry(candidate)
+                        if nested:
+                            return nested
+                for key in ("b64_json", "b64", "base64", "data", "image_base64"):
+                    b64_val = entry.get(key)
+                    if isinstance(b64_val, str) and b64_val.strip():
+                        cleaned = b64_val.strip()
+                        if not self._validate_base64_size(cleaned):
+                            continue
+                        try:
+                            decoded = base64.b64decode(cleaned, validate=True)
+                        except (binascii.Error, ValueError):
+                            continue
+                        mime_type = (
+                            entry.get("mime_type")
+                            or entry.get("mimeType")
+                            or "image/png"
+                        ).lower()
+                        if mime_type == "image/jpg":
+                            mime_type = "image/jpeg"
+                        stored = await _persist_generated_image(decoded, mime_type)
+                        if stored:
+                            await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                            return stored
+                        return f"data:{mime_type};base64,{cleaned}"
+                nested_result = entry.get("result")
+                if nested_result is not None:
+                    return await _materialize_image_entry(nested_result)
+            return None
+
+        async def _collect_image_output_urls(item: dict[str, Any]) -> list[str]:
+            payload = item.get("result")
+            urls: list[str] = []
+            if isinstance(payload, list):
+                for entry in payload:
+                    resolved = await _materialize_image_entry(entry)
+                    if resolved:
+                        urls.append(resolved)
+            else:
+                resolved = await _materialize_image_entry(payload)
+                if resolved:
+                    urls.append(resolved)
+            return urls
+
+        async def _render_image_markdown(item: dict[str, Any]) -> list[str]:
+            nonlocal generated_image_count
+            urls = await _collect_image_output_urls(item)
+            markdowns: list[str] = []
+            for url in urls:
+                generated_image_count += 1
+                label = item.get("label") or f"Generated image {generated_image_count}"
+                alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
+                markdowns.append(f"![{alt_text}]({url})")
+            return markdowns
+
+        def _append_output_block(current: str, block: str) -> str:
+            snippet = (block or "").strip()
+            if not snippet:
+                return current
+            if current:
+                if not current.endswith("\n"):
+                    current += "\n"
+                if not current.endswith("\n\n"):
+                    current += "\n"
+            return f"{current}{snippet}\n"
 
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
             """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
@@ -6024,6 +6528,7 @@ class Pipe:
                         # Default empty content
                         title = f"Running `{item_name}`"
                         content = ""
+                        image_markdowns: list[str] = []
 
                         # Prepare detailed content per item_type
                         if item_type == "function_call":
@@ -6079,6 +6584,27 @@ class Pipe:
                             title = "Let me skim those files…"
                         elif item_type == "image_generation_call":
                             title = "Let me create that image…"
+                            item_id = item.get("id")
+                            if item_id and item_id in processed_image_item_ids:
+                                self.logger.debug("Skipping duplicate image item '%s'", item_id)
+                            else:
+                                if item_id:
+                                    processed_image_item_ids.add(item_id)
+                                try:
+                                    image_markdowns = await _render_image_markdown(item)
+                                except Exception as exc:
+                                    self.logger.error(
+                                        "Failed to process generated image for item '%s': %s",
+                                        item_id or "<unknown>",
+                                        exc,
+                                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    )
+                                    await self._emit_status(
+                                        event_emitter,
+                                        "⚠️ Unable to process generated image output",
+                                        done=False,
+                                    )
+                                    image_markdowns = []
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
                         elif item_type == "mcp_call":
@@ -6104,6 +6630,14 @@ class Pipe:
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Tool status update: %s", desc)
+
+                        if image_markdowns:
+                            note_model_activity()
+                            note_generation_activity()
+                            for snippet in image_markdowns:
+                                assistant_message = _append_output_block(assistant_message, snippet)
+                            if event_emitter:
+                                await event_emitter({"type": "chat:message", "data": {"content": assistant_message}})
 
                         continue
 
@@ -6307,6 +6841,8 @@ class Pipe:
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
+        request_context: Optional[Request] = None,
+        user_obj: Optional[Any] = None,
         streaming_preferences: _StreamingPreferences | None = None,
     ) -> str:
         """Unified implementation: reuse the streaming path.
@@ -6337,6 +6873,8 @@ class Pipe:
             tools or {},
             session=session,
             user_id=user_id,
+            request_context=request_context,
+            user_obj=user_obj,
             streaming_preferences=streaming_preferences,
         )
 
@@ -7233,6 +7771,24 @@ class Pipe:
             return global_valves
 
         return global_valves.model_copy(update=mapped)
+
+
+def _extract_internal_file_id(url: str) -> Optional[str]:
+    """Return the Open WebUI file identifier embedded in a storage URL."""
+    if not isinstance(url, str):
+        return None
+    match = _INTERNAL_FILE_ID_PATTERN.search(url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _is_internal_file_url(url: str) -> bool:
+    """Heuristic to detect when a URL references Open WebUI file storage."""
+    if not isinstance(url, str):
+        return False
+    return "/api/v1/files/" in url or "/files/" in url
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Utility & Helper Layer (organized, consistent docstrings)
