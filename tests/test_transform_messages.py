@@ -8,6 +8,7 @@ from openrouter_responses_pipe.openrouter_responses_pipe import (
     ModelFamily,
     Pipe,
     ResponsesBody,
+    _classify_function_call_artifacts,
     _serialize_marker,
     generate_item_id,
 )
@@ -26,7 +27,8 @@ def _run_transform(messages, artifacts):
         return {ulid: artifacts.get(ulid) for ulid in ulids if ulid in artifacts}
 
     return asyncio.run(
-        pipe.transform_messages_to_input(
+        ResponsesBody.transform_messages_to_input(
+            pipe,
             messages,
             chat_id="chat-1",
             openwebui_model_id="model-1",
@@ -114,6 +116,20 @@ def test_transform_messages_skips_orphaned_function_call_outputs():
     assert all(entry.get("type") != "function_call_output" for entry in tool_entries)
 
 
+def test_classify_function_call_artifacts_partitions_sets():
+    payloads = {
+        "m-valid-call": {"type": "function_call", "call_id": "shared"},
+        "m-valid-output": {"type": "function_call_output", "call_id": "shared"},
+        "m-orphan-call": {"type": "function_call", "call_id": "only_call"},
+        "m-orphan-output": {"type": "function_call_output", "call_id": "only_output"},
+        "m-irrelevant": {"type": "reasoning"},
+    }
+    valid, orphan_calls, orphan_outputs = _classify_function_call_artifacts(payloads)
+    assert valid == {"shared"}
+    assert orphan_calls == {"only_call"}
+    assert orphan_outputs == {"only_output"}
+
+
 @pytest.fixture(autouse=True)
 def _reset_model_specs():
     ModelFamily.set_dynamic_specs({})
@@ -146,7 +162,8 @@ async def test_transform_limits_user_images(monkeypatch):
             ],
         }
     ]
-    transformed = await pipe.transform_messages_to_input(
+    transformed = await ResponsesBody.transform_messages_to_input(
+        pipe,
         messages,
         model_id="vision-model",
         valves=valves,
@@ -176,7 +193,8 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
             "content": [{"type": "text", "text": "please edit"}],
         },
     ]
-    transformed = await pipe.transform_messages_to_input(
+    transformed = await ResponsesBody.transform_messages_to_input(
+        pipe,
         messages,
         model_id="vision-model",
         valves=pipe.valves,
@@ -187,6 +205,37 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
         and block.get("image_url", "").endswith("assistant-img")
         for block in content
     )
+
+
+@pytest.mark.asyncio
+async def test_transform_respects_user_turn_only_selection(monkeypatch):
+    pipe = Pipe()
+
+    async def fake_inline(url, chunk_size, max_bytes):
+        file_id = url.split("/")[-2]
+        return f"data:image/png;base64,{file_id}"
+
+    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
+    valves = pipe.valves.model_copy(update={"IMAGE_INPUT_SELECTION": "user_turn_only"})
+    messages = [
+        {
+            "role": "assistant",
+            "content": "![img](/api/v1/files/assistant-img/content)",
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "touch up"}],
+        },
+    ]
+    transformed = await ResponsesBody.transform_messages_to_input(
+        pipe,
+        messages,
+        model_id="vision-model",
+        valves=valves,
+    )
+    content = transformed[-1]["content"]
+    assert all(block.get("type") != "input_image" for block in content)
 
 
 @pytest.mark.asyncio
@@ -209,7 +258,8 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
             "content": [{"type": "image_url", "image_url": "/api/v1/files/img-a/content"}],
         }
     ]
-    transformed = await pipe.transform_messages_to_input(
+    transformed = await ResponsesBody.transform_messages_to_input(
+        pipe,
         messages,
         model_id="text-only",
         valves=pipe.valves,
