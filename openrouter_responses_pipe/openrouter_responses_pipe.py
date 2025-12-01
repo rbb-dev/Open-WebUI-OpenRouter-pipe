@@ -1427,7 +1427,7 @@ class ResponsesBody(BaseModel):
                                     f"Failed to download image: {exc}",
                                     show_error_message=False
                                 )
-                        elif _is_internal_file_url(url):
+                        if _is_internal_file_url(url):
                             inlined = await self._inline_internal_file_url(
                                 url,
                                 chunk_size=chunk_size,
@@ -4767,6 +4767,7 @@ class Pipe:
         def _encode_stream() -> str:
             total = 0
             buffer = io.StringIO()
+            leftover = b""
             with path.open("rb") as source:
                 while True:
                     chunk = source.read(chunk_size)
@@ -4775,7 +4776,13 @@ class Pipe:
                     total += len(chunk)
                     if total > max_bytes:
                         raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
-                    buffer.write(base64.b64encode(chunk).decode("ascii"))
+                    chunk = leftover + chunk
+                    whole_bytes = (len(chunk) // 3) * 3
+                    if whole_bytes:
+                        buffer.write(base64.b64encode(chunk[:whole_bytes]).decode("ascii"))
+                    leftover = chunk[whole_bytes:]
+            if leftover:
+                buffer.write(base64.b64encode(leftover).decode("ascii"))
             return buffer.getvalue()
 
         loop = asyncio.get_running_loop()

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import os
 import socket
 import sys
 from types import SimpleNamespace
@@ -163,6 +164,73 @@ class TestDataURLParsing:
         data_url = "data:image/png;base64,INVALID!!!BASE64"
         result = pipe_instance._parse_data_url(data_url)
         assert result is None
+
+
+class TestImageTransformations:
+    """Tests focused on user image block transformations."""
+
+    @pytest.mark.asyncio
+    async def test_remote_images_rehosted_and_inlined(
+        self, pipe_instance, mock_request, mock_user, sample_image_base64
+    ):
+        """Remote images should be re-hosted and then inlined for provider delivery."""
+
+        pipe_instance._download_remote_url = AsyncMock(
+            return_value={
+                "data": base64.b64decode(sample_image_base64),
+                "mime_type": "image/png",
+                "url": "https://example.com/cat.png",
+            }
+        )
+        pipe_instance._upload_to_owui_storage = AsyncMock(
+            return_value="/files/internal/cat123"
+        )
+        pipe_instance._inline_internal_file_url = AsyncMock(
+            return_value="data:image/png;base64,INLINED=="
+        )
+
+        block = {
+            "type": "image_url",
+            "image_url": "https://example.com/cat.png",
+        }
+
+        transformed = await _transform_single_block(
+            pipe_instance,
+            block,
+            mock_request,
+            mock_user,
+        )
+
+        assert transformed["type"] == "input_image"
+        assert transformed["image_url"] == "data:image/png;base64,INLINED=="
+        pipe_instance._download_remote_url.assert_awaited_once()
+        pipe_instance._upload_to_owui_storage.assert_awaited_once()
+        pipe_instance._inline_internal_file_url.assert_awaited_once()
+        inline_args = pipe_instance._inline_internal_file_url.await_args
+        assert inline_args.args[0] == "/files/internal/cat123"
+
+
+class TestFileEncoding:
+    """Tests covering file path base64 encoding helpers."""
+
+    @pytest.mark.asyncio
+    async def test_encode_file_path_base64_matches_standard_encoder(
+        self, pipe_instance, tmp_path
+    ):
+        """Chunked base64 encoding should match the standard encoder output."""
+
+        data = os.urandom(100_000)  # ensure multiple read iterations with remainder bytes
+        file_path = tmp_path / "blob.bin"
+        file_path.write_bytes(data)
+
+        expected = base64.b64encode(data).decode("ascii")
+        result = await pipe_instance._encode_file_path_base64(
+            file_path,
+            chunk_size=64 * 1024,
+            max_bytes=len(data) + 1024,
+        )
+
+        assert result == expected
 
 
 class TestRemoteURLDownloading:
