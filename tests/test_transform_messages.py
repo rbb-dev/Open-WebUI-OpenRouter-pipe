@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from openrouter_responses_pipe.openrouter_responses_pipe import (
+    ModelFamily,
+    Pipe,
     ResponsesBody,
     _serialize_marker,
     generate_item_id,
@@ -16,15 +20,18 @@ def _assistant_message_with_markers(*markers: str) -> str:
 
 
 def _run_transform(messages, artifacts):
+    pipe = Pipe()
+
     async def loader(chat_id, message_id, ulids):
         return {ulid: artifacts.get(ulid) for ulid in ulids if ulid in artifacts}
 
     return asyncio.run(
-        ResponsesBody(model="test-model", input=[]).transform_messages_to_input(
+        pipe.transform_messages_to_input(
             messages,
             chat_id="chat-1",
             openwebui_model_id="model-1",
             artifact_loader=loader,
+            valves=pipe.valves,
         )
     )
 
@@ -105,3 +112,109 @@ def test_transform_messages_skips_orphaned_function_call_outputs():
     result = _run_transform(messages, artifacts)
     tool_entries = [item for item in result if item.get("type") != "message"]
     assert all(entry.get("type") != "function_call_output" for entry in tool_entries)
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_specs():
+    ModelFamily.set_dynamic_specs({})
+    yield
+    ModelFamily.set_dynamic_specs({})
+
+
+@pytest.mark.asyncio
+async def test_transform_limits_user_images(monkeypatch):
+    pipe = Pipe()
+    captured_status: list[str] = []
+
+    async def fake_emitter(event):
+        if event.get("type") == "status":
+            captured_status.append(event["data"]["description"])
+
+    async def fake_inline(url, chunk_size, max_bytes):
+        file_id = url.split("/")[-2]
+        return f"data:image/png;base64,{file_id}"
+
+    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
+    valves = pipe.valves.model_copy(update={"MAX_INPUT_IMAGES_PER_REQUEST": 1})
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": "/api/v1/files/img-a/content"},
+                {"type": "image_url", "image_url": "/api/v1/files/img-b/content"},
+            ],
+        }
+    ]
+    transformed = await pipe.transform_messages_to_input(
+        messages,
+        model_id="vision-model",
+        valves=valves,
+        event_emitter=fake_emitter,
+    )
+    content = transformed[0]["content"]
+    assert len(content) == 1
+    assert content[0]["image_url"].endswith("img-a")
+    assert any("Dropped" in status for status in captured_status)
+
+
+@pytest.mark.asyncio
+async def test_transform_falls_back_to_assistant_images(monkeypatch):
+    pipe = Pipe()
+    async def fake_inline(url, chunk_size, max_bytes):
+        file_id = url.split("/")[-2]
+        return f"data:image/png;base64,{file_id}"
+    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
+    messages = [
+        {
+            "role": "assistant",
+            "content": "![img](/api/v1/files/assistant-img/content)",
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "please edit"}],
+        },
+    ]
+    transformed = await pipe.transform_messages_to_input(
+        messages,
+        model_id="vision-model",
+        valves=pipe.valves,
+    )
+    content = transformed[-1]["content"]
+    assert any(
+        block.get("type") == "input_image"
+        and block.get("image_url", "").endswith("assistant-img")
+        for block in content
+    )
+
+
+@pytest.mark.asyncio
+async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
+    pipe = Pipe()
+    captured_status: list[str] = []
+
+    async def fake_emitter(event):
+        if event.get("type") == "status":
+            captured_status.append(event["data"]["description"])
+
+    async def fake_inline(url, chunk_size, max_bytes):
+        return "data:image/png;base64,test"
+
+    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    ModelFamily.set_dynamic_specs({"text-only": {"features": set()}})
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": "/api/v1/files/img-a/content"}],
+        }
+    ]
+    transformed = await pipe.transform_messages_to_input(
+        messages,
+        model_id="text-only",
+        valves=pipe.valves,
+        event_emitter=fake_emitter,
+    )
+    content = transformed[0]["content"]
+    assert all(block.get("type") != "input_image" for block in content)
+    assert any("does not accept image inputs" in status for status in captured_status)

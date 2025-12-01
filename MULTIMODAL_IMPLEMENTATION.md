@@ -7,8 +7,9 @@ This document describes the comprehensive file, image, and audio input handling 
 ## Features Implemented
 
 ### ✅ Image Input Support
-- **Base64 images**: Automatically persisted to OWUI storage for every caller. When a chat user context is missing, the pipe transparently falls back to a dedicated low-privilege service owner.
+- **Base64 images**: Automatically persisted to OWUI storage for every caller so transcripts never bloat with massive inline blobs. When a chat user context is missing, the pipe transparently falls back to a dedicated low-privilege service owner.
 - **Remote image URLs**: Downloaded and re-hosted before hitting OpenRouter so links never rot, no matter who initiated the request. Downloads stream chunk-by-chunk with strict byte-accounting to avoid large transient allocations.
+- **Internal `/api/v1/files/...` URLs**: Resolved through Open WebUI's `Files` table and streamed into `data:<mime>;base64,...` URLs using the `IMAGE_UPLOAD_CHUNK_BYTES` buffer size, so OpenRouter never needs direct access to the OWUI host.
 - **Supported formats** (per OpenRouter docs):
   - `image/png`
   - `image/jpeg`
@@ -17,6 +18,7 @@ This document describes the comprehensive file, image, and audio input handling 
 - **Detail levels**: Preserves `auto`, `low`, `high` detail settings
 - **Size limit**: Configurable via `REMOTE_FILE_MAX_SIZE_MB` valve (default: 50MB)
 - **Base64 validation**: Configurable via `BASE64_MAX_SIZE_MB` valve (default: 50MB)
+- **Per-request limit**: The `MAX_INPUT_IMAGES_PER_REQUEST` valve caps how many `input_image` blocks are forwarded. The selection policy obeys `IMAGE_INPUT_SELECTION` (default `user_then_assistant`), prioritizing the latest user attachments and falling back to the most recent assistant-generated images only when the user turn includes none.
 
 ### ✅ File Input Support
 - **Multiple input formats**: Handles nested and flat block structures
@@ -72,6 +74,12 @@ This document describes the comprehensive file, image, and audio input handling 
 - **Early validation**: Base64 size checked before decoding to prevent memory issues
 - **Clear error messages**: Size limit violations logged with specific valve values
 - **Flexible deployment**: Adjust limits per deployment scenario (dev/staging/prod)
+
+### 🔁 Image Selection Policy
+- **User-first**: The current user turn supplies the only images sent to OpenRouter (up to `MAX_INPUT_IMAGES_PER_REQUEST`). Older turns keep their text, but their `image_url` blocks are omitted to avoid resending stale attachments indefinitely.
+- **Assistant fallback**: When the user does not attach images and `IMAGE_INPUT_SELECTION` is `user_then_assistant` (default), the pipe reuses the most recent assistant-generated images (detected via markdown image links) so “edit the last image” flows continue to work even without re-uploading.
+- **Vision-aware**: Models that do not advertise the `vision` capability automatically drop image blocks and emit a status message explaining why attachments were ignored.
+- **Chunked inlining**: Any `/api/v1/files/...` URL selected by the policy is streamed through `IMAGE_UPLOAD_CHUNK_BYTES` buffers and enforced by `BASE64_MAX_SIZE_MB` before being embedded as a `data:` URL, keeping memory bounded even when multiple users edit large files simultaneously.
 
 ## Architecture
 
@@ -174,7 +182,7 @@ Converts Open WebUI image blocks into Responses API format.
 1. Extract image URL from block (nested or flat structure)
 2. If data URL: Parse, upload to OWUI storage (using fallback storage owner when the chat user is absent), and rewrite to `/api/v1/files/...`.
 3. If remote URL: Download + upload with the same fallback behavior so every caller benefits from re-hosting.
-4. If OWUI file reference: Keep as-is
+4. If OWUI file reference: Stream the stored file from disk (or inline data) using `IMAGE_UPLOAD_CHUNK_BYTES`, enforce `BASE64_MAX_SIZE_MB`, and convert to a `data:<mime>;base64,...` URL so OpenRouter can consume it without reaching into your deployment.
 5. Return Responses API format with detail level
 
 **Error handling**: All errors caught and logged with status emissions. Returns empty `image_url` rather than crashing.

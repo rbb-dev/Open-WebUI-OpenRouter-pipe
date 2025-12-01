@@ -537,6 +537,31 @@ class TestImageTransformer:
         assert image_block["image_url"] == "/api/v1/files/abc"
 
     @pytest.mark.asyncio
+    async def test_internal_file_url_inlined_to_data_url(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Internal OWUI URLs should be converted to data URLs to satisfy providers."""
+        file_path = tmp_path / "inline.bin"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        class _FileRecord:
+            path = str(file_path)
+            meta = {"content_type": "image/png"}
+
+        async def fake_get_file(_file_id):
+            return _FileRecord()
+
+        monkeypatch.setattr(pipe_instance, "_get_file_by_id", fake_get_file)
+        block = {"type": "image_url", "image_url": {"url": "/api/v1/files/inline/content"}}
+        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert image_block["image_url"].startswith("data:image/png;base64,")
+
+    @pytest.mark.asyncio
     async def test_image_error_returns_empty_block(
         self,
         pipe_instance,
