@@ -2847,10 +2847,6 @@ class Pipe:
             description="User override for the idle flush interval in milliseconds (0 disables).",
         )
 
-    async def transform_messages_to_input(self, *args, **kwargs):
-        """Backward-compatible shim; delegates to ResponsesBody helper."""
-        return await ResponsesBody.transform_messages_to_input(self, *args, **kwargs)
-
     # Core Structure — shared concurrency primitives
     _QUEUE_MAXSIZE = 500
     _request_queue: asyncio.Queue[_PipeJob] | None = None
