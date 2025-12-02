@@ -80,15 +80,22 @@ def test_openrouter_api_error_includes_moderation_metadata():
 
 
 def test_openrouter_error_markdown_accepts_model_label_and_diagnostics():
-    err = OpenRouterAPIError(status=400, reason="Bad Request", provider="Anthropic")
+    err = OpenRouterAPIError(
+        status=400,
+        reason="Bad Request",
+        provider="Anthropic",
+        openrouter_message="This endpoint's maximum context length is 400000 tokens. However, you requested about 564659 tokens. Please reduce the length or use the \"middle-out\" transform.",
+    )
     md = err.to_markdown(
         model_label="anthropic/claude-3",
         diagnostics=["- **Context window**: 200,000 tokens"],
+        metrics={"context_limit": 400000, "max_output_tokens": 128000},
         fallback_model="anthropic/claude-3",
     )
     assert "### 🚫 Anthropic: anthropic/claude-3 could not process your request." in md
     assert "Model limits" in md
-    assert "200,000 tokens" in md
+    assert "400,000" in md
+    assert "128,000" in md
 
 
 def test_resolve_error_model_context_uses_registry_spec():

@@ -87,12 +87,76 @@ This note collects the features that are unique to the OpenRouter variant of the
 ## 9. user-facing 400 error templates
 
 * Valve: `OPENROUTER_ERROR_TEMPLATE`.
-* When OpenRouter returns a 400 (prompt too long, moderation block, provider invalid request, etc.) the manifold surfaces a Markdown card instead of crashing the stream. The template is completely admin-configurable and supports placeholders for every data point we capture: model ids (`{model_identifier}`, `{requested_model}`, `{api_model_id}`, `{normalized_model_id}`), provider info (`{provider}`, `{upstream_type}`), request metadata (`{reason}`, `{request_id}`, `{request_id_reference}`), moderation sections, flagged excerpts, raw provider bodies, and derived metrics such as `{context_window_tokens}` / `{max_output_tokens}`.
-* Template hygiene: if a line references placeholders that are empty, the entire line is dropped automatically. That keeps the rendered card clean even when OpenRouter omits a field, and it lets admins reorder or remove sections without touching code.
+* When OpenRouter returns a 400 (prompt too long, moderation block, provider invalid request, etc.) the manifold surfaces a Markdown card instead of crashing the stream. The template is completely admin-configurable and now supports Handlebars-style blocks: wrap optional sections in `{{#if variable}} ... {{/if}}` and they render only when the underlying value is truthy. Individual lines still auto-drop if a placeholder resolves to an empty string, so legacy templates continue to work.
+* Token limit callouts use `{context_limit_tokens}` / `{max_output_tokens}` and are only populated when the upstream error text contains the OpenRouter hint `or use the "middle-out"` **and** the registry exposed limits for that model.
 * Recommended workflow:
   1. Copy the default template from `Pipe.Valves.OPENROUTER_ERROR_TEMPLATE`.
   2. Add or remove Markdown sections as needed for your organization (e.g., internal ticket instructions, support URLs).
   3. Keep `{request_id_reference}` somewhere in the template so operators can correlate user reports with OpenRouter telemetry.
+
+### Template variables
+
+You can mix and match the following placeholders with `{{#if ...}}` blocks:
+
+| Placeholder | Description |
+| --- | --- |
+| `{heading}` | Friendly label such as `Anthropic: claude-3`. |
+| `{detail}` / `{sanitized_detail}` | Raw provider message (sanitized version escapes backticks). |
+| `{provider}` | Provider name supplied by OpenRouter. |
+| `{model_identifier}`, `{requested_model}`, `{api_model_id}`, `{normalized_model_id}` | Various model ids (Open WebUI, requested alias, canonical slug). |
+| `{openrouter_code}` | Numeric OpenRouter error code. |
+| `{upstream_type}` | Provider-specific error classification. |
+| `{reason}` | User-friendly summary of the failure. |
+| `{request_id}` / `{request_id_reference}` | Provider request id plus a short string you can drop into support tickets. |
+| `{moderation_reasons}` | Bullet-list of moderation flags (already prefixed with `-`). |
+| `{flagged_excerpt}` | Redacted moderation snippet. |
+| `{raw_body}` | Trimmed raw provider response body. |
+| `{context_limit_tokens}` / `{max_output_tokens}` | Formatted token limits (available only when OpenRouter suggests “middle-out”). |
+| `{include_model_limits}` | Boolean helper used with `{{#if include_model_limits}} ... {{/if}}` to gate the entire limit block. |
+| `{openrouter_message}` / `{upstream_message}` | Original strings from OpenRouter/provider before formatting. |
+
+### Example error template with macros
+
+```markdown
+### 🚫 {heading} could not process this request
+
+### Error: `{sanitized_detail}`
+
+- **Requested model:** `{requested_model}`
+- **Provider:** `{provider}`
+- **OpenRouter code:** `{openrouter_code}`
+- **Request ID:** `{request_id}`
+
+{{#if include_model_limits}}
+**Model limits**
+- Context window: {context_limit_tokens} tokens
+- Max output tokens: {max_output_tokens} tokens
+Please trim your prompt or enable the middle-out transform.
+{{/if}}
+
+{{#if moderation_reasons}}
+**Moderation reasons**
+{moderation_reasons}
+{{/if}}
+
+{{#if flagged_excerpt}}
+**Flagged text excerpt**
+~~~
+{flagged_excerpt}
+~~~
+{{/if}}
+
+{{#if raw_body}}
+**Raw provider response**
+~~~
+{raw_body}
+~~~
+{{/if}}
+
+Need help? Share `{request_id_reference}` with the on-call engineer.
+```
+
+Because each placeholder is optional, empty sections disappear automatically—e.g., if there are no moderation hits, the `{{#if moderation_reasons}}` block is skipped before the card is sent to the user.
 
 ---
 
@@ -103,28 +167,3 @@ This note collects the features that are unique to the OpenRouter variant of the
 * How to override:
   * Set the valve to `False` if you want full manual control per request (e.g., you supply `transforms` yourself or use a custom trimming strategy).
   * Provide `transforms` inside the request body to bypass the auto-injected array for a single call.
-
-### Example error template
-
-```markdown
-### 🚫 {heading} could not finish this request
-
-**Reason:** `{sanitized_detail}`
-
-- **Requested model:** `{requested_model}`
-- **Provider:** `{provider}`
-- **OpenRouter code:** `{openrouter_code}`
-- **Provider error type:** `{upstream_type}`
-- **Request ID:** `{request_id}`
-
-{moderation_reasons_section}
-{flagged_excerpt_section}
-
-{model_limits_section}
-
-{raw_body_section}
-
-Need help? Paste `{request_id}` into the on-call chat so we can pull traces.
-```
-
-Because each placeholder is optional, empty sections disappear automatically—e.g., if there are no moderation hits, the `{moderation_reasons_section}` line is removed before the card is sent to the user.

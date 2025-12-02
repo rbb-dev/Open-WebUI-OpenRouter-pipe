@@ -105,7 +105,7 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `USE_MODEL_MAX_OUTPUT_TOKENS` | False | Forwards provider-advertised `max_output_tokens` automatically. |
 | `SHOW_FINAL_USAGE_STATUS` | True | Includes timing/cost/tokens in the final status bubble. |
 | `ENABLE_STATUS_CSS_PATCH` | True | Injects a CSS helper so multi-line statuses render nicely. |
-| `OPENROUTER_ERROR_TEMPLATE` | (see source) | Markdown template for OpenRouter 400 responses. Supports placeholders such as `{heading}`, `{sanitized_detail}`, `{provider}`, `{model_identifier}`, `{requested_model}`, `{api_model_id}`, `{normalized_model_id}`, `{openrouter_code}`, `{upstream_type}`, `{reason}`, `{request_id}`, `{moderation_reasons_section}`, `{flagged_excerpt_section}`, `{model_limits_section}`, `{raw_body_section}`, `{context_window_tokens}`, `{max_output_tokens}`, and `{request_id_reference}`. Entire lines are removed automatically if any placeholder on that line resolves to an empty value, so admins can tweak formatting without editing Python. |
+| `OPENROUTER_ERROR_TEMPLATE` | (see source) | Markdown template for OpenRouter 400 responses. Supports all placeholders listed in `docs/openrouter_integrations_and_telemetry.md#template-variables` plus Handlebars-style `{{#if variable}} ... {{/if}}` blocks. Lines drop automatically when a placeholder is empty, so admins can restructure the template without touching Python. |
 
 ---
 

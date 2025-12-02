@@ -142,6 +142,8 @@ _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)/")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 _TEMPLATE_VAR_PATTERN = re.compile(r"{(\w+)}")
+_TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
+_TEMPLATE_IF_CLOSE_RE = re.compile(r"\{\{\s*/if\s*\}\}")
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "### 🚫 {heading} could not process your request.\n\n"
@@ -154,32 +156,67 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "- **OpenRouter code**: `{openrouter_code}`\n"
     "- **Provider error**: `{upstream_type}`\n"
     "- **Reason**: `{reason}`\n"
-    "- **Request ID**: `{request_id}`\n\n"
-    "{moderation_reasons_section}\n"
-    "{flagged_excerpt_section}\n"
-    "{model_limits_section}\n"
-    "{raw_body_section}\n\n"
+    "- **Request ID**: `{request_id}`\n"
+    "{{#if include_model_limits}}\n"
+    "\n**Model limits:**\n"
+    "Context window: {context_limit_tokens} tokens\n"
+    "Max output tokens: {max_output_tokens} tokens\n"
+    "Adjust your prompt or requested output to stay within these limits.\n"
+    "{{/if}}\n"
+    "{{#if moderation_reasons}}\n"
+    "\n**Moderation reasons:**\n"
+    "{moderation_reasons}\n"
+    "Please review the flagged content or contact your administrator if you believe this is a mistake.\n"
+    "{{/if}}\n"
+    "{{#if flagged_excerpt}}\n"
+    "\n**Flagged text excerpt:**\n"
+    "```\n{flagged_excerpt}\n```\n"
+    "Provide this excerpt when following up with your administrator.\n"
+    "{{/if}}\n"
+    "{{#if raw_body}}\n"
+    "\n**Raw provider response:**\n"
+    "```\n{raw_body}\n```\n"
+    "{{/if}}\n\n"
     "Please adjust the request and try again, or ask your admin to enable the middle-out option.\n"
     "{request_id_reference}"
 )
 
 
-def _render_error_template(template: str, values: dict[str, str]) -> str:
-    """Render a user-supplied template, dropping lines with empty placeholders."""
+def _render_error_template(template: str, values: dict[str, Any]) -> str:
+    """Render a user-supplied template, honoring {{#if}} conditionals and placeholder drops."""
     if not template:
         template = DEFAULT_OPENROUTER_ERROR_TEMPLATE
+
     rendered_lines: list[str] = []
+    condition_stack: list[bool] = []
+
+    def _conditions_active() -> bool:
+        return all(condition_stack) if condition_stack else True
+
     for raw_line in template.splitlines():
+        stripped = raw_line.strip()
+        open_match = _TEMPLATE_IF_OPEN_RE.fullmatch(stripped)
+        if open_match:
+            key = open_match.group(1)
+            condition_stack.append(bool(values.get(key)))
+            continue
+        if _TEMPLATE_IF_CLOSE_RE.fullmatch(stripped):
+            if condition_stack:
+                condition_stack.pop()
+            continue
+        if not _conditions_active():
+            continue
+
         line = raw_line
         placeholders = _TEMPLATE_VAR_PATTERN.findall(line)
         if placeholders:
             skip = False
             for name in placeholders:
                 value = values.get(name, "")
-                if not value:
+                if value is None or value == "":
                     skip = True
                     break
-                line = line.replace(f"{{{name}}}", value)
+                line = line.replace(f"{{{name}}}", str(value))
             if skip:
                 continue
         rendered_lines.append(line)
@@ -195,46 +232,30 @@ def _build_error_template_values(
     model_identifier: Optional[str],
     normalized_model_id: Optional[str],
     api_model_id: Optional[str],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Prepare placeholder values for the customizable error template."""
     detail = (error.upstream_message or error.openrouter_message or str(error)).strip()
     sanitized_detail = detail.replace("`", "\\`")
-    moderation_section = ""
-    if error.moderation_reasons:
-        moderation_lines = "\n".join(f"- {reason}" for reason in error.moderation_reasons if reason)
-        if moderation_lines:
-            moderation_section = (
-                f"**Moderation reasons:**\n{moderation_lines}\n"
-                "Please review the flagged content or contact your administrator if you believe this is a mistake."
-            )
-    flagged_section = ""
-    if error.flagged_input:
-        flagged_section = (
-            f"**Flagged text excerpt:**\n```\n{error.flagged_input}\n```\n"
-            "Provide this excerpt when following up with your administrator."
-        )
 
-    context_limit = metrics.get("context_limit")
-    max_output_tokens = metrics.get("max_output_tokens")
-    model_limits = ""
-    if diagnostics:
-        model_limits = "**Model limits:**\n" + "\n".join(diagnostics)
-        if context_limit or max_output_tokens:
-            model_limits += "\nAdjust your prompt or requested output to stay within these limits."
+    moderation_lines = [reason for reason in (error.moderation_reasons or []) if reason]
+    flagged_excerpt = (error.flagged_input or "").strip()
+    raw_body = (error.raw_body or "").strip()
 
-    raw_body_section = ""
-    if error.raw_body:
-        trimmed_body = error.raw_body.strip()
-        if trimmed_body:
-            raw_body_section = f"**Raw provider response:**\n```\n{trimmed_body}\n```"
+    detail_lower = detail.lower()
+    include_model_limits = "or use the \"middle-out\"" in detail_lower
+    context_limit_value = metrics.get("context_limit") if include_model_limits else None
+    max_output_tokens_value = metrics.get("max_output_tokens") if include_model_limits else None
+    include_model_limits = include_model_limits and bool(
+        (context_limit_value or max_output_tokens_value)
+    )
 
-    replacements: dict[str, str] = {
+    replacements: dict[str, Any] = {
         "heading": heading,
         "detail": detail,
         "sanitized_detail": sanitized_detail,
         "provider": (error.provider or "").strip(),
         "reason": str(error),
-        "raw_body": error.raw_body or "",
+        "raw_body": raw_body,
         "model_identifier": model_identifier or "",
         "requested_model": error.requested_model or "",
         "openrouter_code": str(error.openrouter_code or ""),
@@ -243,12 +264,11 @@ def _build_error_template_values(
         "openrouter_message": (error.openrouter_message or "").strip(),
         "request_id": error.request_id or "",
         "request_id_reference": f"Request reference: `{error.request_id}`" if error.request_id else "",
-        "moderation_reasons_section": moderation_section.strip(),
-        "flagged_excerpt_section": flagged_section.strip(),
-        "model_limits_section": model_limits.strip(),
-        "raw_body_section": raw_body_section.strip(),
-        "context_window_tokens": f"{context_limit:,}" if context_limit else "",
-        "max_output_tokens": f"{max_output_tokens:,}" if max_output_tokens else "",
+        "moderation_reasons": "\n".join(f"- {reason}" for reason in moderation_lines),
+        "flagged_excerpt": flagged_excerpt,
+        "context_limit_tokens": f"{context_limit_value:,}" if context_limit_value else "",
+        "max_output_tokens": f"{max_output_tokens_value:,}" if max_output_tokens_value else "",
+        "include_model_limits": bool(include_model_limits),
         "api_model_id": api_model_id or "",
         "normalized_model_id": normalized_model_id or "",
     }
@@ -7134,9 +7154,17 @@ class Pipe:
         except asyncio.CancelledError:
             was_cancelled = True
             raise
-        except OpenRouterAPIError:
+        except OpenRouterAPIError as exc:
             error_occurred = True
-            raise
+            assistant_message = ""
+            await self._report_openrouter_error(
+                exc,
+                event_emitter=event_emitter,
+                normalized_model_id=body.model,
+                api_model_id=getattr(body, "api_model", None),
+                usage=total_usage,
+                template=valves.OPENROUTER_ERROR_TEMPLATE,
+            )
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
             await self._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)

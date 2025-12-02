@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file. The format 
 - Hardened remote download pipeline: asynchronous SSRF validation, Retry-After aware backoff, filtered retry conditions, and explicit valve to trust user-provided size limits (0245e0b, 7d3f71d, bf50d8c, 9b54ac4).
 - Default artifact persistence to always attempt LZ4 compression when available (39396e2) and run model metadata lookups inside a threadpool to avoid blocking the event loop (bcaae30).
 - Redis write-behind now requires Open WebUI multi-worker settings before enabling, preventing accidental single-worker misconfiguration (969ac44).
+- OpenRouter error templating now moves moderation/model-limit copy into the public template with macros and middle-out-aware context limit values (openrouter_responses_pipe.py, tests/test_openrouter_errors.py).
 
 ### Fixed
 - Streaming citations render reliably and no longer interleave with text deltas (7e70e86).
@@ -19,6 +20,7 @@ All notable changes to this project will be documented in this file. The format 
 - User valve overrides (log level, reasoning toggles) honor inheritance semantics without clobbering defaults (a5768fb, 3a9bb06).
 - Multimodal transformers always re-host uploads, handle audio edge cases, and carry request/user context so storage works outside the UI (8066068, 2d6835b, 6da4ae0).
 - Streaming completion frames now include the last assistant snapshot so concurrent workers/usage updates can’t wipe the rendered reply in Open WebUI (openrouter_responses_pipe.py, tests/test_streaming_completion.py).
+- OpenRouter 400 responses no longer bubble up as worker-crashing exceptions; `_run_streaming_loop` reports the templated error and exits cleanly (openrouter_responses_pipe.py).
 
 ### Documentation
 - Rebuilt the documentation tree with professional names (`docs/documentation_index.md`) and lower-case ASCII, added an expanded production readiness report, valve atlas, and OpenRouter integration guide (multiple commits up to f57a356).
