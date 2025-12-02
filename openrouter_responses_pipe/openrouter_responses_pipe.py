@@ -7978,6 +7978,15 @@ class Pipe:
             exc_info=self.logger.isEnabledFor(logging.DEBUG),
         )
         if event_emitter:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": "Encountered a provider error. See details below.",
+                        "done": True,
+                    },
+                }
+            )
             content = _format_openrouter_error_markdown(
                 exc,
                 normalized_model_id=normalized_model_id,
