@@ -77,10 +77,13 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
 
     reported: list[tuple[OpenRouterAPIError, dict]] = []
 
-    async def fake_report(self, exc, **kwargs):
-        reported.append((exc, kwargs))
+    original_report = Pipe._report_openrouter_error
 
-    monkeypatch.setattr(Pipe, "_report_openrouter_error", fake_report)
+    async def spy_report(self, exc, **kwargs):
+        reported.append((exc, kwargs))
+        await original_report(self, exc, **kwargs)
+
+    monkeypatch.setattr(Pipe, "_report_openrouter_error", spy_report)
 
     emitted: list[dict] = []
 
@@ -102,3 +105,7 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
     report_kwargs = reported[0][1]
     assert report_kwargs["normalized_model_id"] == body.model
     assert report_kwargs["api_model_id"] == getattr(body, "api_model", None)
+    status_events = [event for event in emitted if event.get("type") == "status"]
+    assert status_events, "Expected provider error status event"
+    assert status_events[-1]["data"]["done"] is True
+    assert "provider error" in status_events[-1]["data"]["description"].lower()
