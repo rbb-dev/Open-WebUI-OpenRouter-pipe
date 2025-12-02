@@ -6657,6 +6657,7 @@ class Pipe:
             pending_ulids.extend(ulids)
 
         thinking_tasks: list[asyncio.Task] = []
+        thinking_cancelled = False
         if ModelFamily.supports("reasoning", body.model) and event_emitter:
             async def _later(delay: float, msg: str) -> None:
                 """Emit a delayed status update to reassure the user during long thoughts."""
@@ -6682,10 +6683,12 @@ class Pipe:
 
         def cancel_thinking() -> None:
             """Cancel any scheduled reasoning status updates once the loop completes."""
-            if thinking_tasks:
-                for t in thinking_tasks:
-                    t.cancel()
-                thinking_tasks.clear()
+            nonlocal thinking_cancelled
+            if thinking_cancelled:
+                return
+            thinking_cancelled = True
+            for t in thinking_tasks:
+                t.cancel()
 
         def note_model_activity() -> None:
             """Mark the stream as active and stop any pending thinking statuses."""
@@ -7157,6 +7160,7 @@ class Pipe:
         except OpenRouterAPIError as exc:
             error_occurred = True
             assistant_message = ""
+            cancel_thinking()
             await self._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
@@ -7456,8 +7460,10 @@ class Pipe:
         chunk_sentinel = (None, b"")
         delta_batch_threshold = max(1, int(delta_char_limit))
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
+        producer_error: BaseException | None = None
 
         async def _producer() -> None:
+            nonlocal producer_error
             seq = 0
             retryer = AsyncRetrying(
                 stop=stop_after_attempt(3),
@@ -7480,12 +7486,13 @@ class Pipe:
                                     if breaker_key:
                                         self._record_failure(breaker_key)
                                     if resp.status == 400:
-                                        raise _build_openrouter_api_error(
+                                        producer_error = _build_openrouter_api_error(
                                             resp.status,
                                             resp.reason,
                                             error_body,
                                             requested_model=request_body.get("model"),
                                         )
+                                        return
                                     if resp.status < 500:
                                         raise RuntimeError(
                                             f"OpenRouter request failed ({resp.status}): {resp.reason}"
@@ -7644,6 +7651,8 @@ class Pipe:
                 yield final_delta
 
             await producer_task
+            if producer_error is not None:
+                raise producer_error
         finally:
             if not producer_task.done():
                 producer_task.cancel()
@@ -7972,11 +7981,7 @@ class Pipe:
         template: str = DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ) -> None:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
-        self.logger.warning(
-            "OpenRouter rejected the request: %s",
-            exc,
-            exc_info=self.logger.isEnabledFor(logging.DEBUG),
-        )
+        self.logger.warning("OpenRouter rejected the request: %s", exc)
         if event_emitter:
             await event_emitter(
                 {
