@@ -156,6 +156,10 @@ Please trim your prompt or enable the middle-out transform.
 Need help? Share `{request_id_reference}` with the on-call engineer.
 ```
 
+Example of the template:
+<img width="1021" height="765" alt="image" src="https://github.com/user-attachments/assets/533554b0-cd2c-442c-bd15-29055ca43860" />
+
+
 Because each placeholder is optional, empty sections disappear automatically—e.g., if there are no moderation hits, the `{{#if moderation_reasons}}` block is skipped before the card is sent to the user.
 
 ---
