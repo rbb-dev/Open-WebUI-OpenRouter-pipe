@@ -1,4 +1,4 @@
-# OpenRouter Responses API Manifold for Open WebUI
+# Open WebUI pipe for OpenRouter Responses API
 
 ## This pipe is under active development, design might change.
 
