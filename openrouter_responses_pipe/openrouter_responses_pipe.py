@@ -76,10 +76,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Boolean, Column, DateTime, JSON, String, create_engine, inspect as sa_inspect, text
+from sqlalchemy import Boolean, Column, DateTime, JSON, String, inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 try:
     import lz4.frame as lz4frame
@@ -111,15 +111,6 @@ import httpx
 from fastapi import UploadFile, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
-
-
-class _RetryableHTTPStatusError(Exception):
-    """Wrapper that marks an HTTPStatusError as retryable."""
-
-    def __init__(self, original: httpx.HTTPStatusError):
-        self.original = original
-        status_code = getattr(original.response, "status_code", "unknown")
-        super().__init__(f"Retryable HTTP error ({status_code})")
 
 
 LOGGER = logging.getLogger(__name__)
@@ -3313,6 +3304,7 @@ class Pipe:
             lambda: defaultdict(lambda: deque(maxlen=5))
         )
         self._db_breakers: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=5))
+        self._user_insert_param_names: tuple[str, ...] | None = None
         self._startup_task: asyncio.Task | None = None
         self._startup_checks_started = False
         self._startup_checks_pending = False
@@ -5321,14 +5313,29 @@ class Pipe:
                 user_id = f"openrouter-pipe-{uuid.uuid4().hex}"
                 try:
                     oauth_marker = f"openrouter-pipe-storage:{uuid.uuid4().hex}"
+                    insert_fn = Users.insert_new_user
+                    insert_kwargs: dict[str, Any] = {}
+                    try:
+                        if self._user_insert_param_names is None:
+                            sig = inspect.signature(insert_fn)
+                            self._user_insert_param_names = tuple(sig.parameters.keys())
+                    except (TypeError, ValueError):
+                        self._user_insert_param_names = ()
+
+                    param_names = self._user_insert_param_names or ()
+                    if "oauth" in param_names:
+                        insert_kwargs["oauth"] = {"sub": oauth_marker}
+                    elif "oauth_sub" in param_names:
+                        insert_kwargs["oauth_sub"] = oauth_marker
+
                     fallback_user = await run_in_threadpool(
-                        Users.insert_new_user,
+                        insert_fn,
                         user_id,
                         fallback_name,
                         fallback_email,
                         "/user.png",
                         fallback_role or "pending",
-                        oauth_marker,
+                        **insert_kwargs,
                     )
                     self.logger.info(
                         "Created fallback storage user '%s' (%s) for multimodal uploads.",
@@ -5888,7 +5895,6 @@ class Pipe:
         self._maybe_start_cleanup()
         user_valves = self.UserValves.model_validate(__user__.get("valves", {}))
         valves = self._merge_valves(self.valves, user_valves)
-        session_id = str(__metadata__.get("session_id") or "")
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
         safe_event_emitter = self._wrap_safe_event_emitter(__event_emitter__)
 
@@ -7551,7 +7557,7 @@ class Pipe:
                                         await chunk_queue.put((seq, data_blob))
                                         # self.logger.debug("Enqueued SSE chunk seq=%s size=%s",seq,len(data_blob))
                                         seq += 1
-                        except Exception as exc:
+                        except Exception:
                             if breaker_key:
                                 self._record_failure(breaker_key)
                             raise
