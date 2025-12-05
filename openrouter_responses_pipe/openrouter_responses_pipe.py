@@ -3076,12 +3076,13 @@ class Pipe:
             default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
             description=(
                 "Markdown template used when OpenRouter rejects a request with status 400. "
-                "Placeholders such as {heading}, {sanitized_detail}, {provider}, {model_identifier}, "
+                "Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, "
                 "{requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, "
-                "{reason}, {request_id}, {moderation_reasons_section}, {flagged_excerpt_section}, "
-                "{model_limits_section}, {raw_body_section}, {context_window_tokens}, and {max_output_tokens} "
-                "are replaced when values are available. "
-                "Lines containing placeholders are omitted automatically when the referenced value is missing or empty."
+                "{reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, "
+                "{moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, "
+                "and {include_model_limits} are replaced when values are available. "
+                "Lines containing placeholders are omitted automatically when the referenced value is missing or empty. "
+                "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
             ),
         )
         MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
