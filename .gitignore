@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 .claude/
 .vscode/
+.external/
+openrouter_responses_pipe.egg-info/
