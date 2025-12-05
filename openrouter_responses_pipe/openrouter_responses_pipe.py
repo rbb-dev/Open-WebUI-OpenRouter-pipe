@@ -34,6 +34,8 @@ license: MIT
 
 from __future__ import annotations
 
+_OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Imports
 # ─────────────────────────────────────────────────────────────────────────────
@@ -833,7 +835,10 @@ class OpenRouterModelRegistry:
     ) -> None:
         """Fetch and cache the OpenRouter catalog."""
         url = base_url.rstrip("/") + "/models"
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "X-Title": _OPENROUTER_TITLE,
+        }
         _debug_print_request(headers, {"method": "GET", "url": url})
         try:
             async with session.get(url, headers=headers) as resp:
@@ -3482,7 +3487,10 @@ class Pipe:
     ) -> None:
         """Issue a lightweight GET to prime DNS/TLS caches."""
         url = base_url.rstrip("/") + "/models?limit=1"
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "X-Title": _OPENROUTER_TITLE,
+        }
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
@@ -7448,6 +7456,7 @@ class Pipe:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
+            "X-Title": _OPENROUTER_TITLE,
         }
         _debug_print_request(headers, request_body)
         url = base_url.rstrip("/") + "/responses"
@@ -7672,6 +7681,7 @@ class Pipe:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "X-Title": _OPENROUTER_TITLE,
         }
         _debug_print_request(headers, request_params)
         url = base_url.rstrip("/") + "/responses"
