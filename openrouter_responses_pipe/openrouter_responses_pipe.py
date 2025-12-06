@@ -139,17 +139,39 @@ _TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
 _TEMPLATE_IF_CLOSE_RE = re.compile(r"\{\{\s*/if\s*\}\}")
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
+    "{{#if heading}}\n"
     "### 🚫 {heading} could not process your request.\n\n"
+    "{{/if}}\n"
+    "{{#if sanitized_detail}}\n"
     "### Error: `{sanitized_detail}`\n\n"
+    "{{/if}}\n"
+    "{{#if model_identifier}}\n"
     "- **Model**: `{model_identifier}`\n"
+    "{{/if}}\n"
+    "{{#if provider}}\n"
     "- **Provider**: `{provider}`\n"
+    "{{/if}}\n"
+    "{{#if requested_model}}\n"
     "- **Requested model**: `{requested_model}`\n"
+    "{{/if}}\n"
+    "{{#if api_model_id}}\n"
     "- **API model id**: `{api_model_id}`\n"
+    "{{/if}}\n"
+    "{{#if normalized_model_id}}\n"
     "- **Normalized model id**: `{normalized_model_id}`\n"
+    "{{/if}}\n"
+    "{{#if openrouter_code}}\n"
     "- **OpenRouter code**: `{openrouter_code}`\n"
+    "{{/if}}\n"
+    "{{#if upstream_type}}\n"
     "- **Provider error**: `{upstream_type}`\n"
+    "{{/if}}\n"
+    "{{#if reason}}\n"
     "- **Reason**: `{reason}`\n"
+    "{{/if}}\n"
+    "{{#if request_id}}\n"
     "- **Request ID**: `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if include_model_limits}}\n"
     "\n**Model limits:**\n"
     "Context window: {context_limit_tokens} tokens\n"
@@ -171,7 +193,9 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "```\n{raw_body}\n```\n"
     "{{/if}}\n\n"
     "Please adjust the request and try again, or ask your admin to enable the middle-out option.\n"
-    "{request_id_reference}"
+    "{{#if request_id_reference}}\n"
+    "{request_id_reference}\n"
+    "{{/if}}\n"
 )
 
 DEFAULT_NETWORK_TIMEOUT_TEMPLATE = (
@@ -266,7 +290,7 @@ DEFAULT_INTERNAL_ERROR_TEMPLATE = (
 
 
 def _render_error_template(template: str, values: dict[str, Any]) -> str:
-    """Render a user-supplied template, honoring {{#if}} conditionals and placeholder drops."""
+    """Render a user-supplied template, honoring {{#if}} conditionals."""
     if not template:
         template = DEFAULT_OPENROUTER_ERROR_TEMPLATE
 
@@ -291,18 +315,11 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
         if not _conditions_active():
             continue
 
+        # Replace placeholders with values
         line = raw_line
-        placeholders = _TEMPLATE_VAR_PATTERN.findall(line)
-        if placeholders:
-            skip = False
-            for name in placeholders:
-                value = values.get(name, "")
-                if value is None or value == "":
-                    skip = True
-                    break
+        for name, value in values.items():
+            if f"{{{name}}}" in line:
                 line = line.replace(f"{{{name}}}", str(value))
-            if skip:
-                continue
         rendered_lines.append(line)
     return "\n".join(rendered_lines).strip()
 
