@@ -14,3 +14,8 @@ from .multimodal import (
     download_remote_file,
     emit_status,
 )
+from .tools import (
+    build_tools,
+    _strictify_schema,
+    _dedupe_tools,
+)
