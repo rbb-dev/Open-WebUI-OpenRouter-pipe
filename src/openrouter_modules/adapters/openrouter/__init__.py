@@ -10,6 +10,7 @@ from .models import (
     debug_print_request,
     debug_print_error_response,
 )
+from .streaming import send_streaming_request
 
 __all__ = [
     "OpenRouterAPIError",
@@ -17,4 +18,5 @@ __all__ = [
     "format_openrouter_error_markdown",
     "debug_print_request",
     "debug_print_error_response",
+    "send_streaming_request",
 ]
