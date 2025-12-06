@@ -1,12 +1,16 @@
 # Open WebUI pipe for OpenRouter Responses API
 
-## This pipe is under active development, design might change.
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.0.5-blue.svg)](https://github.com/rbb-dev/openrouter-responses-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
-This manifold is tailored to OpenRouter’s Responses API. It specializes in (1) catalog-smart routing against OpenRouter’s rich model metadata, (2) durable multimodal artifact handling with encryption + compression, and (3) high-throughput streaming/tool orchestration backed by breakers, Redis, and deep telemetry. Everything—from model registry to SSE emitters—was re-architected with these production requirements in mind.
+A production-grade Open WebUI pipe for OpenRouter's Responses API, built for reliability and scale. Three core capabilities set it apart:
+
+1. **Catalog-smart routing** – Imports full model metadata from OpenRouter to automatically enable/disable features per model
+2. **Durable artifact persistence** – Encrypted, compressed storage for reasoning payloads and tool outputs with ULID-based replay
+3. **Resilient streaming & tool orchestration** – Breaker-protected execution, Redis-aware scaling, and comprehensive telemetry
+
+Every layer—from model registry to SSE emitters—was designed for production workloads with multi-user concurrency, graceful degradation, and operational visibility.
 
 ![clean](https://github.com/user-attachments/assets/65a23a29-33b9-485d-9d0b-7caeca502ae6)
 
@@ -20,63 +24,59 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 ### Feature Highlights
 - **Catalog-smart Responses import** – Async registry fetches `/models`, derives modality/tool flags, and backs off automatically when OpenRouter throttles.
 - **Multimodal intake with guard rails** – Remote downloads flow through SSRF filters, retries, and MB caps, while base64/audio/video payloads are validated before decoding.
-- **Secure persistence** – Per-pipe SQLAlchemy tables, optional Fernet encryption, ULID markers, and LZ4 compression keep reasoning/tool artifacts safe yet replayable.
+- **Secure persistence** – Uses Open WebUI's existing database connection (no additional configuration needed). Per-pipe SQLAlchemy tables with optional Fernet encryption, ULID markers, and LZ4 compression keep reasoning/tool artifacts safe yet replayable.
 - **Resilient tool + streaming pipeline** – FIFO tool queues with breaker windows, SSE worker pools, and telemetry-rich emitters keep multi-minute reasoning/tool chains responsive without starving other users.
 - **Error handling & user experience** – Comprehensive error templates for network timeouts, connection failures, 5xx service errors, and internal exceptions. Each error includes unique error IDs, timestamps, and session context for troubleshooting. Production-ready defaults with full admin customization via valves.
 - **Operational safeguards** – Request queue + global semaphore, Redis write-behind cache (auto-enables only when Open WebUI sets `UVICORN_WORKERS>1`, `REDIS_URL`, and `WEBSOCKET_REDIS_URL`), artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
 
 ## Documentation
-- **[Multimodal Input Pipeline](MULTIMODAL_IMPLEMENTATION.md)** – end-to-end walkthrough of image/file/audio handling, SSRF protections, and persistence.
-- **[Valve Reference](VALVES_REFERENCE.md)** – full catalog of every system and user valve with defaults, ranges, and tuning guidance.
 
-## Features
+**[Documentation Index](docs/documentation_index.md)** – Central navigation hub for all technical documentation covering architecture, multimodal pipelines, persistence, streaming, and operational guides.
 
-### Model & Request Pipeline
-- **Dynamic catalog import**: The registry fetches OpenRouter's `/models` endpoint, normalizes IDs, and caches feature flags (vision, audio, reasoning, web search, MCP, etc.).
-- **Capability-aware routing**: `ModelFamily` helpers (e.g., `supports("function_calling")`) ensure the pipe only enables features the selected model can honor.
-- **Completions → Responses transforms**: `ResponsesBody.from_completions` rewrites Open WebUI messages into Responses `input[]`, preserves `response_format`/`parallel_tool_calls`, injects persisted ULID artifacts, and keeps reasoning/tool state turn after turn.
+  **Developer & Architecture Guides**
+  - [Developer Guide & Architecture](docs/developer_guide_and_architecture.md) – High-level tour of manifold wiring, layering conventions, request lifecycle, and development workflow.
+  - [Model Catalog & Routing Intelligence](docs/model_catalog_and_routing_intelligence.md) – Registry loader, capability detection, reasoning toggles, and routing helpers.
+  - [History Reconstruction & Context](docs/history_reconstruction_and_context.md) – How Open WebUI messages become Responses `input[]` blocks with ULID markers and artifact replay.
 
-### Multimodal Intake & Storage
-- **Remote download safeguards**: HTTP downloads enforce SSRF bans, configurable retries/backoff, and a MB limit that also honors Open WebUI's RAG upload ceiling when one is configured.
-- **Base64/video validation**: `_validate_base64_size` and `_parse_data_url` reject oversized inline payloads before decoding so large files can't exhaust memory.
-- **Open WebUI storage integration**: Images/files are saved through Open WebUI's own storage endpoints, preventing link rot and keeping chat history portable.
-- **Encrypted, compressed artifacts**: Per-pipe SQLAlchemy tables are created automatically; artifacts can be encrypted with `ARTIFACT_ENCRYPTION_KEY`, optionally LZ4-compressed above `MIN_COMPRESS_BYTES`, and tagged with ULIDs for replay/pruning.
+  **Modality & Interface Layers**
+  - [Multimodal Ingestion Pipeline](docs/multimodal_ingestion_pipeline.md) – Complete walkthrough of image/file/audio/video handling, SSRF protections, and persistence.
+  - [Tooling & Integrations](docs/tooling_and_integrations.md) – Tool sources, strict schema enforcement, batching, MCP servers, and OpenRouter's web search plugin.
+  - [Streaming Pipeline & Emitters](docs/streaming_pipeline_and_emitters.md) – SSE queues, worker pools, reasoning/citation events, and completion finalizers.
 
-### Artifact Persistence Flow
-- **Per-pipe namespaces**: Artifact tables are named `response_items_<pipe>_<hash>` where the hash includes the encryption key. Rotating `ARTIFACT_ENCRYPTION_KEY` intentionally creates a new table so older ciphertexts remain unreadable.
-- **ULID-based replay**: Every reasoning/tool payload is stored with a ULID marker so `_transform_messages_to_input()` can replay prior turns verbatim (and prune older ones when retention rules say so).
-- **Selective encryption + compression**: Reasoning payloads are encrypted by default (or all artifacts when `ENCRYPT_ALL` is true); each payload carries a tiny header indicating whether it was LZ4-compressed.
-- **Redis-backed write-behind**: When Open WebUI runs multiple workers *and* provides both `REDIS_URL` and `WEBSOCKET_REDIS_URL` (with `WEBSOCKET_MANAGER=redis`), artifacts queue into Redis, flush in batches, cache with TTLs for fast replays, and fall back to direct DB writes if breakers trip.
-- **Cleanup + retention**: Scheduled jobs delete stale artifacts (based on `ARTIFACT_CLEANUP_*` valves) and retention settings (e.g., “reasoning only until next reply”) trigger `_delete_artifacts` to purge rows + cache entries once they have been replayed.
+  **Durability & State**
+  - [Persistence, Encryption & Storage](docs/persistence_encryption_and_storage.md) – SQLAlchemy models, ULID markers, encryption, compression, Redis write-behind, and cleanup workers.
+  - [Concurrency Controls & Resilience](docs/concurrency_controls_and_resilience.md) – Admission control, ContextVars, session logging, breaker windows, and overload fallbacks.
+  - [Testing, Bootstrap & Operations](docs/testing_bootstrap_and_operations.md) – Pytest bootstrap plugin, dev setup, CI guidance, warmup probes, and production readiness checks.
 
-### Tooling & Streaming
-- **Strict tool schemas**: Open WebUI registry entries are strictified for deterministic tool calling and deduped so the latest definition wins.
-- **MCP + OpenRouter plugins**: Remote MCP servers (via JSON definition) and OpenRouter's `web` plugin are attached automatically for models that declare support.
-- **Tool executor with breakers**: Each request gets a FIFO queue, per-request semaphore, global semaphore, batch cap, idle timeout, and per-user/per-tool breaker windows to prevent runaway retries.
-- **Streaming worker pool**: Configurable SSE worker count plus chunk/event queues keep streams flowing while `_wrap_event_emitter` shields emitters from client disconnects.
-- **Telemetry-rich emitters**: Citations, notifications, and the final completion frame include elapsed time, cost, tokens, and tokens-per-second when `SHOW_FINAL_USAGE_STATUS` is enabled, giving operators insight without extra dashboards.
+  **Reference Materials**
+  - [Valves & Configuration Atlas](docs/valves_and_configuration_atlas.md) – Exhaustive listing of system + user valves with defaults, ranges, and rationale.
+  - [Security & Encryption Guide](docs/security_and_encryption.md) – Encryption setup, key rotation, SSRF protection, and compliance guidance.
+  - [OpenRouter Integrations & Telemetry](docs/openrouter_integrations_and_telemetry.md) – OpenRouter-specific features including usage strings, catalog routing, plugin wiring, and 400 error templates.
+  - [Error Handling & User Experience](docs/error_handling_and_user_experience.md) – Comprehensive error template system with rendered examples, troubleshooting guide, and operator runbook for all exception types.
+  - [Production Readiness Report](docs/production_readiness_report.md) – Comprehensive audit covering secrets, persistence, multimodal guardrails, concurrency, streaming, and observability.
 
-### Security & Resilience
-- **Session-aware logging**: `SessionLogger` ties every log line to a request via contextvars so troubleshooting output can optionally be surfaced as citations.
-- **Request queue + semaphores**: A bounded queue and process-wide semaphore return HTTP 503 when the manifold is saturated instead of crashing workers.
-- **Redis write-behind cache**: Auto-detects when Open WebUI is configured for multi-worker Redis ( `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL` ), batches artifacts through pending queues, and guards flushes with distributed locks; repeated failures automatically fall back to direct DB writes.
-- **Artifact cleanup & size controls**: Scheduled cleanup removes stale rows while configurable caps for remote/base64/video payloads keep disk and RAM usage predictable.
+## What Makes This Pipe Unique
 
-### Roadmap
-- Health endpoint exposing queue depth, breaker stats, and error rates.
-- Dead-letter queue for unrecoverable tool outputs.
-- Optional ProcessPool offload for CPU-bound or blocking tools.
-- Prometheus-friendly metrics export (latency, TPS, cache hit rate).
+### Production-Grade OpenRouter Integration
+This is not a simple API wrapper. The pipe has been extensively enhanced and hardened for production OpenRouter deployments with:
+- **Intelligent catalog routing** – Automatically detects model capabilities (vision, audio, reasoning, web search, MCP) from OpenRouter's `/models` endpoint and exposes only what each model can do
+- **Durable artifact persistence** – Every reasoning payload and tool output is encrypted (Fernet), compressed (LZ4), and stored with ULID markers so conversations survive server restarts and can be replayed months later
+- **Redis-aware scaling** – Detects multi-worker Open WebUI deployments and automatically enables distributed caching with write-behind batching and breaker-protected fallbacks
+- **Comprehensive error handling** – All exception types (timeouts, connection failures, 5xx errors, internal exceptions) render as user-friendly Markdown cards with unique error IDs for support correlation
 
-## Operational Architecture
+### Security & Resilience at Scale
+- **Encryption at rest** – Fernet encryption for reasoning tokens and tool outputs. Requires `WEBUI_SECRET_KEY` environment variable. See **[Security & Encryption Guide](docs/security_and_encryption.md)** for setup.
+- **SSRF protection** on remote file downloads with configurable retry/backoff and MB caps that honor Open WebUI's RAG upload ceiling
+- **Breaker-protected tool execution** with per-user/per-tool failure windows to prevent runaway retries
+- **Request queue + semaphores** that return HTTP 503 when saturated instead of crashing workers
+- **Session-aware logging** that ties every log line to a request via contextvars for troubleshooting
 
-This pipe is tuned for multi-user workloads:
-- **Request queue + semaphore**: Incoming jobs must acquire a global slot; overflow results in 503 "server busy" responses rather than worker crashes.
-- **Redis write-behind cache**: Auto-detects Redis-backed multi-worker deployments ( `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL` ) and batches artifacts through pending queues guarded by distributed locks; repeated failures automatically fall back to direct DB writes.
-- **Breakers and batching**: Per-user/per-tool breaker windows cap consecutive failures, while compatible tool calls can batch together, each bounded by per-call, per-batch, and idle timeouts.
-- **Resilient emitters**: SSE/notification/citation emitter calls are guarded with try/except blocks so slow or disconnected clients never crash the request; errors are logged and processing continues.
-- **Payload controls**: Remote downloads honor the configured MB ceiling (and Open WebUI's own upload limit when defined) while base64/video payloads are validated before decoding.
-- **Usage-forward finalizer**: A closing completion event summarizes elapsed time, tokens, throughput, and cost so admins can monitor efficiency without extra instrumentation.
+### Developer & Operator Experience
+- **Valve-driven configuration** – Concurrency limits, retry policies, encryption keys, streaming profiles, and other operational settings are configurable through Open WebUI's valve system with production-ready defaults
+- **Built-in telemetry** – Optional status messages show elapsed time, cost, tokens, and throughput per request when `SHOW_FINAL_USAGE_STATUS` is enabled
+- **Comprehensive documentation** – 14 dedicated docs covering architecture, multimodal pipelines, persistence, streaming, testing, and operations
+
+For detailed technical documentation, see the [Documentation Index](docs/documentation_index.md).
 
 ## Installation
 
@@ -91,8 +91,9 @@ This pipe is tuned for multi-user workloads:
 3. **Dependencies**
    - Automatically installed by Open WebUI via the `requirements:` header (`aiohttp`, `cryptography`, `fastapi`, `httpx`, `lz4`, `pydantic`, `sqlalchemy`, `tenacity`, etc.).
 
-4. **Restart Open WebUI**
-   - Newly imported models appear in the model selector.
+4. **Enable the pipe**
+   - Navigate to the model selector in Open WebUI.
+   - Newly imported models appear automatically after enabling the pipe.
 
 ## Usage
 
@@ -101,22 +102,15 @@ This pipe is tuned for multi-user workloads:
 - **Tools & plugins**: Enable registered tools, web search, or MCP servers via valves. Tool outputs are stored securely and replayed when needed.
 - **Monitoring**: Watch streaming deltas, citations, notifications, and the final usage/status summary in the UI.
 
-Configure `ARTIFACT_ENCRYPTION_KEY` if you need encrypted storage. Changing the key intentionally rotates to a new table and makes older artifacts inaccessible (defense-in-depth).
-
 ## Configuration (Valves)
 
-See **[VALVES_REFERENCE.md](VALVES_REFERENCE.md)** for the full system + user valve catalog. Common knobs:
+All configuration is managed through Open WebUI's valve system. For comprehensive documentation of all system and user valves, including defaults, ranges, and configuration guidance, see **[Valves & Configuration Atlas](docs/valves_and_configuration_atlas.md)**.
 
-| Valve | Purpose |
-| --- | --- |
-| `API_KEY` | Encrypted OpenRouter credential injected into every request. |
-| `MODEL_ID` | Comma-separated list of catalog IDs (`auto` imports everything). |
-| `ARTIFACT_ENCRYPTION_KEY` | Enables encrypted reasoning/tool storage; key changes rotate tables. |
-| `REMOTE_FILE_MAX_SIZE_MB` | Caps remote downloads and matches Open WebUI's upload ceiling when RAG uploads are enabled. |
-| `ENABLE_REDIS_CACHE` | Governs Redis write-behind mode (requires `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, and `WEBSOCKET_REDIS_URL`). |
-| `LOG_LEVEL` | Pipe-level logging verbosity (DEBUG / INFO / …). |
+## Security & Encryption
 
-Per-user overrides (log level, reasoning effort, streaming profile, etc.) are also documented in `VALVES_REFERENCE.md`.
+Artifact encryption requires both `WEBUI_SECRET_KEY` (environment variable) and `ARTIFACT_ENCRYPTION_KEY` (valve) to be configured. Without `WEBUI_SECRET_KEY`, all artifacts are stored unencrypted regardless of other settings.
+
+For complete security documentation including encryption setup, key rotation procedures, SSRF protection, and multi-tenant isolation, see **[Security & Encryption Guide](docs/security_and_encryption.md)**.
 
 ## Testing
 
@@ -125,9 +119,10 @@ Per-user overrides (log level, reasoning effort, streaming profile, etc.) are al
 ```bash
 PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py   # multimodal + size guard coverage
 PYTHONPATH=. .venv/bin/pytest tests/test_pipe_guards.py         # request + valve guard coverage
+PYTHONPATH=. .venv/bin/pytest tests/test_error_templates.py     # error template + exception handling coverage
 ```
 
-Extend the suite with additional files under `tests/` when contributing new features or bug fixes.
+Extend the suite with additional files under `tests/` when contributing new features or bug fixes. For detailed testing guidelines, see the [Testing, Bootstrap & Operations](docs/testing_bootstrap_and_operations.md) guide.
 
 ## Acknowledgments
 

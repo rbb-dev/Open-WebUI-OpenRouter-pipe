@@ -82,16 +82,30 @@ Use this page to decide which document to open next.
 * Exhaustive listing of every system + user valve with defaults, ranges, and rationale.
 * Structured tables that mirror the order of `Pipe.Valves` / `Pipe.UserValves` definitions so you can cross-reference quickly.
 
-### 4.1 production readiness audit
+### 4.1 security & encryption guide
+**file:** `docs/security_and_encryption.md`
+
+* Comprehensive security guide covering encryption requirements, key rotation procedures, SSRF protection, secret management, and multi-tenant isolation.
+* Includes production deployment checklists, incident response runbooks, and compliance guidance (GDPR, HIPAA, SOC 2).
+
+### 4.2 production readiness audit
 **file:** `docs/production_readiness_report.md`
 
 * Expanded audit covering secrets, persistence guarantees, multimodal guardrails, concurrency controls, streaming, observability, and outstanding risks.
 * Updated for the OpenRouter manifold; supersedes the legacy root-level document.
 
-### 4.2 openrouter integrations & telemetry
+### 4.3 openrouter integrations & telemetry
 **file:** `docs/openrouter_integrations_and_telemetry.md`
 
 * Highlights the OpenRouter-specific behaviors (usage strings, catalog routing, automatic plugin wiring, CSS patches, multimodal guardrails) so you can quickly explain what differentiates this manifold from the OpenAI version.
+* Documents 400 error templates with template variable reference and Handlebars conditional syntax.
+
+### 4.4 error handling & user experience
+**file:** `docs/error_handling_and_user_experience.md`
+
+* Comprehensive guide to the error template system covering all exception types: network timeouts, connection failures, 5xx service errors, and internal exceptions.
+* Includes rendered examples with realistic data, valve configuration, troubleshooting guide, operator runbook, and template customization patterns.
+* Shows exactly what users see when errors occur and how operators correlate error IDs with backend logs.
 
 ---
 
