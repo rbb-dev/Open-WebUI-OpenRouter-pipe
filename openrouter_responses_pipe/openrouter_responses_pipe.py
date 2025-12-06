@@ -174,6 +174,96 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{request_id_reference}"
 )
 
+DEFAULT_NETWORK_TIMEOUT_TEMPLATE = (
+    "### ⏱️ Request Timeout\n\n"
+    "The request to OpenRouter took too long to complete.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if timeout_seconds}}\n"
+    "**Timeout:** {timeout_seconds}s\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**Possible causes:**\n"
+    "- OpenRouter's servers are slow or overloaded\n"
+    "- Network congestion\n"
+    "- Large request taking longer than expected\n\n"
+    "**What to do:**\n"
+    "- Wait a few moments and try again\n"
+    "- Try a smaller request if possible\n"
+    "- Check [OpenRouter Status](https://status.openrouter.ai/)\n"
+    "{{#if support_email}}\n"
+    "- Contact support: {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_CONNECTION_ERROR_TEMPLATE = (
+    "### 🔌 Connection Failed\n\n"
+    "Unable to reach OpenRouter's servers.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if error_type}}\n"
+    "**Error type:** `{error_type}`\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**Possible causes:**\n"
+    "- Network connectivity issues\n"
+    "- Firewall blocking HTTPS traffic\n"
+    "- DNS resolution failure\n"
+    "- OpenRouter service outage\n\n"
+    "**What to do:**\n"
+    "1. Check your internet connection\n"
+    "2. Verify firewall allows HTTPS (port 443)\n"
+    "3. Check [OpenRouter Status](https://status.openrouter.ai/)\n"
+    "4. Contact your network administrator if the issue persists\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_SERVICE_ERROR_TEMPLATE = (
+    "### 🔴 OpenRouter Service Error\n\n"
+    "OpenRouter's servers are experiencing issues.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if status_code}}\n"
+    "**Status:** {status_code} {reason}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "This is **not** a problem with your request. The issue is on OpenRouter's side.\n\n"
+    "**What to do:**\n"
+    "- Wait a few minutes and try again\n"
+    "- Check [OpenRouter Status](https://status.openrouter.ai/) for updates\n"
+    "- If the problem persists for more than 15 minutes, contact OpenRouter support\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_INTERNAL_ERROR_TEMPLATE = (
+    "### ⚠️ Unexpected Error\n\n"
+    "Something unexpected went wrong while processing your request.\n\n"
+    "**Error ID:** `{error_id}` — Share this with support\n"
+    "{{#if error_type}}\n"
+    "**Error type:** `{error_type}`\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "The error has been logged and will be investigated.\n\n"
+    "**What to do:**\n"
+    "- Try your request again\n"
+    "- If the problem persists, contact support with the Error ID above\n"
+    "{{#if support_email}}\n"
+    "- Email: {support_email}\n"
+    "{{/if}}\n"
+    "{{#if support_url}}\n"
+    "- Support: {support_url}\n"
+    "{{/if}}\n"
+)
+
 
 def _render_error_template(template: str, values: dict[str, Any]) -> str:
     """Render a user-supplied template, honoring {{#if}} conditionals and placeholder drops."""
@@ -3085,6 +3175,65 @@ class Pipe:
                 "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
             ),
         )
+
+        # Support configuration
+        SUPPORT_EMAIL: str = Field(
+            default="",
+            description=(
+                "Support email displayed in error messages. "
+                "Leave empty if self-hosted without dedicated support."
+            )
+        )
+
+        SUPPORT_URL: str = Field(
+            default="",
+            description=(
+                "Support URL (e.g., internal ticket system, Slack channel). "
+                "Shown in error messages if provided."
+            )
+        )
+
+        # Additional error templates
+        NETWORK_TIMEOUT_TEMPLATE: str = Field(
+            default=DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
+            description=(
+                "Markdown template for network timeout errors. "
+                "Available variables: {error_id}, {timeout_seconds}, {timestamp}, "
+                "{session_id}, {user_id}, {support_email}. "
+                "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            )
+        )
+
+        CONNECTION_ERROR_TEMPLATE: str = Field(
+            default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
+            description=(
+                "Markdown template for connection failures. "
+                "Available variables: {error_id}, {error_type}, {timestamp}, "
+                "{session_id}, {user_id}, {support_email}. "
+                "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            )
+        )
+
+        SERVICE_ERROR_TEMPLATE: str = Field(
+            default=DEFAULT_SERVICE_ERROR_TEMPLATE,
+            description=(
+                "Markdown template for OpenRouter 5xx errors. "
+                "Available variables: {error_id}, {status_code}, {reason}, {timestamp}, "
+                "{session_id}, {user_id}, {support_email}. "
+                "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            )
+        )
+
+        INTERNAL_ERROR_TEMPLATE: str = Field(
+            default=DEFAULT_INTERNAL_ERROR_TEMPLATE,
+            description=(
+                "Markdown template for unexpected internal errors. "
+                "Available variables: {error_id}, {error_type}, {timestamp}, "
+                "{session_id}, {user_id}, {support_email}, {support_url}. "
+                "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            )
+        )
+
         MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
             default=200,
             ge=1,
@@ -6097,6 +6246,71 @@ class Pipe:
                 streaming_preferences=streaming_preferences,
                 user_id=user_id,
             )
+        # OpenRouter 400 errors (already have templates)
+        except OpenRouterAPIError as e:
+            await self._report_openrouter_error(
+                e,
+                event_emitter=__event_emitter__,
+                normalized_model_id=body.get("model"),
+                api_model_id=None,
+                template=valves.OPENROUTER_ERROR_TEMPLATE,
+            )
+            return ""
+
+        # Network timeouts
+        except httpx.TimeoutException as e:
+            await self._emit_templated_error(
+                __event_emitter__,
+                template=valves.NETWORK_TIMEOUT_TEMPLATE,
+                variables={
+                    "timeout_seconds": getattr(e, 'timeout', valves.HTTP_TOTAL_TIMEOUT_SECONDS or 120),
+                    "endpoint": "https://openrouter.ai/api/v1/responses",
+                },
+                log_message=f"Network timeout: {e}",
+            )
+            return ""
+
+        # Connection failures
+        except httpx.ConnectError as e:
+            await self._emit_templated_error(
+                __event_emitter__,
+                template=valves.CONNECTION_ERROR_TEMPLATE,
+                variables={
+                    "error_type": type(e).__name__,
+                    "endpoint": "https://openrouter.ai",
+                },
+                log_message=f"Connection failed: {e}",
+            )
+            return ""
+
+        # HTTP 5xx errors
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500:
+                await self._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.SERVICE_ERROR_TEMPLATE,
+                    variables={
+                        "status_code": e.response.status_code,
+                        "reason": e.response.reason_phrase or "Server Error",
+                    },
+                    log_message=f"OpenRouter service error: {e.response.status_code} {e.response.reason_phrase}",
+                )
+                return ""
+            # Other 4xx errors fall through
+            raise
+
+        # Generic catch-all
+        except Exception as e:
+            await self._emit_templated_error(
+                __event_emitter__,
+                template=valves.INTERNAL_ERROR_TEMPLATE,
+                variables={
+                    "error_type": type(e).__name__,
+                },
+                log_message=f"Unexpected error: {e}",
+            )
+            return ""
+
         finally:
             ModelFamily._PIPE_ID.reset(pipe_token)
         return result
@@ -8083,6 +8297,82 @@ class Pipe:
                     self.logger.debug("Error logs for session %s:\n%s", session_id, "\n".join(logs))
             else:
                 self.logger.warning("No debug logs found for session_id %s", session_id)
+
+    async def _emit_templated_error(
+        self,
+        event_emitter: Optional[Callable[[dict[str, Any]], Awaitable[None]]],
+        *,
+        template: str,
+        variables: dict[str, Any],
+        log_message: str,
+        log_level: int = logging.ERROR,
+    ) -> None:
+        """Render and emit an error using the template system.
+
+        Automatically enriches variables with:
+        - error_id: Unique identifier for support correlation
+        - timestamp: ISO 8601 timestamp (UTC)
+        - session_id: Current session identifier
+        - user_id: Current user identifier
+        - support_email: From valves
+        - support_url: From valves
+
+        Args:
+            event_emitter: Event emitter for UI messages
+            template: Markdown template with {{#if}} conditionals
+            variables: Dictionary of template variables
+            log_message: Technical message for operator logs
+            log_level: Logging level (default: ERROR)
+        """
+        import secrets
+
+        # Generate error ID for tracking
+        error_id = secrets.token_hex(8)
+
+        # Enrich variables with context
+        enriched_variables = {
+            "error_id": error_id,
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "session_id": SessionLogger.session_id.get() or "",
+            "user_id": SessionLogger.user_id.get() or "",
+            "support_email": self.valves.SUPPORT_EMAIL or "",
+            "support_url": self.valves.SUPPORT_URL or "",
+            **variables,  # User-provided variables can override defaults
+        }
+
+        # Log with error ID for correlation
+        self.logger.log(
+            log_level,
+            f"[{error_id}] {log_message} (session={enriched_variables['session_id']}, user={enriched_variables['user_id']})"
+        )
+
+        if not event_emitter:
+            return
+
+        # Render template
+        try:
+            markdown = _render_error_template(template, enriched_variables)
+        except Exception as e:
+            self.logger.error(f"[{error_id}] Template rendering failed: {e}")
+            markdown = (
+                f"### ⚠️ Error\n\n"
+                f"An error occurred, but we couldn't format the error message properly.\n\n"
+                f"**Error ID:** `{error_id}` (share this with support)\n\n"
+                f"Please contact your administrator."
+            )
+
+        # Emit to UI
+        try:
+            await event_emitter({
+                "type": "chat:message",
+                "data": {"content": markdown}
+            })
+            await event_emitter({
+                "type": "chat:completion",
+                "data": {"done": True}
+            })
+        except Exception as e:
+            self.logger.error(f"[{error_id}] Failed to emit error message: {e}")
 
     async def _emit_citation(
         self,

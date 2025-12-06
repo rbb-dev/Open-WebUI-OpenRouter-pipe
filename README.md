@@ -22,6 +22,7 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 - **Multimodal intake with guard rails** – Remote downloads flow through SSRF filters, retries, and MB caps, while base64/audio/video payloads are validated before decoding.
 - **Secure persistence** – Per-pipe SQLAlchemy tables, optional Fernet encryption, ULID markers, and LZ4 compression keep reasoning/tool artifacts safe yet replayable.
 - **Resilient tool + streaming pipeline** – FIFO tool queues with breaker windows, SSE worker pools, and telemetry-rich emitters keep multi-minute reasoning/tool chains responsive without starving other users.
+- **Error handling & user experience** – Comprehensive error templates for network timeouts, connection failures, 5xx service errors, and internal exceptions. Each error includes unique error IDs, timestamps, and session context for troubleshooting. Production-ready defaults with full admin customization via valves.
 - **Operational safeguards** – Request queue + global semaphore, Redis write-behind cache (auto-enables only when Open WebUI sets `UVICORN_WORKERS>1`, `REDIS_URL`, and `WEBSOCKET_REDIS_URL`), artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
 
 ## Documentation
@@ -73,7 +74,7 @@ This pipe is tuned for multi-user workloads:
 - **Request queue + semaphore**: Incoming jobs must acquire a global slot; overflow results in 503 "server busy" responses rather than worker crashes.
 - **Redis write-behind cache**: Auto-detects Redis-backed multi-worker deployments ( `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL` ) and batches artifacts through pending queues guarded by distributed locks; repeated failures automatically fall back to direct DB writes.
 - **Breakers and batching**: Per-user/per-tool breaker windows cap consecutive failures, while compatible tool calls can batch together, each bounded by per-call, per-batch, and idle timeouts.
-- **Resilient emitters**: SSE/notification/citation emitters are wrapped so slow or disconnected clients never crash the request; errors are logged and processing continues.
+- **Resilient emitters**: SSE/notification/citation emitter calls are guarded with try/except blocks so slow or disconnected clients never crash the request; errors are logged and processing continues.
 - **Payload controls**: Remote downloads honor the configured MB ceiling (and Open WebUI's own upload limit when defined) while base64/video payloads are validated before decoding.
 - **Usage-forward finalizer**: A closing completion event summarizes elapsed time, tokens, throughput, and cost so admins can monitor efficiency without extra instrumentation.
 

@@ -164,6 +164,27 @@ Because each placeholder is optional, empty sections disappear automatically—e
 
 ---
 
+### Extended Error Template System
+
+The error template system now covers **all error types**, not just OpenRouter 400 responses:
+
+- **Network timeouts** (`NETWORK_TIMEOUT_TEMPLATE`) - Request took too long (httpx.TimeoutException)
+- **Connection failures** (`CONNECTION_ERROR_TEMPLATE`) - Can't reach OpenRouter (httpx.ConnectError)
+- **Service errors** (`SERVICE_ERROR_TEMPLATE`) - OpenRouter 5xx responses (httpx.HTTPStatusError with status >= 500)
+- **Internal errors** (`INTERNAL_ERROR_TEMPLATE`) - Unexpected exceptions (catch-all for any other exception)
+
+Each template automatically includes:
+- **Error ID** - Unique 16-character hex identifier for support correlation (generated via `secrets.token_hex(8)`)
+- **Timestamp** - ISO 8601 UTC timestamp when error occurred
+- **Session context** - Session ID and User ID for multi-tenant debugging
+- **Support contacts** - From `SUPPORT_EMAIL` and `SUPPORT_URL` valves (optional, shown only when configured)
+
+All templates support the same `{{#if variable}}...{{/if}}` conditional syntax and automatic empty-line dropping. Errors are logged with the error ID prefix (e.g., `[a3f8b2c1] Network timeout: ...`) so operators can correlate user reports with backend logs.
+
+**Purpose**: Prevent ugly Open WebUI error boxes by catching all exceptions and presenting clean, professional Markdown error cards with actionable guidance. Users see friendly messages; operators get technical details in logs.
+
+---
+
 ## 10. auto context trimming (message transforms)
 
 * Valve: `AUTO_CONTEXT_TRIMMING` (default True). When enabled, `_apply_context_transforms` automatically sets `ResponsesBody.transforms = ["middle-out"]` unless the caller already provided a `transforms` list.
