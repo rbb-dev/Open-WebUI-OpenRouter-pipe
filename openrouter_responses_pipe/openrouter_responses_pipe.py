@@ -8,7 +8,7 @@ original_author_url: https://github.com/jrkropp/open-webui-developer-toolkit
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
 version: 1.0.5
-requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
+requirements: git+https://github.com/rbb-dev/openrouter_responses_pipe.git
 license: MIT
 
 - Auto-discovers and imports full OpenRouter Responses model catalog with capabilities and identifiers.

@@ -3,7 +3,8 @@ from setuptools import setup, find_packages
 setup(
     name="openrouter_modules",
     version="2.0.0",
-    packages=find_packages(),
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
     python_requires=">=3.10",
     install_requires=[
         "aiohttp>=3.9.0",
