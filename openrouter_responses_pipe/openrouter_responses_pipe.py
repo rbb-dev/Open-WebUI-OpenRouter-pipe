@@ -142,8 +142,26 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
     "### 🚫 {heading} could not process your request.\n\n"
     "{{/if}}\n"
+    "{{#if error_id}}\n"
+    "- **Error ID**: `{error_id}`\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "- **Time**: {timestamp}\n"
+    "{{/if}}\n"
+    "{{#if session_id}}\n"
+    "- **Session**: `{session_id}`\n"
+    "{{/if}}\n"
+    "{{#if user_id}}\n"
+    "- **User**: `{user_id}`\n"
+    "{{/if}}\n"
     "{{#if sanitized_detail}}\n"
     "### Error: `{sanitized_detail}`\n\n"
+    "{{/if}}\n"
+    "{{#if openrouter_message}}\n"
+    "- **OpenRouter message**: `{openrouter_message}`\n"
+    "{{/if}}\n"
+    "{{#if upstream_message}}\n"
+    "- **Provider message**: `{upstream_message}`\n"
     "{{/if}}\n"
     "{{#if model_identifier}}\n"
     "- **Model**: `{model_identifier}`\n"
@@ -172,10 +190,25 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if request_id}}\n"
     "- **Request ID**: `{request_id}`\n"
     "{{/if}}\n"
+    "{{#if native_finish_reason}}\n"
+    "- **Finish reason**: `{native_finish_reason}`\n"
+    "{{/if}}\n"
+    "{{#if error_chunk_id}}\n"
+    "- **Chunk ID**: `{error_chunk_id}`\n"
+    "{{/if}}\n"
+    "{{#if error_chunk_created}}\n"
+    "- **Chunk time**: {error_chunk_created}\n"
+    "{{/if}}\n"
+    "{{#if streaming_provider}}\n"
+    "- **Streaming provider**: `{streaming_provider}`\n"
+    "{{/if}}\n"
+    "{{#if streaming_model}}\n"
+    "- **Streaming model**: `{streaming_model}`\n"
+    "{{/if}}\n"
     "{{#if include_model_limits}}\n"
     "\n**Model limits:**\n"
-    "Context window: {context_limit_tokens} tokens\n"
-    "Max output tokens: {max_output_tokens} tokens\n"
+    "{{#if context_limit_tokens}}Context window: {context_limit_tokens} tokens\n{{/if}}\n"
+    "{{#if max_output_tokens}}Max output tokens: {max_output_tokens} tokens\n{{/if}}\n"
     "Adjust your prompt or requested output to stay within these limits.\n"
     "{{/if}}\n"
     "{{#if moderation_reasons}}\n"
@@ -191,6 +224,14 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if raw_body}}\n"
     "\n**Raw provider response:**\n"
     "```\n{raw_body}\n```\n"
+    "{{/if}}\n"
+    "{{#if metadata_json}}\n"
+    "\n**Metadata:**\n"
+    "```\n{metadata_json}\n```\n"
+    "{{/if}}\n"
+    "{{#if provider_raw_json}}\n"
+    "\n**Provider raw error:**\n"
+    "```\n{provider_raw_json}\n```\n"
     "{{/if}}\n\n"
     "Please adjust the request and try again, or ask your admin to enable the middle-out option.\n"
     "{{#if request_id_reference}}\n"
@@ -288,6 +329,103 @@ DEFAULT_INTERNAL_ERROR_TEMPLATE = (
     "{{/if}}\n"
 )
 
+DEFAULT_AUTHENTICATION_ERROR_TEMPLATE = (
+    "### 🔐 Authentication Failed\n\n"
+    "OpenRouter rejected your credentials.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if openrouter_code}}\n"
+    "**Status:** {openrouter_code}\n"
+    "{{/if}}\n"
+    "{{#if openrouter_message}}\n"
+    "**Details:** {openrouter_message}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "1. Verify the API key configured for this pipe\n"
+    "2. Generate a new key at https://openrouter.ai/keys if needed\n"
+    "3. If using OAuth, re-authenticate your session\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE = (
+    "### 💳 Insufficient Credits\n\n"
+    "OpenRouter could not run this request because the account is out of credits.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if openrouter_code}}\n"
+    "**Status:** {openrouter_code}\n"
+    "{{/if}}\n"
+    "{{#if openrouter_message}}\n"
+    "**Details:** {openrouter_message}\n"
+    "{{/if}}\n"
+    "{{#if required_cost}}\n"
+    "**Estimated cost:** ${required_cost}\n"
+    "{{/if}}\n"
+    "{{#if account_balance}}\n"
+    "**Current balance:** ${account_balance}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "- Add credits at https://openrouter.ai/credits\n"
+    "- Review usage at https://openrouter.ai/usage\n"
+    "- Consider enabling auto-recharge to avoid interruptions\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_RATE_LIMIT_TEMPLATE = (
+    "### ⏸️ Rate Limit Exceeded\n\n"
+    "OpenRouter is protecting the service because too many requests were made quickly.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if openrouter_code}}\n"
+    "**Status:** {openrouter_code}\n"
+    "{{/if}}\n"
+    "{{#if retry_after_seconds}}\n"
+    "**Retry after:** {retry_after_seconds}s\n"
+    "{{/if}}\n"
+    "{{#if rate_limit_type}}\n"
+    "**Limit type:** {rate_limit_type}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**Tips:**\n"
+    "- Back off and retry with exponential delays\n"
+    "- Queue requests or lower parallelism\n"
+    "- Contact OpenRouter if you need higher limits\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_SERVER_TIMEOUT_TEMPLATE = (
+    "### 🕒 OpenRouter Timed Out\n\n"
+    "OpenRouter started the request but couldn't finish within its timeout window.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if openrouter_code}}\n"
+    "**Status:** {openrouter_code}\n"
+    "{{/if}}\n"
+    "{{#if openrouter_message}}\n"
+    "**Details:** {openrouter_message}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**Next steps:**\n"
+    "- Retry shortly; the upstream provider may be busy\n"
+    "- Reduce prompt size or requested work\n"
+    "- Contact support if the issue persists\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
 
 def _render_error_template(template: str, values: dict[str, Any]) -> str:
     """Render a user-supplied template, honoring {{#if}} conditionals."""
@@ -317,11 +455,43 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
 
         # Replace placeholders with values
         line = raw_line
+        drop_line = False
         for name, value in values.items():
-            if f"{{{name}}}" in line:
-                line = line.replace(f"{{{name}}}", str(value))
+            placeholder = f"{{{name}}}"
+            if placeholder in line:
+                if not _template_value_present(value):
+                    drop_line = True
+                line = line.replace(placeholder, "" if value is None else str(value))
+        if drop_line:
+            continue
         rendered_lines.append(line)
     return "\n".join(rendered_lines).strip()
+
+
+def _pretty_json(value: Any) -> str:
+    """Return a human-readable JSON string or an empty string when not applicable."""
+    if value is None:
+        return ""
+    if isinstance(value, (str, bytes)):
+        text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+        return text.strip()
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def _template_value_present(value: Any) -> bool:
+    """Return True when a placeholder value should be rendered."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value != ""
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return True
+    return bool(value)
 
 
 def _build_error_template_values(
@@ -333,6 +503,7 @@ def _build_error_template_values(
     model_identifier: Optional[str],
     normalized_model_id: Optional[str],
     api_model_id: Optional[str],
+    context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Prepare placeholder values for the customizable error template."""
     detail = (error.upstream_message or error.openrouter_message or str(error)).strip()
@@ -350,6 +521,14 @@ def _build_error_template_values(
         (context_limit_value or max_output_tokens_value)
     )
 
+    metadata_json = error.metadata_json or _pretty_json(error.metadata)
+    provider_raw_json = error.provider_raw_json or _pretty_json(error.provider_raw)
+    context = context or {}
+    retry_after = (
+        context.get("retry_after_seconds")
+        or error.metadata.get("retry_after_seconds")
+        or error.metadata.get("retry_after")
+    )
     replacements: dict[str, Any] = {
         "heading": heading,
         "detail": detail,
@@ -372,6 +551,25 @@ def _build_error_template_values(
         "include_model_limits": bool(include_model_limits),
         "api_model_id": api_model_id or "",
         "normalized_model_id": normalized_model_id or "",
+        "metadata_json": metadata_json,
+        "provider_raw_json": provider_raw_json,
+        "native_finish_reason": error.native_finish_reason or "",
+        "error_chunk_id": error.chunk_id or "",
+        "error_chunk_created": error.chunk_created or "",
+        "streaming_provider": error.chunk_provider or (error.provider or ""),
+        "streaming_model": error.chunk_model or "",
+        "is_streaming_error": bool(error.is_streaming_error),
+        "error_id": context.get("error_id", ""),
+        "timestamp": context.get("timestamp", ""),
+        "session_id": context.get("session_id", ""),
+        "user_id": context.get("user_id", ""),
+        "support_email": context.get("support_email", ""),
+        "support_url": context.get("support_url", ""),
+        "retry_after_seconds": retry_after or "",
+        "rate_limit_type": error.metadata.get("rate_limit_type") or "",
+        "required_cost": error.metadata.get("required_cost") or "",
+        "account_balance": error.metadata.get("account_balance") or "",
+        "diagnostics": "\n".join(diagnostics),
     }
     return replacements
 
@@ -1275,9 +1473,12 @@ def _extract_openrouter_error_details(body_text: Optional[str]) -> dict[str, Any
         "request_id": request_id,
         "raw_body": body_text or "",
         "metadata": metadata_dict,
+        "metadata_json": _pretty_json(metadata_dict),
         "moderation_reasons": _normalize_string_list(metadata_dict.get("reasons")),
         "flagged_input": _normalize_optional_str(metadata_dict.get("flagged_input")),
         "model_slug": _normalize_optional_str(metadata_dict.get("model_slug")),
+        "provider_raw": raw_details,
+        "provider_raw_json": _pretty_json(raw_details),
     }
 
 
@@ -1287,9 +1488,13 @@ def _build_openrouter_api_error(
     body_text: Optional[str],
     *,
     requested_model: Optional[str] = None,
+    extra_metadata: Optional[dict[str, Any]] = None,
 ) -> "OpenRouterAPIError":
     """Create a structured error wrapper for OpenRouter 4xx responses."""
     details = _extract_openrouter_error_details(body_text)
+    metadata_block = details.get("metadata") or {}
+    if extra_metadata:
+        metadata_block = {**metadata_block, **extra_metadata}
     return OpenRouterAPIError(
         status=status,
         reason=reason,
@@ -1300,11 +1505,14 @@ def _build_openrouter_api_error(
         upstream_type=details.get("upstream_type"),
         request_id=details.get("request_id"),
         raw_body=details.get("raw_body"),
-        metadata=details.get("metadata") or {},
+        metadata=metadata_block,
         moderation_reasons=details.get("moderation_reasons") or [],
         flagged_input=details.get("flagged_input"),
         model_slug=details.get("model_slug"),
         requested_model=requested_model,
+        metadata_json=details.get("metadata_json"),
+        provider_raw=details.get("provider_raw"),
+        provider_raw_json=details.get("provider_raw_json"),
     )
 
 
@@ -1328,6 +1536,15 @@ class OpenRouterAPIError(RuntimeError):
         flagged_input: Optional[str] = None,
         model_slug: Optional[str] = None,
         requested_model: Optional[str] = None,
+        metadata_json: Optional[str] = None,
+        provider_raw: Optional[Any] = None,
+        provider_raw_json: Optional[str] = None,
+        native_finish_reason: Optional[str] = None,
+        chunk_id: Optional[str] = None,
+        chunk_created: Optional[Any] = None,
+        chunk_provider: Optional[str] = None,
+        chunk_model: Optional[str] = None,
+        is_streaming_error: bool = False,
     ) -> None:
         """Normalize raw OpenRouter metadata into convenient attributes."""
         self.status = status
@@ -1344,6 +1561,15 @@ class OpenRouterAPIError(RuntimeError):
         self.flagged_input = (flagged_input or "").strip() or None
         self.model_slug = (model_slug or "").strip() or None
         self.requested_model = (requested_model or "").strip() or None
+        self.metadata_json = metadata_json or _pretty_json(self.metadata)
+        self.provider_raw = provider_raw
+        self.provider_raw_json = provider_raw_json or _pretty_json(provider_raw)
+        self.native_finish_reason = native_finish_reason
+        self.chunk_id = chunk_id
+        self.chunk_created = chunk_created
+        self.chunk_provider = chunk_provider
+        self.chunk_model = chunk_model
+        self.is_streaming_error = is_streaming_error
         summary = (
             self.upstream_message
             or self.openrouter_message
@@ -1361,6 +1587,7 @@ class OpenRouterAPIError(RuntimeError):
         metrics: Optional[dict[str, Any]] = None,
         normalized_model_id: Optional[str] = None,
         api_model_id: Optional[str] = None,
+        context: Optional[dict[str, Any]] = None,
     ) -> str:
         """Return a user-friendly markdown block describing the failure."""
         provider_label = (self.provider or "").strip()
@@ -1382,6 +1609,7 @@ class OpenRouterAPIError(RuntimeError):
             model_identifier=self.model_slug or self.requested_model or fallback_model,
             normalized_model_id=normalized_model_id,
             api_model_id=api_model_id,
+            context=context,
         )
         return _render_error_template(template or DEFAULT_OPENROUTER_ERROR_TEMPLATE, replacements)
 
@@ -1428,6 +1656,7 @@ def _format_openrouter_error_markdown(
     normalized_model_id: Optional[str],
     api_model_id: Optional[str],
     template: str,
+    context: Optional[dict[str, Any]] = None,
 ) -> str:
     """Render a provider error into markdown after enriching with model context."""
     model_display, diagnostics, metrics = _resolve_error_model_context(
@@ -1443,6 +1672,7 @@ def _format_openrouter_error_markdown(
         metrics=metrics,
         normalized_model_id=normalized_model_id,
         api_model_id=api_model_id,
+        context=context,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1456,11 +1686,7 @@ class CompletionsBody(BaseModel):
     model: str
     messages: List[Dict[str, Any]]
     stream: bool = False
-
-    class Config:
-        """Permit passthrough of additional OpenAI parameters automatically."""
-
-        extra = "allow" # Pass through additional OpenAI parameters automatically
+    model_config = ConfigDict(extra="allow")  # pass through additional OpenAI parameters
 
 class ResponsesBody(BaseModel):
     """
@@ -1483,11 +1709,7 @@ class ResponsesBody(BaseModel):
     response_format: Optional[Dict[str, Any]] = None
     parallel_tool_calls: Optional[bool] = None
     transforms: Optional[List[str]] = None
-
-    class Config:
-        """Permit passthrough of additional OpenAI parameters automatically."""
-
-        extra = "allow" # Allow additional OpenAI parameters automatically (future-proofing)
+    model_config = ConfigDict(extra="allow")  # allow additional OpenAI parameters automatically
 
     @model_validator(mode='after')
     def _normalize_model_id(self) -> "ResponsesBody":
@@ -3187,9 +3409,43 @@ class Pipe:
                 "{requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, "
                 "{reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, "
                 "{moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, "
-                "and {include_model_limits} are replaced when values are available. "
+                "{include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, "
+                "{native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {streaming_provider}, {streaming_model}, "
+                "{retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. "
                 "Lines containing placeholders are omitted automatically when the referenced value is missing or empty. "
                 "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            ),
+        )
+
+        AUTHENTICATION_ERROR_TEMPLATE: str = Field(
+            default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
+            description=(
+                "Markdown template for HTTP 401 errors. Available placeholders include {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, "
+                "{session_id}, {user_id}, {support_email}, {support_url}, and any metadata extracted from the OpenRouter payload."
+            ),
+        )
+
+        INSUFFICIENT_CREDITS_TEMPLATE: str = Field(
+            default=DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
+            description=(
+                "Markdown template for HTTP 402 errors when the account is out of credits. Supports {error_id}, {timestamp}, {openrouter_code}, "
+                "{openrouter_message}, {required_cost}, {account_balance}, {support_email}, and other shared context variables."
+            ),
+        )
+
+        RATE_LIMIT_TEMPLATE: str = Field(
+            default=DEFAULT_RATE_LIMIT_TEMPLATE,
+            description=(
+                "Markdown template for HTTP 429 rate-limit errors. Use placeholders such as {error_id}, {timestamp}, {openrouter_code}, {retry_after_seconds}, "
+                "{rate_limit_type}, {support_email}, and the standard context variables."
+            ),
+        )
+
+        SERVER_TIMEOUT_TEMPLATE: str = Field(
+            default=DEFAULT_SERVER_TIMEOUT_TEMPLATE,
+            description=(
+                "Markdown template for HTTP 408 errors returned by OpenRouter (server-side timeout). Supports the common context variables plus "
+                "{openrouter_message}, {openrouter_code}, and support contact placeholders."
             ),
         )
 
@@ -6270,7 +6526,6 @@ class Pipe:
                 event_emitter=__event_emitter__,
                 normalized_model_id=body.get("model"),
                 api_model_id=None,
-                template=valves.OPENROUTER_ERROR_TEMPLATE,
             )
             return ""
 
@@ -6302,18 +6557,56 @@ class Pipe:
 
         # HTTP 5xx errors
         except httpx.HTTPStatusError as e:
-            if e.response.status_code >= 500:
+            status_code = e.response.status_code if e.response else None
+            reason_phrase = e.response.reason_phrase if e.response else None
+            if status_code and status_code >= 500:
                 await self._emit_templated_error(
                     __event_emitter__,
                     template=valves.SERVICE_ERROR_TEMPLATE,
                     variables={
-                        "status_code": e.response.status_code,
-                        "reason": e.response.reason_phrase or "Server Error",
+                        "status_code": status_code,
+                        "reason": reason_phrase or "Server Error",
                     },
-                    log_message=f"OpenRouter service error: {e.response.status_code} {e.response.reason_phrase}",
+                    log_message=f"OpenRouter service error: {status_code} {reason_phrase}",
                 )
                 return ""
-            # Other 4xx errors fall through
+
+            handled_statuses = {400, 401, 402, 403, 408, 429}
+            if status_code in handled_statuses:
+                body_text = None
+                if e.response is not None:
+                    try:
+                        raw_bytes = await e.response.aread()
+                        body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
+                    except Exception:
+                        body_text = None
+                extra_meta: dict[str, Any] = {}
+                if e.response is not None:
+                    retry_after = e.response.headers.get("Retry-After") or e.response.headers.get("retry-after")
+                    if retry_after:
+                        extra_meta["retry_after"] = retry_after
+                        extra_meta["retry_after_seconds"] = retry_after
+                    rate_scope = (
+                        e.response.headers.get("X-RateLimit-Scope")
+                        or e.response.headers.get("x-ratelimit-scope")
+                    )
+                    if rate_scope:
+                        extra_meta["rate_limit_type"] = rate_scope
+                error = _build_openrouter_api_error(
+                    status=status_code,
+                    reason=reason_phrase or "HTTP error",
+                    body_text=body_text,
+                    requested_model=body.get("model"),
+                    extra_metadata=extra_meta or None,
+                )
+                await self._report_openrouter_error(
+                    error,
+                    event_emitter=__event_emitter__,
+                    normalized_model_id=body.get("model"),
+                    api_model_id=None,
+                )
+                return ""
+
             raise
 
         # Generic catch-all
@@ -7436,7 +7729,6 @@ class Pipe:
                 normalized_model_id=body.model,
                 api_model_id=getattr(body, "api_model", None),
                 usage=total_usage,
-                template=valves.OPENROUTER_ERROR_TEMPLATE,
             )
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
@@ -7755,12 +8047,25 @@ class Pipe:
                                     error_body = await _debug_print_error_response(resp)
                                     if breaker_key:
                                         self._record_failure(breaker_key)
-                                    if resp.status == 400:
+                                    special_statuses = {400, 401, 402, 403, 408, 429}
+                                    if resp.status in special_statuses:
+                                        extra_meta: dict[str, Any] = {}
+                                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                                        if retry_after:
+                                            extra_meta["retry_after"] = retry_after
+                                            extra_meta["retry_after_seconds"] = retry_after
+                                        rate_scope = (
+                                            resp.headers.get("X-RateLimit-Scope")
+                                            or resp.headers.get("x-ratelimit-scope")
+                                        )
+                                        if rate_scope:
+                                            extra_meta["rate_limit_type"] = rate_scope
                                         producer_error = _build_openrouter_api_error(
                                             resp.status,
                                             resp.reason,
                                             error_body,
                                             requested_model=request_body.get("model"),
+                                            extra_metadata=extra_meta or None,
                                         )
                                         return
                                     if resp.status < 500:
@@ -7898,6 +8203,9 @@ class Pipe:
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
+                    streaming_error = self._extract_streaming_error_event(current, body.model)
+                    if streaming_error is not None:
+                        raise streaming_error
                     etype = current.get("type")
                     if etype == "response.output_text.delta":
                         delta_chunk = current.get("delta", "")
@@ -7960,12 +8268,25 @@ class Pipe:
                     if resp.status >= 400:
                         error_body = await _debug_print_error_response(resp)
                         if resp.status < 500:
-                            if resp.status == 400:
+                            special_statuses = {400, 401, 402, 403, 408, 429}
+                            if resp.status in special_statuses:
+                                extra_meta: dict[str, Any] = {}
+                                retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                                if retry_after:
+                                    extra_meta["retry_after"] = retry_after
+                                    extra_meta["retry_after_seconds"] = retry_after
+                                rate_scope = (
+                                    resp.headers.get("X-RateLimit-Scope")
+                                    or resp.headers.get("x-ratelimit-scope")
+                                )
+                                if rate_scope:
+                                    extra_meta["rate_limit_type"] = rate_scope
                                 raise _build_openrouter_api_error(
                                     resp.status,
                                     resp.reason,
                                     error_body,
                                     requested_model=request_params.get("model"),
+                                    extra_metadata=extra_meta or None,
                                 )
                             raise RuntimeError(
                                 f"OpenRouter request failed ({resp.status}): {resp.reason}"
@@ -8249,10 +8570,18 @@ class Pipe:
         normalized_model_id: Optional[str],
         api_model_id: Optional[str],
         usage: Optional[dict[str, Any]] = None,
-        template: str = DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+        template: Optional[str] = None,
     ) -> None:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
-        self.logger.warning("OpenRouter rejected the request: %s", exc)
+        error_id, context_defaults = self._build_error_context()
+        template_to_use = template or self._select_openrouter_template(exc.status)
+        retry_after_hint = (
+            exc.metadata.get("retry_after_seconds")
+            or exc.metadata.get("retry_after")
+        )
+        if retry_after_hint and not context_defaults.get("retry_after_seconds"):
+            context_defaults["retry_after_seconds"] = retry_after_hint
+        self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
         if event_emitter:
             await event_emitter(
                 {
@@ -8267,7 +8596,8 @@ class Pipe:
                 exc,
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
-                template=template or DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+                template=template_to_use or DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+                context=context_defaults,
             )
             await event_emitter({"type": "chat:message", "data": {"content": content}})
             await self._emit_completion(
@@ -8276,6 +8606,18 @@ class Pipe:
                 usage=usage or None,
                 done=True,
             )
+
+    def _select_openrouter_template(self, status: Optional[int]) -> str:
+        """Return the appropriate template based on the HTTP status."""
+        if status == 401:
+            return self.valves.AUTHENTICATION_ERROR_TEMPLATE
+        if status == 402:
+            return self.valves.INSUFFICIENT_CREDITS_TEMPLATE
+        if status == 408:
+            return self.valves.SERVER_TIMEOUT_TEMPLATE
+        if status == 429:
+            return self.valves.RATE_LIMIT_TEMPLATE
+        return self.valves.OPENROUTER_ERROR_TEMPLATE
     async def _emit_error(
         self,
         event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
@@ -8341,21 +8683,8 @@ class Pipe:
             log_message: Technical message for operator logs
             log_level: Logging level (default: ERROR)
         """
-        import secrets
-
-        # Generate error ID for tracking
-        error_id = secrets.token_hex(8)
-
-        # Enrich variables with context
-        enriched_variables = {
-            "error_id": error_id,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "session_id": SessionLogger.session_id.get() or "",
-            "user_id": SessionLogger.user_id.get() or "",
-            "support_email": self.valves.SUPPORT_EMAIL or "",
-            "support_url": self.valves.SUPPORT_URL or "",
-            **variables,  # User-provided variables can override defaults
-        }
+        error_id, context_defaults = self._build_error_context()
+        enriched_variables = {**context_defaults, **variables}
 
         # Log with error ID for correlation
         self.logger.log(
@@ -8390,6 +8719,106 @@ class Pipe:
             })
         except Exception as e:
             self.logger.error(f"[{error_id}] Failed to emit error message: {e}")
+
+    def _build_error_context(self) -> tuple[str, dict[str, Any]]:
+        """Return a unique error id plus contextual metadata for templates."""
+        error_id = secrets.token_hex(8)
+        context = {
+            "error_id": error_id,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "session_id": SessionLogger.session_id.get() or "",
+            "user_id": SessionLogger.user_id.get() or "",
+            "support_email": self.valves.SUPPORT_EMAIL or "",
+            "support_url": self.valves.SUPPORT_URL or "",
+        }
+        return error_id, context
+
+    def _extract_streaming_error_event(
+        self,
+        event: dict[str, Any] | None,
+        requested_model: Optional[str],
+    ) -> Optional[OpenRouterAPIError]:
+        """Return an OpenRouterAPIError for SSE error payloads, if present."""
+        if not isinstance(event, dict):
+            return None
+        event_type = (event.get("type") or "").strip()
+        response_block = event.get("response") if isinstance(event.get("response"), dict) else None
+        error_block = event.get("error") if isinstance(event.get("error"), dict) else None
+        has_error = error_block is not None
+        if isinstance(response_block, dict):
+            if response_block.get("status") == "failed" or isinstance(response_block.get("error"), dict):
+                has_error = True
+        if event_type in {"response.failed", "response.error", "error"}:
+            has_error = True
+        if not has_error:
+            return None
+        return self._build_streaming_openrouter_error(event, requested_model=requested_model)
+
+    def _build_streaming_openrouter_error(
+        self,
+        event: dict[str, Any],
+        *,
+        requested_model: Optional[str],
+    ) -> OpenRouterAPIError:
+        """Normalize SSE error events into an OpenRouterAPIError."""
+        response_block = event.get("response") if isinstance(event.get("response"), dict) else {}
+        error_block = event.get("error") if isinstance(event.get("error"), dict) else None
+        if not error_block and isinstance(response_block.get("error"), dict):
+            error_block = response_block.get("error")
+        message = ""
+        if isinstance(error_block, dict):
+            message = (error_block.get("message") or "").strip()
+        if not message and isinstance(response_block.get("error"), dict):
+            message = (response_block.get("error", {}).get("message") or "").strip()
+        if not message:
+            message = (event.get("message") or "").strip() or "Streaming error"
+        code = error_block.get("code") if isinstance(error_block, dict) else None
+        choices = event.get("choices") or response_block.get("choices")
+        native_finish_reason = None
+        if isinstance(choices, list) and choices:
+            first_choice = choices[0] or {}
+            native_finish_reason = first_choice.get("native_finish_reason") or first_choice.get("finish_reason")
+        chunk_id = event.get("id") or response_block.get("id")
+        chunk_created = event.get("created") or response_block.get("created")
+        chunk_model = event.get("model") or response_block.get("model")
+        chunk_provider = event.get("provider") or response_block.get("provider")
+        metadata: dict[str, Any] = {
+            "stream_event_type": event.get("type") or "",
+            "raw": event,
+        }
+        if isinstance(response_block, dict):
+            if response_block.get("status"):
+                metadata["response_status"] = response_block.get("status")
+            if response_block.get("error"):
+                metadata["response_error"] = response_block.get("error")
+            if response_block.get("id"):
+                metadata.setdefault("request_id", response_block.get("id"))
+        raw_body = _pretty_json(event)
+        return OpenRouterAPIError(
+            status=400,
+            reason=message,
+            provider=chunk_provider,
+            openrouter_message=message,
+            openrouter_code=code,
+            upstream_message=message,
+            upstream_type=(code or event.get("type") or "stream_error"),
+            request_id=response_block.get("id") or event.get("response_id") or event.get("request_id"),
+            raw_body=raw_body,
+            metadata=metadata,
+            moderation_reasons=None,
+            flagged_input=None,
+            model_slug=chunk_model,
+            requested_model=requested_model,
+            metadata_json=_pretty_json(metadata),
+            provider_raw=event,
+            provider_raw_json=raw_body,
+            native_finish_reason=native_finish_reason,
+            chunk_id=chunk_id,
+            chunk_created=chunk_created,
+            chunk_provider=chunk_provider,
+            chunk_model=chunk_model,
+            is_streaming_error=True,
+        )
 
     async def _emit_citation(
         self,

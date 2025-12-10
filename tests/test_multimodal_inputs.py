@@ -32,47 +32,6 @@ from openrouter_responses_pipe.openrouter_responses_pipe import (
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Fixtures
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def pipe_instance():
-    """Create a Pipe instance for testing."""
-    return Pipe()
-
-
-@pytest.fixture
-def mock_request():
-    """Mock FastAPI Request object."""
-    request = Mock()
-    request.app.url_path_for = Mock(return_value="/api/v1/files/test123")
-    return request
-
-
-@pytest.fixture
-def mock_user():
-    """Mock UserModel object."""
-    user = Mock()
-    user.id = "user123"
-    user.email = "test@example.com"
-    user.name = "Test User"
-    return user
-
-
-@pytest.fixture
-def sample_image_base64():
-    """Sample base64 encoded image (1x1 transparent PNG)."""
-    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-
-
-@pytest.fixture
-def sample_audio_base64():
-    """Sample base64 encoded audio data (mock)."""
-    return base64.b64encode(b"FAKE_AUDIO_DATA").decode("utf-8")
-
-
 async def _transform_single_block(
     pipe_instance: Pipe,
     block: dict,
@@ -975,28 +934,6 @@ class TestMultimodalIntegration:
 # ─────────────────────────────────────────────────────────────────────────────
 # Documentation Compliance Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestOpenRouterCompliance:
-    """Tests verifying compliance with OpenRouter documentation."""
-
-    def test_supported_image_formats(self):
-        """Should support image/png, image/jpeg, image/webp, image/gif."""
-        supported_formats = ["image/png", "image/jpeg", "image/webp", "image/gif"]
-        pass
-
-    def test_supported_audio_formats(self):
-        """Should support wav and mp3 audio formats only."""
-        supported_formats = ["wav", "mp3"]
-        pass
-
-    def test_audio_requires_base64_not_urls(self):
-        """Audio must be base64-encoded, URLs not supported per docs."""
-        pass
-
-    def test_file_size_limit_enforced(self):
-        """Should enforce the documented size limit (default 50MB)."""
-        pass
 
 
 if __name__ == "__main__":
