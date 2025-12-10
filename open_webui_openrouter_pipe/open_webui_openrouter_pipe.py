@@ -3119,6 +3119,11 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in payload.items():
         if key not in ALLOWED_OPENROUTER_FIELDS:
             continue
+
+        # Drop explicit nulls; OpenRouter rejects nulls for optional fields.
+        if value is None:
+            continue
+
         if key == "reasoning":
             if not isinstance(value, dict):
                 continue
@@ -3604,8 +3609,6 @@ class Pipe:
         def _normalize_inherit(cls, values):
             """Treat the literal string 'inherit' (any case) as an unset value.
 
-            ``LOG_LEVEL`` is the lone field whose Literal includes ``"INHERIT"``.
-            Keep that string (upper-cased) so validation still succeeds.
             """
             if not isinstance(values, dict):
                 return values
@@ -3615,21 +3618,12 @@ class Pipe:
                 if isinstance(val, str):
                     stripped = val.strip()
                     lowered = stripped.lower()
-                    if key == "LOG_LEVEL":
-                        normalized[key] = stripped.upper()
-                        continue
                     if lowered == "inherit":
                         normalized[key] = None
                         continue
                 normalized[key] = val
             return normalized
 
-        LOG_LEVEL: Literal[
-            "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"
-        ] = Field(
-            default="INHERIT",
-            description="Select logging level. 'INHERIT' uses the pipe default.",
-        )
         SHOW_FINAL_USAGE_STATUS: bool = Field(
             default=True,
             description="Override whether the final status message includes usage stats (set to Inherit to reuse the workspace default).",
@@ -4776,6 +4770,15 @@ class Pipe:
         fallback_model_id: Optional[str] = None,
     ) -> str:
         """Derive the pipe identifier prefix used for storage namespaces."""
+
+        # Prefer the manifold's explicit id since it uniquely namespaces both
+        # artifact tables and ModelFamily prefixes across all Open WebUI models.
+        explicit_id = getattr(self, "id", None)
+        if isinstance(explicit_id, str):
+            trimmed = explicit_id.strip()
+            if trimmed:
+                return trimmed
+
         def _extract_prefix(value: Optional[str]) -> Optional[str]:
             if not isinstance(value, str):
                 return None
@@ -4786,11 +4789,12 @@ class Pipe:
             candidate = _extract_prefix(source)
             if candidate:
                 return candidate
-        explicit_id = getattr(self, "id", None)
-        if isinstance(explicit_id, str) and explicit_id.strip():
-            return explicit_id.strip()
+
         fallback_identifier = "openrouter"
-        self.logger.warning("Pipe identifier missing from metadata; defaulting to '%s'.", fallback_identifier)
+        self.logger.warning(
+            "Pipe identifier missing from metadata; defaulting to '%s'.",
+            fallback_identifier,
+        )
         return fallback_identifier
 
     def _init_artifact_store(
@@ -9006,6 +9010,9 @@ class Pipe:
 
         if not mapped:
             return global_valves
+
+        # Do not allow per-user overrides of the global log level.
+        mapped.pop("LOG_LEVEL", None)
 
         return global_valves.model_copy(update=mapped)
 
