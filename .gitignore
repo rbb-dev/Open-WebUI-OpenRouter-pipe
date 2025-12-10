@@ -4,4 +4,9 @@ __pycache__/
 .claude/
 .vscode/
 .external/
-openrouter_responses_pipe.egg-info/
+backups/
+.coverage
+PLAN1-changelog.md
+PLAN1-implementation.md
+PLAN1-next-step.md
+PLAN1.md
