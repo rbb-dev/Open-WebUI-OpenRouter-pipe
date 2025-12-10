@@ -129,6 +129,7 @@ _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 _TEMPLATE_VAR_PATTERN = re.compile(r"{(\w+)}")
 _TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
 _TEMPLATE_IF_CLOSE_RE = re.compile(r"\{\{\s*/if\s*\}\}")
+_TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
@@ -432,21 +433,38 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
         return all(condition_stack) if condition_stack else True
 
     for raw_line in template.splitlines():
-        stripped = raw_line.strip()
-        open_match = _TEMPLATE_IF_OPEN_RE.fullmatch(stripped)
-        if open_match:
-            key = open_match.group(1)
-            condition_stack.append(bool(values.get(key)))
-            continue
-        if _TEMPLATE_IF_CLOSE_RE.fullmatch(stripped):
-            if condition_stack:
-                condition_stack.pop()
-            continue
-        if not _conditions_active():
+        last_index = 0
+        line_parts: list[str] = []
+
+        for match in _TEMPLATE_IF_TOKEN_RE.finditer(raw_line):
+            segment = raw_line[last_index:match.start()]
+            if segment and _conditions_active():
+                line_parts.append(segment)
+
+            token = match.group(1) or ""
+            var_name = match.group(2)
+            if token.startswith("#if"):
+                condition_stack.append(bool(values.get(var_name or "")))
+            else:
+                if condition_stack:
+                    condition_stack.pop()
+
+            last_index = match.end()
+
+        tail_segment = raw_line[last_index:]
+        if tail_segment and _conditions_active():
+            line_parts.append(tail_segment)
+
+        if not line_parts:
+            if raw_line.strip():
+                continue
+            if not _conditions_active():
+                continue
+            rendered_lines.append("")
             continue
 
-        # Replace placeholders with values
-        line = raw_line
+        line = "".join(line_parts)
+
         drop_line = False
         for name, value in values.items():
             placeholder = f"{{{name}}}"
