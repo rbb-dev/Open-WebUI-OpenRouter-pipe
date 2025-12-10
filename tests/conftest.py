@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 import types
+from unittest.mock import Mock
 
 import pydantic
+import pytest
+
+from openrouter_responses_pipe.openrouter_responses_pipe import Pipe
 
 
 def _ensure_pydantic_backports() -> None:
@@ -198,6 +203,50 @@ def _install_tenacity_stub() -> None:
     tenacity_mod.retry_if_exception_type = _passthrough
     tenacity_mod.stop_after_attempt = _passthrough
     tenacity_mod.wait_exponential = _passthrough
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def pipe_instance():
+    """Return a fresh Pipe instance for tests."""
+    return Pipe()
+
+
+@pytest.fixture
+def mock_request():
+    """Mock FastAPI request used for storage uploads."""
+    request = Mock()
+    request.app = Mock()
+    request.app.url_path_for = Mock(return_value="/api/v1/files/test123")
+    return request
+
+
+@pytest.fixture
+def mock_user():
+    """Mock user object used for uploads and storage context."""
+    user = Mock()
+    user.id = "user123"
+    user.email = "test@example.com"
+    user.name = "Test User"
+    return user
+
+
+@pytest.fixture
+def sample_image_base64() -> str:
+    """Return a 1x1 transparent PNG encoded as base64."""
+    return (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+
+@pytest.fixture
+def sample_audio_base64() -> str:
+    """Return sample base64-encoded audio data."""
+    return base64.b64encode(b"FAKE_AUDIO_DATA").decode("utf-8")
 
 
 def _install_fastapi_stub() -> None:
