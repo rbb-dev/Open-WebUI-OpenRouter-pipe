@@ -89,7 +89,7 @@ import email.utils
 import aiohttp
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 from cryptography.fernet import Fernet, InvalidToken
@@ -3671,9 +3671,6 @@ class Pipe:
         )
         PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
             default="next_reply",
-            validation_alias=AliasChoices("PERSIST_REASONING_TOKENS", "next_reply"),
-            serialization_alias="next_reply",
-            alias="next_reply",
             title="How long to keep reasoning",
             description="Choose whether reasoning is kept just for the next reply or the entire conversation.",
         )
