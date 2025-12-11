@@ -37,6 +37,21 @@ from __future__ import annotations
 
 _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
 _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
+_DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
+_FUNCTION_MODULE_PREFIX = "function_"
+
+
+def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
+    """Return the Open WebUI function id inferred from the loader's module name."""
+    module_name = globals().get("__name__", "")
+    if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
+        candidate = module_name[len(_FUNCTION_MODULE_PREFIX) :].strip()
+        if candidate:
+            return candidate
+    return default
+
+
+_PIPE_RUNTIME_ID = _detect_runtime_pipe_id()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Imports
@@ -3144,6 +3159,7 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 # Primary interface implementing the Responses manifold
 class Pipe:
     """Manifold entrypoint that adapts Open WebUI requests to OpenRouter."""
+    id: str = _PIPE_RUNTIME_ID
     # 4.1 Configuration Schemas
     class Valves(BaseModel):
         """Global valve configuration shared across sessions."""
@@ -3283,6 +3299,15 @@ class Pipe:
             default="conversation",
             title="Reasoning retention",
             description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history.",
+        )
+        TASK_MODEL_REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+            default="low",
+            title="Task reasoning effort",
+            description=(
+                "Reasoning effort requested for Open WebUI task payloads (titles, tags, etc.) when they target this pipe's models. "
+                "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs (and disable auto web-search), "
+                "or use medium/high for progressively deeper background reasoning at higher cost."
+            ),
         )
         
         # Tool execution behavior
@@ -4769,33 +4794,15 @@ class Pipe:
         *,
         fallback_model_id: Optional[str] = None,
     ) -> str:
-        """Derive the pipe identifier prefix used for storage namespaces."""
-
-        # Prefer the manifold's explicit id since it uniquely namespaces both
-        # artifact tables and ModelFamily prefixes across all Open WebUI models.
+        """Return the canonical Open WebUI-assigned id for this pipe."""
         explicit_id = getattr(self, "id", None)
         if isinstance(explicit_id, str):
             trimmed = explicit_id.strip()
             if trimmed:
                 return trimmed
-
-        def _extract_prefix(value: Optional[str]) -> Optional[str]:
-            if not isinstance(value, str):
-                return None
-            candidate = value.split(".", 1)[0].strip()
-            return candidate or None
-
-        for source in (openwebui_model_id, fallback_model_id):
-            candidate = _extract_prefix(source)
-            if candidate:
-                return candidate
-
-        fallback_identifier = "openrouter"
-        self.logger.warning(
-            "Pipe identifier missing from metadata; defaulting to '%s'.",
-            fallback_identifier,
+        raise RuntimeError(
+            "Pipe identifier missing; Open WebUI did not assign an id to this manifold."
         )
-        return fallback_identifier
 
     def _init_artifact_store(
         self,
@@ -6672,14 +6679,22 @@ class Pipe:
             responses_body.max_output_tokens = None
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)
+        task_mode = bool(__task__)
         if allowed_norm_ids and normalized_model_id not in allowed_norm_ids:
-            await self._emit_error(
-                __event_emitter__,
-                f"Model '{responses_body.model}' is not enabled for this pipe. Please choose one of the allowed models.",
-                show_error_message=True,
-                done=True,
-            )
-            return ""
+            if task_mode:
+                self.logger.debug(
+                    "Bypassing model whitelist for task request (model=%s, task=%s)",
+                    normalized_model_id,
+                    (__task__ or {}).get("type") or "task",
+                )
+            else:
+                await self._emit_error(
+                    __event_emitter__,
+                    f"Model '{responses_body.model}' is not enabled for this pipe. Please choose one of the allowed models.",
+                    show_error_message=True,
+                    done=True,
+                )
+                return ""
         if not features:
             fallback_caps = (
                 ModelFamily.capabilities(openwebui_model_id or "")
@@ -6689,14 +6704,23 @@ class Pipe:
                 features = dict(fallback_caps)
 
         # STEP 2: Detect if task model (generate title, generate tags, etc.), handle it separately
+        task_effort = None
         if __task__:
             self.logger.debug("Detected task model: %s", __task__)
-            return await self._run_task_model_request(
+
+            requested_model = responses_body.model
+            owns_task_model = ModelFamily.base_model(requested_model) in allowed_norm_ids if allowed_norm_ids else True
+            if owns_task_model:
+                task_effort = valves.TASK_MODEL_REASONING_EFFORT
+                self._apply_task_reasoning_preferences(responses_body, task_effort)
+
+            result = await self._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
                 session=session,
                 task_context=__task__,
-            )  # Placeholder for task handling logic
+            )
+            return result
 
         # STEP 3: Build OpenAI Tools JSON (from __tools__, valves, and completions_body.extra_tools)
         tools_registry = __tools__
@@ -6766,12 +6790,22 @@ class Pipe:
         if ModelFamily.supports("web_search_tool", responses_body.model) and (
             valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False)
         ):
-            plugin_payload = {"id": "web"}
-            if valves.WEB_SEARCH_MAX_RESULTS is not None:
-                plugin_payload["max_results"] = valves.WEB_SEARCH_MAX_RESULTS
-            plugins = list(responses_body.plugins or [])
-            plugins.append(plugin_payload)
-            responses_body.plugins = plugins
+            reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+            effort = (reasoning_cfg.get("effort") or "").strip().lower()
+            if not effort:
+                effort = (valves.REASONING_EFFORT or "").strip().lower()
+            if effort == "minimal":
+                self.logger.debug(
+                    "Skipping web-search plugin because reasoning.effort is set to 'minimal' (model=%s)",
+                    responses_body.model,
+                )
+            else:
+                plugin_payload = {"id": "web"}
+                if valves.WEB_SEARCH_MAX_RESULTS is not None:
+                    plugin_payload["max_results"] = valves.WEB_SEARCH_MAX_RESULTS
+                plugins = list(responses_body.plugins or [])
+                plugins.append(plugin_payload)
+                responses_body.plugins = plugins
 
         # STEP 7: Log the transformed request body
         self.logger.debug("Transformed ResponsesBody: %s", json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False))
@@ -6846,6 +6880,26 @@ class Pipe:
             if getattr(responses_body, "include_reasoning", None) is None:
                 setattr(responses_body, "include_reasoning", True)
             responses_body.reasoning = None
+        else:
+            responses_body.reasoning = None
+
+    def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
+        """Override reasoning effort for task models."""
+        if not effort:
+            return
+        supported = ModelFamily.supported_parameters(responses_body.model)
+        supports_reasoning = "reasoning" in supported
+        supports_include = "include_reasoning" in supported
+        target_effort = effort.strip().lower()
+        if supports_reasoning:
+            cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+            cfg = dict(cfg) if cfg else {}
+            cfg["effort"] = target_effort
+            cfg.setdefault("enabled", True)
+            responses_body.reasoning = cfg
+        elif supports_include:
+            responses_body.reasoning = None
+            responses_body.include_reasoning = target_effort != "minimal"
         else:
             responses_body.reasoning = None
 

@@ -41,10 +41,11 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 
 | Valve | Default | Range | Notes |
 | --- | --- | --- | --- |
-| `MODEL_ID` | `auto` | CSV | Restrict exposed models. `auto` imports the entire catalog. |
+| `MODEL_ID` | `auto` | CSV | Restrict exposed models. `auto` imports the entire catalog. **Task payloads (`__task__`) bypass this allowlist** so Open WebUI housekeeping (titles, tags, etc.) keeps working even when end-user models are locked down. Interactive chats and API calls still enforce the list. |
 | `MODEL_CATALOG_REFRESH_SECONDS` | 3600 | ≥60 | Cache TTL for the catalog. |
 | `ENABLE_REASONING` | True | bool | Requests reasoning traces whenever supported. |
 | `REASONING_EFFORT` | `medium` | minimal/low/medium/high | Default `reasoning.effort` value. |
+| `TASK_MODEL_REASONING_EFFORT` | `low` | minimal/low/medium/high | Effort applied when Open WebUI schedules background tasks (titles, tags, etc.) against this pipe. The default `low` adds lightweight reasoning while leaving streaming control to Open WebUI; drop to `minimal` to keep the fastest, no-web-search behavior, or raise to medium/high for more deliberate task-specific outputs. |
 | `REASONING_SUMMARY_MODE` | `auto` | auto/concise/detailed/disabled | Governs reasoning summary verbosity. |
 | `AUTO_CONTEXT_TRIMMING` | True | bool | When enabled, automatically attaches OpenRouter’s `middle-out` transform so long prompts degrade gracefully instead of hard-failing with 400-over-limit errors. Disable only if you manage `transforms` manually per request. |
 | `PERSIST_REASONING_TOKENS` | `next_reply` | disabled/next_reply/conversation | Retention horizon; see `docs/history_reconstruction_and_context.md`. |
@@ -62,7 +63,7 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `MIN_COMPRESS_BYTES` | 0 | ≥0 | Skip compression for tiny blobs. |
 | `ENABLE_STRICT_TOOL_CALLING` | True | bool | Enforce strict JSON Schema (see `docs/tooling_and_integrations.md`). |
 | `MAX_FUNCTION_CALL_LOOPS` | 10 | ≥1 | Safety valve for multi-step tool loops. |
-| `ENABLE_WEB_SEARCH_TOOL` | True | bool | Auto-attach OpenRouter"s `web` plugin when supported. |
+| `ENABLE_WEB_SEARCH_TOOL` | True | bool | Auto-attach OpenRouter"s `web` plugin when supported. Requests whose effective `reasoning.effort` resolves to `minimal` skip the plugin entirely (OpenRouter rejects `web_search` when effort is `minimal`), so raise the effort or disable this valve if you need tool-free runs. |
 | `WEB_SEARCH_MAX_RESULTS` | 3 | 1--10 or null | Overrides the plugin"s `max_results`. |
 | `REMOTE_MCP_SERVERS_JSON` | None | JSON | See `docs/tooling_and_integrations.md` for schema. |
 
