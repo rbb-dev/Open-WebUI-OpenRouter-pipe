@@ -26,6 +26,7 @@ import pytest
 
 import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_module
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+    ModelFamily,
     Pipe,
     ResponsesBody,
     StatusMessages,
@@ -904,6 +905,110 @@ class TestAudioTransformer:
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert audio_block["input_audio"]["format"] == "wav"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Higher-level Conversation Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestConversationRebuild:
+    """Higher-level tests for transform_messages_to_input conversation assembly."""
+
+    @pytest.mark.asyncio
+    async def test_transform_messages_prunes_artifacts_and_reuses_images(
+        self,
+        pipe_instance,
+        sample_image_base64,
+        monkeypatch,
+    ):
+        call_marker_id = pipe_module.generate_item_id()
+        output_marker_id = pipe_module.generate_item_id()
+        marker_block = f"[{call_marker_id}]: #\n[{output_marker_id}]: #"
+        long_output = "X" * (pipe_module._TOOL_OUTPUT_PRUNE_MIN_LENGTH + 50)
+
+        messages = [
+            {"role": "system", "content": "Stay on task."},
+            {"role": "developer", "content": "Use CSV outputs."},
+            {
+                "role": "user",
+                "message_id": "u-1",
+                "content": [{"type": "text", "text": "First prompt"}],
+            },
+            {
+                "role": "assistant",
+                "message_id": "a-1",
+                "content": [{"type": "text", "text": f"See cached data\n{marker_block}\n"}],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"![chart](data:image/png;base64,{sample_image_base64})",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "message_id": "u-2",
+                "content": [{"type": "text", "text": "Latest question"}],
+            },
+        ]
+
+        async def artifact_loader(chat_id, message_id, markers):
+            assert chat_id == "chat-1"
+            assert message_id == "a-1"
+            assert markers == [call_marker_id, output_marker_id]
+            return {
+                call_marker_id: {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "lookup",
+                    "arguments": {"foo": 1},
+                },
+                output_marker_id: {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": long_output,
+                },
+            }
+
+        original_supports = ModelFamily.supports.__func__
+
+        def fake_supports(cls, feature, model_id):
+            if feature == "vision":
+                return True
+            return original_supports(cls, feature, model_id)
+
+        monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
+
+        transformed = await ResponsesBody.transform_messages_to_input(
+            pipe_instance,
+            messages,
+            chat_id="chat-1",
+            openwebui_model_id="demo-model",
+            artifact_loader=artifact_loader,
+            pruning_turns=1,
+            replayed_reasoning_refs=[],
+        )
+
+        first_user = transformed[0]
+        assert first_user["role"] == "user"
+        first_text = first_user["content"][0]["text"]
+        assert "Stay on task." in first_text and "Use CSV outputs." in first_text
+
+        artifact = next(
+            (item for item in transformed if item.get("type") == "function_call_output"),
+            None,
+        )
+        assert artifact is not None, f"transformed conversation missing artifact: {transformed}"
+        assert "[tool output pruned" in artifact["output"]
+
+        final_user = [item for item in transformed if item.get("role") == "user"][-1]
+        image_blocks = [block for block in final_user["content"] if block["type"] == "input_image"]
+        expected_image = f"data:image/png;base64,{sample_image_base64}"
+        assert image_blocks and image_blocks[0]["image_url"] == expected_image
 
 
 # ─────────────────────────────────────────────────────────────────────────────
