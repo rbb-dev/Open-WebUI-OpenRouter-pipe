@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import types
+from typing import Any
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     OpenRouterAPIError,
@@ -235,7 +236,7 @@ def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
 
         captured: dict = {}
 
-        async def fake_task_request(self, body, valves, *, session, task_context):
+        async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
             captured["body"] = body
             captured["task_context"] = task_context
             return "ok"
@@ -311,7 +312,7 @@ def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
 
         captured: dict = {}
 
-        async def fake_task_request(self, body, valves, *, session, task_context):
+        async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
             captured["body"] = body
             return "ok"
 
@@ -364,6 +365,62 @@ def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
             assert task_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
             assert task_body["stream"] is True
             await pipe.close()
+        finally:
+            pipe.shutdown()
+
+    asyncio.run(runner())
+
+
+def test_task_models_dump_costs_when_usage_available(monkeypatch):
+    async def runner():
+        pipe = Pipe()
+        pipe.valves = pipe.Valves(COSTS_REDIS_DUMP=True)
+        captured: dict[str, Any] = {}
+
+        async def fake_send(self, session, request_params, api_key, base_url):
+            return {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "auto title"}],
+                    }
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            }
+
+        async def fake_dump(self, valves, *, user_id, model_id, usage, user_obj, pipe_id):
+            captured["user_id"] = user_id
+            captured["model_id"] = model_id
+            captured["usage"] = usage
+            captured["pipe_id"] = pipe_id
+
+        monkeypatch.setattr(
+            Pipe,
+            "send_openai_responses_nonstreaming_request",
+            fake_send,
+        )
+        monkeypatch.setattr(
+            Pipe,
+            "_maybe_dump_costs_snapshot",
+            fake_dump,
+        )
+
+        try:
+            result = await pipe._run_task_model_request(
+                {"model": "openai.gpt-mini"},
+                pipe.valves,
+                session=object(),
+                task_context={"type": "title"},
+                user_id="u123",
+                user_obj={"email": "user@example.com", "name": "User"},
+                pipe_id="openrouter_responses_api_pipe",
+                snapshot_model_id="openrouter_responses_api_pipe.openai.gpt-mini",
+            )
+            assert result == "auto title"
+            assert captured["user_id"] == "u123"
+            assert captured["model_id"] == "openrouter_responses_api_pipe.openai.gpt-mini"
+            assert captured["pipe_id"] == "openrouter_responses_api_pipe"
+            assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
         finally:
             pipe.shutdown()
 
