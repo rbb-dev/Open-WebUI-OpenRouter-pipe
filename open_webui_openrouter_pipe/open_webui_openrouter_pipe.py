@@ -41,7 +41,11 @@ _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
 
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
-    """Return the Open WebUI function id inferred from the loader's module name."""
+    """Infer the Open WebUI function id from the module name.
+
+    Some loaders (Open WebUI hot reload, runpy, unit tests) execute this module via exec/run
+    without setting a real __name__. Returning the default keeps imports working in those cases.
+    """
     module_name = globals().get("__name__", "")
     if isinstance(module_name, str) and module_name.startswith(_FUNCTION_MODULE_PREFIX):
         candidate = module_name[len(_FUNCTION_MODULE_PREFIX) :].strip()
@@ -7646,10 +7650,62 @@ class Pipe:
                                         })
 
                             elif action.get("type") == "open_page":
-                                #TODO: emit status for open_page.  Only emitted by Deep Research models
+                                if event_emitter:
+                                    raw_title = action.get("title")
+                                    raw_host = action.get("host")
+                                    raw_url = action.get("url")
+                                    title = raw_title.strip() if isinstance(raw_title, str) else ""
+                                    host = raw_host.strip() if isinstance(raw_host, str) else ""
+                                    url = raw_url.strip() if isinstance(raw_url, str) else ""
+                                    description = "Opening page"
+                                    if host:
+                                        description = f"Opening {host}"
+                                    elif title:
+                                        description = f"Opening {title}"
+                                    elif url:
+                                        description = f"Opening {url}"
+                                    await event_emitter({
+                                        "type": "status",
+                                        "data": {
+                                            "action": "open_page",
+                                            "description": description,
+                                            "title": raw_title or (title or None),
+                                            "host": raw_host or (host or None),
+                                            "url": raw_url or (url or None),
+                                            "done": False,
+                                        },
+                                    })
                                 continue
                             elif action.get("type") == "find_in_page":
-                                #TODO: emit status for find_in_page.  Only emitted by Deep Research models
+                                if event_emitter:
+                                    raw_query = next(
+                                        (
+                                            value
+                                            for value in (
+                                                action.get("needle"),
+                                                action.get("query"),
+                                                action.get("text"),
+                                            )
+                                            if isinstance(value, str) and value.strip()
+                                        ),
+                                        "",
+                                    )
+                                    query = raw_query.strip() if isinstance(raw_query, str) else ""
+                                    raw_page_url = action.get("url")
+                                    page_url = raw_page_url.strip() if isinstance(raw_page_url, str) else ""
+                                    description = "Searching within page"
+                                    if query:
+                                        description = f"Searching for {query}"
+                                    await event_emitter({
+                                        "type": "status",
+                                        "data": {
+                                            "action": "find_in_page",
+                                            "description": description,
+                                            "needle": raw_query or (query or None),
+                                            "url": raw_page_url or (page_url or None),
+                                            "done": False,
+                                        },
+                                    })
                                 continue
                                     
                             continue

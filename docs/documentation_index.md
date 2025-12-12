@@ -109,7 +109,17 @@ Use this page to decide which document to open next.
 
 ---
 
-## 5. reading order suggestions
+## 5. root-level references
+
+### 5.0 changelog
+**file:** `CHANGELOG.md`
+
+* Chronological, commit-by-commit history from the initial import forward, useful for auditing when specific valves, docs, or integrations landed.
+* Each entry includes the date, author, SHA, and original commit message/body so you can trace context without digging through `git log`.
+
+---
+
+## 6. reading order suggestions
 
 1. Start with `developer_guide_and_architecture.md` to understand how the manifold is layered.
 2. If you are touching model selection or capability toggles, read `model_catalog_and_routing_intelligence.md` followed by `history_reconstruction_and_context.md`.
