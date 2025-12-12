@@ -1421,3 +1421,12 @@ Add dedicated suites for helper utilities, module helpers, and registry plumbing
 - Adds `COSTS_REDIS_DUMP` and `COSTS_REDIS_TTL_SECONDS` valves plus `_maybe_dump_costs_snapshot` to push usage payloads into Redis with short-lived keys namespaced by pipe/user.
 - Hooks the snapshot helper into both streaming and non-streaming flows so every successful turn can emit metrics without impacting the main response path.
 - Updates the integration doc with feature description, safety notes, and example workflows, and ignores the helper script in `.gitignore` to keep working trees clean.
+
+## 2025-12-12 - Map legacy function_call knob to modern tool_choice
+- Commit: `e45ccde4cc4625ccf079058f2b0a771d39ace7d1`
+- Author: rbb-dev
+
+### Details
+- Added `_convert_function_call_to_tool_choice` so old OpenAI-style `function_call` payloads are translated into the Responses `tool_choice` field automatically, keeping backwards compatibility for existing automations.
+- Updated `ResponsesBody.tool_choice` typing plus the Completions→Responses transformer so the converted value is injected only when callers haven't already set `tool_choice`.
+- Extended `tests/test_responses_body.py` to cover dict and string function_call forms and to guarantee we never clobber an explicit tool_choice override.
