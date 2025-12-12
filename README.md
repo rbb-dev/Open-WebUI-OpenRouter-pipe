@@ -28,10 +28,12 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 - **Resilient tool + streaming pipeline** – FIFO tool queues with breaker windows, SSE worker pools, and telemetry-rich emitters keep multi-minute reasoning/tool chains responsive without starving other users.
 - **Error handling & user experience** – Comprehensive error templates for network timeouts, connection failures, 5xx service errors, and internal exceptions. Each error includes unique error IDs, timestamps, and session context for troubleshooting. Production-ready defaults with full admin customization via valves.
 - **Operational safeguards** – Request queue + global semaphore, Redis write-behind cache (auto-enables only when Open WebUI sets `UVICORN_WORKERS>1`, `REDIS_URL`, and `WEBSOCKET_REDIS_URL`), artifact cleanup workers, and per-session logging via `SessionLogger` keep it production-ready.
+- **Opt-in cost telemetry snapshots** – `COSTS_REDIS_DUMP` and `COSTS_REDIS_TTL_SECONDS` valves stream per-turn usage payloads into Redis for downstream billing or anomaly detection without impacting the main response path. See [OpenRouter Integrations & Telemetry → Opt-in cost snapshots](docs/openrouter_integrations_and_telemetry.md#11-opt-in-cost-snapshots-redis-export) for details.
 
 ## Documentation
 
 **[Documentation Index](docs/documentation_index.md)** – Central navigation hub for all technical documentation covering architecture, multimodal pipelines, persistence, streaming, and operational guides.
+**[Changelog](CHANGELOG.md)** – Complete commit-by-commit history tracking every change since project inception.
 
   **Developer & Architecture Guides**
   - [Developer Guide & Architecture](docs/developer_guide_and_architecture.md) – High-level tour of manifold wiring, layering conventions, request lifecycle, and development workflow.
