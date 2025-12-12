@@ -1718,7 +1718,7 @@ class ResponsesBody(BaseModel):
     top_p: Optional[float] = None
     max_output_tokens: Optional[int] = None
     reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
-    tool_choice: Optional[Dict[str, Any]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
     response_format: Optional[Dict[str, Any]] = None
@@ -1765,6 +1765,29 @@ class ResponsesBody(BaseModel):
             tools.append(tool)
 
         return tools
+
+    @staticmethod
+    def _convert_function_call_to_tool_choice(function_call: Any) -> Optional[Any]:
+        """
+        Translate legacy OpenAI `function_call` payloads into modern `tool_choice` values.
+
+        Returns either "auto"/"none" (strings) or {"type": "function", "name": "..."}.
+        """
+        if function_call is None:
+            return None
+        if isinstance(function_call, str):
+            lowered = function_call.strip().lower()
+            if lowered in {"auto", "none"}:
+                return lowered
+            return None
+
+        if isinstance(function_call, dict):
+            name = function_call.get("name")
+            if not name and isinstance(function_call.get("function"), dict):
+                name = function_call["function"].get("name")
+            if isinstance(name, str) and name.strip():
+                return {"type": "function", "name": name.strip()}
+        return None
 
     # -----------------------------------------------------------------------
     # Helper: turn the JSON string into valid MCP tool dicts
@@ -3078,6 +3101,14 @@ class ResponsesBody(BaseModel):
             reasoning = sanitized_params.get("reasoning", {})
             reasoning.setdefault("effort", effort)
             sanitized_params["reasoning"] = reasoning
+
+        # Legacy function_call → modern tool_choice
+        if "tool_choice" not in sanitized_params and "function_call" in completions_dict:
+            converted_choice = ResponsesBody._convert_function_call_to_tool_choice(
+                completions_dict.get("function_call")
+            )
+            if converted_choice is not None:
+                sanitized_params["tool_choice"] = converted_choice
 
         # Transform input messages to OpenAI Responses API format
         if "messages" in completions_dict:

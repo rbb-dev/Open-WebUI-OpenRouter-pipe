@@ -69,6 +69,69 @@ async def test_from_completions_preserves_parallel_tool_calls(monkeypatch, minim
     assert responses.parallel_tool_calls is False
 
 
+@pytest.mark.asyncio
+async def test_from_completions_converts_legacy_function_call_dict(monkeypatch, minimal_pipe):
+    """Legacy function_call dicts should map to tool_choice automatically."""
+    completions = CompletionsBody(
+        model="test",
+        messages=[{"role": "user", "content": "hi"}],
+        function_call={"name": "lookup_weather"},
+    )
+
+    async def fake_transform(_transformer, *_args, **_kwargs):
+        return list(_STUBBED_INPUT)
+
+    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+
+    responses = await ResponsesBody.from_completions(
+        completions,
+        transformer_context=minimal_pipe,
+    )
+    assert responses.tool_choice == {"type": "function", "name": "lookup_weather"}
+
+
+@pytest.mark.asyncio
+async def test_from_completions_converts_legacy_function_call_strings(monkeypatch, minimal_pipe):
+    """Legacy function_call strings like 'none' should pass through unchanged."""
+    completions = CompletionsBody(
+        model="test",
+        messages=[{"role": "user", "content": "hi"}],
+        function_call="none",
+    )
+
+    async def fake_transform(_transformer, *_args, **_kwargs):
+        return list(_STUBBED_INPUT)
+
+    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+
+    responses = await ResponsesBody.from_completions(
+        completions,
+        transformer_context=minimal_pipe,
+    )
+    assert responses.tool_choice == "none"
+
+
+@pytest.mark.asyncio
+async def test_from_completions_does_not_override_explicit_tool_choice(monkeypatch, minimal_pipe):
+    completions = CompletionsBody(
+        model="test",
+        messages=[{"role": "user", "content": "hi"}],
+        function_call={"name": "legacy"},
+        tool_choice="auto",
+    )
+
+    async def fake_transform(_transformer, *_args, **_kwargs):
+        return list(_STUBBED_INPUT)
+
+    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+
+    responses = await ResponsesBody.from_completions(
+        completions,
+        transformer_context=minimal_pipe,
+    )
+    assert responses.tool_choice == "auto"
+
+
 def test_auto_context_trimming_enabled_by_default(minimal_pipe):
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
     minimal_pipe._apply_context_transforms(responses, minimal_pipe.valves)
