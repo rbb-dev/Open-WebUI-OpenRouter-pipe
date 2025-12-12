@@ -69,7 +69,7 @@ abc123def456ghi789jkl012mno345pqr
 **How it works:**
 1. The pipe derives a Fernet key using: `SHA256(ARTIFACT_ENCRYPTION_KEY + pipe_id)`
 2. All reasoning tokens are encrypted before database storage
-3. When `ENCRYPT_ALL=True`, tool outputs and citations are also encrypted
+3. When `ENCRYPT_ALL=True` (the default once an encryption key is configured), tool outputs and citations are also encrypted
 4. Table name includes key hash (first 8 chars): `response_items_openrouter_6d9a1b2c`
 
 **Key derivation code reference:** See [Persistence, Encryption & Storage](persistence_encryption_and_storage.md#encryption-mechanics) for implementation details.
@@ -94,12 +94,12 @@ WARNING: WEBUI_SECRET_KEY not configured; encrypted valves will be stored as pla
 INFO: Artifact table ready: response_items_openrouter_default (no encryption)
 ```
 
-### Mode 2: Reasoning-Only Encryption (Recommended)
+### Mode 2: Reasoning-Only Encryption (Optional)
 
 **Configuration:**
 - `WEBUI_SECRET_KEY`: ✅ Set
 - `ARTIFACT_ENCRYPTION_KEY`: ✅ Set (≥16 chars)
-- `ENCRYPT_ALL`: ❌ False (default)
+- `ENCRYPT_ALL`: ❌ False (explicit override – default is True)
 
 **Behavior:**
 - Reasoning tokens are encrypted (can be 100K+ tokens, high sensitivity)
@@ -116,12 +116,12 @@ INFO: Artifact table ready: response_items_openrouter_6d9a1b2c (key hash: 6d9a1b
 - OpenRouter charges for reasoning tokens separately; hiding them prevents reverse-engineering prompts
 - Tool outputs are typically less sensitive (web search results, function returns)
 
-### Mode 3: Full Encryption (Maximum Security)
+### Mode 3: Full Encryption (Maximum Security, Default when keys are set)
 
 **Configuration:**
 - `WEBUI_SECRET_KEY`: ✅ Set
 - `ARTIFACT_ENCRYPTION_KEY`: ✅ Set (≥16 chars)
-- `ENCRYPT_ALL`: ✅ True
+- `ENCRYPT_ALL`: ✅ True (default)
 
 **Behavior:**
 - Everything encrypted: reasoning tokens, tool outputs, citations, metadata
@@ -628,8 +628,8 @@ docker restart open-webui
 # Admin → Functions → OpenRouter Responses Pipe → Valves → ARTIFACT_ENCRYPTION_KEY
 # Value: "production-encryption-key-2024" (minimum 16 chars)
 
-# 4. Enable full encryption (optional)
-# Admin → Functions → OpenRouter Responses Pipe → Valves → ENCRYPT_ALL = True
+# 4. Confirm full encryption (default)
+# Admin → Functions → OpenRouter Responses Pipe → Valves → ENCRYPT_ALL (leave True unless you explicitly need reasoning-only mode)
 
 # 5. Verify encryption is active
 docker logs open-webui 2>&1 | grep "Artifact table ready"
@@ -659,7 +659,7 @@ docker logs open-webui 2>&1 | grep "Artifact table ready"
 **Production deployment:**
 - [ ] `WEBUI_SECRET_KEY` set (≥32 chars)
 - [ ] `ARTIFACT_ENCRYPTION_KEY` set (≥16 chars)
-- [ ] `ENCRYPT_ALL=True` for sensitive deployments
+- [ ] `ENCRYPT_ALL=True` (default; only set to False if you intentionally need reasoning-only encryption)
 - [ ] SSRF protection enabled (default, do not disable)
 - [ ] TLS enabled for Open WebUI (external to pipe)
 - [ ] Redis TLS enabled if multi-worker (external to pipe)
