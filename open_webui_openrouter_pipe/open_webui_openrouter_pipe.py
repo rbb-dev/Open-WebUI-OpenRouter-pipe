@@ -6376,6 +6376,25 @@ class Pipe:
         except Exception as exc:  # pragma: no cover - Redis failures logged, not fatal
             self.logger.debug("Cost snapshot write failed for user=%s: %s", user_id, exc)
 
+    def _qualify_model_for_pipe(
+        self,
+        pipe_identifier: Optional[str],
+        model_id: Optional[str],
+    ) -> Optional[str]:
+        """Return a dot-prefixed Open WebUI model id for this pipe."""
+        if not isinstance(model_id, str):
+            return None
+        trimmed = model_id.strip()
+        if not trimmed:
+            return None
+        if not pipe_identifier:
+            return trimmed
+        prefix = f"{pipe_identifier}."
+        if trimmed.startswith(prefix):
+            return trimmed
+        normalized = ModelFamily.base_model(trimmed) or trimmed
+        return f"{pipe_identifier}.{normalized}"
+
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
         self._maybe_start_startup_checks()
@@ -6859,6 +6878,13 @@ class Pipe:
                 valves,
                 session=session,
                 task_context=__task__,
+                user_id=user_id or "",
+                user_obj=user_model,
+                pipe_id=pipe_identifier,
+                snapshot_model_id=self._qualify_model_for_pipe(
+                    pipe_identifier,
+                    responses_body.model,
+                ),
             )
             return result
 
@@ -7903,11 +7929,15 @@ class Pipe:
                         done=False,
                     )
 
-                snapshot_model_id = (
-                    (metadata.get("model") or {}).get("id")
-                    if isinstance(metadata, dict)
-                    else None
-                ) or body.model
+                metadata_model = None
+                if isinstance(metadata, dict):
+                    model_block = metadata.get("model")
+                    if isinstance(model_block, dict):
+                        metadata_model = model_block.get("id")
+                snapshot_model_id = self._qualify_model_for_pipe(
+                    pipe_identifier,
+                    metadata_model or body.model,
+                )
 
                 await self._maybe_dump_costs_snapshot(
                     valves,
@@ -8159,6 +8189,10 @@ class Pipe:
         *,
         session: aiohttp.ClientSession | None = None,
         task_context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        user_obj: Optional[Any] = None,
+        pipe_id: Optional[str] = None,
+        snapshot_model_id: Optional[str] = None,
     ) -> str:
         """Process a task model request via the Responses API.
 
@@ -8196,6 +8230,25 @@ class Pipe:
                     api_key=EncryptedStr.decrypt(valves.API_KEY),
                     base_url=valves.BASE_URL,
                 )
+
+                usage = response.get("usage") if isinstance(response, dict) else None
+                if usage and isinstance(usage, dict) and user_id:
+                    safe_model_id = snapshot_model_id or self._qualify_model_for_pipe(
+                        pipe_id,
+                        source_model_id,
+                    )
+                    if safe_model_id:
+                        try:
+                            await self._maybe_dump_costs_snapshot(
+                                valves,
+                                user_id=user_id,
+                                model_id=safe_model_id,
+                                usage=usage,
+                                user_obj=user_obj,
+                                pipe_id=pipe_id,
+                            )
+                        except Exception as exc:  # pragma: no cover - guard against Redis-side issues
+                            self.logger.debug("Task cost snapshot failed: %s", exc)
 
                 message = self._extract_task_output_text(response).strip()
                 if message:

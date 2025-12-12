@@ -112,6 +112,7 @@ This note collects the features that are unique to the OpenRouter variant of the
   * `COSTS_REDIS_TTL_SECONDS` – per-key expiry (defaults to 15 minutes). Even if an admin enables the feature accidentally, the keys evaporate quickly and never accumulate in Redis indefinitely.
 * Behavior:
   * After every successful model turn we capture the Responses usage payload (`input_tokens`, `output_tokens`, reasoning counts, USD cost, etc.) plus the Open WebUI model id, user GUID/email/name, and a timestamp.
+  * Task models now emit the same snapshots: `_run_task_model_request` captures the non-streaming Responses payload, qualifies the model id via `_qualify_model_for_pipe`, and wraps the Redis write in try/except so housekeeping runs can’t crash the pipe even if Redis misbehaves.
   * Each record is written as a plain JSON string to a namespaced key: `costs:<pipe-id>:<user-id>:<uuid>:<epoch>`. The `<pipe-id>` prefix prevents collisions when multiple OpenRouter pipes run on the same Redis instance.
   * The feature is entirely passive—no additional prompts are sent and Redis writes happen only when the main cache client is already configured (`_redis_enabled=True`). If Redis is unavailable or any field is missing, we log a debug “Skipping cost snapshot …” and continue without impacting the user-facing response.
 * Example use cases:
