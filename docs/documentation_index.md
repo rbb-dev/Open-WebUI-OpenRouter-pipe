@@ -40,6 +40,13 @@ Use this page to decide which document to open next.
 * Complete walkthrough of file/image/audio/video handling, SSRF protections, retries, buffering, and fallback storage identities.
 * Includes flowcharts for `_to_input_image`, `_to_input_file`, `_to_input_audio`, and `_to_input_video` plus size-guard tables and error surfacing notes.
 
+### 2.1 task models & housekeeping
+**file:** `docs/task_models_and_housekeeping.md`
+
+* Explains how Open WebUI “task” requests differ from user-facing chats, including the fast-path controller, retries, and reasoning overrides.
+* Recommends ideal mini-tier models (GPT-4.1 Mini, GPT-5 Mini), empty system prompts, and no-tool configurations so chores stay cheap and predictable.
+* Provides a troubleshooting table for common misconfigurations (verbose titles, 400s from unintended tools, runaway costs) and wiring steps in the Open WebUI admin panel.
+
 ### 2.1 tools, plugins, and extra integrations
 **file:** `docs/tooling_and_integrations.md`
 
