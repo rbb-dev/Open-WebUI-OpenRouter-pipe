@@ -1430,3 +1430,38 @@ Add dedicated suites for helper utilities, module helpers, and registry plumbing
 - Added `_convert_function_call_to_tool_choice` so old OpenAI-style `function_call` payloads are translated into the Responses `tool_choice` field automatically, keeping backwards compatibility for existing automations.
 - Updated `ResponsesBody.tool_choice` typing plus the Completions→Responses transformer so the converted value is injected only when callers haven't already set `tool_choice`.
 - Extended `tests/test_responses_body.py` to cover dict and string function_call forms and to guarantee we never clobber an explicit tool_choice override.
+
+## 2025-12-12 - Add breaker valve tuning
+- Commit: `7575385076e32af87331d4d377921752f4b2ffef`
+- Author: rbb-dev
+
+### Details
+- Added `BREAKER_MAX_FAILURES`, `BREAKER_WINDOW_SECONDS`, and `BREAKER_HISTORY_SIZE` valves so per-user request, tool, and DB breakers can be tuned instead of relying on hard-coded limits.
+- Rewired the breaker deques to honor the configured history size, applied the same thresholds to DB/tool breakers, and kept the existing notifications so users still see when a breaker trips.
+- Updated the concurrency and valve documentation to describe the new knobs while removing leftover “Fix” annotations from the runtime.
+
+## 2025-12-12 - docs: add task model guidance
+- Commit: `71ece376690ddd1f830fc4c833993b6ca88ab8bb`
+- Author: rbb-dev
+
+### Details
+- Added `docs/task_models_and_housekeeping.md`, covering how `_run_task_model_request` handles chores, recommended mini-tier models, reasoning valve tips, and troubleshooting steps.
+- Linked the new guide from `docs/documentation_index.md` so operators can find the housekeeping checklist alongside the other architecture docs.
+
+## 2025-12-12 - fix: auto-retry gemini reasoning error
+- Commit: `2993012a7f02ef138a3a0e2aa8a18775738368b5`
+- Author: rbb-dev
+
+### Details
+- Wrapped the Responses API call in `_process_transformed_request` with a retry loop that disables `include_reasoning` when providers complain that “include_thoughts” requires thinking, covering Gemini’s error text.
+- Added `_should_retry_without_reasoning` plus regression tests so we only retry once and log when the fallback is used.
+- Documented the behavior in `docs/error_handling_and_user_experience.md` so operators know why a request might silently fall back to a non-reasoning run.
+
+## 2025-12-13 - Capture task model cost snapshots
+- Commit: `8d16ba512edeedcdab9bbf83fd780e6725138c68`
+- Author: rbb-dev
+
+### Details
+- Added `_qualify_model_for_pipe` to consistently generate `pipe.model` ids and switched both streaming and task flows to use it before writing Redis cost snapshots.
+- Extended `_run_task_model_request` to accept user/pipe context, capture non-streaming usage payloads, and attempt `_maybe_dump_costs_snapshot` behind a guarded try/except so housekeeping runs never crash the pipe.
+- Covered the new flow with tests and updated the telemetry doc to note that task models now appear in the Redis cost export.
