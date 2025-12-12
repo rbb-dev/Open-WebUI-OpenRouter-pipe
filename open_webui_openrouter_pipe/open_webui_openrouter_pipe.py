@@ -6953,11 +6953,26 @@ class Pipe:
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
 
-        # STEP 8: Send to OpenAI Responses API
-        try:
-            if responses_body.stream:
-                # Return async generator for partial text
-                return await self._run_streaming_loop(
+        # STEP 8: Send to OpenAI Responses API (with provider-specific fallbacks)
+        reasoning_retry_attempted = False
+        while True:
+            try:
+                if responses_body.stream:
+                    # Return async generator for partial text
+                    return await self._run_streaming_loop(
+                        responses_body,
+                        valves,
+                        __event_emitter__,
+                        __metadata__,
+                        __tools__,
+                        session=session,
+                        user_id=user_id,
+                        request_context=__request__,
+                        user_obj=user_model,
+                        pipe_identifier=pipe_identifier,
+                    )
+                # Return final text (non-streaming)
+                return await self._run_nonstreaming_loop(
                     responses_body,
                     valves,
                     __event_emitter__,
@@ -6969,28 +6984,22 @@ class Pipe:
                     user_obj=user_model,
                     pipe_identifier=pipe_identifier,
                 )
-            # Return final text (non-streaming)
-            return await self._run_nonstreaming_loop(
-                responses_body,
-                valves,
-                __event_emitter__,
-                __metadata__,
-                __tools__,
-                session=session,
-                user_id=user_id,
-                request_context=__request__,
-                user_obj=user_model,
-                pipe_identifier=pipe_identifier,
-            )
-        except OpenRouterAPIError as exc:
-            await self._report_openrouter_error(
-                exc,
-                event_emitter=__event_emitter__,
-                normalized_model_id=responses_body.model,
-                api_model_id=getattr(responses_body, "api_model", None),
-                template=valves.OPENROUTER_ERROR_TEMPLATE,
-            )
-            return ""
+            except OpenRouterAPIError as exc:
+                if (
+                    not reasoning_retry_attempted
+                    and self._should_retry_without_reasoning(exc, responses_body)
+                ):
+                    reasoning_retry_attempted = True
+                    continue
+
+                await self._report_openrouter_error(
+                    exc,
+                    event_emitter=__event_emitter__,
+                    normalized_model_id=responses_body.model,
+                    api_model_id=getattr(responses_body, "api_model", None),
+                    template=valves.OPENROUTER_ERROR_TEMPLATE,
+                )
+                return ""
 
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
@@ -7053,6 +7062,42 @@ class Pipe:
         if responses_body.transforms is not None:
             return
         responses_body.transforms = ["middle-out"]
+
+    def _should_retry_without_reasoning(
+        self,
+        error: OpenRouterAPIError,
+        responses_body: ResponsesBody,
+    ) -> bool:
+        """Return True when we can retry the request after disabling reasoning."""
+
+        include_flag = getattr(responses_body, "include_reasoning", None)
+        if not include_flag:
+            return False
+
+        trigger_phrases = (
+            "thinking_config.include_thoughts is only enabled when thinking is enabled",
+            "include_thoughts is only enabled when thinking is enabled",
+        )
+        message_candidates = [
+            error.upstream_message,
+            error.openrouter_message,
+            str(error),
+        ]
+
+        for message in message_candidates:
+            if not isinstance(message, str):
+                continue
+            lowered = message.lower()
+            if any(trigger in lowered for trigger in trigger_phrases):
+                responses_body.include_reasoning = False
+                responses_body.reasoning = None
+                self.logger.info(
+                    "Retrying without reasoning for model '%s' after provider rejected include_reasoning without thinking.",
+                    responses_body.model,
+                )
+                return True
+
+        return False
 
 
     def _select_models(self, filter_value: str, available_models: list[dict[str, Any]]) -> list[dict[str, Any]]:

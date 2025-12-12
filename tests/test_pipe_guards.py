@@ -4,7 +4,11 @@ import asyncio
 import logging
 import types
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+    OpenRouterAPIError,
+    Pipe,
+    ResponsesBody,
+)
 
 
 def test_wrap_safe_event_emitter_returns_none_for_missing():
@@ -177,6 +181,39 @@ def test_apply_task_reasoning_preferences_include_only(monkeypatch):
         assert body.reasoning is None
         assert body.include_reasoning is False
         pipe._apply_task_reasoning_preferences(body, "low")
+        assert body.include_reasoning is True
+    finally:
+        pipe.shutdown()
+
+
+def test_retry_without_reasoning_handles_thinking_error():
+    pipe = Pipe()
+    try:
+        body = ResponsesBody(model="fake", input=[])
+        body.include_reasoning = True
+        err = OpenRouterAPIError(
+            status=400,
+            reason="Bad Request",
+            openrouter_message="Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.",
+        )
+        assert pipe._should_retry_without_reasoning(err, body) is True
+        assert body.include_reasoning is False
+        assert body.reasoning is None
+    finally:
+        pipe.shutdown()
+
+
+def test_retry_without_reasoning_ignores_unrelated_errors():
+    pipe = Pipe()
+    try:
+        body = ResponsesBody(model="fake", input=[])
+        body.include_reasoning = True
+        err = OpenRouterAPIError(
+            status=400,
+            reason="Bad Request",
+            openrouter_message="Some other provider issue",
+        )
+        assert pipe._should_retry_without_reasoning(err, body) is False
         assert body.include_reasoning is True
     finally:
         pipe.shutdown()

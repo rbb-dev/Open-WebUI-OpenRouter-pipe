@@ -68,6 +68,25 @@ The request to OpenRouter took too long to complete.
 {{#if support_email}}
 - Contact support: {support_email}
 {{/if}}
+
+---
+
+## provider-specific recovery (Gemini thinking errors)
+
+Certain providers reject `include_reasoning` when their own “thinking” feature is disabled. Google’s Gemini stack, for example, returns:
+
+```
+Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.
+```
+
+Without special handling this manifested as a 400 error card. Starting in `open_webui_openrouter_pipe.py:6956-7002` the pipe now:
+
+1. Detects that specific error text (`Thinking_config.include_thoughts…`) via `_should_retry_without_reasoning`.
+2. Automatically removes `include_reasoning`/`reasoning` from the outgoing payload.
+3. Retries the request exactly once, keeping the original stream/non-stream mode.
+4. Falls back to the normal error template only if the retry also fails.
+
+This makes Gemini usable even when `ENABLE_REASONING` is set globally. Operators still see the warning in DEBUG logs (`Retrying without reasoning…`) so they can adjust valves or per-model settings later, but end users get the final answer instead of a provider error.
 ```
 
 **Example rendered output:**
