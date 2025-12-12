@@ -15,3 +15,4 @@ work.txt
 error.log
 open-webui.log
 coverage_annotate/
+update_usage_db.py

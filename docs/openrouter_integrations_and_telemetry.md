@@ -101,3 +101,23 @@ This note collects the features that are unique to the OpenRouter variant of the
 * How to override:
   * Set the valve to `False` if you want full manual control per request (e.g., you supply `transforms` yourself or use a custom trimming strategy).
   * Provide `transforms` inside the request body to bypass the auto-injected array for a single call.
+
+---
+
+## 11. opt-in cost snapshots (Redis export)
+
+* Source: `_maybe_dump_costs_snapshot` inside `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py`.
+* Valves:
+  * `COSTS_REDIS_DUMP` – master toggle (defaults to `False` so nothing ships unless you ask for it).
+  * `COSTS_REDIS_TTL_SECONDS` – per-key expiry (defaults to 15 minutes). Even if an admin enables the feature accidentally, the keys evaporate quickly and never accumulate in Redis indefinitely.
+* Behavior:
+  * After every successful model turn we capture the Responses usage payload (`input_tokens`, `output_tokens`, reasoning counts, USD cost, etc.) plus the Open WebUI model id, user GUID/email/name, and a timestamp.
+  * Each record is written as a plain JSON string to a namespaced key: `costs:<pipe-id>:<user-id>:<uuid>:<epoch>`. The `<pipe-id>` prefix prevents collisions when multiple OpenRouter pipes run on the same Redis instance.
+  * The feature is entirely passive—no additional prompts are sent and Redis writes happen only when the main cache client is already configured (`_redis_enabled=True`). If Redis is unavailable or any field is missing, we log a debug “Skipping cost snapshot …” and continue without impacting the user-facing response.
+* Example use cases:
+  * Feed a downstream billing or chargeback script (`redis-cli ... MATCH "costs:openrouter_responses_api_pipe:*"`).
+  * Trigger ad-hoc alerts when a single user suddenly spikes usage (subscribe to Redis keyspace events or poll keys).
+  * Export short-lived telemetry into another system (e.g., `redis-cli --raw KEYS 'costs:*' | xargs redis-cli GET …`) without touching the main SQL database.
+* Safety notes:
+  * No personally sensitive data beyond what Open WebUI already stores (email/name) is added.
+  * TTL enforcement plus the explicit valve flag mean you can keep the feature disabled in production and only flip it on temporarily for investigations, knowing that the leftovers age out automatically.

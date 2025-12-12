@@ -40,7 +40,6 @@ _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
 
-
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """Return the Open WebUI function id inferred from the loader's module name."""
     module_name = globals().get("__name__", "")
@@ -3579,6 +3578,16 @@ class Pipe:
             le=50,
             description="Disable Redis caching after this many consecutive flush failures (falls back to direct DB writes).",
         )
+        COSTS_REDIS_DUMP: bool = Field(
+            default=False,
+            description="When True, push per-request usage snapshots into Redis for downstream cost analytics.",
+        )
+        COSTS_REDIS_TTL_SECONDS: int = Field(
+            default=900,
+            ge=60,
+            le=3600,
+            description="TTL (seconds) applied to cost analytics Redis snapshots.",
+        )
         ARTIFACT_CLEANUP_DAYS: int = Field(
             default=90,
             ge=1,
@@ -6234,6 +6243,77 @@ class Pipe:
             except Exception as exc:
                 self.logger.error(f"Failed to emit status: {exc}")
 
+    async def _maybe_dump_costs_snapshot(
+        self,
+        valves: "Pipe.Valves",
+        *,
+        user_id: str,
+        model_id: Optional[str],
+        usage: dict[str, Any] | None,
+        user_obj: Optional[Any] = None,
+        pipe_id: Optional[str] = None,
+    ) -> None:
+        """Push usage snapshots to Redis when enabled, namespaced per pipe."""
+        if not valves.COSTS_REDIS_DUMP:
+            return
+        if not (self._redis_enabled and self._redis_client):
+            return
+        if not user_id:
+            return
+
+        def _user_field(obj: Any, field: str) -> Optional[str]:
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                value = obj.get(field)
+            else:
+                value = getattr(obj, field, None)
+            return str(value) if value is not None else None
+
+        email = _user_field(user_obj, "email")
+        name = _user_field(user_obj, "name")
+        snapshot_usage = usage if isinstance(usage, dict) else {}
+        model_value = (model_id or "").strip() if isinstance(model_id, str) else (model_id or "")
+
+        missing_fields: list[str] = []
+        if not user_id:
+            missing_fields.append("guid")
+        if not email:
+            missing_fields.append("email")
+        if not name:
+            missing_fields.append("name")
+        if not model_value:
+            missing_fields.append("model")
+        if not snapshot_usage:
+            missing_fields.append("usage")
+        if missing_fields:
+            self.logger.debug(
+                "Skipping cost snapshot due to missing fields: %s",
+                ", ".join(sorted(missing_fields)),
+            )
+            return
+
+        ttl = valves.COSTS_REDIS_TTL_SECONDS
+        ts = int(time.time())
+        raw_pipe_id = pipe_id or getattr(self, "id", None)
+        if not raw_pipe_id:
+            self.logger.debug("Skipping cost snapshot due to missing pipe identifier.")
+            return
+        pipe_namespace = _sanitize_table_fragment(raw_pipe_id)
+        key = f"costs:{pipe_namespace}:{user_id}:{uuid.uuid4()}:{ts}"
+        payload = {
+            "guid": user_id,
+            "email": str(email),
+            "name": str(name),
+            "model": model_value,
+            "usage": snapshot_usage,
+            "ts": ts,
+        }
+        try:
+            await self._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)
+        except Exception as exc:  # pragma: no cover - Redis failures logged, not fatal
+            self.logger.debug("Cost snapshot write failed for user=%s: %s", user_id, exc)
+
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
         self._maybe_start_startup_checks()
@@ -6825,6 +6905,7 @@ class Pipe:
                     user_id=user_id,
                     request_context=__request__,
                     user_obj=user_model,
+                    pipe_identifier=pipe_identifier,
                 )
             # Return final text (non-streaming)
             return await self._run_nonstreaming_loop(
@@ -6837,6 +6918,7 @@ class Pipe:
                 user_id=user_id,
                 request_context=__request__,
                 user_obj=user_model,
+                pipe_identifier=pipe_identifier,
             )
         except OpenRouterAPIError as exc:
             await self._report_openrouter_error(
@@ -6947,6 +7029,7 @@ class Pipe:
         *,
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
+        pipe_identifier: Optional[str] = None,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -7645,7 +7728,9 @@ class Pipe:
                     raise ValueError("No final response received from OpenAI Responses API.")
 
                 # Extract usage information from OpenAI response and pass-through to Open WebUI
-                usage = final_response.get("usage", {})
+                raw_usage = final_response.get("usage") or {}
+                usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+
                 if usage:
                     usage["turn_count"] = 1
                     usage["function_call_count"] = sum(
@@ -7658,6 +7743,21 @@ class Pipe:
                         usage=total_usage,
                         done=False,
                     )
+
+                snapshot_model_id = (
+                    (metadata.get("model") or {}).get("id")
+                    if isinstance(metadata, dict)
+                    else None
+                ) or body.model
+
+                await self._maybe_dump_costs_snapshot(
+                    valves,
+                    user_id=user_id or "",
+                    model_id=snapshot_model_id,
+                    usage=usage if usage else {},
+                    user_obj=user_obj,
+                    pipe_id=pipe_identifier,
+                )
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
                 call_items = []
@@ -7857,6 +7957,7 @@ class Pipe:
         *,
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
+        pipe_identifier: Optional[str] = None,
     ) -> str:
         """Unified implementation: reuse the streaming path.
 
@@ -7888,6 +7989,7 @@ class Pipe:
             user_id=user_id,
             request_context=request_context,
             user_obj=user_obj,
+            pipe_identifier=pipe_identifier,
         )
 
     # 4.4 Task Model Handling
