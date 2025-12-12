@@ -119,7 +119,7 @@ Operational guidance:
 ## 9. Failure Surfacing & UX Backpressure
 
 - Multiple breakers exist: user-level (`_breaker_allows`), tool-type (`_tool_type_allows`), and DB-level (`_db_breaker_allows`). When they trip, the pipe emits status messages ("Skipping ... due to repeated failures", "DB ops skipped due to repeated errors") so operators and users know why a request degraded.
-- Breakers are self-healing: each one tracks failures in a sliding 60-second window with a threshold of five events. Successful operations or the passage of time drains the deque, which automatically re-enables the affected path without operator intervention.
+- Breakers are self-healing: each one tracks failures using the valve-defined window (`BREAKER_WINDOW_SECONDS`) and threshold (`BREAKER_MAX_FAILURES`, defaults 60s/5). Successful operations or the passage of time drains the deque, which automatically re-enables the affected path without operator intervention.
 - Request admission control is explicit: `_QUEUE_MAXSIZE` is capped at 500, and a global semaphore enforces `MAX_CONCURRENT_REQUESTS`. If the queue fills the user receives a prompt 503 with a visible status rather than a timeout.
 - Streaming SSE worker pool reorders events by sequence and batches text updates, but still guarantees delivery of reasoning deltas, citations, and final usage stats--even when the downstream client disconnects mid-stream we still flush pending artifacts (`_flush_pending`) before tearing down the job.
 

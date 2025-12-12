@@ -3559,6 +3559,29 @@ class Pipe:
             le=50,
             description="Per-request concurrency limit for tool execution workers.",
         )
+        BREAKER_MAX_FAILURES: int = Field(
+            default=5,
+            ge=1,
+            le=50,
+            description=(
+                "Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. "
+                "Set higher to reduce trip frequency in noisy environments."
+            ),
+        )
+        BREAKER_WINDOW_SECONDS: int = Field(
+            default=60,
+            ge=5,
+            le=900,
+            description="Sliding window length (in seconds) used when counting breaker failures.",
+        )
+        BREAKER_HISTORY_SIZE: int = Field(
+            default=5,
+            ge=1,
+            le=200,
+            description=(
+                "Maximum failures remembered per user/tool breaker. Increase when using very high BREAKER_MAX_FAILURES so history is not truncated."
+            ),
+        )
         TOOL_BATCH_CAP: int = Field(
             default=4,
             ge=1,
@@ -3733,7 +3756,7 @@ class Pipe:
     _semaphore_limit: int = 0
     _tool_global_semaphore: asyncio.Semaphore | None = None
     _tool_global_limit: int = 0
-    _log_queue: asyncio.Queue[logging.LogRecord] | None = None  # Fix: async logging queue
+    _log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _log_worker_task: asyncio.Task | None = None
     _log_worker_lock: asyncio.Lock | None = None
     _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
@@ -3763,20 +3786,24 @@ class Pipe:
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
         self._lz4_warning_emitted = False
-        # Fix: breaker history bounded per user
-        self._breaker_records: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=5))
-        self._breaker_threshold = 5
-        self._breaker_window_seconds = 60
-        self._tool_breakers: dict[str, dict[str, deque[float]]] = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=5))
+        breaker_history_size = self.valves.BREAKER_HISTORY_SIZE
+        self._breaker_records: dict[str, deque[float]] = defaultdict(
+            lambda: deque(maxlen=breaker_history_size)
         )
-        self._db_breakers: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=5))
+        self._breaker_threshold = self.valves.BREAKER_MAX_FAILURES
+        self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
+        self._tool_breakers: dict[str, dict[str, deque[float]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=breaker_history_size))
+        )
+        self._db_breakers: dict[str, deque[float]] = defaultdict(
+            lambda: deque(maxlen=breaker_history_size)
+        )
         self._user_insert_param_names: tuple[str, ...] | None = None
         self._startup_task: asyncio.Task | None = None
         self._startup_checks_started = False
         self._startup_checks_pending = False
         self._startup_checks_complete = False
-        self._warmup_failed = False  # Fix: track warmup failures
+        self._warmup_failed = False
         self._redis_url = (os.getenv("REDIS_URL") or "").strip()
         self._websocket_manager = (os.getenv("WEBSOCKET_MANAGER") or "").strip().lower()
         self._websocket_redis_url = (os.getenv("WEBSOCKET_REDIS_URL") or "").strip()
@@ -3858,7 +3885,7 @@ class Pipe:
         self._startup_task = loop.create_task(self._run_startup_checks(), name="openrouter-warmup")
 
     def _maybe_start_log_worker(self) -> None:
-        """Ensure the async logging queue + worker are started."""  # Fix: async logging
+        """Ensure the async logging queue + worker are started."""
         cls = type(self)
         if cls._log_queue is None:
             cls._log_queue = asyncio.Queue(maxsize=1000)
@@ -3928,7 +3955,7 @@ class Pipe:
             self._startup_checks_pending = False
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc)
-            self._warmup_failed = True  # Fix: track failures
+            self._warmup_failed = True
             self._startup_checks_complete = False
             self._startup_checks_pending = True
         finally: 
@@ -3961,7 +3988,7 @@ class Pipe:
                 async with session.get(
                     url,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),  # Fix: explicit ping timeout
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     resp.raise_for_status()
                     await resp.read()
@@ -4201,7 +4228,7 @@ class Pipe:
             interval_hours = self.valves.ARTIFACT_CLEANUP_INTERVAL_HOURS
             interval_seconds = interval_hours * 3600
             jitter = min(600.0, interval_seconds * 0.25)
-            await asyncio.sleep(interval_seconds + random.uniform(0, jitter))  # Fix: configurable cadence
+            await asyncio.sleep(interval_seconds + random.uniform(0, jitter))
 
     async def _run_cleanup_once(self) -> None:
         if not (self._item_model and self._session_factory):
@@ -4334,7 +4361,7 @@ class Pipe:
 
     @classmethod
     async def _log_worker_loop(cls) -> None:
-        """Drain log records asynchronously to keep handlers non-blocking."""  # Fix: async logging
+        """Drain log records asynchronously to keep handlers non-blocking."""
         queue = cls._log_queue
         if queue is None:
             return
@@ -4720,7 +4747,7 @@ class Pipe:
         return tokens
 
     def _breaker_allows(self, user_id: str) -> bool:
-        """Simple per-user breaker: 5 failures per minute."""
+        """Per-user breaker governed by BREAKER_MAX_FAILURES and BREAKER_WINDOW_SECONDS."""
         if not user_id:
             return True
         window = self._breaker_records[user_id]
@@ -5180,7 +5207,7 @@ class Pipe:
                 if row.get("_persisted") and isinstance(row.get("id"), str)
             ]
             ulids = [ulid for ulid in ulids if ulid]
-            batch_size = self.valves.DB_BATCH_SIZE  # Fix: configurable batching
+            batch_size = self.valves.DB_BATCH_SIZE
             pending_rows = [row for row in rows if not row.get("_persisted")]
             if not pending_rows:
                 if ulids:
@@ -5256,7 +5283,7 @@ class Pipe:
                 context.event_emitter if context else None,
                 "DB ops skipped due to repeated errors.",
                 level="warning",
-            )  # Fix: notify on DB breaker
+            )
             self._record_failure(user_id)
             return []
 
@@ -5381,7 +5408,7 @@ class Pipe:
                 context.event_emitter if context else None,
                 "DB ops skipped due to repeated errors.",
                 level="warning",
-            )  # Fix: notify on DB breaker
+            )
             self._record_failure(user_id)
             return {}
 
@@ -6413,7 +6440,7 @@ class Pipe:
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
         safe_event_emitter = self._wrap_safe_event_emitter(__event_emitter__)
 
-        if not self._breaker_allows(user_id):  # Fix: user-scoped breaker
+        if not self._breaker_allows(user_id):
             message = "Temporarily disabled due to repeated errors. Please retry later."
             if safe_event_emitter:
                 await self._emit_notification(safe_event_emitter, message, level="warning")
@@ -8576,7 +8603,7 @@ class Pipe:
                 )
                 continue
             tool_type = (tool_cfg.get("type") or "function").lower()
-            if not self._tool_type_allows(context.user_id, tool_type):  # Fix: breaker before enqueue
+            if not self._tool_type_allows(context.user_id, tool_type):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
                 outputs.append(
                     self._build_tool_output(
@@ -9344,7 +9371,7 @@ class SessionLogger:
 
         async_handler = logging.Handler()
 
-        def _emit(record: logging.LogRecord) -> None:  # Fix: enqueue log record
+        def _emit(record: logging.LogRecord) -> None:
             cls._enqueue(record)
 
         async_handler.emit = _emit  # type: ignore[assignment]

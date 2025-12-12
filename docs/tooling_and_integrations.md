@@ -46,9 +46,9 @@ Workers call `_execute_tool_batch`, which:
 
 | Breaker | Trigger | Recovery |
 | --- | --- | --- |
-| Per-user breaker (`_breaker_records`) | 5 failures within 60 seconds (timeouts, exceptions, rejected admissions). | Automatically clears when enough time passes or successes are recorded. Emits a status message so the user knows the request is throttled. |
-| Tool-type breaker (`_tool_breakers[user][tool_name]`) | Same threshold but scoped to a tool. Prevents a single buggy tool from taking the whole chat down. | Status message explains which tool was disabled. The loop continues with other tools. |
-| DB breaker (`_db_breakers[user]`) | Persistence failures (DB offline, migrations missing). | Temporarily skips persistence and emits "DB ops skipped due to repeated errors" so operators investigate. |
+| Per-user breaker (`_breaker_records`) | `BREAKER_MAX_FAILURES` hits inside `BREAKER_WINDOW_SECONDS` (defaults: 5 / 60s). History depth follows `BREAKER_HISTORY_SIZE`. | Automatically clears when enough time passes or successes are recorded. Emits a status message so the user knows the request is throttled. |
+| Tool-type breaker (`_tool_breakers[user][tool_name]`) | Same valves but scoped per tool type, so one flaky tool can’t take down the chat. | Status message explains which tool was disabled. The loop continues with other tools. |
+| DB breaker (`_db_breakers[user]`) | Same limits applied to persistence failures (DB offline, migrations missing). | Temporarily skips persistence and emits "DB ops skipped due to repeated errors" so operators investigate. |
 
 When a breaker fires, tool events are still surfaced to the UI. Users see which tool failed, why it was skipped, and whether the system will retry later.
 

@@ -83,6 +83,9 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `TOOL_TIMEOUT_SECONDS` | 60 | 1--600 | Per-tool timeout. |
 | `TOOL_BATCH_TIMEOUT_SECONDS` | 120 | ≥1 | Timeout for an entire batch. |
 | `TOOL_IDLE_TIMEOUT_SECONDS` | None | ≥1 or null | Cancels idle tool queues if set. |
+| `BREAKER_MAX_FAILURES` | 5 | 1--50 | Failures allowed inside the breaker window before requests/tools/DB work are skipped. Applies to user, tool, and DB breakers. |
+| `BREAKER_WINDOW_SECONDS` | 60 | 5--900 | Sliding window length used when counting breaker failures. Increase for slow tools, shrink for fast failovers. |
+| `BREAKER_HISTORY_SIZE` | 5 | 1--200 | Max failures remembered per breaker deque. Set ≥ `BREAKER_MAX_FAILURES` for predictable behavior. |
 
 ### 1.6 redis, persistence, maintenance
 

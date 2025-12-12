@@ -46,8 +46,8 @@ See `docs/tooling_and_integrations.md` for tool-specific breakers. This section 
 
 | Breaker | Scope | Threshold | Action |
 | --- | --- | --- | --- |
-| `_breaker_records` | per-user request-level | 5 failures / 60s | Stops admitting new jobs for that user until the window clears. Emits a `chat:status` warning. |
-| `_db_breakers` | per-user persistence | 5 DB errors / 60s | Skips DB work for the affected user (falls back to ephemeral mode) until the breaker heals. |
+| `_breaker_records` | per-user request-level | `BREAKER_MAX_FAILURES` hits within `BREAKER_WINDOW_SECONDS` (defaults: 5 / 60s) | Stops admitting new jobs for that user until the window clears. Emits a `chat:status` warning. |
+| `_db_breakers` | per-user persistence | Same valves (`BREAKER_MAX_FAILURES` / `BREAKER_WINDOW_SECONDS`) scoped to persistence failures | Skips DB work for the affected user (falls back to ephemeral mode) until the breaker heals. |
 | Redis pending queue warning | global | queue depth > `REDIS_PENDING_WARN_THRESHOLD` | Emits WARN logs so operators know flushers are behind. |
 
 Breakers automatically drain; no manual reset is required.

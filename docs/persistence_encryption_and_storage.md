@@ -85,7 +85,7 @@ Redis is optional but recommended for multi-worker deployments:
 * **Scheduled worker** -- `_artifact_cleanup_worker` wakes every `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter), deletes rows older than `ARTIFACT_CLEANUP_DAYS`, and logs the number of rows removed. Runs inside the DB executor.
 * **Reasoning retention** -- `PERSIST_REASONING_TOKENS` decides whether reasoning artifacts are deleted immediately, after the next assistant reply, or never (until manual cleanup).
 * **Tool retention** -- `TOOL_OUTPUT_RETENTION_TURNS` limits how many turns worth of tool results are replayed in full; older outputs are pruned inline via `_prune_tool_output`.
-* **Self-healing breakers** -- `_db_breakers` watch for repeated DB errors per user. After five failures in 60 seconds, persistence is skipped (a status message warns the user). Once a write succeeds, the breaker drains automatically and normal persistence resumes.
+* **Self-healing breakers** -- `_db_breakers` watch for repeated DB errors per user. After `BREAKER_MAX_FAILURES` hits inside the `BREAKER_WINDOW_SECONDS` window (defaults: 5 / 60s), persistence is skipped (a status message warns the user). Once a write succeeds, the breaker drains automatically and normal persistence resumes.
 
 ---
 
@@ -111,7 +111,7 @@ Redis is optional but recommended for multi-worker deployments:
 
 | Scenario | Behavior | Operator action |
 | --- | --- | --- |
-| DB unreachable | `_db_persist_direct` raises → DB breaker trips → persistence disabled temporarily with user-visible warning. | Fix DB connectivity, then the breaker self-heals after a minute of success. |
+| DB unreachable | `_db_persist_direct` raises → DB breaker trips → persistence disabled temporarily with user-visible warning. | Fix DB connectivity, then the breaker self-heals after one valve-defined window of successful operations. |
 | Redis offline mid-run | `_redis_enqueue_rows` logs a warning and falls back to direct DB writes. A later success automatically re-enables the cache. | Inspect Redis logs; no manual recovery needed. |
 | Encryption misconfigured | If `ARTIFACT_ENCRYPTION_KEY` is set but `WEBUI_SECRET_KEY` is missing, the pipe warns and treats the encrypted valve as plaintext. Artifacts remain unencrypted until the env var is provided. | Set `WEBUI_SECRET_KEY`, restart the pipe, and consider rotating the artifact key since earlier rows were stored plaintext. |
 | Key rotation | Changing `ARTIFACT_ENCRYPTION_KEY` creates a new table. Existing chats cannot read the old ciphertext (intentional defense-in-depth). | Communicate rotations ahead of time; export/import artifacts if long-term retention is required. |
