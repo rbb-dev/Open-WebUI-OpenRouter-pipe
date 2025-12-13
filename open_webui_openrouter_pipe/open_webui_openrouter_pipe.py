@@ -3941,8 +3941,7 @@ class Pipe:
             if flag == _PAYLOAD_FLAG_LZ4:
                 body = self._lz4_decompress(body)
             elif flag != _PAYLOAD_FLAG_PLAIN:
-                # Backward compatibility: old ciphertexts lack the header and are just JSON.
-                body = payload_bytes
+                raise ValueError(f"Invalid artifact payload flag: {flag}")
         try:
             return json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

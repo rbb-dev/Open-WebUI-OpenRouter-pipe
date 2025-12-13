@@ -297,3 +297,10 @@ def test_strictify_schema_helpers():
         {"type": "function", "name": "a", "data": 2},
     ])
     assert deduped == [{"type": "function", "name": "a", "data": 2}]
+
+
+def test_decode_payload_bytes_rejects_headerless_ciphertext():
+    pipe = ow.Pipe()
+    legacy_bytes = b'{"type":"reasoning"}'
+    with pytest.raises(ValueError, match="Invalid artifact payload flag"):
+        pipe._decode_payload_bytes(legacy_bytes)
