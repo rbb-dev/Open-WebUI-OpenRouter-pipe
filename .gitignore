@@ -13,6 +13,7 @@ PLAN1.md
 AGENTS.md
 work.txt
 error.log
+error.json
 open-webui.log
 coverage_annotate/
 update_usage_db.py
