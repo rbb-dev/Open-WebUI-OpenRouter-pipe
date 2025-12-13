@@ -28,7 +28,6 @@ import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_module
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     ModelFamily,
     Pipe,
-    ResponsesBody,
     StatusMessages,
 )
 
@@ -46,8 +45,7 @@ async def _transform_single_block(
             "content": [block],
         }
     ]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe_instance,
+    transformed = await pipe_instance.transform_messages_to_input(
         messages,
         __request__=mock_request,
         user_obj=mock_user,
@@ -659,8 +657,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await ResponsesBody.transform_messages_to_input(
-            pipe_instance,
+        transformed = await pipe_instance.transform_messages_to_input(
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -714,8 +711,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await ResponsesBody.transform_messages_to_input(
-            pipe_instance,
+        transformed = await pipe_instance.transform_messages_to_input(
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -983,8 +979,7 @@ class TestConversationRebuild:
 
         monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
 
-        transformed = await ResponsesBody.transform_messages_to_input(
-            pipe_instance,
+        transformed = await pipe_instance.transform_messages_to_input(
             messages,
             chat_id="chat-1",
             openwebui_model_id="demo-model",

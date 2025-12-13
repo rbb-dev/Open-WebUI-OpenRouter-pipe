@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
 
 
 async def _transform_single_block(
@@ -17,8 +17,7 @@ async def _transform_single_block(
     mock_user,
 ):
     messages = [{"role": "user", "content": [block]}]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe_instance,
+    transformed = await pipe_instance.transform_messages_to_input(
         messages,
         __request__=mock_request,
         user_obj=mock_user,

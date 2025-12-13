@@ -1,0 +1,16 @@
+{
+  "include": [
+    "open_webui_openrouter_pipe",
+    "tests",
+  ],
+  "exclude": [
+    "backups",
+    ".external",
+    ".git",
+    ".venv",
+    ".pytest_cache",
+    "**/__pycache__",
+    "coverage_annotate",
+    "update_usage_db.py"
+  ]
+}
