@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
+from typing import Any, List
 
 
 @pytest.fixture
@@ -18,16 +19,17 @@ def mock_pipe():
     return pipe
 
 
+class _Emitter:
+    def __init__(self) -> None:
+        self.events: List[dict[str, Any]] = []
+
+    async def __call__(self, event: dict[str, Any]) -> None:
+        self.events.append(event)
+
+
 @pytest.fixture
 def mock_event_emitter():
-    """Create a mock event emitter that captures emitted events."""
-    emitted_events = []
-
-    async def emitter(event):
-        emitted_events.append(event)
-
-    emitter.events = emitted_events
-    return emitter
+    return _Emitter()
 
 
 class TestEmitTemplatedError:

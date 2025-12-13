@@ -165,6 +165,7 @@ class TestImageTransformations:
         pipe_instance._upload_to_owui_storage.assert_awaited_once()
         pipe_instance._inline_internal_file_url.assert_awaited_once()
         inline_args = pipe_instance._inline_internal_file_url.await_args
+        assert inline_args is not None
         assert inline_args.args[0] == "/files/internal/cat123"
 
 

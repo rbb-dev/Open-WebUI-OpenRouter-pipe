@@ -3,6 +3,8 @@
     "open_webui_openrouter_pipe",
     "tests",
   ],
+  "venvPath": ".",
+  "venv": ".venv",
   "exclude": [
     "backups",
     ".external",
@@ -12,5 +14,9 @@
     "**/__pycache__",
     "coverage_annotate",
     "update_usage_db.py"
+  ],
+  "extraPaths": [
+    ".",
+    ".external/open-webui/backend"
   ]
 }

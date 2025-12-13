@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -81,7 +81,7 @@ async def test_registry_refresh_populates_models_and_specs():
             }
         ]
     }
-    session = DummySession(DummyResponse(payload))
+    session = cast(Any, DummySession(DummyResponse(payload)))
     await ow.OpenRouterModelRegistry.ensure_loaded(
         session,
         base_url="https://api",
@@ -113,7 +113,7 @@ async def test_registry_cache_prevents_refresh(monkeypatch):
         called = True
 
     monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", fake_refresh)
-    session = DummySession(DummyResponse({"data": []}))
+    session = cast(Any, DummySession(DummyResponse({"data": []})))
     await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=60, logger=logging.getLogger("test"))
     assert called is False
 
@@ -129,14 +129,14 @@ async def test_registry_refresh_failure_uses_cache(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", boom)
-    session = DummySession(DummyResponse({"data": []}))
+    session = cast(Any, DummySession(DummyResponse({"data": []})))
     await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=1, logger=logging.getLogger("test"))
     assert reg._models
 
 
 @pytest.mark.asyncio
 async def test_registry_raises_when_key_missing():
-    session = DummySession(DummyResponse({"data": []}))
+    session = cast(Any, DummySession(DummyResponse({"data": []})))
     with pytest.raises(ValueError):
         await ow.OpenRouterModelRegistry.ensure_loaded(session, base_url="https://api", api_key="", cache_seconds=60, logger=logging.getLogger("test"))
 
@@ -149,7 +149,7 @@ async def test_registry_refresh_error_no_cache(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", boom)
-    session = DummySession(DummyResponse({"data": []}))
+    session = cast(Any, DummySession(DummyResponse({"data": []})))
     with pytest.raises(RuntimeError):
         await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=1, logger=logging.getLogger("test"))
 

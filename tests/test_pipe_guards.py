@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import types
-from typing import Any
+from typing import Any, cast
+
+import pytest
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     OpenRouterAPIError,
@@ -20,16 +22,18 @@ def test_wrap_safe_event_emitter_returns_none_for_missing():
         pipe.shutdown()
 
 
-def test_wrap_safe_event_emitter_swallows_transport_errors(caplog):
+@pytest.mark.asyncio
+async def test_wrap_safe_event_emitter_swallows_transport_errors(caplog):
     pipe = Pipe()
 
     async def failing_emitter(_event):
         raise RuntimeError("boom")
 
     wrapped = pipe._wrap_safe_event_emitter(failing_emitter)
+    assert wrapped is not None
 
     with caplog.at_level(logging.DEBUG):
-        asyncio.run(wrapped({"type": "status"}))
+        await wrapped({"type": "status"})
 
     try:
         assert any("Event emitter failure" in message for message in caplog.messages)
@@ -46,21 +50,22 @@ def test_resolve_pipe_identifier_returns_class_id():
         pipe.shutdown()
 
 
-def test_pipe_handles_job_failure(monkeypatch):
-    async def runner():
-        pipe = Pipe()
+@pytest.mark.asyncio
+async def test_pipe_handles_job_failure(monkeypatch):
+    pipe = Pipe()
 
-        events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
-        async def emitter(event):
-            events.append(event)
+    async def emitter(event: dict[str, Any]) -> None:
+        events.append(event)
 
-        def fake_enqueue(self, job):
-            job.future.set_exception(RuntimeError("boom"))
-            return True
+    def fake_enqueue(self, job):
+        job.future.set_exception(RuntimeError("boom"))
+        return True
 
-        monkeypatch.setattr(Pipe, "_enqueue_job", fake_enqueue)
+    monkeypatch.setattr(Pipe, "_enqueue_job", fake_enqueue)
 
+    try:
         result = await pipe.pipe(
             body={},
             __user__={"valves": {}},
@@ -73,9 +78,8 @@ def test_pipe_handles_job_failure(monkeypatch):
 
         assert result == "Request failed. Please retry."
         assert events and events[0]["type"] == "chat:completion"
+    finally:
         await pipe.close()
-
-    asyncio.run(runner())
 
 
 def test_merge_valves_no_overrides_returns_global():
@@ -220,208 +224,200 @@ def test_retry_without_reasoning_ignores_unrelated_errors():
         pipe.shutdown()
 
 
-def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
-    async def runner():
-        pipe = Pipe()
-        pipe.valves = pipe.Valves(TASK_MODEL_REASONING_EFFORT="high")
+@pytest.mark.asyncio
+async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(TASK_MODEL_REASONING_EFFORT="high")
 
-        async def fake_ensure_loaded(*_, **__):
-            return None
+    async def fake_ensure_loaded(*_, **__):
+        return None
 
-        def fake_list_models(cls):
-            return [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
+    def fake_list_models(cls):
+        return [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
 
-        def fake_supported(cls, model_id):
-            return frozenset({"reasoning"})
+    def fake_supported(cls, model_id):
+        return frozenset({"reasoning"})
 
-        captured: dict = {}
+    captured: dict[str, Any] = {}
 
-        async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
-            captured["body"] = body
-            captured["task_context"] = task_context
-            return "ok"
+    async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
+        captured["body"] = body
+        captured["task_context"] = task_context
+        return "ok"
 
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.ensure_loaded",
-            fake_ensure_loaded,
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.ensure_loaded",
+        fake_ensure_loaded,
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.list_models",
+        classmethod(fake_list_models),
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+    monkeypatch.setattr(
+        Pipe,
+        "_run_task_model_request",
+        fake_task_request,
+    )
+
+    try:
+        body = {"model": "fake.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "fake.model"}}
+        available_models = [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
+        allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
+        allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+        openwebui_model_id = metadata["model"]["id"]
+        pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
+        result = await pipe._process_transformed_request(
+            body,
+            __user__={"id": "u1", "valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=metadata,
+            __tools__=None,
+            __task__={"type": "title"},
+            __task_body__=None,
+            valves=pipe.valves,
+            session=cast(Any, object()),
+            openwebui_model_id=openwebui_model_id,
+            pipe_identifier=pipe_identifier,
+            pipe_identifier_for_artifacts=pipe_identifier,
+            allowed_norm_ids=allowed_norm_ids,
+            features={},
         )
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.list_models",
-            classmethod(fake_list_models),
+        assert result == "ok"
+        task_body = captured["body"]
+        assert task_body["stream"] is True
+        assert task_body.get("reasoning", {}).get("effort") == "high"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(TASK_MODEL_REASONING_EFFORT="high")
+
+    async def fake_ensure_loaded(*_, **__):
+        return None
+
+    def fake_list_models(cls):
+        return [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
+
+    def fake_supported(cls, model_id):
+        return frozenset({"reasoning"})
+
+    captured: dict[str, Any] = {}
+
+    async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
+        captured["body"] = body
+        return "ok"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.ensure_loaded",
+        fake_ensure_loaded,
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.list_models",
+        classmethod(fake_list_models),
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+    monkeypatch.setattr(
+        Pipe,
+        "_run_task_model_request",
+        fake_task_request,
+    )
+
+    try:
+        body = {"model": "unlisted.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "unlisted.model"}}
+        available_models = [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
+        allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
+        allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+        openwebui_model_id = metadata["model"]["id"]
+        pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
+        result = await pipe._process_transformed_request(
+            body,
+            __user__={"id": "u1", "valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=metadata,
+            __tools__=None,
+            __task__={"type": "title"},
+            __task_body__=None,
+            valves=pipe.valves,
+            session=cast(Any, object()),
+            openwebui_model_id=openwebui_model_id,
+            pipe_identifier=pipe_identifier,
+            pipe_identifier_for_artifacts=pipe_identifier,
+            allowed_norm_ids=allowed_norm_ids,
+            features={},
         )
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
-            classmethod(fake_supported),
+        assert result == "ok"
+        task_body = captured["body"]
+        assert task_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
+        assert task_body["stream"] is True
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_task_models_dump_costs_when_usage_available(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(COSTS_REDIS_DUMP=True)
+    captured: dict[str, Any] = {}
+
+    async def fake_send(self, session, request_params, api_key, base_url):
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "auto title"}],
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        }
+
+    async def fake_dump(self, valves, *, user_id, model_id, usage, user_obj, pipe_id):
+        captured["user_id"] = user_id
+        captured["model_id"] = model_id
+        captured["usage"] = usage
+        captured["pipe_id"] = pipe_id
+
+    monkeypatch.setattr(
+        Pipe,
+        "send_openai_responses_nonstreaming_request",
+        fake_send,
+    )
+    monkeypatch.setattr(
+        Pipe,
+        "_maybe_dump_costs_snapshot",
+        fake_dump,
+    )
+
+    try:
+        result = await pipe._run_task_model_request(
+            {"model": "openai.gpt-mini"},
+            pipe.valves,
+            session=cast(Any, object()),
+            task_context={"type": "title"},
+            user_id="u123",
+            user_obj={"email": "user@example.com", "name": "User"},
+            pipe_id="openrouter_responses_api_pipe",
+            snapshot_model_id="openrouter_responses_api_pipe.openai.gpt-mini",
         )
-        monkeypatch.setattr(
-            Pipe,
-            "_run_task_model_request",
-            fake_task_request,
-        )
-
-        try:
-            body = {"model": "fake.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-            metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "fake.model"}}
-            available_models = [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
-            allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
-            allowed_norm_ids = {m["norm_id"] for m in allowed_models}
-            openwebui_model_id = metadata["model"]["id"]
-            pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
-            result = await pipe._process_transformed_request(
-                body,
-                __user__={"id": "u1", "valves": {}},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__=metadata,
-                __tools__=None,
-                __task__={"type": "title"},
-                __task_body__=None,
-                valves=pipe.valves,
-                session=object(),
-                openwebui_model_id=openwebui_model_id,
-                pipe_identifier=pipe_identifier,
-                pipe_identifier_for_artifacts=pipe_identifier,
-                allowed_norm_ids=allowed_norm_ids,
-                features={},
-            )
-            assert result == "ok"
-            task_body = captured["body"]
-            assert task_body["stream"] is True
-            assert task_body.get("reasoning", {}).get("effort") == "high"
-            await pipe.close()
-        finally:
-            pipe.shutdown()
-
-    asyncio.run(runner())
-
-
-def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
-    async def runner():
-        pipe = Pipe()
-        pipe.valves = pipe.Valves(TASK_MODEL_REASONING_EFFORT="high")
-
-        async def fake_ensure_loaded(*_, **__):
-            return None
-
-        def fake_list_models(cls):
-            return [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
-
-        def fake_supported(cls, model_id):
-            return frozenset({"reasoning"})
-
-        captured: dict = {}
-
-        async def fake_task_request(self, body, valves, *, session, task_context, **kwargs):
-            captured["body"] = body
-            return "ok"
-
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.ensure_loaded",
-            fake_ensure_loaded,
-        )
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.list_models",
-            classmethod(fake_list_models),
-        )
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
-            classmethod(fake_supported),
-        )
-        monkeypatch.setattr(
-            Pipe,
-            "_run_task_model_request",
-            fake_task_request,
-        )
-
-        try:
-            body = {"model": "unlisted.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-            metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "unlisted.model"}}
-            available_models = [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
-            allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
-            allowed_norm_ids = {m["norm_id"] for m in allowed_models}
-            openwebui_model_id = metadata["model"]["id"]
-            pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
-            result = await pipe._process_transformed_request(
-                body,
-                __user__={"id": "u1", "valves": {}},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__=metadata,
-                __tools__=None,
-                __task__={"type": "title"},
-                __task_body__=None,
-                valves=pipe.valves,
-                session=object(),
-                openwebui_model_id=openwebui_model_id,
-                pipe_identifier=pipe_identifier,
-                pipe_identifier_for_artifacts=pipe_identifier,
-                allowed_norm_ids=allowed_norm_ids,
-                features={},
-            )
-            assert result == "ok"
-            task_body = captured["body"]
-            assert task_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
-            assert task_body["stream"] is True
-            await pipe.close()
-        finally:
-            pipe.shutdown()
-
-    asyncio.run(runner())
-
-
-def test_task_models_dump_costs_when_usage_available(monkeypatch):
-    async def runner():
-        pipe = Pipe()
-        pipe.valves = pipe.Valves(COSTS_REDIS_DUMP=True)
-        captured: dict[str, Any] = {}
-
-        async def fake_send(self, session, request_params, api_key, base_url):
-            return {
-                "output": [
-                    {
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": "auto title"}],
-                    }
-                ],
-                "usage": {"input_tokens": 5, "output_tokens": 2},
-            }
-
-        async def fake_dump(self, valves, *, user_id, model_id, usage, user_obj, pipe_id):
-            captured["user_id"] = user_id
-            captured["model_id"] = model_id
-            captured["usage"] = usage
-            captured["pipe_id"] = pipe_id
-
-        monkeypatch.setattr(
-            Pipe,
-            "send_openai_responses_nonstreaming_request",
-            fake_send,
-        )
-        monkeypatch.setattr(
-            Pipe,
-            "_maybe_dump_costs_snapshot",
-            fake_dump,
-        )
-
-        try:
-            result = await pipe._run_task_model_request(
-                {"model": "openai.gpt-mini"},
-                pipe.valves,
-                session=object(),
-                task_context={"type": "title"},
-                user_id="u123",
-                user_obj={"email": "user@example.com", "name": "User"},
-                pipe_id="openrouter_responses_api_pipe",
-                snapshot_model_id="openrouter_responses_api_pipe.openai.gpt-mini",
-            )
-            assert result == "auto title"
-            assert captured["user_id"] == "u123"
-            assert captured["model_id"] == "openrouter_responses_api_pipe.openai.gpt-mini"
-            assert captured["pipe_id"] == "openrouter_responses_api_pipe"
-            assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
-        finally:
-            pipe.shutdown()
-
-    asyncio.run(runner())
+        assert result == "auto title"
+        assert captured["user_id"] == "u123"
+        assert captured["model_id"] == "openrouter_responses_api_pipe.openai.gpt-mini"
+        assert captured["pipe_id"] == "openrouter_responses_api_pipe"
+        assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
+    finally:
+        await pipe.close()

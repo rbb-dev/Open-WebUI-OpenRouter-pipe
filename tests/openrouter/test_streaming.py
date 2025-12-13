@@ -1,4 +1,5 @@
 import pytest
+from typing import Any, cast
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     ModelFamily,
@@ -45,7 +46,7 @@ async def test_completion_events_preserve_streamed_text(monkeypatch):
         emitter,
         metadata={"model": {"id": "sandbox"}},
         tools={},
-        session=object(),
+        session=cast(Any, object()),
         user_id="user-123",
     )
 
@@ -97,7 +98,7 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
         emitter,
         metadata={"model": {"id": "sandbox"}},
         tools={},
-        session=object(),
+        session=cast(Any, object()),
         user_id="user-123",
     )
 
@@ -227,7 +228,7 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
         emitter,
         metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
         tools={},
-        session=object(),
+        session=cast(Any, object()),
         user_id="user-123",
     )
 

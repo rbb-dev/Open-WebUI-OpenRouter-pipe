@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import sys
 import types
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pydantic
@@ -38,17 +39,17 @@ def _ensure_module(name: str) -> types.ModuleType:
 
 
 def _install_open_webui_stubs() -> None:
-    open_webui = _ensure_module("open_webui")
-    models_pkg = _ensure_module("open_webui.models")
+    open_webui = cast(Any, _ensure_module("open_webui"))
+    models_pkg = cast(Any, _ensure_module("open_webui.models"))
     models_pkg.__path__ = []  # mark as package
-    chats_mod = _ensure_module("open_webui.models.chats")
-    models_mod = _ensure_module("open_webui.models.models")
-    files_mod = _ensure_module("open_webui.models.files")
-    users_mod = _ensure_module("open_webui.models.users")
+    chats_mod = cast(Any, _ensure_module("open_webui.models.chats"))
+    models_mod = cast(Any, _ensure_module("open_webui.models.models"))
+    files_mod = cast(Any, _ensure_module("open_webui.models.files"))
+    users_mod = cast(Any, _ensure_module("open_webui.models.users"))
 
-    routers_pkg = _ensure_module("open_webui.routers")
+    routers_pkg = cast(Any, _ensure_module("open_webui.routers"))
     routers_pkg.__path__ = []  # mark as package
-    routers_files_mod = _ensure_module("open_webui.routers.files")
+    routers_files_mod = cast(Any, _ensure_module("open_webui.routers.files"))
 
     class _Chats:
         @staticmethod
@@ -101,7 +102,7 @@ def _install_open_webui_stubs() -> None:
     open_webui.models = models_pkg
     open_webui.routers = routers_pkg
 
-    config_mod = _ensure_module("open_webui.config")
+    config_mod = cast(Any, _ensure_module("open_webui.config"))
 
     class _ConfigValue:
         def __init__(self, value):
@@ -115,8 +116,8 @@ def _install_open_webui_stubs() -> None:
 
 
 def _install_pydantic_core_stub() -> None:
-    core_pkg = _ensure_module("pydantic_core")
-    core_schema_mod = _ensure_module("pydantic_core.core_schema")
+    core_pkg = cast(Any, _ensure_module("pydantic_core"))
+    core_schema_mod = cast(Any, _ensure_module("pydantic_core.core_schema"))
 
     def _builder(*args, **kwargs):
         # Return a valid Pydantic schema dictionary with required 'type' key
@@ -136,10 +137,10 @@ def _install_pydantic_core_stub() -> None:
 
 
 def _install_sqlalchemy_stub() -> None:
-    sa_pkg = _ensure_module("sqlalchemy")
-    exc_mod = _ensure_module("sqlalchemy.exc")
-    engine_mod = _ensure_module("sqlalchemy.engine")
-    orm_mod = _ensure_module("sqlalchemy.orm")
+    sa_pkg = cast(Any, _ensure_module("sqlalchemy"))
+    exc_mod = cast(Any, _ensure_module("sqlalchemy.exc"))
+    engine_mod = cast(Any, _ensure_module("sqlalchemy.engine"))
+    orm_mod = cast(Any, _ensure_module("sqlalchemy.orm"))
 
     class _SQLAlchemyError(Exception):
         ...
@@ -174,7 +175,7 @@ def _install_sqlalchemy_stub() -> None:
 
 
 def _install_tenacity_stub() -> None:
-    tenacity_mod = _ensure_module("tenacity")
+    tenacity_mod = cast(Any, _ensure_module("tenacity"))
 
     class _DummyAttempt:
         def __enter__(self):
@@ -260,7 +261,7 @@ def _install_fastapi_stub() -> None:
     """
     import sys
 
-    fastapi_pkg = _ensure_module("fastapi")
+    fastapi_pkg = cast(Any, _ensure_module("fastapi"))
 
     # Create minimal Request class
     class _Request:
@@ -313,20 +314,20 @@ def _install_fastapi_stub() -> None:
     fastapi_pkg.UploadFile = _UploadFile
 
     # Create fastapi.datastructures module
-    datastructures_mod = _ensure_module("fastapi.datastructures")
+    datastructures_mod = cast(Any, _ensure_module("fastapi.datastructures"))
     datastructures_mod.UploadFile = _UploadFile
 
     # Create fastapi.responses module
-    responses_mod = _ensure_module("fastapi.responses")
+    responses_mod = cast(Any, _ensure_module("fastapi.responses"))
     responses_mod.JSONResponse = _JSONResponse
 
     # Create fastapi.concurrency module
-    concurrency_mod = _ensure_module("fastapi.concurrency")
+    concurrency_mod = cast(Any, _ensure_module("fastapi.concurrency"))
     concurrency_mod.run_in_threadpool = _run_in_threadpool
 
     # Create starlette stubs
-    starlette_pkg = _ensure_module("starlette")
-    starlette_datastructures_mod = _ensure_module("starlette.datastructures")
+    starlette_pkg = cast(Any, _ensure_module("starlette"))
+    starlette_datastructures_mod = cast(Any, _ensure_module("starlette.datastructures"))
     starlette_datastructures_mod.Headers = _Headers
     starlette_pkg.datastructures = starlette_datastructures_mod
 

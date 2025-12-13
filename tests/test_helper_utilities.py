@@ -153,15 +153,18 @@ def test_build_tools_combines_registry_mcp_and_extras(monkeypatch):
 
 def test_normalize_persisted_items_and_classifier():
     call = _normalize_persisted_item({"type": "function_call", "name": "fetch", "arguments": {"foo": 1}})
+    assert call is not None
     assert call["call_id"]
     assert json.loads(call["arguments"])["foo"] == 1
 
     output = _normalize_persisted_item(
         {"type": "function_call_output", "call_id": "abc", "output": {"data": 42}}
     )
+    assert output is not None
     assert output["output"] == str({"data": 42})
 
     reasoning = _normalize_persisted_item({"type": "reasoning", "content": "step"})
+    assert reasoning is not None
     assert reasoning["content"][0]["text"] == "step"
 
     artifacts = {

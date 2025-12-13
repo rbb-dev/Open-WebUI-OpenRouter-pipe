@@ -15,6 +15,7 @@ def test_normalize_function_call_serializes_arguments_and_ids():
     }
 
     normalized = _normalize_persisted_item(item)
+    assert normalized is not None
 
     assert normalized["type"] == "function_call"
     assert json.loads(normalized["arguments"]) == {"city": "Lisbon", "units": "metric"}
@@ -27,6 +28,7 @@ def test_normalize_function_call_output_assigns_defaults():
     item = {"type": "function_call_output", "output": {"ok": True}}
 
     normalized = _normalize_persisted_item(item)
+    assert normalized is not None
 
     assert isinstance(normalized["output"], str)
     assert normalized["call_id"]
@@ -37,8 +39,11 @@ def test_normalize_reasoning_and_file_search_payloads():
     reasoning = _normalize_persisted_item(
         {"type": "reasoning", "content": "Chain", "summary": "Done"}
     )
+    assert reasoning is not None
     file_search = _normalize_persisted_item({"type": "file_search_call", "queries": "bad"})
+    assert file_search is not None
     web_search = _normalize_persisted_item({"type": "web_search_call", "action": "invalid"})
+    assert web_search is not None
 
     assert reasoning["content"] == [{"type": "reasoning_text", "text": "Chain"}]
     assert reasoning["summary"] == ["Done"]
