@@ -7,7 +7,6 @@ import pytest
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     ModelFamily,
     Pipe,
-    ResponsesBody,
     _classify_function_call_artifacts,
     _serialize_marker,
     generate_item_id,
@@ -27,8 +26,7 @@ def _run_transform(messages, artifacts):
         return {ulid: artifacts.get(ulid) for ulid in ulids if ulid in artifacts}
 
     return asyncio.run(
-        ResponsesBody.transform_messages_to_input(
-            pipe,
+        pipe.transform_messages_to_input(
             messages,
             chat_id="chat-1",
             openwebui_model_id="model-1",
@@ -162,8 +160,7 @@ async def test_transform_limits_user_images(monkeypatch):
             ],
         }
     ]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe,
+    transformed = await pipe.transform_messages_to_input(
         messages,
         model_id="vision-model",
         valves=valves,
@@ -193,8 +190,7 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
             "content": [{"type": "text", "text": "please edit"}],
         },
     ]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe,
+    transformed = await pipe.transform_messages_to_input(
         messages,
         model_id="vision-model",
         valves=pipe.valves,
@@ -228,8 +224,7 @@ async def test_transform_respects_user_turn_only_selection(monkeypatch):
             "content": [{"type": "text", "text": "touch up"}],
         },
     ]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe,
+    transformed = await pipe.transform_messages_to_input(
         messages,
         model_id="vision-model",
         valves=valves,
@@ -258,8 +253,7 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
             "content": [{"type": "image_url", "image_url": "/api/v1/files/img-a/content"}],
         }
     ]
-    transformed = await ResponsesBody.transform_messages_to_input(
-        pipe,
+    transformed = await pipe.transform_messages_to_input(
         messages,
         model_id="text-only",
         valves=pipe.valves,

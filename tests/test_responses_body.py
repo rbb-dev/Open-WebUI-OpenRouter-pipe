@@ -39,7 +39,7 @@ async def test_from_completions_preserves_response_format(monkeypatch, minimal_p
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
 
-    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+    monkeypatch.setattr(Pipe, "transform_messages_to_input", fake_transform)
 
     responses = await ResponsesBody.from_completions(
         completions,
@@ -60,7 +60,7 @@ async def test_from_completions_preserves_parallel_tool_calls(monkeypatch, minim
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
 
-    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+    monkeypatch.setattr(Pipe, "transform_messages_to_input", fake_transform)
 
     responses = await ResponsesBody.from_completions(
         completions,
@@ -81,7 +81,7 @@ async def test_from_completions_converts_legacy_function_call_dict(monkeypatch, 
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
 
-    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+    monkeypatch.setattr(Pipe, "transform_messages_to_input", fake_transform)
 
     responses = await ResponsesBody.from_completions(
         completions,
@@ -102,7 +102,7 @@ async def test_from_completions_converts_legacy_function_call_strings(monkeypatc
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
 
-    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+    monkeypatch.setattr(Pipe, "transform_messages_to_input", fake_transform)
 
     responses = await ResponsesBody.from_completions(
         completions,
@@ -123,7 +123,7 @@ async def test_from_completions_does_not_override_explicit_tool_choice(monkeypat
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
 
-    monkeypatch.setattr(ResponsesBody, "transform_messages_to_input", fake_transform)
+    monkeypatch.setattr(Pipe, "transform_messages_to_input", fake_transform)
 
     responses = await ResponsesBody.from_completions(
         completions,
