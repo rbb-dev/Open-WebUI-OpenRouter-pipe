@@ -83,7 +83,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast, no_type_check
 from urllib.parse import urlparse
 import ast
 import email.utils
@@ -923,6 +923,9 @@ class _ToolExecutionContext:
     batch_cap: int
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
+
+
+ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
 
 class EncryptedStr(str):
@@ -2863,6 +2866,9 @@ class Pipe:
         client: Optional[_RedisClient] = None
         try:
             client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+            if client is None:
+                self.logger.warning("Redis client initialization returned None; Redis cache remains disabled.")
+                return
             await _wait_for(client.ping(), timeout=5.0)
         except Exception as exc:
             if client is not None:
@@ -2959,12 +2965,27 @@ class Pipe:
                 data = await _wait_for(self._redis_client.lpop(self._redis_pending_key))
                 if data is None:
                     break
-                raw_entries.append(data)
+                entry: str | None = None
+                if isinstance(data, str):
+                    entry = data
+                elif isinstance(data, bytes):
+                    entry = data.decode("utf-8", errors="replace")
+                else:
+                    self.logger.warning(
+                        "Unexpected Redis queue payload type '%s'; skipping entry.",
+                        type(data).__name__,
+                    )
+                    continue
+                raw_entries.append(entry)
                 try:
-                    rows.append(json.loads(data))
+                    parsed = json.loads(entry)
                 except json.JSONDecodeError as exc:
                     self.logger.warning("Malformed JSON in pending queue, skipping: %s", exc)
                     continue
+                if not isinstance(parsed, dict):
+                    self.logger.warning("Pending queue entry must be an object; skipping malformed payload.")
+                    continue
+                rows.append(parsed)
             if not raw_entries:
                 return
             if not rows:
@@ -3388,6 +3409,7 @@ class Pipe:
         tasks = [self._invoke_tool_call(item, context) for item in batch]
         gather_coro = asyncio.gather(*tasks, return_exceptions=True)
         # TODO: Add soak tests that cover multi-minute batch executions to validate these generous timeouts.
+        results: list[tuple[str, str] | BaseException] = []
         try:
             if context.batch_timeout:
                 results = await asyncio.wait_for(gather_coro, timeout=context.batch_timeout)
@@ -3416,7 +3438,7 @@ class Pipe:
         for item, result in zip(batch, results):
             if item.future.done():
                 continue
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 payload = self._build_tool_output(
                     item.call,
                     f"Tool error: {result}",
@@ -3455,6 +3477,12 @@ class Pipe:
         tool_type: str,
     ) -> tuple[str, str]:
         fn = item.tool_cfg.get("callable")
+        if not callable(fn):
+            message = f"Tool '{item.call.get('name')}' is missing a callable handler."
+            self.logger.warning("%s", message)
+            self._record_tool_failure_type(context.user_id, tool_type)
+            return ("failed", message)
+        fn_to_call = cast(ToolCallable, fn)
         timeout = float(context.timeout)
         retryer = AsyncRetrying(
             stop=stop_after_attempt(2),
@@ -3466,7 +3494,7 @@ class Pipe:
             async for attempt in retryer:
                 with attempt:
                     result = await asyncio.wait_for(
-                        self._call_tool_callable(fn, item.args),
+                        self._call_tool_callable(fn_to_call, item.args),
                         timeout=timeout,
                     )
                     self._reset_tool_failure_type(context.user_id, tool_type)
@@ -3475,11 +3503,15 @@ class Pipe:
         except Exception as exc:
             self._record_tool_failure_type(context.user_id, tool_type)
             raise exc
+        return ("failed", "Tool execution produced no output.")
 
-    async def _call_tool_callable(self, fn: Callable, args: dict[str, Any]) -> Any:
+    async def _call_tool_callable(self, fn: ToolCallable, args: dict[str, Any]) -> Any:
         if inspect.iscoroutinefunction(fn):
             return await fn(**args)
-        return await asyncio.to_thread(fn, **args)
+        result = await asyncio.to_thread(fn, **args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     @contextlib.asynccontextmanager
     async def _acquire_tool_global(self, semaphore: asyncio.Semaphore, tool_name: str | None):
@@ -3499,9 +3531,9 @@ class Pipe:
             return
 
         session: aiohttp.ClientSession | None = None
-        tokens: list[tuple[ContextVar, object]] = []
+        tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tool_context: _ToolExecutionContext | None = None
-        tool_token: contextvars.Token | None = None  # type: ignore[name-defined]
+        tool_token: contextvars.Token[Optional[_ToolExecutionContext]] | None = None
         try:
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
@@ -3565,7 +3597,7 @@ class Pipe:
                 with contextlib.suppress(Exception):
                     await session.close()
 
-    def _create_http_session(self, valves: "Pipe.Valves" | None = None) -> aiohttp.ClientSession:
+    def _create_http_session(self, valves: Pipe.Valves | None = None) -> aiohttp.ClientSession:
         """Return a fresh ClientSession with sane defaults for per-request use."""
         valves = valves or self.valves
         connector = aiohttp.TCPConnector(
@@ -3602,12 +3634,12 @@ class Pipe:
             semaphore.release()
             self.logger.debug("Semaphore released (request=%s)", request_id)
 
-    def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar, object]]:
+    def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar[Any], contextvars.Token[Any]]]:
         """Set SessionLogger contextvars based on the incoming request."""
         session_id = job.session_id or None
         user_id = job.user_id or None
         log_level = getattr(logging, str(job.valves.LOG_LEVEL).upper(), logging.INFO)
-        tokens: list[tuple[ContextVar, object]] = []
+        tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
@@ -4067,17 +4099,23 @@ class Pipe:
 
         cleanup_rows = False
         try:
-            ulids: list[str] = [
-                row.get("id")
-                for row in rows
-                if row.get("_persisted") and isinstance(row.get("id"), str)
-            ]
-            ulids = [ulid for ulid in ulids if ulid]
+            ulids: list[str] = []
+            for row in rows:
+                if not row.get("_persisted"):
+                    continue
+                identifier = row.get("id")
+                if isinstance(identifier, str) and identifier:
+                    ulids.append(identifier)
+
             batch_size = self.valves.DB_BATCH_SIZE
             pending_rows = [row for row in rows if not row.get("_persisted")]
             if not pending_rows:
                 if ulids:
-                    self.logger.debug("Persisted %d response artifact(s) to %s.", len(ulids), self._artifact_table_name)
+                    self.logger.debug(
+                        "Persisted %d response artifact(s) to %s.",
+                        len(ulids),
+                        self._artifact_table_name,
+                    )
                 cleanup_rows = True
                 return ulids
 
@@ -4090,7 +4128,11 @@ class Pipe:
                 for row in chunk:
                     payload = row.get("payload")
                     if not isinstance(payload, dict):
-                        self.logger.warning("Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.", row.get("chat_id"), row.get("message_id"))
+                        self.logger.warning(
+                            "Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.",
+                            row.get("chat_id"),
+                            row.get("message_id"),
+                        )
                         continue
                     ulid = row.get("id") or generate_item_id()
                     stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
@@ -4118,7 +4160,11 @@ class Pipe:
                     session.commit()
                 except SQLAlchemyError as exc:  # pragma: no cover
                     session.rollback()
-                    self.logger.error("Failed to persist response artifacts: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    self.logger.error(
+                        "Failed to persist response artifacts: %s",
+                        exc,
+                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                    )
                     raise
                 finally:
                     session.close()
@@ -4128,7 +4174,11 @@ class Pipe:
                 ulids.extend(chunk_ulids)
 
             if ulids:
-                self.logger.debug("Persisted %d response artifact(s) to %s.", len(ulids), self._artifact_table_name)
+                self.logger.debug(
+                    "Persisted %d response artifact(s) to %s.",
+                    len(ulids),
+                    self._artifact_table_name,
+                )
             cleanup_rows = True
             return ulids
         finally:
@@ -4185,7 +4235,12 @@ class Pipe:
                 except Exception as exc:
                     if self._is_duplicate_key_error(exc):
                         self.logger.debug("Duplicate key detected during DB persist; assuming prior flush succeeded")
-                        return [row.get("id") for row in rows if row.get("id")]
+                        return [
+                            identifier
+                            for row in rows
+                            for identifier in [row.get("id")]
+                            if isinstance(identifier, str) and identifier
+                        ]
                     raise
                 if self._redis_enabled:
                     await self._redis_cache_rows(rows)
@@ -4583,7 +4638,19 @@ class Pipe:
                 background_tasks=BackgroundTasks(),
             )
             # Generate internal URL path
-            internal_url = request.app.url_path_for("get_file_content_by_id", id=file_item.id)
+            file_id: Optional[str] = None
+            if hasattr(file_item, "id"):
+                candidate = getattr(file_item, "id", None)
+                if isinstance(candidate, str) and candidate.strip():
+                    file_id = candidate.strip()
+            elif isinstance(file_item, dict):
+                raw_id = file_item.get("id")
+                if isinstance(raw_id, str) and raw_id.strip():
+                    file_id = raw_id.strip()
+            if not file_id:
+                self.logger.error("Upload handler returned an object without an id; aborting OWUI storage write.")
+                return None
+            internal_url = request.app.url_path_for("get_file_content_by_id", id=file_id)
             self.logger.info(
                 f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: {internal_url}"
             )
@@ -4697,6 +4764,7 @@ class Pipe:
         try:
             import ipaddress
             import socket
+            from ipaddress import IPv4Address, IPv6Address
 
             parsed = urlparse(url)
             host = parsed.hostname
@@ -4705,10 +4773,10 @@ class Pipe:
                 self.logger.warning(f"URL has no hostname: {url}")
                 return False
 
-            ip_objects: list[ipaddress._BaseAddress] = []
+            ip_objects: list[IPv4Address | IPv6Address] = []
             seen_ips: set[str] = set()
 
-            def _record_ip(candidate: ipaddress._BaseAddress) -> None:
+            def _record_ip(candidate: IPv4Address | IPv6Address) -> None:
                 comp = candidate.compressed
                 if comp not in seen_ips:
                     seen_ips.add(comp)
@@ -5413,7 +5481,7 @@ class Pipe:
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
         *,
-        valves: "Pipe.Valves" | None = None,
+        valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
     ) -> AsyncGenerator[str, None] | str | None:
         """Process a user request and return either a stream or final text.
@@ -5834,7 +5902,7 @@ class Pipe:
                     responses_body.model,
                 )
             else:
-                plugin_payload = {"id": "web"}
+                plugin_payload: dict[str, Any] = {"id": "web"}
                 if valves.WEB_SEARCH_MAX_RESULTS is not None:
                     plugin_payload["max_results"] = valves.WEB_SEARCH_MAX_RESULTS
                 plugins = list(responses_body.plugins or [])
@@ -5944,7 +6012,7 @@ class Pipe:
             responses_body.reasoning = cfg
         elif supports_include:
             responses_body.reasoning = None
-            responses_body.include_reasoning = target_effort != "minimal"
+            setattr(responses_body, "include_reasoning", target_effort != "minimal")
         else:
             responses_body.reasoning = None
 
@@ -6594,87 +6662,88 @@ class Pipe:
                         All errors are caught and logged with status emissions.
                         Failed processing returns minimal valid block rather than crashing.
                     """
-                    try:
-                        audio_payload = block.get("input_audio") or block.get("data") or block.get("blob")
-                        format_map = {
-                            "audio/mpeg": "mp3",
-                            "audio/mp3": "mp3",
-                            "audio/wav": "wav",
-                            "audio/wave": "wav",
-                            "audio/x-wav": "wav",
+                    format_map = {
+                        "audio/mpeg": "mp3",
+                        "audio/mp3": "mp3",
+                        "audio/wav": "wav",
+                        "audio/wave": "wav",
+                        "audio/x-wav": "wav",
+                    }
+                    supported_formats = {"mp3", "wav"}
+
+                    def _map_format(mime: Optional[str]) -> str:
+                        if not isinstance(mime, str):
+                            return "mp3"
+                        return format_map.get(mime.lower(), "mp3")
+
+                    def _empty_audio_block() -> dict[str, Any]:
+                        return {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": "",
+                                "format": "mp3",
+                            },
                         }
-                        supported_formats = {"mp3", "wav"}
 
-                        def _map_format(mime: Optional[str]) -> str:
-                            if not isinstance(mime, str):
-                                return "mp3"
-                            return format_map.get(mime.lower(), "mp3")
+                    def _normalize_base64(data: str) -> Optional[str]:
+                        if not data:
+                            return None
+                        cleaned = "".join(data.split())
+                        if not cleaned:
+                            return None
+                        if not self._validate_base64_size(cleaned):
+                            return None
+                        try:
+                            base64.b64decode(cleaned, validate=True)
+                        except (binascii.Error, ValueError):
+                            return None
+                        return cleaned
 
-                        def _empty_audio_block() -> dict[str, Any]:
-                            return {
-                                "type": "input_audio",
-                                "input_audio": {
-                                    "data": "",
-                                    "format": "mp3",
-                                },
-                            }
-
-                        def _normalize_base64(data: str) -> Optional[str]:
-                            if not data:
-                                return None
-                            cleaned = "".join(data.split())
-                            if not cleaned:
-                                return None
-                            if not self._validate_base64_size(cleaned):
-                                return None
-                            try:
-                                base64.b64decode(cleaned, validate=True)
-                            except (binascii.Error, ValueError):
-                                return None
-                            return cleaned
-
-                        def _resolved_mime_hint(payload: Optional[dict[str, Any]] = None) -> Optional[str]:
-                            candidates: list[Any] = []
-                            if isinstance(payload, dict):
-                                candidates.extend(
-                                    [
-                                        payload.get("mimeType"),
-                                        payload.get("mime_type"),
-                                    ]
-                                )
+                    def _resolved_mime_hint(payload: Optional[dict[str, Any]] = None) -> Optional[str]:
+                        candidates: list[Any] = []
+                        if isinstance(payload, dict):
                             candidates.extend(
                                 [
-                                    block.get("mimeType"),
-                                    block.get("mime_type"),
-                                    block.get("contentType"),
-                                    block.get("content_type"),
+                                    payload.get("mimeType"),
+                                    payload.get("mime_type"),
                                 ]
                             )
-                            for value in candidates:
-                                if isinstance(value, str):
-                                    stripped = value.strip()
-                                    if stripped:
-                                        return stripped
-                            return None
+                        candidates.extend(
+                            [
+                                block.get("mimeType"),
+                                block.get("mime_type"),
+                                block.get("contentType"),
+                                block.get("content_type"),
+                            ]
+                        )
+                        for value in candidates:
+                            if isinstance(value, str):
+                                stripped = value.strip()
+                                if stripped:
+                                    return stripped
+                        return None
 
-                        def _normalize_format(
-                            explicit_format: Optional[str],
-                            mime_hint: Optional[str],
-                        ) -> str:
-                            if isinstance(explicit_format, str):
-                                normalized = explicit_format.strip().lower()
-                                if normalized in supported_formats:
-                                    return normalized
-                            return _map_format(mime_hint)
+                    def _normalize_format(
+                        explicit_format: Optional[str],
+                        mime_hint: Optional[str],
+                    ) -> str:
+                        if isinstance(explicit_format, str):
+                            normalized = explicit_format.strip().lower()
+                            if normalized in supported_formats:
+                                return normalized
+                        return _map_format(mime_hint)
 
-                        def _build_audio_block(data: str, audio_format: str) -> dict[str, Any]:
-                            return {
-                                "type": "input_audio",
-                                "input_audio": {
-                                    "data": data,
-                                    "format": audio_format,
-                                },
-                            }
+                    def _build_audio_block(data: str, audio_format: str) -> dict[str, Any]:
+                        return {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": data,
+                                "format": audio_format,
+                            },
+                        }
+
+                    try:
+                        audio_payload = block.get("input_audio") or block.get("data") or block.get("blob")
 
                         # If payload is already a dict with both data/format, validate and passthrough
                         if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
@@ -6897,6 +6966,9 @@ class Pipe:
                         return {"type": "video_url", "video_url": {"url": ""}}
 
                 # Block transformers (async functions for image/file processing)
+                def _identity_block(b: dict[str, Any]) -> dict[str, Any]:
+                    return b
+
                 block_transform = {
                     "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
                     "image_url":  _to_input_image,
@@ -6922,8 +6994,9 @@ class Pipe:
                 for block in content_blocks:
                     if not block:
                         continue
-                    block_type = block.get("type")
-                    transformer = block_transform.get(block_type, lambda b: b)
+                    raw_block_type = block.get("type")
+                    block_type = raw_block_type if isinstance(raw_block_type, str) else ""
+                    transformer = block_transform.get(block_type, _identity_block)
                     is_image_block = block_type in {"image_url", "input_image"}
 
                     if is_image_block:
@@ -7165,7 +7238,7 @@ class Pipe:
                 continue
             lowered = message.lower()
             if any(trigger in lowered for trigger in trigger_phrases):
-                responses_body.include_reasoning = False
+                setattr(responses_body, "include_reasoning", False)
                 responses_body.reasoning = None
                 self.logger.info(
                     "Retrying without reasoning for model '%s' after provider rejected include_reasoning without thinking.",
@@ -7200,13 +7273,14 @@ class Pipe:
         return selected or available_models
 
     # 4.3 Core Multi-Turn Handlers
-    async def _run_streaming_loop(
+    @no_type_check
+    async def _run_streaming_loop(  # pyright: ignore[reportGeneralTypeIssues]
         self,
         body: ResponsesBody,
         valves: Pipe.Valves,
         event_emitter: EventEmitter | None,
         metadata: dict[str, Any] = {},
-        tools: Optional[Dict[str, Dict[str, Any]]] = None,
+        tools: dict[str, Dict[str, Any]] | list[dict[str, Any]] | None = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
@@ -8190,7 +8264,7 @@ class Pipe:
         valves: Pipe.Valves,
         event_emitter: EventEmitter | None,
         metadata: Dict[str, Any] = {},
-        tools: Optional[Dict[str, Dict[str, Any]]] = None,
+        tools: dict[str, Dict[str, Any]] | list[dict[str, Any]] | None = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
@@ -8547,6 +8621,8 @@ class Pipe:
             while True:
                 timeout = idle_flush_seconds if (idle_flush_seconds and delta_buffer) else None
                 timed_out = False
+                seq: int | None = None
+                event: dict[str, Any] | None = None
                 if timeout is not None:
                     try:
                         seq, event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
@@ -8566,6 +8642,9 @@ class Pipe:
                     done_workers += 1
                     if done_workers >= workers and not pending_events:
                         break
+                    continue
+                if event is None:
+                    self.logger.debug("Skipping empty SSE event (seq=%s)", seq)
                     continue
                 pending_events[seq] = event
                 while next_seq in pending_events:
@@ -8667,6 +8746,8 @@ class Pipe:
                             )
                     resp.raise_for_status()
                     return await resp.json()
+        self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")
+        return {}
 
     async def close(self) -> None:
         """Shutdown background resources (DB executor, queue worker)."""
@@ -9155,8 +9236,10 @@ class Pipe:
         requested_model: Optional[str],
     ) -> OpenRouterAPIError:
         """Normalize SSE error events into an OpenRouterAPIError."""
-        response_block = event.get("response") if isinstance(event.get("response"), dict) else {}
-        error_block = event.get("error") if isinstance(event.get("error"), dict) else None
+        response_value = event.get("response")
+        response_block: dict[str, Any] = response_value if isinstance(response_value, dict) else {}
+        error_value = event.get("error")
+        error_block = error_value if isinstance(error_value, dict) else None
         if not error_block and isinstance(response_block.get("error"), dict):
             error_block = response_block.get("error")
         message = ""
@@ -9494,9 +9577,9 @@ class SessionLogger:
         logs:       Map of session_id -> fixed-size deque of formatted log strings.
     """
 
-    session_id = ContextVar("session_id", default=None)
-    user_id = ContextVar("user_id", default=None)
-    log_level = ContextVar("log_level", default=logging.INFO)
+    session_id: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
+    user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
+    log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
     logs = defaultdict(lambda: deque(maxlen=2000))
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
@@ -9948,7 +10031,7 @@ def _sanitize_table_fragment(value: str) -> str:
 def build_tools(
     responses_body: "ResponsesBody",
     valves: "Pipe.Valves",
-    __tools__: Optional[Dict[str, Any]] = None,
+    __tools__: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     *,
     features: Optional[Dict[str, Any]] = None,
     extra_tools: Optional[List[Dict[str, Any]]] = None,
@@ -9983,6 +10066,8 @@ def build_tools(
                 strict=valves.ENABLE_STRICT_TOOL_CALLING,
             )
         )
+    elif isinstance(__tools__, list) and __tools__:
+        tools.extend([tool for tool in __tools__ if isinstance(tool, dict)])
 
     # 3) Optional MCP servers
     if valves.REMOTE_MCP_SERVERS_JSON:
