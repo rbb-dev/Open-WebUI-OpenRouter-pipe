@@ -83,7 +83,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypedDict, Union, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypedDict, Union, TYPE_CHECKING, cast
 from urllib.parse import urlparse
 import ast
 import email.utils
@@ -148,7 +148,6 @@ _TEMPLATE_VAR_PATTERN = re.compile(r"{(\w+)}")
 _TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
 _TEMPLATE_IF_CLOSE_RE = re.compile(r"\{\{\s*/if\s*\}\}")
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
-
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
     "### 🚫 {heading} could not process your request.\n\n"
@@ -988,6 +987,26 @@ class EncryptedStr(str):
                 lambda instance: str(instance)
             ),
         )
+
+_ALLOWED_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _default_api_key() -> EncryptedStr:
+    """Return the API key env default as EncryptedStr."""
+    return EncryptedStr((os.getenv("OPENROUTER_API_KEY") or "").strip())
+
+
+def _default_artifact_encryption_key() -> EncryptedStr:
+    """Provide an EncryptedStr placeholder for artifact encryption."""
+    return EncryptedStr("")
+
+
+def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
+    """Normalize env-provided log level to the allowed literal set."""
+    value = (os.getenv("GLOBAL_LOG_LEVEL") or "INFO").strip().upper()
+    if value not in _ALLOWED_LOG_LEVELS:
+        value = "INFO"
+    return cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], value)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Constants & Global Configuration
@@ -2020,7 +2039,7 @@ class Pipe:
             description="OpenRouter API base URL. Override this if you are using a gateway or proxy.",
         )
         API_KEY: EncryptedStr = Field(
-            default=(os.getenv("OPENROUTER_API_KEY") or "").strip(),
+            default_factory=_default_api_key,
             description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
         )
         HTTP_CONNECT_TIMEOUT_SECONDS: int = Field(
@@ -2168,7 +2187,7 @@ class Pipe:
             description="Persist tool call results across conversation turns. When disabled, tool results stay ephemeral.",
         )
         ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
-            default="",
+            default_factory=_default_artifact_encryption_key,
             description="Min 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible.",
         )
         ENCRYPT_ALL: bool = Field(
@@ -2231,7 +2250,7 @@ class Pipe:
 
         # Logging
         LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-            default=os.getenv("GLOBAL_LOG_LEVEL", "INFO").upper(),
+            default_factory=_resolve_log_level_default,
             description="Select logging level.  Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
         )
         MAX_CONCURRENT_REQUESTS: int = Field(
