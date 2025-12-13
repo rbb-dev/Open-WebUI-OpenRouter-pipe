@@ -1748,6 +1748,10 @@ class CompletionsBody(BaseModel):
     model: str
     messages: List[Dict[str, Any]]
     stream: bool = False
+    response_format: Optional[Dict[str, Any]] = None
+    parallel_tool_calls: Optional[bool] = None
+    function_call: Optional[Union[str, Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     model_config = ConfigDict(extra="allow")  # pass through additional OpenAI parameters
 
 class ResponsesBody(BaseModel):
@@ -1765,6 +1769,7 @@ class ResponsesBody(BaseModel):
     top_p: Optional[float] = None
     max_output_tokens: Optional[int] = None
     reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
+    include_reasoning: Optional[bool] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
@@ -4842,7 +4847,7 @@ class Pipe:
             self.logger.error(f"URL safety validation failed for {url}: {exc}")
             return False
 
-    def _is_youtube_url(self, url: str) -> bool:
+    def _is_youtube_url(self, url: Optional[str]) -> bool:
         """Check if URL is a valid YouTube video URL.
 
         Supports both standard and short YouTube URL formats:

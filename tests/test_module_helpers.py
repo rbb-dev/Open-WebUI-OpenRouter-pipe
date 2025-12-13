@@ -5,11 +5,15 @@ import sys
 import types
 import io
 import logging
+from typing import Any, Dict, TYPE_CHECKING, cast
 
 import httpx
 import pytest
 
 from open_webui_openrouter_pipe import open_webui_openrouter_pipe as ow
+
+if TYPE_CHECKING:
+    from aiohttp import ClientResponse
 
 
 def _install_logger(monkeypatch):
@@ -50,15 +54,15 @@ def test_pretty_json_and_template_value_present():
     assert ow._template_value_present("") is False
 
 
-def _make_error(**overrides):
-    base = dict(
-        status=400,
-        reason="Bad",
-        provider="Provider",
-        metadata={"retry_after_seconds": 2},
-        upstream_message="upstream",
-        requested_model="demo",
-    )
+def _make_error(**overrides: Any) -> ow.OpenRouterAPIError:
+    base: Dict[str, Any] = {
+        "status": 400,
+        "reason": "Bad",
+        "provider": "Provider",
+        "metadata": {"retry_after_seconds": 2},
+        "upstream_message": "upstream",
+        "requested_model": "demo",
+    }
     base.update(overrides)
     return ow.OpenRouterAPIError(**base)
 
@@ -99,7 +103,8 @@ def test_unwrap_and_coerce_helpers():
 
 def test_retry_after_seconds_parses_date():
     dt = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=5)).strftime("%a, %d %b %Y %H:%M:%S GMT")
-    assert ow._retry_after_seconds(dt) >= 4
+    seconds = ow._retry_after_seconds(dt)
+    assert seconds is not None and seconds >= 4
     assert ow._retry_after_seconds("invalid") is None
 
 
@@ -145,7 +150,7 @@ async def test_debug_print_error_response(monkeypatch):
         async def text(self):
             return "body"
 
-    resp = FakeResponse()
+    resp = cast("ClientResponse", FakeResponse())
     body = await ow._debug_print_error_response(resp)
     assert body == "body"
     assert "OpenRouter error response" in stream.getvalue()
@@ -210,15 +215,17 @@ def test_internal_file_helpers():
     assert ow._is_internal_file_url("https://x/api/v1/files/123") is True
 
 
-def test_wrap_event_emitter_controls_events():
+@pytest.mark.asyncio
+async def test_wrap_event_emitter_controls_events():
     calls = []
 
     async def emitter(event):
         calls.append(event)
 
     wrapped = ow._wrap_event_emitter(emitter, suppress_chat_messages=True)
-    asyncio.run(wrapped({"type": "chat:message"}))
-    asyncio.run(wrapped({"type": "status"}))
+    assert wrapped is not None
+    await wrapped({"type": "chat:message"})
+    await wrapped({"type": "status"})
     assert calls == [{"type": "status"}]
 
 
@@ -233,10 +240,13 @@ def test_merge_usage_stats_and_wrap_code_block():
 
 def test_normalize_persisted_item_variants(monkeypatch):
     fn_call = ow._normalize_persisted_item({"type": "function_call", "name": "tool", "arguments": {"a": 1}})
+    assert fn_call is not None
     assert fn_call["name"] == "tool"
     fn_output = ow._normalize_persisted_item({"type": "function_call_output", "call_id": "123", "output": 5})
+    assert fn_output is not None
     assert fn_output["output"] == "5"
     reasoning = ow._normalize_persisted_item({"type": "reasoning", "content": "text"})
+    assert reasoning is not None
     assert reasoning["content"]
 
 
