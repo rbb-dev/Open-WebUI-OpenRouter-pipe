@@ -2299,16 +2299,20 @@ class Pipe:
             description="Number of per-request SSE worker tasks that parse streamed chunks.",
         )
         STREAMING_CHUNK_QUEUE_MAXSIZE: int = Field(
-            default=100,
-            ge=10,
-            le=5000,
-            description="Maximum number of raw SSE chunks buffered before applying backpressure to the OpenRouter stream.",
+            default=0,
+            ge=0,
+            description="Maximum number of raw SSE chunks buffered before applying backpressure to the OpenRouter stream. 0=unbounded (deadlock-proof, recommended); bounded values &lt;500 risk hangs on tool-heavy loads or slow DB/emit (drain block → event full → workers block → chunk full → producer halt).",
         )
         STREAMING_EVENT_QUEUE_MAXSIZE: int = Field(
-            default=100,
-            ge=10,
-            le=5000,
-            description="Maximum number of parsed SSE events buffered ahead of downstream processing.",
+            default=0,
+            ge=0,
+            description="Maximum number of parsed SSE events buffered ahead of downstream processing. 0=unbounded (deadlock-proof, recommended); bounded values &lt;500 risk hangs on tool-heavy loads or slow DB/emit (drain block → event full → workers block → chunk full → producer halt).",
+
+        )
+        STREAMING_EVENT_QUEUE_WARN_SIZE: int = Field(
+            default=1000,
+            ge=100,
+            description="Log warning when event_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
         )
         OPENROUTER_ERROR_TEMPLATE: str = Field(
             default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
@@ -7660,6 +7664,7 @@ class Pipe:
                     idle_flush_ms=0,
                     chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
                     event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
+                    event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
                 ):
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
@@ -8443,6 +8448,7 @@ class Pipe:
         idle_flush_ms: int = 0,
         chunk_queue_maxsize: int = 100,
         event_queue_maxsize: int = 100,
+        event_queue_warn_size: int = 1000,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
@@ -8466,10 +8472,8 @@ class Pipe:
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
-        producer_error: BaseException | None = None
 
         async def _producer() -> None:
-            nonlocal producer_error
             seq = 0
             retryer = AsyncRetrying(
                 stop=stop_after_attempt(3),
@@ -8505,14 +8509,13 @@ class Pipe:
                                         if rate_scope:
                                             extra_meta["rate_limit_type"] = rate_scope
                                         reason_text = resp.reason or "HTTP error"
-                                        producer_error = _build_openrouter_api_error(
+                                        raise _build_openrouter_api_error(
                                             resp.status,
                                             reason_text,
                                             error_body,
                                             requested_model=request_body.get("model"),
                                             extra_metadata=extra_meta or None,
                                         )
-                                        return
                                     if resp.status < 500:
                                         raise RuntimeError(
                                             f"OpenRouter request failed ({resp.status}): {resp.reason}"
@@ -8562,7 +8565,12 @@ class Pipe:
                                         await chunk_queue.put((seq, data_blob))
                                         # self.logger.debug("Enqueued SSE chunk seq=%s size=%s",seq,len(data_blob))
                                         seq += 1
-                        except Exception:
+                        except Exception as producer_exc:
+                            self.logger.error(
+                                "Producer encountered error while streaming from OpenRouter: %s",
+                                producer_exc,
+                                exc_info=True,
+                            )
                             if breaker_key:
                                 self._record_failure(breaker_key)
                             raise
@@ -8607,6 +8615,7 @@ class Pipe:
         delta_buffer: list[str] = []
         delta_template: Optional[dict[str, Any]] = None
         delta_length = 0
+        event_queue_warn_last_ts: float = 0.0
 
         def flush_delta(force: bool = False) -> Optional[dict[str, Any]]:
             if passthrough_deltas:
@@ -8643,6 +8652,17 @@ class Pipe:
                     continue
 
                 event_queue.task_done()
+
+                # Non-spammy queue monitoring
+                now = perf_counter()
+                if event_queue.qsize() >= event_queue_warn_size and (now - event_queue_warn_last_ts) >= 30.0:
+                    self.logger.warning(
+                        "Event queue backlog high: %d items (session=%s)",
+                        event_queue.qsize(),
+                        SessionLogger.session_id.get() or "unknown",
+                    )
+                    event_queue_warn_last_ts = now
+
                 if seq is None:
                     done_workers += 1
                     if done_workers >= workers and not pending_events:
@@ -8685,15 +8705,22 @@ class Pipe:
                 yield final_delta
 
             await producer_task
-            if producer_error is not None:
-                raise producer_error
         finally:
             if not producer_task.done():
                 producer_task.cancel()
             for task in worker_tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
+            results = await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                    task_name = "producer" if idx == 0 else f"worker-{idx - 1}"
+                    self.logger.error(
+                        "SSE %s task failed during cleanup: %s",
+                        task_name,
+                        result,
+                        exc_info=result,
+                    )
 
     async def send_openai_responses_nonstreaming_request(
         self,

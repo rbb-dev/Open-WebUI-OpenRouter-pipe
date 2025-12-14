@@ -13,6 +13,16 @@ The streaming layer converts OpenRouter"s Server-Sent Events (SSE) into the incr
 OpenRouter SSE → chunk queue → worker pool → event queue → emitters → Open WebUI client
 ```
 
+**Deadlock Risks (Bounded Queues)**  
+Small bounded queues (`STREAMING_CHUNK_QUEUE_MAXSIZE`/`STREAMING_EVENT_QUEUE_MAXSIZE` &lt;500) risk deadlock chain:  
+1. Drain loop blocks (slow DB writes, OWUI emit backpressure).  
+2. `event_queue` fills → workers block on `await event_queue.put()`.  
+3. `chunk_queue` fills → producer blocks on `await chunk_queue.put()`.  
+4. Main loop hangs on `if done_workers >= workers and not pending_events: break`; sentinels never propagate.  
+
+**Tools exacerbate**: Larger payloads (calls+outputs+reasoning), more events, slower DB → faster fill.  
+**Fix**: Use unbounded (`=0`, recommended) or large sizes (&gt;1000). Monitor via `STREAMING_EVENT_QUEUE_WARN_SIZE` (warns on high `qsize()` w/ cooldown).
+
 1. `_stream_responses` opens the `/responses` SSE stream via `httpx` (configured with per-request timeouts and retry wrappers). Raw bytes go into `chunk_queue` (bounded by `STREAMING_CHUNK_QUEUE_MAXSIZE`).
 2. `_consume_sse` spawns `SSE_WORKERS_PER_REQUEST` parser tasks. Each worker pulls from `chunk_queue`, parses SSE frames, normalizes OpenRouter event types, and pushes structured dicts into `event_queue` (bounded by `STREAMING_EVENT_QUEUE_MAXSIZE`). Sequence numbers keep events in order even when multiple workers parse in parallel.
 3. `_drain_event_queue` reads parsed events, updates internal state (text buffer, reasoning segments, pending tool calls), and calls the relevant emitter helpers (`_emit_update`, `_emit_status`, `_emit_citation`, `_emit_tool_prompt`, `_emit_completion`).

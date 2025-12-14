@@ -74,8 +74,9 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `LOG_LEVEL` | env `GLOBAL_LOG_LEVEL` or `INFO` | enum | Pipe-wide log threshold. |
 | `MAX_CONCURRENT_REQUESTS` | 200 | 1--2000 | Size of the global request semaphore. |
 | `SSE_WORKERS_PER_REQUEST` | 4 | 1--8 | SSE parser tasks per request. |
-| `STREAMING_CHUNK_QUEUE_MAXSIZE` | 100 | 10--5000 | Raw chunk buffer limit. |
-| `STREAMING_EVENT_QUEUE_MAXSIZE` | 100 | 10--5000 | Parsed event buffer limit. |
+| `STREAMING_CHUNK_QUEUE_MAXSIZE` | 0 | ≥0 | Raw SSE chunk buffer. 0=unbounded (deadlock-proof, recommended); small bounded (&lt;500) risks hangs on tool-heavy loads or slow DB/emit (drain block → event full → workers block → chunk full → producer halt). |
+| `STREAMING_EVENT_QUEUE_MAXSIZE` | 0 | ≥0 | Parsed SSE event buffer. Same deadlock risks as chunk queue; primary bottleneck. |
+| `STREAMING_EVENT_QUEUE_WARN_SIZE` | 1000 | ≥100 | Logs warning when event_queue.qsize() ≥ this (unbounded monitoring; ≥100 avoids spam on sustained load). Tune higher for noisy environments. |
 | `MAX_PARALLEL_TOOLS_GLOBAL` | 200 | 1--2000 | Global tool semaphore. |
 | `MAX_PARALLEL_TOOLS_PER_REQUEST` | 5 | 1--50 | Per-request worker cap. |
 | `TOOL_BATCH_CAP` | 4 | 1--32 | Max compatible tool calls per batch. |
