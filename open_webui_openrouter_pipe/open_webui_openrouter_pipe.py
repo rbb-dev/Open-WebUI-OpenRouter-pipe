@@ -83,7 +83,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypedDict, Union, TYPE_CHECKING, cast
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast
 from urllib.parse import urlparse
 import ast
 import email.utils
@@ -115,6 +115,8 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
 else:
     _RedisClient = Any
+
+EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 # Open WebUI internals
 from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
@@ -635,6 +637,29 @@ class _RetryWait:
         return base_delay
 
 
+_TWait = TypeVar("_TWait")
+
+
+async def _wait_for(
+    value: Awaitable[_TWait] | _TWait,
+    *,
+    timeout: Optional[float] = None,
+) -> _TWait:
+    """Return ``value`` immediately when it's synchronous, otherwise await it.
+
+    Redis' asyncio client returns synchronous fallbacks (bool/str/list) when a
+    pipeline is configured for immediate execution, which caused ``await`` to be
+    applied to non-awaitables.  This helper centralizes the guard so call sites
+    stay tidy and Pyright no longer reports \"X is not awaitable\" diagnostics.
+    """
+    if inspect.isawaitable(value):
+        coroutine = cast(Awaitable[_TWait], value)
+        if timeout is None:
+            return cast(_TWait, await coroutine)
+        return cast(_TWait, await asyncio.wait_for(coroutine, timeout=timeout))
+    return cast(_TWait, value)
+
+
 _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
 
@@ -851,8 +876,8 @@ class _PipeJob:
     pipe: "Pipe"
     body: dict[str, Any]
     user: dict[str, Any]
-    request: Request
-    event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
+    request: Request | None
+    event_emitter: EventEmitter | None
     event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None
     metadata: dict[str, Any]
     tools: list[dict[str, Any]] | dict[str, Any] | None
@@ -894,7 +919,7 @@ class _ToolExecutionContext:
     batch_timeout: float | None
     idle_timeout: float | None
     user_id: str
-    event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None
+    event_emitter: EventEmitter | None
     batch_cap: int
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
@@ -2838,7 +2863,7 @@ class Pipe:
         client: Optional[_RedisClient] = None
         try:
             client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
-            await asyncio.wait_for(client.ping(), timeout=5.0)
+            await _wait_for(client.ping(), timeout=5.0)
         except Exception as exc:
             if client is not None:
                 with contextlib.suppress(Exception):
@@ -2883,7 +2908,9 @@ class Pipe:
                 if not self._redis_client:
                     break
 
-                queue_depth = await self._redis_client.llen(self._redis_pending_key)
+                queue_depth = await _wait_for(
+                    self._redis_client.llen(self._redis_pending_key)
+                )
                 if queue_depth > warn_threshold:
                     self.logger.warning("⚠️ Redis pending queue backed up: %d items (threshold: %d)", queue_depth, warn_threshold)
                 elif queue_depth > 0:
@@ -2912,11 +2939,13 @@ class Pipe:
         lock_acquired = False
         try:
             lock_acquired = bool(
-                await self._redis_client.set(
-                    self._redis_flush_lock_key,
-                    lock_token,
-                    nx=True,
-                    ex=5,
+                await _wait_for(
+                    self._redis_client.set(
+                        self._redis_flush_lock_key,
+                        lock_token,
+                        nx=True,
+                        ex=5,
+                    )
                 )
             )
             if not lock_acquired:
@@ -2927,7 +2956,7 @@ class Pipe:
             raw_entries: list[str] = []
             batch_size = self.valves.DB_BATCH_SIZE
             while len(rows) < batch_size:
-                data = await self._redis_client.lpop(self._redis_pending_key)
+                data = await _wait_for(self._redis_client.lpop(self._redis_pending_key))
                 if data is None:
                     break
                 raw_entries.append(data)
@@ -2961,11 +2990,13 @@ class Pipe:
                     "else return 0 end"
                 )
                 try:
-                    await self._redis_client.eval(
-                        release_script,
-                        1,
-                        self._redis_flush_lock_key,
-                        lock_token,
+                    await _wait_for(
+                        self._redis_client.eval(
+                            release_script,
+                            1,
+                            self._redis_flush_lock_key,
+                            lock_token,
+                        )
                     )
                 except Exception:
                     # Redis errors during lock release are non-fatal - continue pipe operation
@@ -2992,10 +3023,10 @@ class Pipe:
             for row in rows:
                 serialized = json.dumps(row, ensure_ascii=False)
                 pipe.rpush(self._redis_pending_key, serialized)
-            await pipe.execute()
+            await _wait_for(pipe.execute())
 
             await self._redis_cache_rows(rows)
-            await self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush")
+            await _wait_for(self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
 
             self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
             return [row["id"] for row in rows]
@@ -3013,7 +3044,7 @@ class Pipe:
             if not cache_key:
                 continue
             pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
-        await pipe.execute()
+        await _wait_for(pipe.execute())
 
     async def _redis_requeue_entries(self, entries: list[str]) -> None:
         """Push raw JSON entries back onto the pending queue after a DB failure."""
@@ -3023,7 +3054,7 @@ class Pipe:
         for payload in reversed(entries):
             pipe.lpush(self._redis_pending_key, payload)
         pipe.expire(self._redis_pending_key, max(self._redis_ttl, 60))
-        await pipe.execute()
+        await _wait_for(pipe.execute())
 
     async def _redis_fetch_rows(
         self,
@@ -3041,7 +3072,7 @@ class Pipe:
                 id_lookup.append(item_id)
         if not keys:
             return {}
-        values = await self._redis_client.mget(keys)
+        values = await _wait_for(self._redis_client.mget(keys))
         cached: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
             if not raw:
@@ -4321,7 +4352,7 @@ class Pipe:
             keys = [self._redis_cache_key(chat_id, artifact_id) for chat_id, artifact_id in refs]
             keys = [key for key in keys if key]
             if keys:
-                await self._redis_client.delete(*keys)
+                await _wait_for(self._redis_client.delete(*keys))
 
     # ─────────────────────────────────────────────────────────────────────────────
     # File and Image Handling Helpers
@@ -5207,7 +5238,9 @@ class Pipe:
             "ts": ts,
         }
         try:
-            await self._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)
+            await _wait_for(
+                self._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)
+            )
         except Exception as exc:  # pragma: no cover - Redis failures logged, not fatal
             self.logger.debug("Cost snapshot write failed for user=%s: %s", user_id, exc)
 
@@ -5275,8 +5308,8 @@ class Pipe:
         self,
         body: dict[str, Any],
         __user__: dict[str, Any],
-        __request__: Request,
-        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]],
+        __request__: Request | None,
+        __event_emitter__: EventEmitter | None,
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
@@ -5372,8 +5405,8 @@ class Pipe:
         self,
         body: dict[str, Any],
         __user__: dict[str, Any],
-        __request__: Request,
-        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]],
+        __request__: Request | None,
+        __event_emitter__: EventEmitter | None,
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
@@ -5578,8 +5611,8 @@ class Pipe:
         self,
         body: dict[str, Any],
         __user__: dict[str, Any],
-        __request__: Request,
-        __event_emitter__: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        __request__: Request | None,
+        __event_emitter__: EventEmitter | None,
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
@@ -7106,8 +7139,6 @@ class Pipe:
 
         return openai_input
 
-    @classmethod
-
     def _should_retry_without_reasoning(
         self,
         error: OpenRouterAPIError,
@@ -7173,7 +7204,7 @@ class Pipe:
         self,
         body: ResponsesBody,
         valves: Pipe.Valves,
-        event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
+        event_emitter: EventEmitter | None,
         metadata: dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
         session: aiohttp.ClientSession | None = None,
@@ -8157,7 +8188,7 @@ class Pipe:
         self,
         body: ResponsesBody,
         valves: Pipe.Valves,
-        event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
+        event_emitter: EventEmitter | None,
         metadata: Dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
         session: aiohttp.ClientSession | None = None,
@@ -8394,9 +8425,10 @@ class Pipe:
                                         )
                                         if rate_scope:
                                             extra_meta["rate_limit_type"] = rate_scope
+                                        reason_text = resp.reason or "HTTP error"
                                         producer_error = _build_openrouter_api_error(
                                             resp.status,
-                                            resp.reason,
+                                            reason_text,
                                             error_body,
                                             requested_model=request_body.get("model"),
                                             extra_metadata=extra_meta or None,
@@ -8622,9 +8654,10 @@ class Pipe:
                                 )
                                 if rate_scope:
                                     extra_meta["rate_limit_type"] = rate_scope
+                                reason_text = resp.reason or "HTTP error"
                                 raise _build_openrouter_api_error(
                                     resp.status,
-                                    resp.reason,
+                                    reason_text,
                                     error_body,
                                     requested_model=request_params.get("model"),
                                     extra_metadata=extra_meta or None,
@@ -8684,7 +8717,7 @@ class Pipe:
         self._redis_ready_task = None
         if self._redis_client:
             with contextlib.suppress(Exception):
-                await self._redis_client.close()
+                await _wait_for(self._redis_client.close())
             self._redis_client = None
 
     # 4.6 Tool Execution Logic
@@ -8708,7 +8741,19 @@ class Pipe:
         breaker_only_skips = True
 
         for call in calls:
-            tool_cfg = tools.get(call.get("name"))
+            raw_name = call.get("name")
+            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+            if not tool_name:
+                breaker_only_skips = False
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        "Tool call missing name",
+                        status="failed",
+                    )
+                )
+                continue
+            tool_cfg = tools.get(tool_name)
             if not tool_cfg:
                 breaker_only_skips = False
                 outputs.append(
@@ -8814,7 +8859,12 @@ class Pipe:
 
         tasks: list[Awaitable] = []
         for call in calls:
-            tool_cfg = tools.get(call.get("name"))
+            raw_name = call.get("name")
+            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+            if not tool_name:
+                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool call missing name")))
+                continue
+            tool_cfg = tools.get(tool_name)
             if not tool_cfg:
                 tasks.append(asyncio.sleep(0, result=RuntimeError("Tool not found")))
                 continue
@@ -8886,8 +8936,8 @@ class Pipe:
 
     def _wrap_safe_event_emitter(
         self,
-        emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
-    ) -> Callable[[dict[str, Any]], Awaitable[None]] | None:
+        emitter: EventEmitter | None,
+    ) -> EventEmitter | None:
         """Return an emitter wrapper that swallows downstream transport errors."""
 
         if emitter is None:
@@ -8907,7 +8957,7 @@ class Pipe:
         self,
         exc: OpenRouterAPIError,
         *,
-        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        event_emitter: EventEmitter | None,
         normalized_model_id: Optional[str],
         api_model_id: Optional[str],
         usage: Optional[dict[str, Any]] = None,
@@ -8961,7 +9011,7 @@ class Pipe:
         return self.valves.OPENROUTER_ERROR_TEMPLATE
     async def _emit_error(
         self,
-        event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
+        event_emitter: EventEmitter | None,
         error_obj: Exception | str,
         *,
         show_error_message: bool = True,
@@ -9000,7 +9050,7 @@ class Pipe:
 
     async def _emit_templated_error(
         self,
-        event_emitter: Optional[Callable[[dict[str, Any]], Awaitable[None]]],
+        event_emitter: EventEmitter | None,
         *,
         template: str,
         variables: dict[str, Any],
@@ -9082,9 +9132,12 @@ class Pipe:
         """Return an OpenRouterAPIError for SSE error payloads, if present."""
         if not isinstance(event, dict):
             return None
-        event_type = (event.get("type") or "").strip()
-        response_block = event.get("response") if isinstance(event.get("response"), dict) else None
-        error_block = event.get("error") if isinstance(event.get("error"), dict) else None
+        event_data: dict[str, Any] = event
+        event_type = (event_data.get("type") or "").strip()
+        response_raw = event_data.get("response")
+        response_block = response_raw if isinstance(response_raw, dict) else None
+        error_raw = event_data.get("error")
+        error_block = error_raw if isinstance(error_raw, dict) else None
         has_error = error_block is not None
         if isinstance(response_block, dict):
             if response_block.get("status") == "failed" or isinstance(response_block.get("error"), dict):
@@ -9093,7 +9146,7 @@ class Pipe:
             has_error = True
         if not has_error:
             return None
-        return self._build_streaming_openrouter_error(event, requested_model=requested_model)
+        return self._build_streaming_openrouter_error(event_data, requested_model=requested_model)
 
     def _build_streaming_openrouter_error(
         self,
@@ -9163,7 +9216,7 @@ class Pipe:
 
     async def _emit_citation(
         self,
-        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        event_emitter: EventEmitter | None,
         citation: Dict[str, Any],
     ) -> None:
         """Send a normalized citation block to the UI if an emitter is available."""
@@ -9217,7 +9270,7 @@ class Pipe:
 
     async def _emit_completion(
         self,
-        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        event_emitter: EventEmitter | None,
         *,
         content: str | None = "",                       # always included (may be "").  UI will stall if you leave it out.
         title:   str | None = None,                     # optional title.
@@ -9249,7 +9302,7 @@ class Pipe:
 
     async def _emit_notification(
         self,
-        event_emitter: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        event_emitter: EventEmitter | None,
         content: str,
         *,
         level: Literal["info", "success", "warning", "error"] = "info",
@@ -9560,7 +9613,7 @@ class SessionLogger:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _wrap_event_emitter(
-    emitter: Callable[[Dict[str, Any]], Awaitable[None]] | None,
+    emitter: EventEmitter | None,
     *,
     suppress_chat_messages: bool = False,
     suppress_completion: bool = False,
