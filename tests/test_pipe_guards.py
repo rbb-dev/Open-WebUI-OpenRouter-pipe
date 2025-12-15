@@ -11,6 +11,9 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     OpenRouterAPIError,
     Pipe,
     ResponsesBody,
+    ModelFamily,
+    generate_item_id,
+    _serialize_marker,
 )
 
 
@@ -286,6 +289,59 @@ def test_retry_without_reasoning_handles_reasoning_dict():
         )
         assert pipe._should_retry_without_reasoning(err, body) is True
         assert body.reasoning is None
+    finally:
+        pipe.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_transform_messages_skips_image_generation_artifacts(monkeypatch):
+    pipe = Pipe()
+    marker = generate_item_id()
+    serialized = _serialize_marker(marker)
+
+    async def fake_loader(chat_id, message_id, ulids):
+        assert ulids == [marker]
+        return {
+            marker: {
+                "type": "image_generation_call",
+                "id": "img1",
+                "status": "completed",
+                "result": "data:image/png;base64,AAA",
+            }
+        }
+
+    messages = [
+        {
+            "role": "assistant",
+            "message_id": "assistant-1",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": f"Here is your image {serialized}",
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "message_id": "user-2",
+            "content": [{"type": "input_text", "text": "Please continue"}],
+        },
+    ]
+
+    monkeypatch.setattr(
+        ModelFamily,
+        "supports",
+        classmethod(lambda cls, feature, model_id: True),
+    )
+
+    try:
+        result = await pipe.transform_messages_to_input(
+            messages,
+            chat_id="chat-1",
+            openwebui_model_id="provider/model",
+            artifact_loader=fake_loader,
+        )
+        assert all(item.get("type") != "image_generation_call" for item in result)
     finally:
         pipe.shutdown()
 

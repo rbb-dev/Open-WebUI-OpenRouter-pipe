@@ -56,6 +56,20 @@ def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
 
 _PIPE_RUNTIME_ID = _detect_runtime_pipe_id()
 
+# Tool artifacts that shouldn't be replayed back to the provider on future turns.
+# OpenAI's Responses docs only require reasoning/function-call outputs to be
+# preserved. Re-sending large tool payloads (image generation blobs, web search
+# telemetry, etc.) wastes context window budget and can trip provider limits.
+_NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
+    {
+        "image_generation_call",
+        "web_search_call",
+        "file_search_call",
+        "local_shell_call",
+        "mcp_call",
+    }
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Imports
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2163,6 +2177,36 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             value = allowed_reasoning
         filtered[key] = value
     return filtered
+
+
+def _filter_replayable_input_items(
+    items: Any,
+    *,
+    logger: logging.Logger = LOGGER,
+) -> Any:
+    """Strip tool artifacts we must not replay back to the provider."""
+    if not isinstance(items, list):
+        return items
+
+    filtered: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            filtered.append(item)
+            continue
+        item_type = str(item.get("type") or "").lower()
+        if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
+            logger.debug(
+                "Input sanitizer removed %s artifact at index %d (id=%s).",
+                item_type,
+                idx,
+                item.get("id"),
+            )
+            continue
+        filtered.append(item)
+
+    if len(filtered) != len(items):
+        return filtered
+    return items
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5902,6 +5946,7 @@ class Pipe:
             transformer_valves=valves,
 
         )
+        self._sanitize_request_input(responses_body)
         self._apply_reasoning_preferences(responses_body, valves)
         self._apply_gemini_thinking_config(responses_body, valves)
         self._apply_context_transforms(responses_body, valves)
@@ -6279,6 +6324,21 @@ class Pipe:
         if responses_body.transforms is not None:
             return
         responses_body.transforms = ["middle-out"]
+
+    def _sanitize_request_input(self, body: ResponsesBody) -> None:
+        """Remove non-replayable artifacts that may have snuck into body.input."""
+        items = getattr(body, "input", None)
+        if not isinstance(items, list):
+            return
+        sanitized = _filter_replayable_input_items(items, logger=self.logger)
+        if sanitized is items:
+            return
+        removed = len(items) - len(sanitized)
+        self.logger.debug(
+            "Sanitized provider input: removed %d non-replayable artifact(s).",
+            removed,
+        )
+        body.input = sanitized
 
     async def transform_messages_to_input(
         self: "Pipe",
@@ -7303,6 +7363,12 @@ class Pipe:
                         except Exception as exc:
                             self.logger.error("Failed to reuse assistant image: %s", exc)
                     if fallback_blocks:
+                        self.logger.debug(
+                            "Rehydrating %d assistant-generated image(s) due to empty user attachments (selection_mode=%s, limit=%d).",
+                            len(fallback_blocks),
+                            selection_mode,
+                            image_limit,
+                        )
                         converted_blocks = fallback_blocks + converted_blocks
                         user_images_used = len(fallback_blocks)
 
@@ -7401,7 +7467,13 @@ class Pipe:
                             replayed_reasoning_refs.append((chat_id, segment["marker"]))
                         item = _normalize_persisted_item(payload)
                         if item is not None:
-                            item_type = item.get("type")
+                            item_type = ((item.get("type") or "").lower())
+                            if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
+                                self.logger.debug(
+                                    "Skipping %s artifact when rebuilding provider context (not replayable).",
+                                    item_type,
+                                )
+                                continue
                             if (
                                 item_type == "function_call"
                                 and item.get("call_id") in orphaned_call_ids
@@ -7894,6 +7966,7 @@ class Pipe:
         try:
             for _ in range(valves.MAX_FUNCTION_CALL_LOOPS):
                 final_response: dict[str, Any] | None = None
+                self._sanitize_request_input(body)
                 request_payload = body.model_dump(exclude_none=True)
                 api_model_override = getattr(body, "api_model", None)
                 if api_model_override:
@@ -8341,6 +8414,7 @@ class Pipe:
                 if call_items:
                     note_model_activity()  # Cancel thinking tasks when function calls begin
                     body.input.extend(call_items)
+                    self._sanitize_request_input(body)
 
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
                 self.logger.debug("📞 Found %d function_call items in response", len(calls))
@@ -8384,6 +8458,7 @@ class Pipe:
                             cancel_thinking()
                         self.logger.debug("Received tool result\n%s", result_text)
                     body.input.extend(function_outputs)
+                    self._sanitize_request_input(body)
                 else:
                     break
 
