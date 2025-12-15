@@ -82,7 +82,7 @@ Unable to submit request because Thinking_config.include_thoughts is only enable
 Without special handling this manifested as a 400 error card. Starting in `open_webui_openrouter_pipe.py:6956-7002` the pipe now:
 
 1. Detects that specific error text (`Thinking_config.include_thoughts…`) via `_should_retry_without_reasoning`.
-2. Automatically removes `include_reasoning`/`reasoning` from the outgoing payload.
+2. Automatically removes the `reasoning` payload (and the legacy `include_reasoning` flag when present) from the outgoing request.
 3. Retries the request exactly once, keeping the original stream/non-stream mode.
 4. Falls back to the normal error template only if the retry also fails.
 

@@ -67,7 +67,7 @@ This note captures everything operators need to know about “task models” ins
 ## 5. code paths worth knowing
 
 * `_process_transformed_request` (≈ line 6846) detects `__task__` payloads and logs `"Detected task model"` so operators see it in DEBUG logs.
-* `_apply_task_reasoning_preferences` applies the `TASK_MODEL_REASONING_EFFORT` valve and toggles `include_reasoning` off when the provider lacks native reasoning support.
+* `_apply_task_reasoning_preferences` applies the `TASK_MODEL_REASONING_EFFORT` valve, preferring the unified `reasoning` payload and falling back to the legacy `include_reasoning` flag only when a model lacks native support (or disabling reasoning entirely when requested).
 * `_run_task_model_request` emits targeted retries (two attempts) and strips unsupported parameters before calling the Responses API.
 * `_extract_task_output_text` converts the Responses payload into plain text, returning the first assistant message or the fallback `output_text` list.
 
@@ -94,4 +94,3 @@ Knowing these entry points helps when you trace why a specific task run failed o
 3. **Review task latency weekly.** Use the Open WebUI telemetry or OpenRouter usage logs; aim for <2s p95 per housekeeping run.
 
 By following these guardrails you ensure housekeeping stays invisible, cheap, and reliable—letting flagship models handle the conversations that users actually see.
-

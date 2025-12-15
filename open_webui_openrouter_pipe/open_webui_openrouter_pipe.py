@@ -1578,6 +1578,114 @@ def _build_openrouter_api_error(
     )
 
 
+def _is_reasoning_effort_error(error_details: dict[str, Any]) -> bool:
+    """Return True when the provider rejected reasoning.effort as unsupported."""
+    provider_raw = error_details.get("provider_raw")
+    if not isinstance(provider_raw, dict):
+        return False
+    upstream_error = provider_raw.get("error", {})
+    if not isinstance(upstream_error, dict):
+        return False
+    return (
+        upstream_error.get("param") == "reasoning.effort"
+        and upstream_error.get("code") == "unsupported_value"
+        and upstream_error.get("type") == "invalid_request_error"
+    )
+
+
+def _parse_supported_effort_values(error_message: str) -> list[str]:
+    """Extract the list of supported reasoning efforts from an OpenRouter error."""
+    import re
+
+    match = re.search(r"Supported values are:\s*(.+?)\.", error_message, re.IGNORECASE)
+    if not match:
+        return []
+    values_str = match.group(1)
+    return re.findall(r"'([^']+)'", values_str)
+
+
+def _select_best_effort_fallback(requested: str, supported: list[str]) -> Optional[str]:
+    """Choose the closest supported effort to retry with."""
+    ordering = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    if not supported:
+        return None
+    requested_lower = (requested or "").strip().lower()
+    supported_lower = [value.strip().lower() for value in supported if value]
+    if requested_lower in supported_lower:
+        return requested_lower
+    try:
+        requested_idx = ordering.index(requested_lower)
+    except ValueError:
+        return supported_lower[0] if supported_lower else None
+    indexed: list[tuple[int, str]] = []
+    for value in supported_lower:
+        try:
+            indexed.append((ordering.index(value), value))
+        except ValueError:
+            continue
+    if not indexed:
+        return supported_lower[0] if supported_lower else None
+    indexed.sort()
+    min_idx, min_value = indexed[0]
+    max_idx, max_value = indexed[-1]
+    if requested_idx <= min_idx:
+        return min_value
+    if requested_idx >= max_idx:
+        return max_value
+    for idx, value in indexed:
+        if idx > requested_idx:
+            return value
+    closest = None
+    distance = float("inf")
+    for idx, value in indexed:
+        delta = abs(idx - requested_idx)
+        if delta < distance:
+            closest = value
+            distance = delta
+    return closest
+
+
+def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
+    """Return the Gemini thinking family for the provided normalized model id."""
+    lowered = (normalized_model_id or "").lower()
+    if lowered.startswith("google.gemini-3-") or lowered == "google.gemini-3":
+        return "gemini-3"
+    if lowered.startswith("google.gemini-2.5-") or lowered == "google.gemini-2.5":
+        return "gemini-2.5"
+    return None
+
+
+def _map_effort_to_gemini_level(effort: str, valve_level: str) -> Optional[str]:
+    """Map our reasoning effort preference onto Gemini 3 thinking levels."""
+    effective = (valve_level or "auto").strip().lower()
+    if effective in {"low", "high"}:
+        return effective.upper()
+    normalized = (effort or "").strip().lower()
+    if normalized in {"none", ""}:
+        return None
+    if normalized in {"minimal", "low"}:
+        return "LOW"
+    return "HIGH"
+
+
+def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> Optional[int]:
+    """Scale the configured Gemini 2.5 thinking budget from the requested effort."""
+    if base_budget <= 0:
+        return 0 if base_budget == 0 else None
+    normalized = (effort or "").strip().lower()
+    if normalized == "none":
+        return None
+    scalars = {
+        "minimal": 0.25,
+        "low": 0.5,
+        "medium": 1.0,
+        "high": 2.0,
+        "xhigh": 4.0,
+    }
+    scalar = scalars.get(normalized, 1.0)
+    return int(max(1, round(base_budget * scalar)))
+
+
 class OpenRouterAPIError(RuntimeError):
     """User-facing error raised when OpenRouter rejects a request with status 400."""
 
@@ -1770,6 +1878,7 @@ class ResponsesBody(BaseModel):
     max_output_tokens: Optional[int] = None
     reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
     include_reasoning: Optional[bool] = None
+    thinking_config: Optional[Dict[str, Any]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
@@ -2188,22 +2297,43 @@ class Pipe:
                 "manages `transforms` manually."
             ),
         )
-        REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+        REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
             default="medium",
             title="Reasoning effort",
-            description="Default reasoning effort to request from supported models. Higher effort spends more tokens to think through tough problems.",
+            description=(
+                "Default reasoning effort to request from supported models. Use 'none' to skip reasoning entirely "
+                "or 'xhigh' when maximum depth is desired (only on supporting models)."
+            ),
         )
         REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
             default="auto",
             title="Reasoning summary",
             description="Controls the reasoning summary emitted by supported models (auto/concise/detailed). Set to 'disabled' to skip requesting reasoning summaries.",
         )
+        GEMINI_THINKING_LEVEL: Literal["auto", "low", "high"] = Field(
+            default="auto",
+            title="Gemini 3 thinking level",
+            description=(
+                "Controls the thinking_level sent to Gemini 3.x models. 'auto' maps minimal/low effort to LOW and "
+                "everything else to HIGH. Set explicitly to 'low' or 'high' to override."
+            ),
+        )
+        GEMINI_THINKING_BUDGET: int = Field(
+            default=1024,
+            ge=0,
+            le=65536,
+            title="Gemini 2.5 thinking budget",
+            description=(
+                "Base thinking budget (tokens) for Gemini 2.5 models. When 0, thinking is disabled. "
+                "When non-zero, the pipe scales this value based on reasoning effort (minimal → smaller, xhigh → larger)."
+            ),
+        )
         PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
             default="conversation",
             title="Reasoning retention",
             description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history.",
         )
-        TASK_MODEL_REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+        TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
             default="low",
             title="Task reasoning effort",
             description=(
@@ -2599,10 +2729,10 @@ class Pipe:
             title="Show reasoning steps",
             description="While the AI works, show its step-by-step reasoning when supported.",
         )
-        REASONING_EFFORT: Literal["minimal", "low", "medium", "high"] = Field(
+        REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
             default="medium",
             title="Reasoning depth",
-            description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough).",
+            description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). Use 'none' to disable reasoning or 'xhigh' for maximum depth when available.",
         )
         REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
             default="auto",
@@ -5773,6 +5903,7 @@ class Pipe:
 
         )
         self._apply_reasoning_preferences(responses_body, valves)
+        self._apply_gemini_thinking_config(responses_body, valves)
         self._apply_context_transforms(responses_body, valves)
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
             if responses_body.max_output_tokens is None:
@@ -5817,6 +5948,7 @@ class Pipe:
             if owns_task_model:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
                 self._apply_task_reasoning_preferences(responses_body, task_effort)
+                self._apply_gemini_thinking_config(responses_body, valves)
 
             result = await self._run_task_model_request(
                 responses_body.model_dump(),
@@ -5926,6 +6058,7 @@ class Pipe:
 
         # STEP 8: Send to OpenAI Responses API (with provider-specific fallbacks)
         reasoning_retry_attempted = False
+        reasoning_effort_retry_attempted = False
         while True:
             try:
                 if responses_body.stream:
@@ -5956,6 +6089,53 @@ class Pipe:
                     pipe_identifier=pipe_identifier,
                 )
             except OpenRouterAPIError as exc:
+                if not reasoning_effort_retry_attempted:
+                    error_details = {"provider_raw": exc.provider_raw}
+                    if _is_reasoning_effort_error(error_details):
+                        original_effort = None
+                        if isinstance(responses_body.reasoning, dict):
+                            original_effort = responses_body.reasoning.get("effort")
+
+                        error_message = exc.upstream_message or exc.openrouter_message or ""
+                        supported_values = _parse_supported_effort_values(error_message)
+
+                        if supported_values:
+                            fallback_effort = _select_best_effort_fallback(
+                                original_effort or "",
+                                supported_values,
+                            )
+                            if fallback_effort:
+                                self.logger.info(
+                                    "Reasoning effort '%s' not supported by model %s. Retrying with '%s'. Supported values: %s",
+                                    original_effort,
+                                    responses_body.model,
+                                    fallback_effort,
+                                    ", ".join(supported_values),
+                                )
+                                if __event_emitter__:
+                                    try:
+                                        await __event_emitter__(
+                                            {
+                                                "type": "status",
+                                                "data": {
+                                                    "description": (
+                                                        f"Adjusting reasoning effort from '{original_effort}' to "
+                                                        f"'{fallback_effort}' (model doesn't support '{original_effort}')"
+                                                    ),
+                                                    "done": False,
+                                                },
+                                            }
+                                        )
+                                    except Exception as emit_error:
+                                        self.logger.debug("Failed to emit status update: %s", emit_error)
+
+                                if not isinstance(responses_body.reasoning, dict):
+                                    responses_body.reasoning = {}
+                                responses_body.reasoning["effort"] = fallback_effort
+                                reasoning_effort_retry_attempted = True
+                                self._apply_gemini_thinking_config(responses_body, valves)
+                                continue
+
                 if (
                     not reasoning_retry_attempted
                     and self._should_retry_without_reasoning(exc, responses_body)
@@ -5980,30 +6160,40 @@ class Pipe:
 
         supported = ModelFamily.supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
-        supports_include = "include_reasoning" in supported
-        summary_mode = (getattr(valves, "REASONING_SUMMARY_MODE", "auto") or "auto").strip().lower()
+        supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
+        summary_mode = (
+            (getattr(valves, "REASONING_SUMMARY_MODE", "auto") or "auto")
+            .strip()
+            .lower()
+        )
         valid_summary_modes = {"auto", "concise", "detailed"}
         requested_summary: Optional[str] = None
         if summary_mode != "disabled":
-            requested_summary = summary_mode if summary_mode in valid_summary_modes else "auto"
+            requested_summary = (
+                summary_mode if summary_mode in valid_summary_modes else "auto"
+            )
+
+        target_effort = (getattr(valves, "REASONING_EFFORT", "") or "").strip().lower()
 
         if supports_reasoning:
-            cfg = responses_body.reasoning or {}
-            if not isinstance(cfg, dict):
-                cfg = {}
-            if valves.REASONING_EFFORT and "effort" not in cfg:
-                cfg["effort"] = valves.REASONING_EFFORT
+            cfg: dict[str, Any] = {}
+            if isinstance(responses_body.reasoning, dict):
+                cfg = dict(responses_body.reasoning)
+            if target_effort and "effort" not in cfg:
+                cfg["effort"] = target_effort
             if requested_summary and "summary" not in cfg:
                 cfg["summary"] = requested_summary
             cfg.setdefault("enabled", True)
-            if cfg:
-                responses_body.reasoning = cfg
-        elif supports_include:
-            if getattr(responses_body, "include_reasoning", None) is None:
-                setattr(responses_body, "include_reasoning", True)
+            responses_body.reasoning = cfg or None
+            if getattr(responses_body, "include_reasoning", None) is not None:
+                setattr(responses_body, "include_reasoning", None)
+        elif supports_legacy_only:
             responses_body.reasoning = None
+            desired = target_effort not in {"none", ""}
+            setattr(responses_body, "include_reasoning", desired)
         else:
             responses_body.reasoning = None
+            setattr(responses_body, "include_reasoning", False)
 
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
         """Override reasoning effort for task models."""
@@ -6011,19 +6201,75 @@ class Pipe:
             return
         supported = ModelFamily.supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
-        supports_include = "include_reasoning" in supported
+        supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         target_effort = effort.strip().lower()
+
         if supports_reasoning:
-            cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+            cfg = (
+                responses_body.reasoning
+                if isinstance(responses_body.reasoning, dict)
+                else {}
+            )
             cfg = dict(cfg) if cfg else {}
             cfg["effort"] = target_effort
             cfg.setdefault("enabled", True)
             responses_body.reasoning = cfg
-        elif supports_include:
+            if getattr(responses_body, "include_reasoning", None) is not None:
+                setattr(responses_body, "include_reasoning", None)
+        elif supports_legacy_only:
             responses_body.reasoning = None
-            setattr(responses_body, "include_reasoning", target_effort != "minimal")
+            desired = target_effort not in {"none", "minimal"}
+            setattr(responses_body, "include_reasoning", desired)
         else:
             responses_body.reasoning = None
+            setattr(responses_body, "include_reasoning", False)
+
+    def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
+        """Translate reasoning preferences into Vertex thinking_config for Gemini models."""
+        normalized_model = ModelFamily.base_model(responses_body.model)
+        family = _classify_gemini_thinking_family(normalized_model)
+        if not family:
+            responses_body.thinking_config = None
+            return
+
+        reasoning_cfg = (
+            responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+        )
+        include_flag = getattr(responses_body, "include_reasoning", None)
+        effort_hint = (reasoning_cfg.get("effort") or "").strip().lower()
+        if not effort_hint:
+            effort_hint = (getattr(valves, "REASONING_EFFORT", "") or "").strip().lower()
+
+        enabled = reasoning_cfg.get("enabled", True)
+        exclude = reasoning_cfg.get("exclude", False)
+        if effort_hint == "none":
+            enabled = False
+
+        reasoning_requested = bool(include_flag) or (reasoning_cfg and enabled and not exclude)
+        if not reasoning_requested:
+            responses_body.thinking_config = None
+            setattr(responses_body, "include_reasoning", False)
+            return
+
+        thinking_config: dict[str, Any] = {"include_thoughts": True}
+        if family == "gemini-3":
+            level = _map_effort_to_gemini_level(effort_hint, valves.GEMINI_THINKING_LEVEL)
+            if level is None:
+                responses_body.thinking_config = None
+                setattr(responses_body, "include_reasoning", False)
+                return
+            thinking_config["thinking_level"] = level
+        elif family == "gemini-2.5":
+            budget = _map_effort_to_gemini_budget(effort_hint, valves.GEMINI_THINKING_BUDGET)
+            if budget is None:
+                responses_body.thinking_config = None
+                setattr(responses_body, "include_reasoning", False)
+                return
+            thinking_config["thinking_budget"] = budget
+
+        responses_body.thinking_config = thinking_config
+        responses_body.reasoning = None
+        setattr(responses_body, "include_reasoning", None)
 
     def _apply_context_transforms(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
         """Attach OpenRouter's middle-out transform when auto trimming is enabled."""
@@ -7229,7 +7475,9 @@ class Pipe:
         """Return True when we can retry the request after disabling reasoning."""
 
         include_flag = getattr(responses_body, "include_reasoning", None)
-        if not include_flag:
+        has_reasoning_dict = bool(getattr(responses_body, "reasoning", None))
+        has_thinking_config = bool(getattr(responses_body, "thinking_config", None))
+        if not any((include_flag, has_reasoning_dict, has_thinking_config)):
             return False
 
         trigger_phrases = (
@@ -7249,6 +7497,7 @@ class Pipe:
             if any(trigger in lowered for trigger in trigger_phrases):
                 setattr(responses_body, "include_reasoning", False)
                 responses_body.reasoning = None
+                responses_body.thinking_config = None
                 self.logger.info(
                     "Retrying without reasoning for model '%s' after provider rejected include_reasoning without thinking.",
                     responses_body.model,

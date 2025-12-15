@@ -1465,3 +1465,10 @@ Add dedicated suites for helper utilities, module helpers, and registry plumbing
 - Added `_qualify_model_for_pipe` to consistently generate `pipe.model` ids and switched both streaming and task flows to use it before writing Redis cost snapshots.
 - Extended `_run_task_model_request` to accept user/pipe context, capture non-streaming usage payloads, and attempt `_maybe_dump_costs_snapshot` behind a guarded try/except so housekeeping runs never crash the pipe.
 - Covered the new flow with tests and updated the telemetry doc to note that task models now appear in the Redis cost export.
+
+### Details
+- Migrated `_apply_reasoning_preferences` and `_apply_task_reasoning_preferences` to send OpenRouter’s unified `reasoning` payload whenever a model advertises native support, falling back to the legacy `include_reasoning` flag only when necessary. This fixes Gemini image edits that previously failed because we requested `include_thoughts` without enabling `thinking`.
+- Enhanced `_should_retry_without_reasoning` and the reasoning-effort fallback so they mutate the new payload structure, ensuring we can still recover from provider validation errors after the migration.
+- Added regression tests covering reasoning-preferring flows, legacy-only models, the new “none/xhigh” effort options, and the retry logic for both legacy and modern payloads.
+- Added explicit `thinking_config` translation plus Gemini-specific valves so Gemini 2.5/3.x requests send the required `thinking_level`/`thinking_budget` knobs, preventing Vertex from rejecting `includeThoughts`. Updated docs and guard tests to cover the new behavior.
+- Updated `docs/valves_and_configuration_atlas.md`, `docs/task_models_and_housekeeping.md`, and `docs/error_handling_and_user_experience.md` to document the expanded effort levels, automatic downgrades, and the fact that we now prioritize the `reasoning` object.

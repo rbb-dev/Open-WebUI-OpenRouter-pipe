@@ -185,6 +185,8 @@ def test_apply_task_reasoning_preferences_include_only(monkeypatch):
         pipe._apply_task_reasoning_preferences(body, "minimal")
         assert body.reasoning is None
         assert body.include_reasoning is False
+        pipe._apply_task_reasoning_preferences(body, "none")
+        assert body.include_reasoning is False
         pipe._apply_task_reasoning_preferences(body, "low")
         assert body.include_reasoning is True
     finally:
@@ -196,6 +198,7 @@ def test_retry_without_reasoning_handles_thinking_error():
     try:
         body = ResponsesBody(model="fake", input=[])
         body.include_reasoning = True
+        body.thinking_config = {"include_thoughts": True}
         err = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
@@ -204,6 +207,7 @@ def test_retry_without_reasoning_handles_thinking_error():
         assert pipe._should_retry_without_reasoning(err, body) is True
         assert body.include_reasoning is False
         assert body.reasoning is None
+        assert body.thinking_config is None
     finally:
         pipe.shutdown()
 
@@ -220,6 +224,112 @@ def test_retry_without_reasoning_ignores_unrelated_errors():
         )
         assert pipe._should_retry_without_reasoning(err, body) is False
         assert body.include_reasoning is True
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_reasoning_preferences_prefers_reasoning_payload(monkeypatch):
+    pipe = Pipe()
+
+    def fake_supported(cls, model_id):
+        return frozenset({"reasoning", "include_reasoning"})
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+
+    try:
+        body = ResponsesBody(model="fake", input=[])
+        body.include_reasoning = True
+        pipe._apply_reasoning_preferences(body, pipe.Valves())
+        assert isinstance(body.reasoning, dict)
+        assert body.reasoning.get("enabled") is True
+        assert body.include_reasoning is None
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_reasoning_preferences_legacy_only_sets_flag(monkeypatch):
+    pipe = Pipe()
+
+    def fake_supported(cls, model_id):
+        return frozenset({"include_reasoning"})
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+
+    try:
+        body = ResponsesBody(model="fake", input=[])
+        valves = pipe.Valves(REASONING_EFFORT="high")
+        pipe._apply_reasoning_preferences(body, valves)
+        assert body.reasoning is None
+        assert body.include_reasoning is True
+        valves = pipe.Valves(REASONING_EFFORT="none")
+        pipe._apply_reasoning_preferences(body, valves)
+        assert body.include_reasoning is False
+    finally:
+        pipe.shutdown()
+
+
+def test_retry_without_reasoning_handles_reasoning_dict():
+    pipe = Pipe()
+    try:
+        body = ResponsesBody(model="fake", input=[])
+        body.reasoning = {"enabled": True, "effort": "medium"}
+        err = OpenRouterAPIError(
+            status=400,
+            reason="Bad Request",
+            openrouter_message="Thinking_config.include_thoughts is only enabled when thinking is enabled.",
+        )
+        assert pipe._should_retry_without_reasoning(err, body) is True
+        assert body.reasoning is None
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_gemini_thinking_config_sets_level(monkeypatch):
+    pipe = Pipe()
+
+    def fake_supported(cls, model_id):
+        return frozenset({"reasoning"})
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="high")
+        body = ResponsesBody(model="google/gemini-3-pro-image-preview", input=[])
+        pipe._apply_reasoning_preferences(body, valves)
+        pipe._apply_gemini_thinking_config(body, valves)
+        assert body.thinking_config == {"include_thoughts": True, "thinking_level": "HIGH"}
+        assert body.reasoning is None
+        assert body.include_reasoning is None
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_gemini_thinking_config_sets_budget(monkeypatch):
+    pipe = Pipe()
+
+    def fake_supported(cls, model_id):
+        return frozenset({"reasoning"})
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily.supported_parameters",
+        classmethod(fake_supported),
+    )
+
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="medium", GEMINI_THINKING_BUDGET=512)
+        body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
+        pipe._apply_reasoning_preferences(body, valves)
+        pipe._apply_gemini_thinking_config(body, valves)
+        assert body.thinking_config == {"include_thoughts": True, "thinking_budget": 512}
     finally:
         pipe.shutdown()
 
