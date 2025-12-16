@@ -8875,7 +8875,7 @@ class Pipe:
                                         if stripped.startswith(b":"):
                                             continue
                                         if stripped.startswith(b"data:"):
-                                            event_data_parts.append(stripped[5:].lstrip())
+                                            event_data_parts.append(bytes(stripped[5:].lstrip()))
                                             continue
                                     if start_idx > 0:
                                         del buf[:start_idx]
