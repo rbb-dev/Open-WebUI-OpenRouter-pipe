@@ -10,9 +10,9 @@ The OpenRouter manifold persists reasoning traces, tool inputs/outputs, and othe
 ## 1. artifact lifecycle
 
 1. **Creation** -- Whenever the streaming loop finishes a reasoning chunk or a tool execution completes, `_persist_artifacts` receives a list of dicts (`{"chat_id", "message_id", "payload", ...}`). Each entry receives a ULID (`generate_item_id`) if one was not provided and is stamped with timestamps + metadata.
-2. **Encryption & compression** -- `_prepare_payload_for_storage` inspects `self._encryption_key`, `self._encrypt_all`, and `self._compression_enabled`:
+2. **Encryption & compression** -- `_prepare_rows_for_storage()` inspects `self._encryption_key`, `self._encrypt_all`, and `self._compression_enabled`:
    * If no `ARTIFACT_ENCRYPTION_KEY` is configured, payloads are JSON blobs stored as-is.
-   * When a key is present, a Fernet cipher is constructed lazily. Each payload is serialized, optionally compressed via LZ4 (flag stored in a 1-byte header), encrypted, and base64-encoded.
+   * When a key is present, a Fernet cipher is constructed lazily. Each payload is serialized, optionally compressed via LZ4 (flag stored in a 1-byte header), encrypted, and base64-encoded. Encryption now happens **before** any Redis write so queues/caches only ever contain ciphertext (`{"ciphertext": "...", "enc_v": 1}`).
    * `ENCRYPT_ALL=False` limits encryption to reasoning tokens while leaving other artifacts plaintext. Set it to `True` to encrypt everything.
 3. **Write path** -- `_persist_artifacts` either writes directly via `_db_persist_direct` or funnels entries through Redis (`_redis_enqueue_rows`) based on the deployment. Direct writes happen through SQLAlchemy sessions running inside a `ThreadPoolExecutor` to keep the event loop non-blocking.
 4. **Marker emission** -- After rows are stored, `_serialize_marker(ulid)` strings are appended to the assistant text so `_transform_messages_to_input` can recover them on the next turn.
@@ -72,7 +72,7 @@ The snippet above lives at `open_webui_openrouter_pipe/open_webui_openrouter_pip
 Redis is optional but recommended for multi-worker deployments:
 
 1. **Eligibility check** -- `_redis_candidate` requires `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL`, `ENABLE_REDIS_CACHE=True`, and the `redis.asyncio` package. Otherwise the pipe logs why Redis stayed disabled.
-2. **Queueing** -- `_redis_enqueue_rows` pushes serialized JSON rows onto `pending` (list) and caches each payload under `artifact:{chat_id}:{row_id}` with TTL `REDIS_CACHE_TTL_SECONDS`. A pub/sub message (`db-flush`) wakes other workers so they flush immediately.
+2. **Queueing** -- `_redis_enqueue_rows` pushes serialized JSON rows onto `pending` (list) and caches each payload under `artifact:{chat_id}:{row_id}` with TTL `REDIS_CACHE_TTL_SECONDS`. When encryption is enabled, these rows already contain ciphertext so Redis never stores plaintext artifacts. A pub/sub message (`db-flush`) wakes other workers so they flush immediately.
 3. **Flushing** -- `_redis_periodic_flusher` acquires a short-lived lock (`flush_lock`) to avoid duplicate flushes, pops up to `DB_BATCH_SIZE` entries, rehydrates them, and calls `_db_persist_direct`. Failures requeue the raw JSON and increment `REDIS_FLUSH_FAILURE_LIMIT`. Exceeding the limit disables Redis automatically and logs a critical alert.
 4. **Reads** -- `_redis_fetch_rows` looks up cached artifacts when `_transform_messages_to_input` needs them. Cache hits save DB round-trips and keep multi-worker replay deterministic.
 5. **Namespacing** -- Each pipe instance sets `_redis_namespace = (self.id or \"openrouter\").lower()`, and all keys derive from it: `pending` queue, cache prefix, and flush lock. Multiple pipes can therefore share the same Redis cluster without stepping on one another.
