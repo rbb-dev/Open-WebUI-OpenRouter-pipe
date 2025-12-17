@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import datetime
 import json
 import sys
@@ -314,3 +315,71 @@ def test_decode_payload_bytes_rejects_headerless_ciphertext():
     legacy_bytes = b'{"type":"reasoning"}'
     with pytest.raises(ValueError, match="Invalid artifact payload flag"):
         pipe._decode_payload_bytes(legacy_bytes)
+
+
+def _build_encryption_ready_pipe() -> ow.Pipe:
+    pipe = ow.Pipe()
+    pipe._encryption_key = "a" * 32  # type: ignore[attr-defined]
+    pipe._encrypt_all = True  # type: ignore[attr-defined]
+    pipe._fernet = None  # type: ignore[attr-defined]
+    return pipe
+
+
+def test_prepare_rows_for_storage_encrypts_payloads():
+    pipe = _build_encryption_ready_pipe()
+    rows = [
+        {
+            "chat_id": "chat",
+            "message_id": "msg",
+            "item_type": "reasoning",
+            "payload": {"type": "reasoning", "content": "secret"},
+        }
+    ]
+    pipe._prepare_rows_for_storage(rows)
+    stored = rows[0]
+    payload = stored["payload"]
+    assert stored["is_encrypted"] is True
+    assert isinstance(payload, dict)
+    assert payload.get("enc_v") == ow._ENCRYPTED_PAYLOAD_VERSION
+    decrypted = pipe._decrypt_payload(payload["ciphertext"])
+    assert decrypted["content"] == "secret"
+
+
+def test_prepare_rows_for_storage_idempotent():
+    pipe = _build_encryption_ready_pipe()
+    rows = [
+        {
+            "chat_id": "chat",
+            "message_id": "msg",
+            "item_type": "reasoning",
+            "payload": {"type": "reasoning", "content": "secret"},
+        }
+    ]
+    pipe._prepare_rows_for_storage(rows)
+    first_payload = copy.deepcopy(rows[0]["payload"])
+    pipe._prepare_rows_for_storage(rows)
+    assert rows[0]["payload"] == first_payload
+    assert rows[0]["is_encrypted"] is True
+
+
+@pytest.mark.asyncio
+async def test_redis_fetch_rows_decrypts_cached_payloads():
+    pipe = _build_encryption_ready_pipe()
+    row = {
+        "id": "01TEST",
+        "chat_id": "chat",
+        "message_id": "msg",
+        "item_type": "reasoning",
+        "payload": {"type": "reasoning", "content": "secret"},
+    }
+    pipe._prepare_rows_for_storage([row])
+    cached_json = json.dumps(row, ensure_ascii=False)
+
+    class FakeRedis:
+        async def mget(self, keys):
+            return [cached_json]
+
+    pipe._redis_client = FakeRedis()  # type: ignore[attr-defined]
+    pipe._redis_enabled = True  # type: ignore[attr-defined]
+    fetched = await pipe._redis_fetch_rows("chat", ["01TEST"])
+    assert fetched["01TEST"]["content"] == "secret"

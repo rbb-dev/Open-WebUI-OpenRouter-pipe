@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.9
+version: 1.0.10
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
 license: MIT
 
@@ -97,7 +97,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast, no_type_check
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast, no_type_check
 from urllib.parse import urlparse
 import ast
 import email.utils
@@ -1144,6 +1144,7 @@ def sanitize_model_id(model_id: str) -> str:
 
 _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
+_ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
 # DB Persistence constants
@@ -3283,9 +3284,27 @@ class Pipe:
                 continue
             try:
                 row_data = json.loads(raw)
-                cached[item_id] = row_data.get("payload", row_data)
             except json.JSONDecodeError:
                 continue
+            payload = row_data.get("payload", row_data) if isinstance(row_data, dict) else row_data
+            is_encrypted = False
+            if isinstance(row_data, dict):
+                is_encrypted = bool(row_data.get("is_encrypted"))
+            if not is_encrypted and isinstance(payload, dict):
+                is_encrypted = "ciphertext" in payload
+            if is_encrypted:
+                ciphertext = ""
+                if isinstance(payload, dict):
+                    ciphertext = payload.get("ciphertext", "") or ""
+                elif isinstance(row_data, dict) and isinstance(row_data.get("payload"), dict):
+                    ciphertext = row_data["payload"].get("ciphertext", "") or ""
+                try:
+                    payload = self._decrypt_payload(ciphertext)
+                except Exception as exc:
+                    self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    continue
+            if isinstance(payload, dict):
+                cached[item_id] = payload
         return cached
 
     async def _artifact_cleanup_worker(self) -> None:
@@ -4249,7 +4268,28 @@ class Pipe:
         if not self._should_encrypt(item_type):
             return payload, False
         encrypted = self._encrypt_payload(payload)
-        return {"ciphertext": encrypted}, True
+        return {"ciphertext": encrypted, "enc_v": _ENCRYPTED_PAYLOAD_VERSION}, True
+
+    def _prepare_rows_for_storage(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Normalize row payloads so Redis/DB always receive the stored schema."""
+        if not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            payload = row.get("payload")
+            if (
+                row.get("is_encrypted")
+                and isinstance(payload, dict)
+                and "ciphertext" in payload
+            ):
+                payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
+                continue
+            if not isinstance(payload, dict):
+                continue
+            stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
+            row["payload"] = stored_payload
+            row["is_encrypted"] = is_encrypted
 
     def _make_db_row(
         self,
@@ -4310,15 +4350,24 @@ class Pipe:
                 persisted_rows: list[dict[str, Any]] = []
                 for row in chunk:
                     payload = row.get("payload")
-                    if not isinstance(payload, dict):
+                    if payload is None:
                         self.logger.warning(
-                            "Skipping artifact persist for chat_id=%s message_id=%s: payload is not a dict.",
+                            "Skipping artifact persist for chat_id=%s message_id=%s: payload missing or invalid.",
                             row.get("chat_id"),
                             row.get("message_id"),
                         )
                         continue
                     ulid = row.get("id") or generate_item_id()
-                    stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), payload)
+                    stored_payload = payload
+                    is_encrypted = bool(row.get("is_encrypted"))
+                    needs_encryption = (
+                        not is_encrypted
+                        or not isinstance(stored_payload, dict)
+                        or "ciphertext" not in stored_payload
+                    )
+                    if needs_encryption:
+                        raw_payload = payload if isinstance(payload, dict) else {}
+                        stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), raw_payload)
                     instances.append(
                         self._item_model(  # type: ignore[call-arg]
                             id=ulid,
@@ -4388,6 +4437,8 @@ class Pipe:
 
         for row in rows:
             row.setdefault("id", generate_item_id())
+
+        self._prepare_rows_for_storage(rows)
 
         try:
             if self._redis_enabled:
@@ -4519,18 +4570,18 @@ class Pipe:
         try:
             fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids)
             if fetched and self._redis_enabled:
-                await self._redis_cache_rows(
-                    [
-                        {
-                            "id": item_id,
-                            "chat_id": chat_id,
-                            "message_id": message_id,
-                            "payload": payload,
-                        }
-                        for item_id, payload in fetched.items()
-                    ],
-                    chat_id=chat_id,
-                )
+                cache_rows = [
+                    {
+                        "id": item_id,
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "item_type": (payload or {}).get("type", "unknown") if isinstance(payload, dict) else "unknown",
+                        "payload": payload,
+                    }
+                    for item_id, payload in fetched.items()
+                ]
+                self._prepare_rows_for_storage(cache_rows)
+                await self._redis_cache_rows(cache_rows, chat_id=chat_id)
             if user_id:
                 self._reset_db_failure(user_id)
             cached.update(fetched)
