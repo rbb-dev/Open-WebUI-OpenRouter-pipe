@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .claude/
+.qwen/
 .vscode/
 .external/
 backups/

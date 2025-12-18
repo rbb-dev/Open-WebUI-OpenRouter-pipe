@@ -13,6 +13,7 @@ The Responses manifold treats tool calling as a first-class subsystem. This docu
 2. **Open WebUI registry** -- `ResponsesBody.transform_owui_tools(__tools__)` converts each registry entry into an OpenAI-style `{type:"function", name, description, parameters}` dict. When `ENABLE_STRICT_TOOL_CALLING=True`, `_strictify_schema` rewrites every object schema to:
    * Set `additionalProperties=False` on every object node (root + nested).
    * Require all declared properties but make optional ones nullable (`{"type": ["string", "null"]}`).
+   * **Auto-infer missing types** -- Properties without a `type` key are automatically fixed: empty schemas `{}` become `{"type": "object"}`, schemas with `properties` but no type get `{"type": "object"}`, schemas with `items` but no type get `{"type": "array"}`. This defensive inference ensures malformed schemas don't cause OpenAI validation errors.
    * Cache transformed schemas (`_STRICT_SCHEMA_CACHE_SIZE=128`) so repeat calls are cheap.
 3. **MCP servers** -- `REMOTE_MCP_SERVERS_JSON` accepts either one JSON object or a list of objects describing remote servers. `_build_mcp_tools` validates URLs (`http/https/ws/wss` only), whitelists fields (`server_label`, `server_url`, `require_approval`, `allowed_tools`, `headers`), and emits `{"type": "mcp", ...}` entries.
 4. **Filter-provided `extra_tools`** -- Upstream filters can attach a list of already-sanitized tool dicts on `completions_body.extra_tools`. The builder simply appends them.

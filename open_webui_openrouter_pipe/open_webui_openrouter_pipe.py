@@ -10523,6 +10523,17 @@ def _strictify_schema(schema):
 def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
+
+    Applies strict-mode transformations to JSON schemas:
+    - Ensures all object nodes have `additionalProperties: false`
+    - Makes all properties required
+    - Makes optional properties nullable by adding "null" to their type
+    - **Auto-infers missing types**: Adds default types to properties without one:
+      * Empty schemas `{}` → `{"type": "object"}`
+      * Schemas with `properties` but no type → `{"type": "object"}`
+      * Schemas with `items` but no type → `{"type": "array"}`
+
+    This defensive type inference ensures schemas are valid for OpenAI strict mode.
     """
     root_t = schema.get("type")
     if not (
@@ -10570,6 +10581,40 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
             for name, p in props.items():
                 if not isinstance(p, dict):
                     continue
+
+                # Ensure every property schema has a type key (strict mode requirement)
+                if "type" not in p:
+                    schema_structure_keys = {"properties", "items", "anyOf", "oneOf", "allOf"}
+                    has_nested_structure = any(k in p for k in schema_structure_keys)
+
+                    if has_nested_structure:
+                        if "properties" in p:
+                            p["type"] = "object"
+                            LOGGER.debug(
+                                "Added inferred type 'object' to property '%s' which has 'properties' but no explicit type. "
+                                "Consider fixing the schema definition at the source.",
+                                name
+                            )
+                        elif "items" in p:
+                            p["type"] = "array"
+                            LOGGER.debug(
+                                "Added inferred type 'array' to property '%s' which has 'items' but no explicit type. "
+                                "Consider fixing the schema definition at the source.",
+                                name
+                            )
+                        # For anyOf/oneOf/allOf without type, don't add a default
+                        # Let OpenAI validation handle these complex cases
+                    else:
+                        # Empty or minimal schema (e.g., {"description": "..."} or just {})
+                        # Default to object as the safest, most flexible type
+                        p["type"] = "object"
+                        LOGGER.debug(
+                            "Added default type 'object' to property '%s' with no type or schema structure. "
+                            "This indicates an incomplete schema definition that should be fixed at the source.",
+                            name
+                        )
+
+                # Handle optional fields by adding null to type
                 if name in optional_candidates:
                     ptype = p.get("type")
                     if isinstance(ptype, str) and ptype != "null":
@@ -10580,6 +10625,10 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
 
         items = node.get("items")
         if isinstance(items, dict):
+            # Ensure items schema has a type key
+            if "type" not in items and "properties" not in items and "items" not in items:
+                items["type"] = "object"
+                LOGGER.debug("Added default type 'object' to empty items schema")
             stack.append(items)
         elif isinstance(items, list):
             for it in items:
@@ -10591,6 +10640,10 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(branches, list):
                 for br in branches:
                     if isinstance(br, dict):
+                        # Ensure branch schema has a type key
+                        if "type" not in br and "properties" not in br and "items" not in br:
+                            br["type"] = "object"
+                            LOGGER.debug("Added default type 'object' to empty %s branch", key)
                         stack.append(br)
 
     return schema
