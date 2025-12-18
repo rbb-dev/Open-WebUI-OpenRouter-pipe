@@ -5,6 +5,8 @@
 
 OpenRouter workloads are bursty. This pipe is engineered to accept hundreds of concurrent chats without starving the host or corrupting state. This document walks through every concurrency primitive, admission policy, breaker, and watchdog that keeps the manifold stable.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. admission control

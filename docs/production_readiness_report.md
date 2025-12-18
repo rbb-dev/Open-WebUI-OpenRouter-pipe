@@ -4,6 +4,8 @@
 **Auditor:** Codex (via GPT-5)  
 **Scope:** End-to-end readiness of the OpenRouter Responses manifold with emphasis on multimodal intake, persistence, and concurrency controls. References: `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py`, Open WebUI sources and OpenRouter docs.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. Secrets & Key Material

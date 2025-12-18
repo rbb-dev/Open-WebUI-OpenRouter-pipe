@@ -24,36 +24,37 @@ Use this page to decide which document to open next.
 * Documents the OpenRouter model registry loader, refresh cadence, capability detection, and routing helpers.
 * Covers reasoning toggles, modality gates, web-search/MCP wiring, and how valves feed into catalog queries.
 
-### 1.2 history reconstruction & context replay
+---
+
+## 2. modality & interface layers
+**scope:** data transformation, message handling, multimodal content processing, task execution, tool orchestration, and streaming
+
+### 2.0 history reconstruction & context replay
 **file:** `docs/history_reconstruction_and_context.md`
 
 * Explains how Open WebUI messages become Responses `input[]` blocks, including developer/system instructions, persisted artifacts, and marker decoding.
 * Details ULID markers, history compaction, reasoning/tool retention knobs, and how failures are surfaced to the UI.
 
----
-
-## 2. modality & interface layers
-
-### 2.0 multimodal intake pipeline
+### 2.1 multimodal intake pipeline
 **file:** `docs/multimodal_ingestion_pipeline.md`
 
 * Complete walkthrough of file/image/audio/video handling, SSRF protections, retries, buffering, and fallback storage identities.
 * Includes flowcharts for `_to_input_image`, `_to_input_file`, `_to_input_audio`, and `_to_input_video` plus size-guard tables and error surfacing notes.
 
-### 2.1 task models & housekeeping
+### 2.2 task models & housekeeping
 **file:** `docs/task_models_and_housekeeping.md`
 
-* Explains how Open WebUI “task” requests differ from user-facing chats, including the fast-path controller, retries, and reasoning overrides.
+* Explains how Open WebUI "task" requests differ from user-facing chats, including the fast-path controller, retries, and reasoning overrides.
 * Recommends ideal mini-tier models (GPT-4.1 Mini, GPT-5 Mini), empty system prompts, and no-tool configurations so chores stay cheap and predictable.
 * Provides a troubleshooting table for common misconfigurations (verbose titles, 400s from unintended tools, runaway costs) and wiring steps in the Open WebUI admin panel.
 
-### 2.1 tools, plugins, and extra integrations
+### 2.3 tools, plugins, and extra integrations
 **file:** `docs/tooling_and_integrations.md`
 
 * Catalogs every tool source: Open WebUI registry, model-provided tools, filter-injected extras, MCP servers, and OpenRouter"s `web` search plugin.
 * Documents strict schema enforcement, batching rules, loop ceilings, breaker telemetry, and how persisted tool outputs are referenced later.
 
-### 2.2 streaming engine & emitters
+### 2.4 streaming engine & emitters
 **file:** `docs/streaming_pipeline_and_emitters.md`
 
 * Dissects the SSE consumer/producer queues, worker pools, UTF-16 safety, reasoning/citation events, and completion finalizers.
@@ -135,3 +136,94 @@ Use this page to decide which document to open next.
 5. Always consult `valves_and_configuration_atlas.md` before adding or editing configuration knobs, and skim `testing_bootstrap_and_operations.md` before submitting PRs.
 
 Each document is intentionally verbose--expect tables, callouts, and excerpts from the source. Use the navigation breadcrumbs at the top of each file to jump between related sections.
+
+---
+
+## 7. documentation relationship map
+
+This map shows how documentation serves different personas and workflows:
+
+```
+                    ┌──────────────────────────────────┐
+                    │   documentation_index.md         │
+                    │   (Navigation Hub - Start Here)  │
+                    └──────────────────────────────────┘
+                                   │
+          ┌────────────────────────┼────────────────────────┐
+          │                        │                        │
+   ┌──────▼──────┐          ┌─────▼─────┐          ┌──────▼──────┐
+   │ Development │          │ Operations │          │  Security   │
+   │   Persona   │          │   Persona  │          │   Persona   │
+   └─────────────┘          └────────────┘          └─────────────┘
+          │                        │                        │
+          │                        │                        │
+    Core Reading:            Core Reading:            Core Reading:
+    • developer_guide         • testing_bootstrap      • security_and_encryption
+    • model_catalog           • production_readiness   • production_readiness
+    • history_reconstruction  • concurrency_controls   • multimodal_ingestion
+    • tooling_integrations    • valves_configuration     (SSRF protection)
+    • streaming_pipeline      • error_handling         • persistence_encryption
+    • persistence                                        (key rotation)
+                                   │
+                            ┌──────▼──────┐
+                            │   Auditor   │
+                            │   Persona   │
+                            └─────────────┘
+                                   │
+                            Core Reading:
+                            • production_readiness
+                            • security_and_encryption
+                            • valves_configuration
+                            • concurrency_controls
+```
+
+### persona-to-document quick reference
+
+**🔧 Developer** (implementing features, fixing bugs):
+* Start: `developer_guide_and_architecture.md`
+* Configuration: `valves_and_configuration_atlas.md`
+* Model behavior: `model_catalog_and_routing_intelligence.md`
+* Message handling: `history_reconstruction_and_context.md`
+* Multimodal: `multimodal_ingestion_pipeline.md`
+* Tools: `tooling_and_integrations.md`
+* Streaming: `streaming_pipeline_and_emitters.md`
+* Storage: `persistence_encryption_and_storage.md`
+* Resilience: `concurrency_controls_and_resilience.md`
+
+**⚙️ Operator** (deploying, monitoring, troubleshooting):
+* Start: `testing_bootstrap_and_operations.md`
+* Pre-deploy: `production_readiness_report.md`
+* Configuration: `valves_and_configuration_atlas.md`
+* Errors: `error_handling_and_user_experience.md`
+* Resilience: `concurrency_controls_and_resilience.md`
+* OpenRouter specifics: `openrouter_integrations_and_telemetry.md`
+
+**🔒 Security** (securing, auditing, compliance):
+* Start: `security_and_encryption.md`
+* Audit: `production_readiness_report.md`
+* SSRF: `multimodal_ingestion_pipeline.md` (implementation details)
+* Encryption: `persistence_encryption_and_storage.md` (key rotation)
+* Configuration: `valves_and_configuration_atlas.md` (security valves)
+
+**📋 Auditor** (verifying readiness, compliance):
+* Start: `production_readiness_report.md`
+* Security posture: `security_and_encryption.md`
+* Configuration: `valves_and_configuration_atlas.md`
+* Resilience: `concurrency_controls_and_resilience.md`
+
+### quick navigation by task
+
+| Task | Primary Doc | Supporting Docs |
+|------|-------------|----------------|
+| **Add new valve** | `valves_and_configuration_atlas.md` | `developer_guide_and_architecture.md` |
+| **Configure encryption** | `security_and_encryption.md` | `persistence_encryption_and_storage.md` |
+| **Troubleshoot errors** | `error_handling_and_user_experience.md` | `openrouter_integrations_and_telemetry.md` |
+| **Set up testing** | `testing_bootstrap_and_operations.md` | `developer_guide_and_architecture.md` |
+| **Deploy to production** | `production_readiness_report.md` | `security_and_encryption.md`, `testing_bootstrap_and_operations.md` |
+| **Understand model routing** | `model_catalog_and_routing_intelligence.md` | `history_reconstruction_and_context.md` |
+| **Handle multimodal content** | `multimodal_ingestion_pipeline.md` | `persistence_encryption_and_storage.md` |
+| **Configure tools/MCP** | `tooling_and_integrations.md` | `concurrency_controls_and_resilience.md` |
+| **Optimize streaming** | `streaming_pipeline_and_emitters.md` | `concurrency_controls_and_resilience.md` |
+| **Rotate encryption keys** | `security_and_encryption.md` | `persistence_encryption_and_storage.md` |
+
+---

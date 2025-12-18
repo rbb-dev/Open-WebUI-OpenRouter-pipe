@@ -5,6 +5,8 @@
 
 This document is the canonical reference for every image, file, audio, and video pathway that flows through the OpenRouter Responses pipe. Use it whenever you touch `_to_input_image`, `_to_input_file`, `_to_input_audio`, `_to_input_video`, download helpers, or storage fallbacks.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. design goals
@@ -91,6 +93,8 @@ Every multimodal helper first calls `_resolve_storage_context`. If storage canno
 * **SSRF protection**: `_is_safe_url` resolves every host to IPv4/IPv6 addresses and rejects loopback, RFC1918, link-local, multicast, and reserved ranges.
 * **MIME normalization**: e.g., `image/jpg` → `image/jpeg` so downstream validators stay consistent.
 * **Status hooks**: When an `event_emitter` is provided, downloads broadcast start/finish/abort statuses.
+
+> **Security note**: See [Security and Encryption](security_and_encryption.md#ssrf-protection) for compliance context, security procedures, and key rotation policies related to SSRF protection and other security measures.
 
 ---
 

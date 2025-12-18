@@ -5,6 +5,10 @@
 
 This document covers the local developer workflow (tests, linting, fixtures) and the operational checks you should run before/after deploying the pipe into Open WebUI.
 
+> **Pre-deployment**: Before deploying to production, review the comprehensive [Production Readiness Report](production_readiness_report.md) for end-to-end security verification, compliance guidance, and deployment checklists.
+
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. local testing workflow

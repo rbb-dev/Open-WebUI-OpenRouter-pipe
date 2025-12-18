@@ -5,6 +5,8 @@
 
 This document explains how the OpenRouter Responses manifold is organized, how requests flow through it, and how to contribute safely. Everything lives in a single Python module for compatibility with Open WebUI pipes, but the code is intentionally segmented into layers that mirror a multi-file project. Use the map below to orient yourself before diving into subsystem deep dives.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. layered architecture inside a single file
@@ -125,3 +127,26 @@ These helpers are idempotent; they skip work if a previous run is still active. 
 * **Automatic GC** -- `SessionLogger.cleanup()` removes sessions that have been idle for more than an hour, preventing unbounded memory usage.
 
 When you add new logging statements, use `self.logger` so they inherit the per-session metadata automatically. If you need to inspect logs for a specific user, filter by the `session_id` displayed in the console formatter.
+
+
+---
+
+## Related Topics
+
+**Core Systems:**
+- **Model Selection & Routing**: [Model Catalog and Routing Intelligence](model_catalog_and_routing_intelligence.md) - How models are selected and routed based on capabilities
+- **Message Transformation**: [History Reconstruction and Context](history_reconstruction_and_context.md) - How Open WebUI messages become API inputs
+- **Configuration Reference**: [Valves and Configuration Atlas](valves_and_configuration_atlas.md) - Complete valve reference with defaults and ranges
+
+**Feature Deep Dives:**
+- **Multimodal Content**: [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md) - File, image, audio, and video handling
+- **Tool Execution**: [Tooling and Integrations](tooling_and_integrations.md) - Function calling, MCP, web search
+- **Streaming**: [Streaming Pipeline and Emitters](streaming_pipeline_and_emitters.md) - SSE events and worker pools
+- **Data Persistence**: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) - Database schema and encryption
+
+**Operations:**
+- **Error Handling**: [Error Handling and User Experience](error_handling_and_user_experience.md) - Error templates and troubleshooting
+- **Testing & Deployment**: [Testing, Bootstrap, and Operations](testing_bootstrap_and_operations.md) - Testing workflows and operational runbooks
+- **Security**: [Security and Encryption](security_and_encryption.md) - Security procedures and compliance
+- **Production Readiness**: [Production Readiness Report](production_readiness_report.md) - Pre-deployment checklist
+

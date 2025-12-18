@@ -32,16 +32,18 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 
 ## Documentation
 
-**[Documentation Index](docs/documentation_index.md)** – Central navigation hub for all technical documentation covering architecture, multimodal pipelines, persistence, streaming, and operational guides.
+**[Documentation Index](docs/documentation_index.md)** – Central navigation hub with persona-based reading paths (Developer, Operator, Security, Auditor) and a visual relationship map showing how all 15+ docs interconnect. Features quick navigation callouts and Related Topics sections throughout.
+
 **[Changelog](CHANGELOG.md)** – Complete commit-by-commit history tracking every change since project inception.
 
   **Developer & Architecture Guides**
   - [Developer Guide & Architecture](docs/developer_guide_and_architecture.md) – High-level tour of manifold wiring, layering conventions, request lifecycle, and development workflow.
   - [Model Catalog & Routing Intelligence](docs/model_catalog_and_routing_intelligence.md) – Registry loader, capability detection, reasoning toggles, and routing helpers.
-  - [History Reconstruction & Context](docs/history_reconstruction_and_context.md) – How Open WebUI messages become Responses `input[]` blocks with ULID markers and artifact replay.
 
   **Modality & Interface Layers**
+  - [History Reconstruction & Context](docs/history_reconstruction_and_context.md) – How Open WebUI messages become Responses `input[]` blocks with ULID markers and artifact replay.
   - [Multimodal Ingestion Pipeline](docs/multimodal_ingestion_pipeline.md) – Complete walkthrough of image/file/audio/video handling, SSRF protections, and persistence.
+  - [Task Models & Housekeeping](docs/task_models_and_housekeeping.md) – Background task configuration, model selection, and troubleshooting.
   - [Tooling & Integrations](docs/tooling_and_integrations.md) – Tool sources, strict schema enforcement, batching, MCP servers, and OpenRouter's web search plugin.
   - [Streaming Pipeline & Emitters](docs/streaming_pipeline_and_emitters.md) – SSE queues, worker pools, reasoning/citation events, and completion finalizers.
 
@@ -76,7 +78,7 @@ This is not a simple API wrapper. The pipe has been extensively enhanced and har
 ### Developer & Operator Experience
 - **Valve-driven configuration** – Concurrency limits, retry policies, encryption keys, streaming profiles, and other operational settings are configurable through Open WebUI's valve system with production-ready defaults
 - **Built-in telemetry** – Optional status messages show elapsed time, cost, tokens, and throughput per request when `SHOW_FINAL_USAGE_STATUS` is enabled
-- **Comprehensive documentation** – 14 dedicated docs covering architecture, multimodal pipelines, persistence, streaming, testing, and operations
+- **Comprehensive documentation** – 15+ interconnected docs with persona-based navigation (Developer, Operator, Security, Auditor), quick navigation callouts, visual relationship map, and Related Topics sections covering architecture, multimodal pipelines, persistence, streaming, testing, and operations
 
 For detailed technical documentation, see the [Documentation Index](docs/documentation_index.md).
 

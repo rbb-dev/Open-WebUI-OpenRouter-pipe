@@ -5,6 +5,8 @@
 
 This note collects the features that are unique to the OpenRouter variant of the Responses manifold. Use it whenever you need a quick reminder of the “extras” we ship for OpenRouter beyond the baseline OpenAI manifold.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. status telemetry & usage string
@@ -122,3 +124,23 @@ This note collects the features that are unique to the OpenRouter variant of the
 * Safety notes:
   * No personally sensitive data beyond what Open WebUI already stores (email/name) is added.
   * TTL enforcement plus the explicit valve flag mean you can keep the feature disabled in production and only flip it on temporarily for investigations, knowing that the leftovers age out automatically.
+
+
+---
+
+## Related Topics
+
+**Core Integration Points:**
+- **Model Catalog**: [Model Catalog and Routing Intelligence](model_catalog_and_routing_intelligence.md) - OpenRouter model registry, capability detection, routing logic
+- **Error Handling**: [Error Handling and User Experience](error_handling_and_user_experience.md) - Provider-specific error recovery (Gemini thinking errors)
+- **Tool Integration**: [Tooling and Integrations](tooling_and_integrations.md) - OpenRouter web search plugin, automatic plugin wiring
+
+**Configuration & Operations:**
+- **Valve Reference**: [Valves and Configuration Atlas](valves_and_configuration_atlas.md) - OpenRouter-specific valves (API key, base URL, telemetry)
+- **Testing**: [Testing, Bootstrap, and Operations](testing_bootstrap_and_operations.md) - OpenRouter warmup checks, catalog health verification
+- **Production**: [Production Readiness Report](production_readiness_report.md) - OpenRouter API key management, rate limiting
+
+**Architecture:**
+- **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - How OpenRouter integration fits into the manifold architecture
+- **Multimodal**: [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md) - OpenRouter multimodal guardrails and capability routing
+
