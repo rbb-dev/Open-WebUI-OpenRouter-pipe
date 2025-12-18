@@ -5,6 +5,8 @@
 
 This note captures everything operators need to know about “task models” inside Open WebUI—those quick, background invocations that keep chats tidy by generating titles, tags, summaries, and other housekeeping responses. Because these requests fire frequently and should never disrupt the main chat, we treat them differently from user-facing model runs. Use this guide whenever you expose new models through the pipe or tune valves that affect housekeeping.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. how task models run inside the pipe

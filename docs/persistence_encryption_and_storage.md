@@ -5,6 +5,8 @@
 
 The OpenRouter manifold persists reasoning traces, tool inputs/outputs, and other structured artifacts so that regenerations can replay prior context without bloating chat transcripts. This document explains how the storage layer works, how encryption/compression are applied, and how Redis write-behind keeps multi-worker deployments consistent.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. artifact lifecycle
@@ -77,6 +79,8 @@ Redis is optional but recommended for multi-worker deployments:
 4. **Reads** -- `_redis_fetch_rows` looks up cached artifacts when `_transform_messages_to_input` needs them. Cache hits save DB round-trips and keep multi-worker replay deterministic.
 5. **Namespacing** -- Each pipe instance sets `_redis_namespace = (self.id or \"openrouter\").lower()`, and all keys derive from it: `pending` queue, cache prefix, and flush lock. Multiple pipes can therefore share the same Redis cluster without stepping on one another.
 6. **Graceful degradation** -- If Redis fails mid-run, `_redis_enqueue_rows` logs a warning and falls back to direct DB writes, then retries enabling Redis later. No operator toggle is required.
+
+> **Related**: See [Concurrency Controls and Resilience](concurrency_controls_and_resilience.md#background-workers) for Redis background worker configuration, pool management, and resilience patterns.
 
 ---
 

@@ -5,6 +5,8 @@
 
 The Responses manifold treats tool calling as a first-class subsystem. This document covers the entire pipeline--how tool schemas are built, how execution queues behave, how breakers protect the system, and how optional integrations (web search, MCP, filter injections) are merged without surprises.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. schema assembly (`build_tools`)

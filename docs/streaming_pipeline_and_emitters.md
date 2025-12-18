@@ -5,6 +5,8 @@
 
 The streaming layer converts OpenRouter"s Server-Sent Events (SSE) into the incremental updates Open WebUI expects: text deltas, reasoning traces, tool prompts, citations, notifications, and final usage stats. This document explains every moving part so you can tune latency, add new event types, or debug edge cases without spelunking through the file.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. pipeline overview

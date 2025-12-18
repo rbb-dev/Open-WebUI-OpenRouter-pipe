@@ -5,6 +5,8 @@
 
 This document covers the comprehensive error template system that catches all exception types and renders user-friendly Markdown error cards instead of letting Open WebUI display raw error boxes.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## overview
@@ -73,7 +75,7 @@ The request to OpenRouter took too long to complete.
 
 ## provider-specific recovery (Gemini thinking errors)
 
-Certain providers reject `include_reasoning` when their own “thinking” feature is disabled. Google’s Gemini stack, for example, returns:
+Certain providers reject `include_reasoning` when their own "thinking" feature is disabled. Google's Gemini stack, for example, returns:
 
 ```
 Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.
@@ -87,6 +89,9 @@ Without special handling this manifested as a 400 error card. Starting in `open_
 4. Falls back to the normal error template only if the retry also fails.
 
 This makes Gemini usable even when `ENABLE_REASONING` is set globally. Operators still see the warning in DEBUG logs (`Retrying without reasoning…`) so they can adjust valves or per-model settings later, but end users get the final answer instead of a provider error.
+
+> **See also**: For comprehensive coverage of OpenRouter provider-specific behaviors, including catalog routing, automatic plugin wiring, and multimodal guardrails, see [OpenRouter Integrations and Telemetry](openrouter_integrations_and_telemetry.md).
+
 ```
 
 **Example rendered output:**
@@ -933,3 +938,22 @@ Trigger specific errors by setting valves:
 - User-visible error history (last 5 errors in UI)
 - Webhook notifications for critical errors
 - Template preview in Admin UI
+
+
+---
+
+## Related Topics
+
+**Error Sources & Context:**
+- **Provider Errors**: [OpenRouter Integrations and Telemetry](openrouter_integrations_and_telemetry.md) - Provider-specific behaviors, catalog routing, automatic plugin wiring
+- **Connection & Resilience**: [Concurrency Controls and Resilience](concurrency_controls_and_resilience.md) - Timeout configuration, breaker patterns, admission control
+- **Security Errors**: [Security and Encryption](security_and_encryption.md) - SSRF blocks, encryption failures, key rotation issues
+
+**Configuration & Customization:**
+- **Valve Reference**: [Valves and Configuration Atlas](valves_and_configuration_atlas.md) - Error template configuration, timeout settings, retry limits
+- **Testing Errors**: [Testing, Bootstrap, and Operations](testing_bootstrap_and_operations.md) - Incident response, troubleshooting workflows
+
+**Architecture:**
+- **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - Error propagation through the request lifecycle
+- **Streaming Errors**: [Streaming Pipeline and Emitters](streaming_pipeline_and_emitters.md) - How errors are emitted through SSE events
+

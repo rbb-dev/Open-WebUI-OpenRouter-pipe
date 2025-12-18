@@ -5,6 +5,8 @@
 
 Open WebUI stores messages as a heterogeneous list of dicts. The OpenRouter Responses API expects a tightly structured `input[]` array with blocks such as `input_text`, `input_image`, `response_text`, and `tool_result`. This document describes how the pipe bridges the two, how persisted artifacts are recovered via ULID markers, and how pruning/retention knobs influence the final payload.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. message normalization pipeline

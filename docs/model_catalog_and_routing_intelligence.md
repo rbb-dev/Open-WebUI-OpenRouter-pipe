@@ -5,6 +5,8 @@
 
 This document explains how the pipe imports OpenRouter's `/models` catalog, derives per-model capability maps, and applies that metadata when routing user requests. Understanding this layer is essential before tweaking valves such as `MODEL_ID`, `MODEL_CATALOG_REFRESH_SECONDS`, or any of the reasoning/modality toggles.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. catalog ingestion pipeline

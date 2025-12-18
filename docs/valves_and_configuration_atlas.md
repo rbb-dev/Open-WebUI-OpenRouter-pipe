@@ -5,6 +5,8 @@
 
 Valves are the sole configuration surface for the OpenRouter Responses pipe. This reference mirrors the order of `Pipe.Valves` and `Pipe.UserValves`, groups related toggles, and explains how each value is used at runtime. Defaults reflect the current code; update this file whenever you add or change a valve.
 
+> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+
 ---
 
 ## 1. system valves (`Pipe.Valves`)
@@ -137,3 +139,24 @@ Per-user overrides mirror global valves where it makes sense. The literal string
 4. **Testing** -- extend `tests/test_pipe_guards.py` when you add guards or new interactions (e.g., a valve that toggles Redis behavior).
 
 With this atlas you can tune the manifold confidently, knowing exactly how each knob affects the system.
+
+
+---
+
+## Related Topics
+
+**Using Valves in Practice** - See specific feature docs for detailed valve usage:
+- **Multimodal Handling**: [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md) - Image/file handling valves, size limits, SSRF protection
+- **Tool Execution**: [Tooling and Integrations](tooling_and_integrations.md) - Tool execution valves, MCP configuration, function calling limits
+- **Streaming Configuration**: [Streaming Pipeline and Emitters](streaming_pipeline_and_emitters.md) - SSE worker pool valves, buffer sizes, latency tuning
+- **Persistence & Redis**: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) - Redis cache valves, encryption keys, cleanup schedules
+- **Concurrency & Resilience**: [Concurrency Controls and Resilience](concurrency_controls_and_resilience.md) - Admission control, breaker windows, queue limits
+
+**Security & Compliance:**
+- **Security Procedures**: [Security and Encryption](security_and_encryption.md) - Key rotation, SSRF protection, secret management
+- **Production Deployment**: [Production Readiness Report](production_readiness_report.md) - Pre-deployment valve checklist
+
+**Architecture & Development:**
+- **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - How valves fit into the overall system
+- **Error Handling**: [Error Handling and User Experience](error_handling_and_user_experience.md) - Error template customization valves
+
