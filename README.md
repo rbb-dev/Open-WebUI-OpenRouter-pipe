@@ -12,7 +12,7 @@ A production-grade Open WebUI pipe for OpenRouter's Responses API, built for rel
 
 Every layer—from model registry to SSE emitters—was designed for production workloads with multi-user concurrency, graceful degradation, and operational visibility.
 
-![output](https://github.com/user-attachments/assets/3bf672f2-d0e2-4536-8808-b6900859a259)
+![output](https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97)
 
 ## Overview
 
