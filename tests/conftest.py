@@ -102,6 +102,47 @@ def _install_open_webui_stubs() -> None:
     open_webui.models = models_pkg
     open_webui.routers = routers_pkg
 
+    utils_pkg = cast(Any, _ensure_module("open_webui.utils"))
+    utils_pkg.__path__ = []  # mark as package
+    misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))
+
+    def _openai_chat_message_template(model: str) -> dict[str, Any]:
+        import time
+        import uuid
+
+        return {
+            "id": f"{model}-{str(uuid.uuid4())}",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "logprobs": None, "finish_reason": None}],
+        }
+
+    def _openai_chat_chunk_message_template(
+        model: str,
+        content: str | None = None,
+        reasoning_content: str | None = None,
+        tool_calls: list[dict] | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        template = _openai_chat_message_template(model)
+        template["object"] = "chat.completion.chunk"
+        template["choices"][0]["delta"] = {}
+        if content:
+            template["choices"][0]["delta"]["content"] = content
+        if reasoning_content:
+            template["choices"][0]["delta"]["reasoning_content"] = reasoning_content
+        if tool_calls:
+            template["choices"][0]["delta"]["tool_calls"] = tool_calls
+        if not content and not reasoning_content and not tool_calls:
+            template["choices"][0]["finish_reason"] = "stop"
+        if usage:
+            template["usage"] = usage
+        return template
+
+    misc_mod.openai_chat_chunk_message_template = _openai_chat_chunk_message_template
+    utils_pkg.misc = misc_mod
+    open_webui.utils = utils_pkg
+
     config_mod = cast(Any, _ensure_module("open_webui.config"))
 
     class _ConfigValue:

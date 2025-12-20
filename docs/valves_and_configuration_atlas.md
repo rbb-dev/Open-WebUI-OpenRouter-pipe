@@ -46,6 +46,7 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `MODEL_ID` | `auto` | CSV | Restrict exposed models. `auto` imports the entire catalog. **Task payloads (`__task__`) bypass this allowlist** so Open WebUI housekeeping (titles, tags, etc.) keeps working even when end-user models are locked down. Interactive chats and API calls still enforce the list. |
 | `MODEL_CATALOG_REFRESH_SECONDS` | 3600 | ≥60 | Cache TTL for the catalog. |
 | `ENABLE_REASONING` | True | bool | Requests reasoning traces whenever supported. |
+| `THINKING_OUTPUT_MODE` | `open_webui` | open_webui/status/both | Controls where live reasoning deltas are surfaced: Open WebUI’s collapsible reasoning box, status messages, or both. Note: the pipe’s initial “Thinking…”/“Building a plan…” placeholders always emit as status updates regardless of this valve. |
 | `REASONING_EFFORT` | `medium` | none/minimal/low/medium/high/xhigh | Default `reasoning.effort`. The pipe now sends the unified `reasoning` payload to OpenRouter and only falls back to the legacy `include_reasoning` flag when a model lacks native support. If a provider rejects the chosen effort, we automatically retry with the closest supported value before disabling reasoning. |
 | `GEMINI_THINKING_LEVEL` | `auto` | auto/low/high | Applies only to Gemini 3.x models. `auto` maps reasoning `minimal/low` → LOW and the rest → HIGH. Override to force a specific level or set `REASONING_EFFORT=none` if you want to skip Gemini thinking entirely. |
 | `GEMINI_THINKING_BUDGET` | `1024` | 0–65536 | Base thinking budget for Gemini 2.5 models. The pipe scales this value based on `REASONING_EFFORT` (¼× for minimal, ½× for low, 2× for high, 4× for xhigh). Set to `0` to disable thinking even when reasoning is requested. |
@@ -124,6 +125,7 @@ Per-user overrides mirror global valves where it makes sense. The literal string
 | `LOG_LEVEL` | `INHERIT` | enum | Lets a single user opt into DEBUG logging without affecting others. |
 | `SHOW_FINAL_USAGE_STATUS` | True | bool | Per-user toggle for final usage banner. |
 | `ENABLE_REASONING` | True | bool | Disable reasoning for a specific user. |
+| `THINKING_OUTPUT_MODE` | `open_webui` | open_webui/status/both | Same as system valve but scoped to a single user. |
 | `REASONING_EFFORT` | `medium` | enum | Personal preference for reasoning depth. |
 | `REASONING_SUMMARY_MODE` | `auto` | enum | Personal verbosity setting for reasoning summaries. |
 | `PERSIST_REASONING_TOKENS` | `next_reply` | enum | Same semantics as system valve but scoped to the user. |
@@ -159,4 +161,3 @@ With this atlas you can tune the manifold confidently, knowing exactly how each 
 **Architecture & Development:**
 - **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - How valves fit into the overall system
 - **Error Handling**: [Error Handling and User Experience](error_handling_and_user_experience.md) - Error template customization valves
-

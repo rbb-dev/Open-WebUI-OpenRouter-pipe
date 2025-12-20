@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from typing import Any, cast
 
@@ -121,7 +122,7 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
         stream=True,
     )
-    valves = pipe.valves
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
     def fake_supports(cls, feature, _model_id):
         return feature == "function_calling"
@@ -239,3 +240,192 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
     completion_events = [event for event in emitted if event["type"] == "chat:completion"]
     assert completion_events and "turn_count" in completion_events[-1]["data"]["usage"]
     assert persisted_rows, "Expected reasoning payload persistence"
+
+
+@pytest.mark.asyncio
+async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
+    pipe = Pipe()
+
+    def fake_enqueue(self, job):
+        async def producer() -> None:
+            assert job.stream_queue is not None
+            emitter = pipe._make_middleware_stream_emitter(job, job.stream_queue)
+            await emitter({"type": "status", "data": {"description": "Thinking…", "done": False}})
+            await emitter({"type": "reasoning:delta", "data": {"delta": "Analysing…"}})
+            await emitter({"type": "reasoning:completed", "data": {"content": "Analysing…"}})
+            await emitter({"type": "chat:message", "data": {"content": "Hello", "delta": "Hello"}})
+            await emitter({"type": "chat:completion", "data": {"usage": {"input_tokens": 1}}})
+            await job.stream_queue.put(None)
+            if not job.future.done():
+                job.future.set_result("Hello")
+
+        asyncio.create_task(producer())
+        return True
+
+    monkeypatch.setattr(Pipe, "_enqueue_job", fake_enqueue)
+
+    try:
+        result = await pipe.pipe(
+            body={"stream": True, "model": "openrouter/test"},
+            __user__={"valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"model": {"id": "sandbox"}},
+            __tools__=None,
+        )
+        assert hasattr(result, "__aiter__")
+        items = [item async for item in result]
+    finally:
+        await pipe.close()
+
+    reasoning_chunks = [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and item.get("choices")
+        and item["choices"][0].get("delta", {}).get("reasoning_content")
+    ]
+    assert reasoning_chunks
+    assert reasoning_chunks[0]["choices"][0]["delta"]["reasoning_content"] == "Analysing…"
+
+    assert any(
+        isinstance(item, dict)
+        and item.get("choices")
+        and item["choices"][0].get("delta", {}).get("content") == "Hello"
+        for item in items
+    )
+
+    assert not any(
+        isinstance(item, dict)
+        and item.get("event", {}).get("type") in {"reasoning:completed", "chat:message"}
+        for item in items
+    )
+
+
+@pytest.mark.asyncio
+async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+
+    events = [
+        {"type": "response.reasoning_text.delta", "delta": "Building a plan."},
+        {"type": "response.reasoning_summary_text.done", "text": "**Building a plan…**\nDrafting steps."},
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert any(event.get("type") == "reasoning:delta" for event in emitted)
+    status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
+    assert any("Thinking" in text for text in status_texts)
+    assert not any("Building a plan" in text for text in status_texts)
+
+
+@pytest.mark.asyncio
+async def test_thinking_output_mode_status_suppresses_reasoning_events(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
+
+    events = [
+        {"type": "response.reasoning_text.delta", "delta": "Building a plan."},
+        {"type": "response.reasoning_summary_text.done", "text": "**Building a plan…**\nDrafting steps."},
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert not any(event.get("type") == "reasoning:delta" for event in emitted)
+    status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
+    assert any("Building a plan" in text for text in status_texts)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mode(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+
+    events = [
+        {"type": "response.reasoning_summary_text.done", "text": "**Thinking…**\nSummary only."},
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert any(event.get("type") == "reasoning:delta" for event in emitted)
+    assert any(event.get("type") == "reasoning:completed" for event in emitted)
+    status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
+    assert any("Thinking" in text for text in status_texts)
+    assert not any("Summary only" in text for text in status_texts)

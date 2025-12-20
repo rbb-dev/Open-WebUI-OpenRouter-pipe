@@ -137,6 +137,7 @@ from open_webui.models.models import ModelForm, Models
 from open_webui.models.files import Files
 from open_webui.models.users import Users
 from open_webui.routers.files import upload_file_handler
+from open_webui.utils.misc import openai_chat_chunk_message_template
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 # Additional imports for file/image handling
@@ -899,6 +900,7 @@ class _PipeJob:
     task_body: Optional[dict[str, Any]]
     valves: "Pipe.Valves"
     future: asyncio.Future
+    stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
     request_id: str = field(default_factory=lambda: secrets.token_hex(8))
 
     @property
@@ -2333,6 +2335,16 @@ class Pipe:
             title="Show live reasoning",
             description="Request live reasoning traces whenever the selected model supports them.",
         )
+        THINKING_OUTPUT_MODE: Literal["open_webui", "status", "both"] = Field(
+            default="open_webui",
+            title="Thinking output",
+            description=(
+                "Controls where in-progress thinking is surfaced while a response is being generated. "
+                "'open_webui' streams reasoning in the Open WebUI reasoning box only; "
+                "'status' emits thinking as status events only; "
+                "'both' enables both outputs."
+            ),
+        )
         AUTO_CONTEXT_TRIMMING: bool = Field(
             default=True,
             title="Auto context trimming",
@@ -2774,6 +2786,16 @@ class Pipe:
             title="Show reasoning steps",
             description="While the AI works, show its step-by-step reasoning when supported.",
         )
+        THINKING_OUTPUT_MODE: Literal["open_webui", "status", "both"] = Field(
+            default="open_webui",
+            title="Thinking output",
+            description=(
+                "Choose where to show the model's thinking while it works: "
+                "'open_webui' uses the Open WebUI reasoning box, "
+                "'status' uses status messages, "
+                "or 'both' shows both."
+            ),
+        )
         REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
             default="medium",
             title="Reasoning depth",
@@ -2805,6 +2827,7 @@ class Pipe:
     _tool_global_semaphore: asyncio.Semaphore | None = None
     _tool_global_limit: int = 0
     _log_queue: asyncio.Queue[logging.LogRecord] | None = None
+    _log_queue_loop: asyncio.AbstractEventLoop | None = None
     _log_worker_task: asyncio.Task | None = None
     _log_worker_lock: asyncio.Lock | None = None
     _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
@@ -2889,7 +2912,7 @@ class Pipe:
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
-        self._redis_namespace = (getattr(self, "id", None) or "openrouter").lower()
+        self._redis_namespace = (getattr(self, "id", None ) or "openrouter").lower()
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
@@ -2935,15 +2958,21 @@ class Pipe:
     def _maybe_start_log_worker(self) -> None:
         """Ensure the async logging queue + worker are started."""
         cls = type(self)
-        if cls._log_queue is None:
-            cls._log_queue = asyncio.Queue(maxsize=1000)
-            SessionLogger.set_log_queue(cls._log_queue)
         if cls._log_worker_lock is None:
             cls._log_worker_lock = asyncio.Lock()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        if cls._log_queue is None or cls._log_queue_loop is not loop:
+            stale_worker = cls._log_worker_task
+            if stale_worker and not stale_worker.done():
+                with contextlib.suppress(Exception):
+                    stale_worker.cancel()
+            cls._log_worker_task = None
+            cls._log_queue = asyncio.Queue(maxsize=1000)
+            cls._log_queue_loop = loop
+            SessionLogger.set_log_queue(cls._log_queue)
         SessionLogger.set_main_loop(loop)
 
         async def _ensure_worker() -> None:
@@ -3482,6 +3511,7 @@ class Pipe:
                 await worker
             cls._log_worker_task = None
         cls._log_queue = None
+        cls._log_queue_loop = None
         SessionLogger.set_log_queue(None)
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
@@ -3736,6 +3766,12 @@ class Pipe:
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tool_context: _ToolExecutionContext | None = None
         tool_token: contextvars.Token[Optional[_ToolExecutionContext]] | None = None
+        stream_queue = job.stream_queue
+        stream_emitter = (
+            self._make_middleware_stream_emitter(job, stream_queue)
+            if stream_queue is not None
+            else None
+        )
         try:
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
@@ -3755,7 +3791,7 @@ class Pipe:
                     batch_timeout=batch_timeout,
                     idle_timeout=idle_timeout,
                     user_id=job.user_id,
-                    event_emitter=job.event_emitter,
+                    event_emitter=stream_emitter or job.event_emitter,
                     batch_cap=job.valves.TOOL_BATCH_CAP,
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
@@ -3771,7 +3807,7 @@ class Pipe:
                     job.body,
                     job.user,
                     job.request,
-                    job.event_emitter,
+                    stream_emitter or job.event_emitter,
                     job.event_call,
                     job.metadata,
                     job.tools,
@@ -3785,9 +3821,15 @@ class Pipe:
                 self._reset_failure_counter(job.user_id)
         except Exception as exc:
             self._record_failure(job.user_id)
+            if stream_queue is not None and not job.future.cancelled():
+                with contextlib.suppress(Exception):
+                    await stream_queue.put({"error": {"detail": str(exc)}})
             if not job.future.done():
                 job.future.set_exception(exc)
         finally:
+            if stream_queue is not None:
+                with contextlib.suppress(Exception):
+                    await stream_queue.put(None)
             if tool_context:
                 await self._shutdown_tool_context(tool_context)
             if tool_token is not None:
@@ -5617,7 +5659,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
-    ) -> AsyncGenerator[str, None] | str | None | JSONResponse:
+    ) -> AsyncGenerator[dict[str, Any] | str, None] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
 
         self._maybe_start_log_worker()
@@ -5628,6 +5670,7 @@ class Pipe:
         valves = self._merge_valves(self.valves, user_valves)
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
         safe_event_emitter = self._wrap_safe_event_emitter(__event_emitter__)
+        wants_stream = bool(isinstance(body, dict) and body.get("stream"))
 
         if not self._breaker_allows(user_id):
             message = "Temporarily disabled due to repeated errors. Please retry later."
@@ -5654,13 +5697,17 @@ class Pipe:
             raise RuntimeError("request queue not initialized")
 
         loop = asyncio.get_running_loop()
+        stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
         future = loop.create_future()
+        if wants_stream:
+            stream_queue = asyncio.Queue()
+
         job = _PipeJob(
             pipe=self,
             body=body,
             user=__user__,
             request=__request__,
-            event_emitter=safe_event_emitter,
+            event_emitter=None if wants_stream else safe_event_emitter,
             event_call=__event_call__,
             metadata=__metadata__,
             tools=__tools__,
@@ -5668,6 +5715,7 @@ class Pipe:
             task_body=__task_body__,
             valves=valves,
             future=future,
+            stream_queue=stream_queue,
         )
 
         if not self._enqueue_job(job):
@@ -5681,6 +5729,22 @@ class Pipe:
                 )
             SessionLogger.cleanup()
             return "Server busy (503)"
+
+        if wants_stream and stream_queue is not None:
+            async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
+                try:
+                    while True:
+                        item = await stream_queue.get()
+                        stream_queue.task_done()
+                        if item is None:
+                            break
+                        yield item
+                finally:
+                    if not future.done():
+                        future.cancel()
+                    SessionLogger.cleanup()
+
+            return _stream()
 
         try:
             result = await future
@@ -7723,10 +7787,15 @@ class Pipe:
         generated_image_count = 0
         reasoning_status_buffer = ""
         reasoning_status_last_emit: float | None = None
+        thinking_mode = str(getattr(valves, "THINKING_OUTPUT_MODE", "both") or "both").strip().lower()
+        thinking_box_enabled = thinking_mode in {"open_webui", "both"}
+        thinking_status_enabled = thinking_mode in {"status", "both"}
 
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit readable status updates for reasoning text without flooding."""
             nonlocal reasoning_status_buffer, reasoning_status_last_emit
+            if not thinking_status_enabled:
+                return
             if not event_emitter:
                 return
             reasoning_status_buffer += delta_text
@@ -7963,7 +8032,7 @@ class Pipe:
 
         thinking_tasks: list[asyncio.Task] = []
         thinking_cancelled = False
-        if ModelFamily.supports("reasoning", body.model) and event_emitter:
+        if event_emitter:
             async def _later(delay: float, msg: str) -> None:
                 """Emit a delayed status update to reassure the user during long thoughts."""
                 try:
@@ -7982,6 +8051,9 @@ class Pipe:
                 (6.0, "Exploring possible responses…"),
                 (7.0, "Building a plan…"),
             ]:
+                if delay == 0:
+                    await event_emitter({"type": "status", "data": {"description": msg}})
+                    continue
                 thinking_tasks.append(
                     asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg))
                 )
@@ -8074,7 +8146,7 @@ class Pipe:
                                 note_generation_activity()
                                 reasoning_buffer += normalized_delta
 
-                                if event_emitter:
+                                if event_emitter and thinking_box_enabled:
                                     await event_emitter(
                                         {
                                             "type": "reasoning:delta",
@@ -8086,17 +8158,18 @@ class Pipe:
                                         }
                                     )
 
-                                    await _maybe_emit_reasoning_status(normalized_delta)
+                                await _maybe_emit_reasoning_status(normalized_delta)
                             if etype.endswith(".done") or etype.endswith(".completed"):
                                 if event_emitter:
                                     await _maybe_emit_reasoning_status("", force=True)
 
-                                    await event_emitter(
-                                        {
-                                            "type": "reasoning:completed",
-                                            "data": {"content": reasoning_buffer},
-                                        }
-                                    )
+                                    if thinking_box_enabled:
+                                        await event_emitter(
+                                            {
+                                                "type": "reasoning:completed",
+                                                "data": {"content": reasoning_buffer},
+                                            }
+                                        )
                                 reasoning_completed_emitted = True
                             continue
 
@@ -8140,14 +8213,43 @@ class Pipe:
                             title_match = re.findall(r"\*\*(.+?)\*\*", text)
                             title = title_match[-1].strip() if title_match else "Thinking…"
                             content = re.sub(r"\*\*(.+?)\*\*", "", text).strip()
+                            summary = title if not content else f"{title}\n{content}"
                             if event_emitter:
-                                cancel_thinking()
-                                await event_emitter(
-                                    {
-                                        "type": "status",
-                                        "data": {"description": f"{title}\n{content}"},
-                                    }
-                                )
+                                note_model_activity()
+                                if thinking_box_enabled and (not reasoning_buffer):
+                                    normalized_summary = (
+                                        _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
+                                    )
+                                    if normalized_summary:
+                                        note_generation_activity()
+                                        reasoning_stream_active = True
+                                        reasoning_buffer += normalized_summary
+                                        await event_emitter(
+                                            {
+                                                "type": "reasoning:delta",
+                                                "data": {
+                                                    "content": reasoning_buffer,
+                                                    "delta": normalized_summary,
+                                                    "event": etype,
+                                                },
+                                            }
+                                        )
+                                    if not reasoning_completed_emitted:
+                                        await event_emitter(
+                                            {
+                                                "type": "reasoning:completed",
+                                                "data": {"content": reasoning_buffer},
+                                            }
+                                        )
+                                        reasoning_completed_emitted = True
+                                if thinking_status_enabled:
+                                    cancel_thinking()
+                                    await event_emitter(
+                                        {
+                                            "type": "status",
+                                            "data": {"description": summary},
+                                        }
+                                    )
                         continue
 
                     # ─── Citations from inline annotations (emit metadata only) ───────────────
@@ -8379,6 +8481,7 @@ class Pipe:
                             title = None # Don't emit a title for reasoning items
                             if (
                                 event_emitter
+                                and thinking_box_enabled
                                 and reasoning_buffer
                                 and not reasoning_completed_emitted
                             ):
@@ -8535,13 +8638,14 @@ class Pipe:
         finally:
             cancel_thinking()
             for t in thinking_tasks:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
             if (
                 reasoning_buffer
                 and reasoning_stream_active
                 and not reasoning_completed_emitted
                 and event_emitter
+                and thinking_box_enabled
             ):
                 await event_emitter(
                     {
@@ -9440,6 +9544,89 @@ class Pipe:
                 self.logger.warning("Event emitter failure%s: %s", suffix, exc)
 
         return _guarded
+
+    def _make_middleware_stream_emitter(
+        self,
+        job: _PipeJob,
+        stream_queue: asyncio.Queue[dict[str, Any] | str | None],
+    ) -> EventEmitter:
+        """Translate internal events into middleware-supported streaming output.
+
+        Open WebUI's `process_chat_response` middleware consumes OpenAI-style
+        streaming chunks (``choices[].delta``) and supports out-of-band events
+        via a top-level ``event`` key. This adapter ensures:
+
+        - assistant deltas become ``delta.content`` chunks
+        - reasoning traces become ``delta.reasoning_content`` chunks
+        - status/citation/notification/etc are forwarded via ``{"event": ...}``
+        """
+
+        model_id = ""
+        metadata_model = job.metadata.get("model") if isinstance(job.metadata, dict) else None
+        if isinstance(metadata_model, dict):
+            model_id = str(metadata_model.get("id") or "")
+        if not model_id:
+            model_id = str(job.body.get("model") or "pipe")
+
+        assistant_sent = ""
+
+        async def _emit(event: dict[str, Any]) -> None:
+            nonlocal assistant_sent
+            if not isinstance(event, dict):
+                return
+
+            etype = event.get("type")
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+            if etype == "chat:message":
+                delta = data.get("delta")
+                content = data.get("content")
+                delta_text: str | None = None
+
+                if isinstance(delta, str) and delta:
+                    delta_text = delta
+                    if isinstance(content, str) and content.startswith(assistant_sent):
+                        assistant_sent = content
+                    else:
+                        assistant_sent = assistant_sent + delta
+                elif isinstance(content, str) and content:
+                    if content.startswith(assistant_sent):
+                        delta_text = content[len(assistant_sent) :]
+                        assistant_sent = content
+
+                if isinstance(delta_text, str) and delta_text:
+                    await stream_queue.put(
+                        openai_chat_chunk_message_template(model_id, delta_text)
+                    )
+                return
+
+            if etype == "reasoning:delta":
+                delta = data.get("delta")
+                if isinstance(delta, str) and delta:
+                    await stream_queue.put(
+                        openai_chat_chunk_message_template(
+                            model_id,
+                            reasoning_content=delta,
+                        )
+                    )
+                return
+
+            if etype == "reasoning:completed":
+                return
+
+            if etype == "chat:completion":
+                error = data.get("error")
+                if isinstance(error, dict) and error:
+                    await stream_queue.put({"error": error})
+
+                usage = data.get("usage")
+                if isinstance(usage, dict) and usage:
+                    await stream_queue.put({"usage": usage})
+                return
+
+            await stream_queue.put({"event": event})
+
+        return _emit
 
     async def _report_openrouter_error(
         self,
