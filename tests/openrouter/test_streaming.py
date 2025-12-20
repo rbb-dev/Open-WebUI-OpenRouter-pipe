@@ -254,6 +254,7 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
             await emitter({"type": "reasoning:delta", "data": {"delta": "Analysing…"}})
             await emitter({"type": "reasoning:completed", "data": {"content": "Analysing…"}})
             await emitter({"type": "chat:message", "data": {"content": "Hello", "delta": "Hello"}})
+            await emitter({"type": "reasoning:delta", "data": {"delta": "Late reasoning."}})
             await emitter({"type": "chat:completion", "data": {"usage": {"input_tokens": 1}}})
             await job.stream_queue.put(None)
             if not job.future.done():
@@ -288,6 +289,10 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
     ]
     assert reasoning_chunks
     assert reasoning_chunks[0]["choices"][0]["delta"]["reasoning_content"] == "Analysing…"
+    assert not any(
+        chunk["choices"][0]["delta"].get("reasoning_content") == "Late reasoning."
+        for chunk in reasoning_chunks
+    )
 
     assert any(
         isinstance(item, dict)
@@ -299,6 +304,13 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
     assert not any(
         isinstance(item, dict)
         and item.get("event", {}).get("type") in {"reasoning:completed", "chat:message"}
+        for item in items
+    )
+
+    assert any(
+        isinstance(item, dict)
+        and item.get("event", {}).get("type") == "status"
+        and "Late reasoning." in (item.get("event", {}).get("data", {}) or {}).get("description", "")
         for item in items
     )
 

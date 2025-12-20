@@ -9569,14 +9569,57 @@ class Pipe:
             model_id = str(job.body.get("model") or "pipe")
 
         assistant_sent = ""
+        answer_started = False
+        reasoning_status_buffer = ""
+        reasoning_status_last_emit: float | None = None
+
+        thinking_mode = str(getattr(job.valves, "THINKING_OUTPUT_MODE", "both") or "both").strip().lower()
+        thinking_box_enabled = thinking_mode in {"open_webui", "both"}
 
         async def _emit(event: dict[str, Any]) -> None:
-            nonlocal assistant_sent
+            nonlocal assistant_sent, answer_started, reasoning_status_buffer, reasoning_status_last_emit
             if not isinstance(event, dict):
                 return
 
             etype = event.get("type")
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+            async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
+                """Emit status updates for late-arriving reasoning without spamming the UI."""
+                nonlocal reasoning_status_buffer, reasoning_status_last_emit
+                if not isinstance(delta_text, str):
+                    return
+                reasoning_status_buffer += delta_text
+                text = reasoning_status_buffer.strip()
+                if not text:
+                    return
+                should_emit = force
+                now = perf_counter()
+                if not should_emit:
+                    if delta_text.rstrip().endswith(_REASONING_STATUS_PUNCTUATION):
+                        should_emit = True
+                    elif len(text) >= _REASONING_STATUS_MAX_CHARS:
+                        should_emit = True
+                    else:
+                        elapsed = None if reasoning_status_last_emit is None else (now - reasoning_status_last_emit)
+                        if len(text) >= _REASONING_STATUS_MIN_CHARS:
+                            if elapsed is None or elapsed >= _REASONING_STATUS_IDLE_SECONDS:
+                                should_emit = True
+                if not should_emit:
+                    return
+                await stream_queue.put(
+                    {
+                        "event": {
+                            "type": "status",
+                            "data": {
+                                "description": text,
+                                "done": False,
+                            },
+                        }
+                    }
+                )
+                reasoning_status_buffer = ""
+                reasoning_status_last_emit = now
 
             if etype == "chat:message":
                 delta = data.get("delta")
@@ -9595,6 +9638,9 @@ class Pipe:
                         assistant_sent = content
 
                 if isinstance(delta_text, str) and delta_text:
+                    answer_started = True
+                    if reasoning_status_buffer:
+                        await _maybe_emit_reasoning_status("", force=True)
                     await stream_queue.put(
                         openai_chat_chunk_message_template(model_id, delta_text)
                     )
@@ -9603,18 +9649,28 @@ class Pipe:
             if etype == "reasoning:delta":
                 delta = data.get("delta")
                 if isinstance(delta, str) and delta:
-                    await stream_queue.put(
-                        openai_chat_chunk_message_template(
-                            model_id,
-                            reasoning_content=delta,
+                    # Open WebUI auto-renders `delta.reasoning_content` into an embedded
+                    # `<details type="reasoning">` block. Once assistant text has started,
+                    # additional reasoning deltas would create a second block. To keep the
+                    # UI tidy (and avoid the duplicate "Thought for <1 second" block),
+                    # reroute late reasoning into status events instead.
+                    if answer_started:
+                        await _maybe_emit_reasoning_status(delta)
+                    elif thinking_box_enabled:
+                        await stream_queue.put(
+                            openai_chat_chunk_message_template(
+                                model_id,
+                                reasoning_content=delta,
+                            )
                         )
-                    )
                 return
 
             if etype == "reasoning:completed":
                 return
 
             if etype == "chat:completion":
+                if reasoning_status_buffer:
+                    await _maybe_emit_reasoning_status("", force=True)
                 error = data.get("error")
                 if isinstance(error, dict) and error:
                     await stream_queue.put({"error": error})
