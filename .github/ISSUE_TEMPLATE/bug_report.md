@@ -10,6 +10,9 @@ assignees: ''
 **Describe the bug**
 A clear and concise description of what the bug is.
 
+**Logs**
+Attach debug logs for the chat session and the rror generated
+
 **To Reproduce**
 Steps to reproduce the behavior:
 1. Go to '...'
