@@ -118,6 +118,46 @@ This note collects the features that are unique to the OpenRouter variant of the
   * Each record is written as a plain JSON string to a namespaced key: `costs:<pipe-id>:<user-id>:<uuid>:<epoch>`. The `<pipe-id>` prefix prevents collisions when multiple OpenRouter pipes run on the same Redis instance.
   * The feature is entirely passive—no additional prompts are sent and Redis writes happen only when the main cache client is already configured (`_redis_enabled=True`). If Redis is unavailable or any field is missing, we log a debug “Skipping cost snapshot …” and continue without impacting the user-facing response.
 * Example use cases:
+
+---
+
+## 12. model fallbacks (routing via `models`)
+
+OpenRouter supports automatic failover to other models when the primary model errors (downtime, rate limits, moderation refusal, etc.). This is controlled by the **`models`** request field (array of model IDs).
+
+Because Open WebUI already sends a single primary `model`, this pipe uses the OpenRouter pattern:
+
+- `model`: primary model (the model selected in the chat / route)
+- `models`: **fallback list only**, tried in order if the primary fails
+
+### configuring in Open WebUI (`model_fallback`)
+
+Open WebUI does not have a dedicated UI for OpenRouter’s `models` field, so we support a per-model Advanced Param:
+
+- In the model’s **Advanced Params** → **Add Custom Parameters**
+- Add key: `model_fallback`
+- Value: comma-separated OpenRouter model IDs, for example:
+
+```text
+openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
+```
+
+The pipe parses this string, trims whitespace, drops empty entries, deduplicates while preserving order, and sends:
+
+```json
+{
+  "model": "openai/gpt-5",
+  "models": [
+    "openai/gpt-5.1",
+    "anthropic/claude-sonnet-4.5"
+  ]
+}
+```
+
+Notes:
+
+- `model_fallback` is an Open WebUI convenience parameter; it is **not** forwarded to OpenRouter.
+- If the parsed fallback list is empty, the pipe does not send `models` at all.
   * Feed a downstream billing or chargeback script (`redis-cli ... MATCH "costs:openrouter_responses_api_pipe:*"`).
   * Trigger ad-hoc alerts when a single user suddenly spikes usage (subscribe to Redis keyspace events or poll keys).
   * Export short-lived telemetry into another system (e.g., `redis-cli --raw KEYS 'costs:*' | xargs redis-cli GET …`) without touching the main SQL database.
@@ -143,4 +183,3 @@ This note collects the features that are unique to the OpenRouter variant of the
 **Architecture:**
 - **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - How OpenRouter integration fits into the manifold architecture
 - **Multimodal**: [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md) - OpenRouter multimodal guardrails and capability routing
-
