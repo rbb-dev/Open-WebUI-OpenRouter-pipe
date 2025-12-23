@@ -115,6 +115,18 @@ Use this page to decide which document to open next.
 * Includes rendered examples with realistic data, valve configuration, troubleshooting guide, operator runbook, and template customization patterns.
 * Shows exactly what users see when errors occur and how operators correlate error IDs with backend logs.
 
+### 4.5 request identifiers & abuse attribution
+**file:** [request_identifiers_and_abuse_attribution.md](request_identifiers_and_abuse_attribution.md)
+
+* Explains when/why to send OpenRouter `user`, `session_id`, and request `metadata` for multi-user deployments.
+* Documents valve-gated behaviour and shows example JSON payloads that avoid PII.
+
+### 4.6 encrypted session log storage
+**file:** [session_log_storage.md](session_log_storage.md)
+
+* Documents optional, valve-gated persistence of per-request session logs to encrypted zip archives for incident response.
+* Explains required OWUI identifiers, archive layout, retention cleanup, and what is (and is not) stored.
+
 ---
 
 ## 5. root-level references
@@ -225,19 +237,3 @@ This map shows how documentation serves different personas and workflows:
 | **Configure tools/MCP** | [tooling_and_integrations.md](tooling_and_integrations.md) | [concurrency_controls_and_resilience.md](concurrency_controls_and_resilience.md) |
 | **Optimize streaming** | [streaming_pipeline_and_emitters.md](streaming_pipeline_and_emitters.md) | [concurrency_controls_and_resilience.md](concurrency_controls_and_resilience.md) |
 | **Rotate encryption keys** | [security_and_encryption.md](security_and_encryption.md) | [persistence_encryption_and_storage.md](persistence_encryption_and_storage.md) |
-
-## 4. safety, attribution, and observability
-
-### 4.0 request identifiers & abuse attribution
-**file:** [request_identifiers_and_abuse_attribution.md](request_identifiers_and_abuse_attribution.md)
-
-* Explains when/why to send OpenRouter `user`, `session_id`, and request `metadata` for multi-user deployments.
-* Documents valve-gated behaviour and shows example JSON payloads that avoid PII.
-
-### 4.1 encrypted session log storage
-**file:** [session_log_storage.md](session_log_storage.md)
-
-* Documents optional, valve-gated persistence of per-request session logs to encrypted zip archives for incident response.
-* Explains required OWUI identifiers, archive layout, retention cleanup, and what is (and is not) stored.
-
----
