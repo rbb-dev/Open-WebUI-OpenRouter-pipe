@@ -262,3 +262,34 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
     content = transformed[0]["content"]
     assert all(block.get("type") != "input_image" for block in content)
     assert any("does not accept image inputs" in status for status in captured_status)
+
+
+@pytest.mark.asyncio
+async def test_transform_preserves_system_and_developer_message_text_exactly():
+    pipe = Pipe()
+    messages = [
+        {"role": "system", "content": "  keep leading\nand trailing  \n"},
+        {
+            "role": "developer",
+            "content": [
+                {"type": "text", "text": "dev  "},
+                "  raw\n",
+            ],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ]
+
+    transformed = await pipe.transform_messages_to_input(messages, valves=pipe.valves)
+    assert transformed[0] == {
+        "type": "message",
+        "role": "system",
+        "content": [{"type": "input_text", "text": "  keep leading\nand trailing  \n"}],
+    }
+    assert transformed[1] == {
+        "type": "message",
+        "role": "developer",
+        "content": [
+            {"type": "input_text", "text": "dev  "},
+            {"type": "input_text", "text": "  raw\n"},
+        ],
+    }

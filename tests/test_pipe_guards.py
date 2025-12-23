@@ -10,6 +10,7 @@ import pytest
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     OpenRouterAPIError,
     Pipe,
+    CompletionsBody,
     ResponsesBody,
     ModelFamily,
     generate_item_id,
@@ -175,6 +176,46 @@ async def test_run_streaming_loop_tolerates_null_item(monkeypatch):
             pipe_identifier="open_webui_openrouter_pipe",
         )
         assert result == ""
+    finally:
+        pipe.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_from_completions_preserves_system_message_in_input():
+    pipe = Pipe()
+    try:
+        completions_body = CompletionsBody(
+            model="openrouter/test",
+            messages=[
+                {"role": "system", "content": "You're an AI assistant."},
+                {"role": "user", "content": "ping"},
+            ],
+            stream=True,
+        )
+        responses_body = await ResponsesBody.from_completions(
+            completions_body,
+            transformer_context=pipe,
+        )
+        assert responses_body.instructions is None
+        assert isinstance(responses_body.input, list)
+
+        system_items = [
+            item
+            for item in responses_body.input
+            if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "system"
+        ]
+        assert system_items
+        assert system_items[0]["content"][0]["type"] == "input_text"
+        assert system_items[0]["content"][0]["text"] == "You're an AI assistant."
+
+        user_items = [
+            item
+            for item in responses_body.input
+            if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user"
+        ]
+        assert user_items
+        assert user_items[0]["content"][0]["type"] == "input_text"
+        assert user_items[0]["content"][0]["text"] == "ping"
     finally:
         pipe.shutdown()
 

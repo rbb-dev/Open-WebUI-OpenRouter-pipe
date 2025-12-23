@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.10
+version: 1.0.11
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
 license: MIT
 
@@ -1514,6 +1514,28 @@ def _normalize_string_list(value: Any) -> list[str]:
     return items
 
 
+def _extract_plain_text_content(content: Any) -> str:
+    """Collapse Open WebUI-style content blocks into a single string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if isinstance(block, dict):
+                text_val = block.get("text") or block.get("content")
+                if isinstance(text_val, str):
+                    parts.append(text_val)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        text_val = content.get("text") or content.get("content")
+        if isinstance(text_val, str):
+            return text_val
+    return str(content or "")
+
+
 def _extract_openrouter_error_details(body_text: Optional[str]) -> dict[str, Any]:
     """Normalize OpenRouter error payloads into structured metadata."""
     parsed = _safe_json_loads(body_text) if body_text else None
@@ -1884,11 +1906,11 @@ class ResponsesBody(BaseModel):
     Represents the body of a responses request to OpenAI Responses API.
     """
     
-    # Required parameters
+    # Core parameters
     model: str
-    input: Union[str, List[Dict[str, Any]]] # plain text, or rich array
+    instructions: Optional[str] = None  # system/developer instructions
+    input: Union[str, List[Dict[str, Any]]]  # plain text, or rich array
 
-    # Optional parameters
     stream: bool = False                          # SSE chunking
     temperature: Optional[float] = None
     top_p: Optional[float] = None
@@ -2076,7 +2098,7 @@ class ResponsesBody(BaseModel):
             "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
 
             # Fields not documented in OpenRouter's Responses API reference
-            "instructions", "store", "truncation",
+            "store", "truncation",
             "user",
         }
         sanitized_params = {}
@@ -2118,8 +2140,19 @@ class ResponsesBody(BaseModel):
                     "so multimodal helpers (file uploads, status events, etc.) are available."
                 )
             transformer_owner = transformer_context
+            raw_messages = completions_dict.get("messages", [])
+            filtered_messages: list[dict[str, Any]] = []
+            if isinstance(raw_messages, list):
+                for msg in raw_messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    role = (msg.get("role") or "").lower()
+                    if not role:
+                        continue
+                    filtered_messages.append(msg)
+
             sanitized_params["input"] = await transformer_owner.transform_messages_to_input(
-                completions_dict.get("messages", []),
+                filtered_messages,
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
                 artifact_loader=artifact_loader,
@@ -2143,6 +2176,7 @@ class ResponsesBody(BaseModel):
 ALLOWED_OPENROUTER_FIELDS = {
     "model",
     "input",
+    "instructions",
     "stream",
     "max_output_tokens",
     "temperature",
@@ -6510,26 +6544,6 @@ class Pipe:
         List[dict] : The fully-formed `input` list for the OpenAI Responses API.
         """
 
-        def _extract_plain_text(content: Any) -> str:
-            """Collapse Open WebUI content blocks into a single string."""
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                parts: list[str] = []
-                for block in content:
-                    if isinstance(block, str):
-                        parts.append(block)
-                    elif isinstance(block, dict):
-                        text_val = block.get("text") or block.get("content")
-                        if isinstance(text_val, str):
-                            parts.append(text_val)
-                return "\n".join(parts)
-            if isinstance(content, dict):
-                text_val = content.get("text") or content.get("content")
-                if isinstance(text_val, str):
-                    return text_val
-            return str(content or "")
-
         logger = LOGGER
         active_valves = valves or self.valves
         image_limit = getattr(
@@ -6562,7 +6576,6 @@ class Pipe:
         else:
             vision_supported = True
 
-        pending_instructions: list[str] = []
         openai_input: list[dict] = []
         last_assistant_images: list[dict[str, Any]] = []
 
@@ -6677,16 +6690,47 @@ class Pipe:
             prune_before_turn = total_turns - pruning_turns
 
         for idx, msg in enumerate(messages):
-            role = (msg.get("role") or "").lower()
+            raw_role = msg.get("role")
+            role = (raw_role or "").lower()
             raw_content = msg.get("content", "")
             msg_id = msg.get("message_id") or _message_identifier(msg)
             msg_turn_index = turn_indices[idx]
 
             # -------- system / developer messages --------------------------- #
             if role in {"system", "developer"}:
-                text = _extract_plain_text(raw_content)
-                if text.strip():
-                    pending_instructions.append(text.strip())
+                # Preserve system/developer content exactly as supplied by Open WebUI.
+                # We still adapt it into Responses API "input_text" blocks, but we do
+                # not strip/trim/normalize whitespace or merge blocks.
+                blocks: list[dict[str, Any]] = []
+
+                if isinstance(raw_content, str):
+                    blocks.append({"type": "input_text", "text": raw_content})
+                elif isinstance(raw_content, list):
+                    for entry in raw_content:
+                        if isinstance(entry, str):
+                            blocks.append({"type": "input_text", "text": entry})
+                            continue
+                        if isinstance(entry, dict):
+                            text_val = entry.get("text")
+                            if not isinstance(text_val, str):
+                                text_val = entry.get("content")
+                            if isinstance(text_val, str):
+                                blocks.append({"type": "input_text", "text": text_val})
+                elif isinstance(raw_content, dict):
+                    text_val = raw_content.get("text")
+                    if not isinstance(text_val, str):
+                        text_val = raw_content.get("content")
+                    if isinstance(text_val, str):
+                        blocks.append({"type": "input_text", "text": text_val})
+
+                if blocks:
+                    openai_input.append(
+                        {
+                            "type": "message",
+                            "role": role,
+                            "content": blocks,
+                        }
+                    )
                 continue
 
             # -------- user message ---------------------------------------- #
@@ -6695,8 +6739,6 @@ class Pipe:
                 content_blocks = msg.get("content") or []
                 if isinstance(content_blocks, str):
                     content_blocks = [{"type": "text", "text": content_blocks}]
-
-                instruction_prefix = "\n\n".join(pending_instructions).strip()
 
                 # Only transform known types; leave all others unchanged
                 async def _to_input_image(block: dict) -> dict:
@@ -7523,13 +7565,6 @@ class Pipe:
                         done=False,
                     )
 
-                if instruction_prefix:
-                    pending_instructions.clear()
-                    if converted_blocks and converted_blocks[0].get("type") == "input_text":
-                        converted_blocks[0]["text"] = f"{instruction_prefix}\n\n{converted_blocks[0].get('text', '')}".strip()
-                    else:
-                        converted_blocks.insert(0, {"type": "input_text", "text": instruction_prefix})
-
                 openai_input.append({
                     "type": "message",
                     "role": "user",
@@ -7538,7 +7573,11 @@ class Pipe:
                 continue
 
             # -------- assistant message ----------------------------------- #
-            assistant_text = raw_content if isinstance(raw_content, str) else _extract_plain_text(raw_content)
+            assistant_text = (
+                raw_content
+                if isinstance(raw_content, str)
+                else _extract_plain_text_content(raw_content)
+            )
             is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
             assistant_image_urls = _markdown_images_from_text(assistant_text)
             if assistant_image_urls:
@@ -7657,18 +7696,6 @@ class Pipe:
                             "content": [{"type": "output_text", "text": assistant_text}],
                         }
                     )
-
-        if pending_instructions:
-            instruction_text = "\n\n".join(s for s in pending_instructions if s).strip()
-            if instruction_text:
-                openai_input.insert(
-                    0,
-                    {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": instruction_text}],
-                    },
-                )
 
         return openai_input
 
@@ -9606,7 +9633,8 @@ class Pipe:
                 return
 
             etype = event.get("type")
-            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            raw_data = event.get("data")
+            data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
 
             async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
                 """Emit status updates for late-arriving reasoning without spamming the UI."""
