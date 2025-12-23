@@ -5666,11 +5666,20 @@ class Pipe:
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
-        user_valves = self.UserValves.model_validate(__user__.get("valves", {}))
+
+        if not isinstance(body, dict):
+            body = {}
+        if not isinstance(__user__, dict):
+            __user__ = {}
+        if not isinstance(__metadata__, dict):
+            __metadata__ = {}
+
+        user_valves_raw = __user__.get("valves") or {}
+        user_valves = self.UserValves.model_validate(user_valves_raw)
         valves = self._merge_valves(self.valves, user_valves)
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
         safe_event_emitter = self._wrap_safe_event_emitter(__event_emitter__)
-        wants_stream = bool(isinstance(body, dict) and body.get("stream"))
+        wants_stream = bool(body.get("stream"))
 
         if not self._breaker_allows(user_id):
             message = "Temporarily disabled due to repeated errors. Please retry later."
@@ -5788,15 +5797,24 @@ class Pipe:
         ``_run_streaming_loop``.  Otherwise it falls back to
         ``_run_nonstreaming_loop`` and returns the aggregated response.
         """
+        if not isinstance(body, dict):
+            body = {}
+        if not isinstance(__user__, dict):
+            __user__ = {}
+        if not isinstance(__metadata__, dict):
+            __metadata__ = {}
+
         if valves is None:
+            user_valves_raw = __user__.get("valves") or {}
             valves = self._merge_valves(
                 self.valves,
-                self.UserValves.model_validate(__user__.get("valves", {})),
+                self.UserValves.model_validate(user_valves_raw),
             )
         if session is None:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
 
-        openwebui_model_id = __metadata__.get("model", {}).get("id", "")
+        model_block = __metadata__.get("model")
+        openwebui_model_id = model_block.get("id", "") if isinstance(model_block, dict) else ""
         request_model_id = body.get("model") if isinstance(body.get("model"), str) else None
         pipe_identifier_for_artifacts = self._resolve_pipe_identifier(
             openwebui_model_id,
@@ -7739,6 +7757,9 @@ class Pipe:
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
+        if not isinstance(metadata, dict):
+            metadata = {}
+
         self.logger.debug("🔧 PERSIST_TOOL_RESULTS=%s", valves.PERSIST_TOOL_RESULTS)
         self.logger.debug("Streaming config: direct pass-through (no server batching)")
 
@@ -7762,7 +7783,8 @@ class Pipe:
                     tool_registry[name] = entry
             if skipped_no_callable and not tool_registry:
                 self.logger.warning("Received list-based tools without callables; tool execution will be disabled for this request.")
-        openwebui_model = metadata.get("model", {}).get("id", "")
+        model_block = metadata.get("model")
+        openwebui_model = model_block.get("id", "") if isinstance(model_block, dict) else ""
         assistant_message = ""
         pending_ulids: list[str] = []
         pending_items: list[dict[str, Any]] = []
@@ -8287,7 +8309,8 @@ class Pipe:
 
                     # ─── Emit status updates for in-progress items ──────────────────────
                     if etype == "response.output_item.added":
-                        item = event.get("item", {})
+                        item_raw = event.get("item")
+                        item = item_raw if isinstance(item_raw, dict) else {}
                         item_type = item.get("type", "")
                         item_status = item.get("status", "")
 
@@ -8305,7 +8328,8 @@ class Pipe:
 
                     # ─── Emit detailed tool status upon completion ────────────────────────
                     if etype == "response.output_item.done":
-                        item = event.get("item", {})
+                        item_raw = event.get("item")
+                        item = item_raw if isinstance(item_raw, dict) else {}
                         item_type = item.get("type", "")
                         item_name = item.get("name", "unnamed_tool")
 
