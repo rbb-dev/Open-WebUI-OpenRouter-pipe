@@ -2204,6 +2204,7 @@ class ResponsesBody(BaseModel):
 
 ALLOWED_OPENROUTER_FIELDS = {
     "model",
+    "models",
     "input",
     "instructions",
     "metadata",
@@ -2222,6 +2223,64 @@ ALLOWED_OPENROUTER_FIELDS = {
     "session_id",
     "transforms",
 }
+
+def _parse_model_fallback_csv(value: Any) -> list[str]:
+    """Parse a comma-separated model list into a normalized array (order-preserving)."""
+    if not isinstance(value, str):
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    models: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        candidate = part.strip()
+        if not candidate:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        models.append(candidate)
+    return models
+
+
+def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging.Logger = LOGGER) -> None:
+    """Map OWUI custom `model_fallback` (CSV string) to OpenRouter `models` (array).
+
+    OpenRouter supports `model` plus `models` where `models` is treated as the fallback list.
+    This helper never prepends `model` into `models`.
+    """
+    if not isinstance(payload, dict):
+        return
+    raw_fallback = payload.pop("model_fallback", None)
+    fallback_models = _parse_model_fallback_csv(raw_fallback)
+
+    existing_models_raw = payload.get("models")
+    existing_models: list[str] = []
+    if isinstance(existing_models_raw, list):
+        for entry in existing_models_raw:
+            if isinstance(entry, str) and entry.strip():
+                existing_models.append(entry.strip())
+
+    if not fallback_models and not existing_models:
+        return
+
+    # Merge existing + fallback (dedupe, preserve order). Existing models come first.
+    merged: list[str] = []
+    seen: set[str] = set()
+    for candidate in existing_models + fallback_models:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        merged.append(candidate)
+
+    if not merged:
+        payload.pop("models", None)
+        return
+
+    payload["models"] = merged
+    if raw_fallback not in (None, "", []):
+        logger.debug("Applied model_fallback -> models (%d fallback(s))", len(fallback_models))
 
 def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
     """Return a validated OpenRouter `metadata` dict or None.
@@ -8638,6 +8697,7 @@ class Pipe:
                     owui_user_id=user_id,
                     logger=self.logger,
                 )
+                _apply_model_fallback_to_payload(request_payload, logger=self.logger)
                 request_payload = _filter_openrouter_request(request_payload)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
