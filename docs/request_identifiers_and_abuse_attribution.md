@@ -70,7 +70,7 @@ Why:
 
 This is optional: you can keep request identifiers enabled without storing archives, and you can store archives purely as local backups even if you choose not to send identifiers to OpenRouter.
 
-Deep-dive: see `docs/session_log_storage.md`.
+Deep-dive: see [session_log_storage.md](session_log_storage.md).
 
 ---
 
