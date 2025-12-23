@@ -58,6 +58,22 @@ The pipe enforces OpenRouter’s documented constraints: max 16 pairs; keys ≤6
 
 ---
 
+## pairing with encrypted session log archives (recommended)
+
+If you’re enabling request identifiers specifically for abuse attribution / incident response, consider also enabling **encrypted session log storage**.
+
+Why:
+
+* OpenRouter/provider support can reference `user`, `session_id`, and/or `metadata.*` when reporting abuse or asking you to investigate.
+* Encrypted on-disk session log archives give operators a durable record of what happened for a specific request, without needing to run the whole system at `LOG_LEVEL=DEBUG`.
+* Archives are stored using the same IDs (`<user_id>/<chat_id>/<message_id>.zip`) so they’re directly searchable from the identifiers you already see in Open WebUI / provider reports.
+
+This is optional: you can keep request identifiers enabled without storing archives, and you can store archives purely as local backups even if you choose not to send identifiers to OpenRouter.
+
+Deep-dive: see `docs/session_log_storage.md`.
+
+---
+
 ## example payloads
 
 ### minimal (only `user`)
@@ -109,4 +125,3 @@ See `docs/valves_and_configuration_atlas.md` for the canonical list and defaults
 * Enable `SEND_SESSION_ID` when you want provider-side grouping for multi-step agent flows / long sessions.
 * Enable `SEND_CHAT_ID`/`SEND_MESSAGE_ID` if you want a direct pointer back to a specific OWUI thread/turn during incident response.
 * Treat the emitted IDs as **non-secret** (they may appear in logs). They should not encode PII.
-

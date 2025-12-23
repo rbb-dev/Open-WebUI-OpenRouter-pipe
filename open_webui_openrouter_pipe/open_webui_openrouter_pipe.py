@@ -6,8 +6,8 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.11
-requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity
+version: 1.0.12
+requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
 - This work was based on excellent work by jrkropp (https://github.com/jrkropp/open-webui-developer-toolkit)
@@ -85,6 +85,7 @@ import inspect
 import json
 import logging
 import os
+import queue
 import re
 import sys
 import secrets
@@ -94,6 +95,7 @@ import hashlib
 import base64
 import binascii
 import functools
+import threading
 from time import perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
@@ -101,6 +103,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast, no_type_check
 from urllib.parse import urlparse
 import ast
@@ -123,6 +126,11 @@ try:
     import lz4.frame as lz4frame
 except ImportError:  # pragma: no cover - optional dependency, handled via requirements metadata
     lz4frame = None
+
+try:
+    import pyzipper  # pyright: ignore[reportMissingImports]
+except ImportError:  # pragma: no cover - optional dependency
+    pyzipper = None
 
 try:  # optional Redis cache
     import redis.asyncio as aioredis
@@ -946,6 +954,23 @@ class _ToolExecutionContext:
 
 
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
+
+
+@dataclass(slots=True)
+class _SessionLogArchiveJob:
+    """Represents a single session log archive request destined for the writer thread."""
+
+    base_dir: str
+    zip_password: bytes
+    zip_compression: str
+    zip_compresslevel: Optional[int]
+    user_id: str
+    session_id: str
+    chat_id: str
+    message_id: str
+    request_id: str
+    created_at: float
+    log_lines: list[str]
 
 
 class EncryptedStr(str):
@@ -2617,6 +2642,55 @@ class Pipe:
             default_factory=_resolve_log_level_default,
             description="Select logging level.  Recommend INFO or WARNING for production use. DEBUG is useful for development and debugging.",
         )
+        SESSION_LOG_STORE_ENABLED: bool = Field(
+            default=False,
+            description=(
+                "When True, persist per-request SessionLogger output to encrypted zip files on disk. "
+                "Persistence is skipped when any required IDs are missing (user_id, session_id, chat_id, message_id)."
+            ),
+        )
+        SESSION_LOG_DIR: str = Field(
+            default="session_logs",
+            description=(
+                "Base directory for encrypted session log archives. "
+                "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip."
+            ),
+        )
+        SESSION_LOG_ZIP_PASSWORD: EncryptedStr = Field(
+            default=EncryptedStr(""),
+            description=(
+                "Password used to encrypt session log zip files (pyzipper AES). "
+                "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY)."
+            ),
+        )
+        SESSION_LOG_RETENTION_DAYS: int = Field(
+            default=90,
+            ge=1,
+            description="Retention window for stored session log archives. Cleanup deletes zip files older than this many days.",
+        )
+        SESSION_LOG_CLEANUP_INTERVAL_SECONDS: int = Field(
+            default=3600,
+            ge=60,
+            description="How often (in seconds) to run the session log cleanup loop when storage is enabled.",
+        )
+        SESSION_LOG_ZIP_COMPRESSION: Literal["stored", "deflated", "bzip2", "lzma"] = Field(
+            default="lzma",
+            description="Zip compression algorithm for session log archives (default lzma).",
+        )
+        SESSION_LOG_ZIP_COMPRESSLEVEL: Optional[int] = Field(
+            default=None,
+            ge=0,
+            le=9,
+            description=(
+                "Compression level (0-9) for deflated/bzip2 zip compression. "
+                "Ignored for stored/lzma."
+            ),
+        )
+        SESSION_LOG_MAX_LINES: int = Field(
+            default=20000,
+            ge=100,
+            description="Maximum number of in-memory SessionLogger lines retained per request (older lines are dropped).",
+        )
         MAX_CONCURRENT_REQUESTS: int = Field(
             default=200,
             ge=1,
@@ -3082,6 +3156,16 @@ class Pipe:
         self._storage_user_cache: Optional[Any] = None
         self._storage_user_lock: Optional[asyncio.Lock] = None
         self._storage_role_warning_emitted: bool = False
+        self._session_log_queue: queue.Queue[_SessionLogArchiveJob] | None = None
+        self._session_log_stop_event: threading.Event | None = None
+        self._session_log_worker_thread: threading.Thread | None = None
+        self._session_log_cleanup_thread: threading.Thread | None = None
+        self._session_log_lock = threading.Lock()
+        self._session_log_cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
+        self._session_log_retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
+        self._session_log_dir = self.valves.SESSION_LOG_DIR
+        self._session_log_dirs: set[str] = set()
+        self._session_log_warning_emitted = False
         self._maybe_start_log_worker()
         self._maybe_start_startup_checks()
 
@@ -3148,6 +3232,172 @@ class Pipe:
                 )
 
         loop.create_task(_ensure_worker())
+
+    def _maybe_start_session_log_workers(self) -> None:
+        """Start session log writer + cleanup threads if not already running."""
+        if self._session_log_worker_thread and self._session_log_worker_thread.is_alive():
+            return
+        if self._session_log_cleanup_thread and self._session_log_cleanup_thread.is_alive():
+            return
+        if self._session_log_queue is None:
+            self._session_log_queue = queue.Queue(maxsize=500)
+        if self._session_log_stop_event is None:
+            self._session_log_stop_event = threading.Event()
+
+        def _writer_loop() -> None:
+            while True:
+                if self._session_log_stop_event and self._session_log_stop_event.is_set():
+                    break
+                item: _SessionLogArchiveJob | None = None
+                try:
+                    item = self._session_log_queue.get(timeout=0.5) if self._session_log_queue else None
+                except queue.Empty:
+                    continue
+                except Exception:
+                    continue
+                if item is None:
+                    with contextlib.suppress(Exception):
+                        if self._session_log_queue:
+                            self._session_log_queue.task_done()
+                    continue
+                try:
+                    self._write_session_log_archive(item)
+                except Exception:
+                    # Never allow the writer thread to crash the process.
+                    self.logger.debug("Session log writer failed", exc_info=True)
+                finally:
+                    with contextlib.suppress(Exception):
+                        if self._session_log_queue:
+                            self._session_log_queue.task_done()
+
+        def _cleanup_loop() -> None:
+            while True:
+                if self._session_log_stop_event and self._session_log_stop_event.is_set():
+                    break
+                try:
+                    self._cleanup_session_log_archives()
+                except Exception:
+                    # Never allow cleanup to crash the process.
+                    self.logger.debug("Session log cleanup failed", exc_info=True)
+                interval = 3600
+                with contextlib.suppress(Exception):
+                    with self._session_log_lock:
+                        interval = max(60, int(self._session_log_cleanup_interval_seconds or 3600))
+                try:
+                    time.sleep(interval)
+                except Exception:
+                    time.sleep(60)
+
+        self._session_log_worker_thread = threading.Thread(
+            target=_writer_loop,
+            name="openrouter-session-log-writer",
+            daemon=True,
+        )
+        self._session_log_worker_thread.start()
+
+        self._session_log_cleanup_thread = threading.Thread(
+            target=_cleanup_loop,
+            name="openrouter-session-log-cleanup",
+            daemon=True,
+        )
+        self._session_log_cleanup_thread.start()
+
+    def _stop_session_log_workers(self) -> None:
+        """Stop session log background threads (best effort)."""
+        if self._session_log_stop_event:
+            with contextlib.suppress(Exception):
+                self._session_log_stop_event.set()
+        if self._session_log_queue:
+            with contextlib.suppress(Exception):
+                self._session_log_queue.put_nowait(None)  # type: ignore[arg-type]
+        for thread in (self._session_log_worker_thread, self._session_log_cleanup_thread):
+            if thread and thread.is_alive():
+                with contextlib.suppress(Exception):
+                    thread.join(timeout=2.0)
+        self._session_log_worker_thread = None
+        self._session_log_cleanup_thread = None
+
+    def _enqueue_session_log_archive(
+        self,
+        valves: "Pipe.Valves",
+        *,
+        user_id: str,
+        session_id: str,
+        chat_id: str,
+        message_id: str,
+        request_id: str,
+        log_lines: list[str],
+    ) -> None:
+        """Queue the current request's session logs for encrypted zip persistence."""
+        if not getattr(valves, "SESSION_LOG_STORE_ENABLED", False):
+            return
+        if not (user_id and session_id and chat_id and message_id):
+            return
+        if not log_lines:
+            return
+        if pyzipper is None:
+            if not self._session_log_warning_emitted:
+                self.logger.warning("Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence.")
+                self._session_log_warning_emitted = True
+            return
+
+        base_dir = str(getattr(valves, "SESSION_LOG_DIR", "") or "").strip()
+        if not base_dir:
+            if not self._session_log_warning_emitted:
+                self.logger.warning("Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.")
+                self._session_log_warning_emitted = True
+            return
+
+        decrypted = EncryptedStr.decrypt(getattr(valves, "SESSION_LOG_ZIP_PASSWORD", "") or "")
+        password = (decrypted or "").strip()
+        if not password:
+            if not self._session_log_warning_emitted:
+                self.logger.warning("Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.")
+                self._session_log_warning_emitted = True
+            return
+
+        zip_compression = str(getattr(valves, "SESSION_LOG_ZIP_COMPRESSION", "lzma") or "lzma").strip().lower()
+        zip_compresslevel = getattr(valves, "SESSION_LOG_ZIP_COMPRESSLEVEL", None)
+        if zip_compression not in {"stored", "deflated", "bzip2", "lzma"}:
+            zip_compression = "lzma"
+        if zip_compression in {"stored", "lzma"}:
+            zip_compresslevel = None
+
+        with contextlib.suppress(Exception):
+            with self._session_log_lock:
+                self._session_log_cleanup_interval_seconds = int(
+                    getattr(valves, "SESSION_LOG_CLEANUP_INTERVAL_SECONDS", 3600) or 3600
+                )
+                self._session_log_retention_days = int(
+                    getattr(valves, "SESSION_LOG_RETENTION_DAYS", 90) or 90
+                )
+                self._session_log_dir = base_dir
+                self._session_log_dirs.add(base_dir)
+
+        if self._session_log_queue is None:
+            self._session_log_queue = queue.Queue(maxsize=500)
+        if self._session_log_queue.full():
+            self.logger.warning("Session log archive queue is full; dropping archive for chat_id=%s message_id=%s", chat_id, message_id)
+            return
+
+        self._maybe_start_session_log_workers()
+        job = _SessionLogArchiveJob(
+            base_dir=base_dir,
+            zip_password=password.encode("utf-8"),
+            zip_compression=zip_compression,
+            zip_compresslevel=zip_compresslevel if isinstance(zip_compresslevel, int) else None,
+            user_id=user_id,
+            session_id=session_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            request_id=request_id,
+            created_at=time.time(),
+            log_lines=log_lines,
+        )
+        try:
+            self._session_log_queue.put_nowait(job)
+        except Exception:
+            self.logger.debug("Failed to enqueue session log archive job", exc_info=True)
 
     def _maybe_start_redis(self) -> None:
         """Initialize Redis cache if enabled."""
@@ -4041,10 +4291,14 @@ class Pipe:
     def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar[Any], contextvars.Token[Any]]]:
         """Set SessionLogger contextvars based on the incoming request."""
         session_id = job.session_id or None
+        request_id = job.request_id or None
         user_id = job.user_id or None
         log_level = getattr(logging, str(job.valves.LOG_LEVEL).upper(), logging.INFO)
+        with contextlib.suppress(Exception):
+            SessionLogger.set_max_lines(int(getattr(job.valves, "SESSION_LOG_MAX_LINES", 2000) or 2000))
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
+        tokens.append((SessionLogger.request_id, SessionLogger.request_id.set(request_id)))
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
         return tokens
@@ -4365,6 +4619,113 @@ class Pipe:
         self._db_executor = None
         if executor:
             executor.shutdown(wait=True)
+        self._stop_session_log_workers()
+
+    def _write_session_log_archive(self, job: _SessionLogArchiveJob) -> None:
+        """Write a single encrypted zip archive containing session logs + metadata."""
+        if pyzipper is None:
+            return
+        base_dir = (job.base_dir or "").strip()
+        if not base_dir:
+            return
+
+        user_id = _sanitize_path_component(job.user_id, fallback="user")
+        chat_id = _sanitize_path_component(job.chat_id, fallback="chat")
+        message_id = _sanitize_path_component(job.message_id, fallback="message")
+        session_id = str(job.session_id or "")
+
+        root = Path(base_dir).expanduser()
+        out_dir = root / user_id / chat_id
+        out_path = out_dir / f"{message_id}.zip"
+        tmp_path = out_dir / f"{message_id}.zip.tmp"
+
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+
+        compression_map = {
+            "stored": pyzipper.ZIP_STORED,
+            "deflated": pyzipper.ZIP_DEFLATED,
+            "bzip2": pyzipper.ZIP_BZIP2,
+            "lzma": pyzipper.ZIP_LZMA,
+        }
+        compression = compression_map.get((job.zip_compression or "lzma").lower(), pyzipper.ZIP_LZMA)
+
+        meta = {
+            "created_at": datetime.datetime.fromtimestamp(job.created_at, tz=datetime.timezone.utc).isoformat(),
+            "ids": {
+                "user_id": str(job.user_id or ""),
+                "session_id": str(session_id),
+                "chat_id": str(job.chat_id or ""),
+                "message_id": str(job.message_id or ""),
+            },
+            "request_id": str(job.request_id or ""),
+            "log_format": "text",
+        }
+        meta_json = json.dumps(meta, ensure_ascii=False, indent=2)
+        logs_payload = "\n".join([line.rstrip("\n") for line in (job.log_lines or [])])
+        if logs_payload and not logs_payload.endswith("\n"):
+            logs_payload += "\n"
+
+        zip_kwargs: dict[str, Any] = {
+            "mode": "w",
+            "compression": compression,
+            "encryption": pyzipper.WZ_AES,
+        }
+        if job.zip_compresslevel is not None and compression in {pyzipper.ZIP_DEFLATED, pyzipper.ZIP_BZIP2}:
+            zip_kwargs["compresslevel"] = int(job.zip_compresslevel)
+
+        try:
+            with pyzipper.AESZipFile(tmp_path, **zip_kwargs) as zf:
+                zf.setpassword(job.zip_password or b"")
+                zf.writestr("meta.json", meta_json)
+                zf.writestr("logs.txt", logs_payload)
+        except Exception:
+            with contextlib.suppress(Exception):
+                tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            return
+
+        try:
+            os.replace(tmp_path, out_path)
+        except Exception:
+            with contextlib.suppress(Exception):
+                tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+
+    def _cleanup_session_log_archives(self) -> None:
+        """Delete expired session log archives and prune empty directories."""
+        with self._session_log_lock:
+            dirs = set(self._session_log_dirs)
+            retention_days = int(self._session_log_retention_days or 90)
+        if not dirs:
+            return
+        cutoff = time.time() - max(1, retention_days) * 86400
+
+        for base_dir in dirs:
+            base_dir = (base_dir or "").strip()
+            if not base_dir:
+                continue
+            root = Path(base_dir).expanduser()
+            if not root.exists():
+                continue
+            try:
+                for path in root.rglob("*.zip"):
+                    with contextlib.suppress(Exception):
+                        stat = path.stat()
+                        if stat.st_mtime < cutoff:
+                            path.unlink(missing_ok=True)  # type: ignore[arg-type]
+            except Exception:
+                continue
+
+            # Prune empty directories, including the root if it's emptied out.
+            try:
+                for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+                    if dirnames or filenames:
+                        continue
+                    with contextlib.suppress(Exception):
+                        os.rmdir(dirpath)
+            except Exception:
+                continue
 
     def _get_fernet(self) -> Fernet | None:
         """Return (and cache) the Fernet helper derived from the encryption key."""
@@ -8867,12 +9228,25 @@ class Pipe:
                     }
                     )
 
-            if valves.LOG_LEVEL != "INHERIT":
-                session_id = SessionLogger.session_id.get()
-                if session_id:
-                    logs = SessionLogger.logs.get(session_id, [])
-                    if logs and self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug("Collected %d session log entries for session %s.", len(logs), session_id)
+            request_id = SessionLogger.request_id.get() or ""
+            if request_id:
+                logs = list(SessionLogger.logs.get(request_id, []))
+                if logs and self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("Collected %d session log entries for request %s.", len(logs), request_id)
+                resolved_user_id = str(user_id or metadata.get("user_id") or "")
+                resolved_session_id = str(metadata.get("session_id") or "")
+                resolved_chat_id = str(metadata.get("chat_id") or "")
+                resolved_message_id = str(metadata.get("message_id") or "")
+                with contextlib.suppress(Exception):
+                    self._enqueue_session_log_archive(
+                        valves,
+                        user_id=resolved_user_id,
+                        session_id=resolved_session_id,
+                        chat_id=resolved_chat_id,
+                        message_id=resolved_message_id,
+                        request_id=request_id,
+                        log_lines=logs,
+                    )
 
             if (not error_occurred) and (not was_cancelled):
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
@@ -8886,7 +9260,8 @@ class Pipe:
                 )
 
             # Clear logs
-            SessionLogger.logs.pop(SessionLogger.session_id.get(), None)
+            if request_id:
+                SessionLogger.logs.pop(request_id, None)
             SessionLogger.cleanup()
 
             chat_id = metadata.get("chat_id")
@@ -9956,13 +10331,13 @@ class Pipe:
 
         # 2) Optionally dump the collected logs to the backend logger
         if show_error_log_citation:
-            session_id = SessionLogger.session_id.get()
-            logs = SessionLogger.logs.get(session_id, [])
+            request_id = SessionLogger.request_id.get()
+            logs = SessionLogger.logs.get(request_id or "", [])
             if logs:
                 if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("Error logs for session %s:\n%s", session_id, "\n".join(logs))
+                    self.logger.debug("Error logs for request %s:\n%s", request_id, "\n".join(logs))
             else:
-                self.logger.warning("No debug logs found for session_id %s", session_id)
+                self.logger.warning("No debug logs found for request_id %s", request_id)
 
     async def _emit_templated_error(
         self,
@@ -10401,21 +10776,26 @@ def _is_internal_file_url(url: str) -> bool:
 class SessionLogger:
     """Per-request logger that captures console output and an in-memory log buffer.
 
-    The logger is bound to a logical *session* via contextvars so that log lines
-    can be collected and emitted (e.g., as citations) for the current request.
+    The logger tracks two identifiers via contextvars:
+    - session_id: Open WebUI session identifier (for status/errors/debug).
+    - request_id: Per-request unique id used to key the in-memory log buffer.
+
     Cleanup is intentional and explicit: request handlers call ``cleanup`` once
     they finish streaming so there is no background task silently pruning logs.
 
     Attributes:
-        session_id: ContextVar storing the current logical session ID.
-        log_level:  ContextVar storing the minimum level to emit for this session.
-        logs:       Map of session_id -> fixed-size deque of formatted log strings.
+        session_id: ContextVar storing the Open WebUI session id.
+        request_id: ContextVar storing the per-request buffer key.
+        log_level:  ContextVar storing the minimum level to emit for this request.
+        logs:       Map of request_id -> fixed-size deque of formatted log strings.
     """
 
     session_id: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
+    request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
     user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
-    logs = defaultdict(lambda: deque(maxlen=2000))
+    max_lines: int = 2000
+    logs: Dict[str, deque[str]] = {}
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
@@ -10432,7 +10812,7 @@ class SessionLogger:
         Returns:
             logging.Logger: A configured logger that writes both to stdout and
             the in-memory `SessionLogger.logs` buffer. The buffer is keyed by
-            the current `SessionLogger.session_id`.
+            the current `SessionLogger.request_id`.
         """
         logger = logging.getLogger(name)
         logger.handlers.clear()
@@ -10445,15 +10825,18 @@ class SessionLogger:
 
         # Single combined filter: attach session_id and respect per-session level.
         def filter(record):
-            """Attach session metadata and enforce per-session log levels."""
+            """Attach session metadata and capture the per-request console log level."""
             sid = cls.session_id.get()
+            rid = cls.request_id.get()
             uid = cls.user_id.get()
             record.session_id = sid
+            record.request_id = rid
             record.session_label = sid or "-"
             record.user_id = uid or "-"
-            if sid:
-                cls._session_last_seen[sid] = time.time()
-            return record.levelno >= cls.log_level.get()
+            record.session_log_level = cls.log_level.get()
+            if rid:
+                cls._session_last_seen[rid] = time.time()
+            return True
 
         logger.addFilter(filter)
 
@@ -10473,6 +10856,16 @@ class SessionLogger:
     @classmethod
     def set_main_loop(cls, loop: asyncio.AbstractEventLoop | None) -> None:
         cls._main_loop = loop
+
+    @classmethod
+    def set_max_lines(cls, value: int) -> None:
+        """Set the maximum in-memory lines retained per request (best effort)."""
+        try:
+            value_int = int(value)
+        except Exception:
+            return
+        value_int = max(100, min(200000, value_int))
+        cls.max_lines = value_int
 
     @classmethod
     def _enqueue(cls, record: logging.LogRecord) -> None:
@@ -10504,13 +10897,19 @@ class SessionLogger:
 
     @classmethod
     def process_record(cls, record: logging.LogRecord) -> None:
-        console_line = cls._console_formatter.format(record)
-        sys.stdout.write(console_line + "\n")
-        sys.stdout.flush()
-        session_id = getattr(record, "session_id", None)
-        if session_id:
-            cls.logs[session_id].append(cls._memory_formatter.format(record))
-            cls._session_last_seen[session_id] = time.time()
+        session_log_level = getattr(record, "session_log_level", logging.INFO)
+        if record.levelno >= int(session_log_level):
+            console_line = cls._console_formatter.format(record)
+            sys.stdout.write(console_line + "\n")
+            sys.stdout.flush()
+        request_id = getattr(record, "request_id", None)
+        if request_id:
+            buffer = cls.logs.get(request_id)
+            if buffer is None or buffer.maxlen != cls.max_lines:
+                buffer = deque(maxlen=cls.max_lines)
+                cls.logs[request_id] = buffer
+            buffer.append(cls._memory_formatter.format(record))
+            cls._session_last_seen[request_id] = time.time()
 
     @classmethod
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
@@ -10858,6 +11257,18 @@ def _sanitize_table_fragment(value: str) -> str:
     if len(fragment) > 62:
         fragment = fragment[:62].rstrip("_") or "pipe"
     return fragment
+
+
+def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_length: int = 128) -> str:
+    """Return a filesystem-safe path component to prevent traversal/odd characters."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    cleaned = re.sub(r"[^0-9A-Za-z._-]+", "_", text)
+    cleaned = cleaned.strip("._-") or fallback
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip("._-") or fallback
+    return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────

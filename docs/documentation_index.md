@@ -234,4 +234,10 @@ This map shows how documentation serves different personas and workflows:
 * Explains when/why to send OpenRouter `user`, `session_id`, and request `metadata` for multi-user deployments.
 * Documents valve-gated behaviour and shows example JSON payloads that avoid PII.
 
+### 4.1 encrypted session log storage
+**file:** [session_log_storage.md](session_log_storage.md)
+
+* Documents optional, valve-gated persistence of per-request session logs to encrypted zip archives for incident response.
+* Explains required OWUI identifiers, archive layout, retention cleanup, and what is (and is not) stored.
+
 ---

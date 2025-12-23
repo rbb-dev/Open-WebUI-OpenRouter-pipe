@@ -77,6 +77,7 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | Valve | Default | Range | Notes |
 | --- | --- | --- | --- |
 | `LOG_LEVEL` | env `GLOBAL_LOG_LEVEL` or `INFO` | enum | Pipe-wide log threshold. |
+| `SESSION_LOG_MAX_LINES` | 20000 | ≥100 | In-memory SessionLogger buffer cap per request (older lines drop). Used for debug/error citations and optional on-disk session log archives. |
 | `MAX_CONCURRENT_REQUESTS` | 200 | 1--2000 | Size of the global request semaphore. |
 | `SSE_WORKERS_PER_REQUEST` | 4 | 1--8 | SSE parser tasks per request. |
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | 0 | ≥0 | Raw SSE chunk buffer. 0=unbounded (deadlock-proof, recommended); small bounded (&lt;500) risks hangs on tool-heavy loads or slow DB/emit (drain block → event full → workers block → chunk full → producer halt). |
@@ -101,6 +102,13 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `REDIS_CACHE_TTL_SECONDS` | 600 | 60--3600 | TTL for cached artifacts. |
 | `REDIS_PENDING_WARN_THRESHOLD` | 100 | 1--10000 | Log warning when pending queue exceeds this size. |
 | `REDIS_FLUSH_FAILURE_LIMIT` | 5 | 1--50 | Disable Redis after this many consecutive flush failures. |
+| `SESSION_LOG_STORE_ENABLED` | False | bool | When enabled, persists per-request SessionLogger output to encrypted zip files on disk. Persistence is skipped when any required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`). See `docs/session_log_storage.md`. |
+| `SESSION_LOG_DIR` | `session_logs` | string | Base directory for archives; files are stored as `<SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip`. |
+| `SESSION_LOG_ZIP_PASSWORD` | `""` | string | Password used to encrypt archives (pyzipper AES). Use an encrypted value (requires `WEBUI_SECRET_KEY`). |
+| `SESSION_LOG_RETENTION_DAYS` | 90 | ≥1 | Cleanup deletes archives older than this many days. |
+| `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | 3600 | ≥60 | Cleanup cadence when session log storage is enabled. |
+| `SESSION_LOG_ZIP_COMPRESSION` | `lzma` | stored/deflated/bzip2/lzma | Compression algorithm for archives. |
+| `SESSION_LOG_ZIP_COMPRESSLEVEL` | null | 0--9 or null | Compression level for deflated/bzip2; ignored for stored/lzma. |
 | `ARTIFACT_CLEANUP_DAYS` | 90 | 1--365 | Age threshold for DB cleanup job. |
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | 1.0 | 0.5--24 | Cleanup cadence. |
 | `DB_BATCH_SIZE` | 10 | 5--20 | Rows per DB transaction when draining Redis. |

@@ -1,7 +1,7 @@
 # Open WebUI pipe for OpenRouter Responses API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.11-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-1.0.12-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 A production-grade Open WebUI pipe for OpenRouter's Responses API, built for reliability and scale. Three core capabilities set it apart:
