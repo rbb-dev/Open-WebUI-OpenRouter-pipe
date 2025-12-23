@@ -10826,16 +10826,20 @@ class SessionLogger:
         # Single combined filter: attach session_id and respect per-session level.
         def filter(record):
             """Attach session metadata and capture the per-request console log level."""
-            sid = cls.session_id.get()
-            rid = cls.request_id.get()
-            uid = cls.user_id.get()
-            record.session_id = sid
-            record.request_id = rid
-            record.session_label = sid or "-"
-            record.user_id = uid or "-"
-            record.session_log_level = cls.log_level.get()
-            if rid:
-                cls._session_last_seen[rid] = time.time()
+            try:
+                sid = cls.session_id.get()
+                rid = cls.request_id.get()
+                uid = cls.user_id.get()
+                record.session_id = sid
+                record.request_id = rid
+                record.session_label = sid or "-"
+                record.user_id = uid or "-"
+                record.session_log_level = cls.log_level.get()
+                if rid:
+                    cls._session_last_seen[rid] = time.time()
+            except Exception:
+                # Logging must never break request handling.
+                pass
             return True
 
         logger.addFilter(filter)
@@ -10897,19 +10901,29 @@ class SessionLogger:
 
     @classmethod
     def process_record(cls, record: logging.LogRecord) -> None:
-        session_log_level = getattr(record, "session_log_level", logging.INFO)
-        if record.levelno >= int(session_log_level):
-            console_line = cls._console_formatter.format(record)
-            sys.stdout.write(console_line + "\n")
-            sys.stdout.flush()
-        request_id = getattr(record, "request_id", None)
-        if request_id:
-            buffer = cls.logs.get(request_id)
-            if buffer is None or buffer.maxlen != cls.max_lines:
-                buffer = deque(maxlen=cls.max_lines)
-                cls.logs[request_id] = buffer
-            buffer.append(cls._memory_formatter.format(record))
-            cls._session_last_seen[request_id] = time.time()
+        try:
+            session_log_level = getattr(record, "session_log_level", logging.INFO)
+            if record.levelno >= int(session_log_level):
+                try:
+                    console_line = cls._console_formatter.format(record)
+                    sys.stdout.write(console_line + "\n")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+            request_id = getattr(record, "request_id", None)
+            if request_id:
+                buffer = cls.logs.get(request_id)
+                if buffer is None or buffer.maxlen != cls.max_lines:
+                    buffer = deque(maxlen=cls.max_lines)
+                    cls.logs[request_id] = buffer
+                try:
+                    buffer.append(cls._memory_formatter.format(record))
+                    cls._session_last_seen[request_id] = time.time()
+                except Exception:
+                    pass
+        except Exception:
+            # Never raise from logging hooks.
+            return
 
     @classmethod
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
