@@ -2211,6 +2211,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "stream",
     "max_output_tokens",
     "temperature",
+    "top_k",
     "top_p",
     "reasoning",
     "include_reasoning",
@@ -2389,6 +2390,21 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Drop explicit nulls; OpenRouter rejects nulls for optional fields.
         if value is None:
+            continue
+
+        if key == "top_k":
+            if isinstance(value, (int, float)):
+                filtered[key] = float(value)
+                continue
+            if isinstance(value, str):
+                candidate = value.strip()
+                if not candidate:
+                    continue
+                try:
+                    filtered[key] = float(candidate)
+                except ValueError:
+                    continue
+                continue
             continue
 
         if key == "metadata":

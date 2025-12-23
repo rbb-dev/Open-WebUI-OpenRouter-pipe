@@ -161,6 +161,17 @@ Notes:
   * Feed a downstream billing or chargeback script (`redis-cli ... MATCH "costs:openrouter_responses_api_pipe:*"`).
   * Trigger ad-hoc alerts when a single user suddenly spikes usage (subscribe to Redis keyspace events or poll keys).
   * Export short-lived telemetry into another system (e.g., `redis-cli --raw KEYS 'costs:*' | xargs redis-cli GET …`) without touching the main SQL database.
+
+---
+
+## 13. sampling (`top_k`)
+
+OpenRouter’s Responses API supports the sampling parameter `top_k` (number). Open WebUI may include it in the request body when a user sets it in model parameters.
+
+Pipe behavior:
+
+- If `top_k` is present in the incoming request body and is numeric (or a numeric string), the pipe forwards it to OpenRouter.
+- If `top_k` is missing, null, or not parseable as a number, the pipe omits it (to avoid sending invalid fields).
 * Safety notes:
   * No personally sensitive data beyond what Open WebUI already stores (email/name) is added.
   * TTL enforcement plus the explicit valve flag mean you can keep the feature disabled in production and only flip it on temporarily for investigations, knowing that the leftovers age out automatically.
