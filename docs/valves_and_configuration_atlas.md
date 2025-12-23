@@ -112,6 +112,10 @@ Valves are the sole configuration surface for the OpenRouter Responses pipe. Thi
 | `USE_MODEL_MAX_OUTPUT_TOKENS` | False | Forwards provider-advertised `max_output_tokens` automatically. |
 | `SHOW_FINAL_USAGE_STATUS` | True | Includes timing/cost/tokens in the final status bubble. |
 | `ENABLE_STATUS_CSS_PATCH` | True | Injects a CSS helper so multi-line statuses render nicely. |
+| `SEND_END_USER_ID` | False | When enabled, sends the OpenRouter `user` field using the OWUI user GUID (`__user__["id"]`). Also adds `metadata.user_id` to the request metadata map. See `docs/request_identifiers_and_abuse_attribution.md`. |
+| `SEND_SESSION_ID` | False | When enabled, sends OpenRouter `session_id` using OWUI `__metadata__["session_id"]` (if present). Also adds `metadata.session_id`. See `docs/request_identifiers_and_abuse_attribution.md`. |
+| `SEND_CHAT_ID` | False | When enabled, adds `metadata.chat_id` using OWUI `__metadata__["chat_id"]`. There is no OpenRouter top-level `chat_id` field. See `docs/request_identifiers_and_abuse_attribution.md`. |
+| `SEND_MESSAGE_ID` | False | When enabled, adds `metadata.message_id` using OWUI `__metadata__["message_id"]`. There is no OpenRouter top-level `message_id` field. See `docs/request_identifiers_and_abuse_attribution.md`. |
 | `OPENROUTER_ERROR_TEMPLATE` | (see source) | Markdown template for OpenRouter 400 responses. Supports all placeholders listed in `docs/openrouter_integrations_and_telemetry.md#template-variables` plus Handlebars-style `{{#if variable}} ... {{/if}}` blocks. Lines drop automatically when a placeholder is empty, so admins can restructure the template without touching Python. |
 
 ---

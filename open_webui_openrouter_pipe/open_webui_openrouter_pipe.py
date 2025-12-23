@@ -39,6 +39,10 @@ _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
 _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
+_MAX_OPENROUTER_ID_CHARS = 128
+_MAX_OPENROUTER_METADATA_PAIRS = 16
+_MAX_OPENROUTER_METADATA_KEY_CHARS = 64
+_MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """Infer the Open WebUI function id from the module name.
@@ -2177,6 +2181,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "model",
     "input",
     "instructions",
+    "metadata",
     "stream",
     "max_output_tokens",
     "temperature",
@@ -2188,8 +2193,108 @@ ALLOWED_OPENROUTER_FIELDS = {
     "plugins",
     "response_format",
     "parallel_tool_calls",
+    "user",
+    "session_id",
     "transforms",
 }
+
+def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
+    """Return a validated OpenRouter `metadata` dict or None.
+
+    OpenRouter's Responses schema documents `metadata` as a string→string map with:
+    - max 16 pairs
+    - key <= 64 chars, no brackets
+    - value <= 512 chars
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    sanitized: dict[str, str] = {}
+    for key, value in raw.items():
+        if len(sanitized) >= _MAX_OPENROUTER_METADATA_PAIRS:
+            break
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if len(key) > _MAX_OPENROUTER_METADATA_KEY_CHARS:
+            continue
+        if "[" in key or "]" in key:
+            continue
+        if len(value) > _MAX_OPENROUTER_METADATA_VALUE_CHARS:
+            continue
+        sanitized[key] = value
+
+    return sanitized or None
+
+
+def _apply_identifier_valves_to_payload(
+    payload: dict[str, Any],
+    *,
+    valves: "Pipe.Valves",
+    owui_metadata: dict[str, Any],
+    owui_user_id: str,
+    logger: logging.Logger = LOGGER,
+) -> None:
+    """Mutate request payload to include valve-gated identifiers.
+
+    Rules (per operator requirements):
+    - Only emit `metadata` when at least one identifier valve contributes a value.
+    - When `SEND_END_USER_ID` is enabled, emit both top-level `user` and `metadata.user_id`.
+    - When `SEND_SESSION_ID` is enabled, emit both top-level `session_id` and `metadata.session_id`.
+    - `chat_id` and `message_id` have no OpenRouter top-level fields; they go into `metadata` only.
+    """
+    if not isinstance(payload, dict):
+        return
+    if not isinstance(owui_metadata, dict):
+        owui_metadata = {}
+
+    metadata_out: dict[str, str] = {}
+
+    if getattr(valves, "SEND_END_USER_ID", False):
+        candidate = (owui_user_id or "").strip()
+        if candidate and len(candidate) <= _MAX_OPENROUTER_ID_CHARS:
+            payload["user"] = candidate
+            metadata_out["user_id"] = candidate
+        else:
+            payload.pop("user", None)
+            logger.debug("SEND_END_USER_ID enabled but OWUI user id missing/invalid; omitting `user`.")
+    else:
+        payload.pop("user", None)
+
+    if getattr(valves, "SEND_SESSION_ID", False):
+        session_id = owui_metadata.get("session_id")
+        if isinstance(session_id, str):
+            candidate = session_id.strip()
+            if candidate and len(candidate) <= _MAX_OPENROUTER_ID_CHARS:
+                payload["session_id"] = candidate
+                metadata_out["session_id"] = candidate
+            else:
+                payload.pop("session_id", None)
+                logger.debug("SEND_SESSION_ID enabled but OWUI session_id missing/invalid; omitting `session_id`.")
+        else:
+            payload.pop("session_id", None)
+    else:
+        payload.pop("session_id", None)
+
+    if getattr(valves, "SEND_CHAT_ID", False):
+        chat_id = owui_metadata.get("chat_id")
+        if isinstance(chat_id, str):
+            candidate = chat_id.strip()
+            if candidate:
+                metadata_out["chat_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
+
+    if getattr(valves, "SEND_MESSAGE_ID", False):
+        message_id = owui_metadata.get("message_id")
+        if isinstance(message_id, str):
+            candidate = message_id.strip()
+            if candidate:
+                metadata_out["message_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
+
+    if metadata_out:
+        # Let the central sanitizer enforce length/bracket/pair constraints.
+        payload["metadata"] = metadata_out
+    else:
+        payload.pop("metadata", None)
+
 
 def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
@@ -2201,6 +2306,11 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Drop explicit nulls; OpenRouter rejects nulls for optional fields.
         if value is None:
             continue
+
+        if key == "metadata":
+            value = _sanitize_openrouter_metadata(value)
+            if value is None:
+                continue
 
         if key == "reasoning":
             if not isinstance(value, dict):
@@ -2769,6 +2879,22 @@ class Pipe:
         ENABLE_STATUS_CSS_PATCH: bool = Field(
             default=True,
             description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",
+        )
+        SEND_END_USER_ID: bool = Field(
+            default=False,
+            description="When True, send OpenRouter `user` using the OWUI user GUID, and also include `metadata.user_id`.",
+        )
+        SEND_SESSION_ID: bool = Field(
+            default=False,
+            description="When True, send OpenRouter `session_id` using OWUI metadata and also include `metadata.session_id`.",
+        )
+        SEND_CHAT_ID: bool = Field(
+            default=False,
+            description="When True, include OWUI chat_id as `metadata.chat_id` (metadata only).",
+        )
+        SEND_MESSAGE_ID: bool = Field(
+            default=False,
+            description="When True, include OWUI message_id as `metadata.message_id` (metadata only).",
         )
         MAX_INPUT_IMAGES_PER_REQUEST: int = Field(
             default=5,
@@ -8144,6 +8270,13 @@ class Pipe:
                 if api_model_override:
                     request_payload["model"] = api_model_override
                     request_payload.pop("api_model", None)
+                _apply_identifier_valves_to_payload(
+                    request_payload,
+                    valves=valves,
+                    owui_metadata=metadata,
+                    owui_user_id=user_id,
+                    logger=self.logger,
+                )
                 request_payload = _filter_openrouter_request(request_payload)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
