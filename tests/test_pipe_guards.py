@@ -85,6 +85,100 @@ async def test_pipe_handles_job_failure(monkeypatch):
         await pipe.close()
 
 
+@pytest.mark.asyncio
+async def test_pipe_coerces_none_metadata(monkeypatch):
+    pipe = Pipe()
+
+    def fake_enqueue(self, job):
+        job.future.set_result("ok")
+        return True
+
+    monkeypatch.setattr(Pipe, "_enqueue_job", fake_enqueue)
+
+    try:
+        result = await pipe.pipe(
+            body={},
+            __user__={"valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=None,  # type: ignore[arg-type]
+            __tools__=None,
+        )
+
+        assert result == "ok"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_handle_pipe_call_tolerates_metadata_model_none(monkeypatch):
+    pipe = Pipe()
+
+    async def fake_ensure_loaded(*_args, **_kwargs):
+        return None
+
+    def fake_list_models(*_args, **_kwargs):
+        return [{"id": "openrouter/test", "norm_id": "openrouter/test", "name": "Test"}]
+
+    async def fake_process(*_args, **_kwargs):
+        return "ok"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.ensure_loaded",
+        fake_ensure_loaded,
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.list_models",
+        fake_list_models,
+    )
+    monkeypatch.setattr(Pipe, "_process_transformed_request", fake_process)
+
+    try:
+        result = await pipe._handle_pipe_call(
+            body={},
+            __user__={"valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"model": None},
+            __tools__=None,
+            valves=pipe.Valves(),
+            session=object(),  # type: ignore[arg-type]
+        )
+        assert result == "ok"
+    finally:
+        pipe.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_loop_tolerates_null_item(monkeypatch):
+    pipe = Pipe()
+
+    async def fake_send(self, *_args, **_kwargs):
+        yield {"type": "response.output_item.added", "item": None}
+        yield {"type": "response.output_item.done", "item": None}
+        yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_send)
+
+    try:
+        body = ResponsesBody(model="openrouter/test", input=[], stream=True)
+        result = await pipe._run_streaming_loop(
+            body,
+            pipe.Valves(),
+            event_emitter=None,
+            metadata={},
+            tools={},
+            session=object(),  # type: ignore[arg-type]
+            user_id="user",
+            pipe_identifier="open_webui_openrouter_pipe",
+        )
+        assert result == ""
+    finally:
+        pipe.shutdown()
+
+
 def test_merge_valves_no_overrides_returns_global():
     pipe = Pipe()
     try:
