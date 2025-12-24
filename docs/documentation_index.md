@@ -155,39 +155,29 @@ Each document is intentionally verbose--expect tables, callouts, and excerpts fr
 
 This map shows how documentation serves different personas and workflows:
 
+```mermaid
+flowchart TB
+  hub["📑 documentation_index.md (Start Here)"]
+
+  dev["👨‍💻 Building/Modifying Code"]
+  ops["⚙️ Deploying/Operating"]
+  sec["🔒 Security/Compliance"]
+  ref["📚 Configuration Reference"]
+
+  hub --> dev
+  hub --> ops
+  hub --> sec
+  hub --> ref
+
+  dev --> dev_docs["developer_guide_and_architecture model_catalog_and_routing_intelligence history_reconstruction_and_context multimodal_ingestion_pipeline task_models_and_housekeeping tooling_and_integrations streaming_pipeline_and_emitters persistence_encryption_and_storage"]
+
+  ops --> ops_docs["testing_bootstrap_and_operations production_readiness_report concurrency_controls_and_resilience error_handling_and_user_experience openrouter_integrations_and_telemetry session_log_storage"]
+
+  sec --> sec_docs["security_and_encryption production_readiness_report multimodal_ingestion_pipeline (SSRF) persistence_encryption_and_storage (keys) request_identifiers_and_abuse_attribution session_log_storage"]
+
+  ref --> ref_docs["valves_and_configuration_atlas error_handling_and_user_experience (templates) openrouter_integrations_and_telemetry request_identifiers_and_abuse_attribution"]
 ```
-                    ┌──────────────────────────────────┐
-                    │   documentation_index.md         │
-                    │   (Navigation Hub - Start Here)  │
-                    └──────────────────────────────────┘
-                                   │
-          ┌────────────────────────┼────────────────────────┐
-          │                        │                        │
-   ┌──────▼──────┐          ┌─────▼─────┐          ┌──────▼──────┐
-   │ Development │          │ Operations │          │  Security   │
-   │   Persona   │          │   Persona  │          │   Persona   │
-   └─────────────┘          └────────────┘          └─────────────┘
-          │                        │                        │
-          │                        │                        │
-    Core Reading:            Core Reading:            Core Reading:
-    • developer_guide         • testing_bootstrap      • security_and_encryption
-    • model_catalog           • production_readiness   • production_readiness
-    • history_reconstruction  • concurrency_controls   • multimodal_ingestion
-    • tooling_integrations    • valves_configuration     (SSRF protection)
-    • streaming_pipeline      • error_handling         • persistence_encryption
-    • persistence                                        (key rotation)
-                                   │
-                            ┌──────▼──────┐
-                            │   Auditor   │
-                            │   Persona   │
-                            └─────────────┘
-                                   │
-                            Core Reading:
-                            • production_readiness
-                            • security_and_encryption
-                            • valves_configuration
-                            • concurrency_controls
-```
+
 
 ### persona-to-document quick reference
 
