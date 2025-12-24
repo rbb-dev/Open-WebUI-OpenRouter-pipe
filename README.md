@@ -32,32 +32,9 @@ This pipe focuses on the capabilities unique to OpenRouter Responses deployments
 
 ## Documentation
 
-**[Documentation Index](docs/documentation_index.md)** – Central navigation hub with persona-based reading paths (Developer, Operator, Security, Auditor) and a visual relationship map showing how all 15+ docs interconnect. Features quick navigation callouts and Related Topics sections throughout.
+**[Documentation Index](docs/documentation_index.md)** – Central navigation hub (Developer, Operator, Security, Auditor) and a visual relationship map showing how all 15+ docs interconnect. Features quick navigation, callouts, and Related Topics sections throughout.
 
 **[Changelog](CHANGELOG.md)** – Complete commit-by-commit history tracking every change since project inception.
-
-  **Developer & Architecture Guides**
-  - [Developer Guide & Architecture](docs/developer_guide_and_architecture.md) – High-level tour of manifold wiring, layering conventions, request lifecycle, and development workflow.
-  - [Model Catalog & Routing Intelligence](docs/model_catalog_and_routing_intelligence.md) – Registry loader, capability detection, reasoning toggles, and routing helpers.
-
-  **Modality & Interface Layers**
-  - [History Reconstruction & Context](docs/history_reconstruction_and_context.md) – How Open WebUI messages become Responses `input[]` blocks with ULID markers and artifact replay.
-  - [Multimodal Ingestion Pipeline](docs/multimodal_ingestion_pipeline.md) – Complete walkthrough of image/file/audio/video handling, SSRF protections, and persistence.
-  - [Task Models & Housekeeping](docs/task_models_and_housekeeping.md) – Background task configuration, model selection, and troubleshooting.
-  - [Tooling & Integrations](docs/tooling_and_integrations.md) – Tool sources, strict schema enforcement, batching, MCP servers, and OpenRouter's web search plugin.
-  - [Streaming Pipeline & Emitters](docs/streaming_pipeline_and_emitters.md) – SSE queues, worker pools, reasoning/citation events, and completion finalizers.
-
-  **Durability & State**
-  - [Persistence, Encryption & Storage](docs/persistence_encryption_and_storage.md) – SQLAlchemy models, ULID markers, encryption, compression, Redis write-behind, and cleanup workers.
-  - [Concurrency Controls & Resilience](docs/concurrency_controls_and_resilience.md) – Admission control, ContextVars, session logging, breaker windows, and overload fallbacks.
-  - [Testing, Bootstrap & Operations](docs/testing_bootstrap_and_operations.md) – Pytest bootstrap plugin, dev setup, CI guidance, warmup probes, and production readiness checks.
-
-  **Reference Materials**
-  - [Valves & Configuration Atlas](docs/valves_and_configuration_atlas.md) – Exhaustive listing of system + user valves with defaults, ranges, and rationale.
-  - [Security & Encryption Guide](docs/security_and_encryption.md) – Encryption setup, key rotation, SSRF protection, and compliance guidance.
-  - [OpenRouter Integrations & Telemetry](docs/openrouter_integrations_and_telemetry.md) – OpenRouter-specific features including usage strings, catalog routing, plugin wiring, and 400 error templates.
-  - [Error Handling & User Experience](docs/error_handling_and_user_experience.md) – Comprehensive error template system with rendered examples, troubleshooting guide, and operator runbook for all exception types.
-  - [Production Readiness Report](docs/production_readiness_report.md) – Comprehensive audit covering secrets, persistence, multimodal guardrails, concurrency, streaming, and observability.
 
 ## What Makes This Pipe Unique
 
