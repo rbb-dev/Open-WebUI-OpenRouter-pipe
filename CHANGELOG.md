@@ -1467,8 +1467,259 @@ Add dedicated suites for helper utilities, module helpers, and registry plumbing
 - Covered the new flow with tests and updated the telemetry doc to note that task models now appear in the Redis cost export.
 
 ### Details
-- Migrated `_apply_reasoning_preferences` and `_apply_task_reasoning_preferences` to send OpenRouter’s unified `reasoning` payload whenever a model advertises native support, falling back to the legacy `include_reasoning` flag only when necessary. This fixes Gemini image edits that previously failed because we requested `include_thoughts` without enabling `thinking`.
+- Migrated `_apply_reasoning_preferences` and `_apply_task_reasoning_preferences` to send OpenRouter's unified `reasoning` payload whenever a model advertises native support, falling back to the legacy `include_reasoning` flag only when necessary. This fixes Gemini image edits that previously failed because we requested `include_thoughts` without enabling `thinking`.
 - Enhanced `_should_retry_without_reasoning` and the reasoning-effort fallback so they mutate the new payload structure, ensuring we can still recover from provider validation errors after the migration.
-- Added regression tests covering reasoning-preferring flows, legacy-only models, the new “none/xhigh” effort options, and the retry logic for both legacy and modern payloads.
+- Added regression tests covering reasoning-preferring flows, legacy-only models, the new "none/xhigh" effort options, and the retry logic for both legacy and modern payloads.
 - Added explicit `thinking_config` translation plus Gemini-specific valves so Gemini 2.5/3.x requests send the required `thinking_level`/`thinking_budget` knobs, preventing Vertex from rejecting `includeThoughts`. Updated docs and guard tests to cover the new behavior.
 - Updated `docs/valves_and_configuration_atlas.md`, `docs/task_models_and_housekeeping.md`, and `docs/error_handling_and_user_experience.md` to document the expanded effort levels, automatic downgrades, and the fact that we now prioritize the `reasoning` object.
+
+## 2025-12-13 - fix: prevent streaming deadlock with unbounded queues and monitoring
+- Commit: `d03b68b2ea9fd52ae7bf9f1e98c4e46adf5f5cc8`
+- Author: rbb-dev
+
+Changes streaming queue configuration to eliminate deadlock risk in tool-heavy or high-backpressure scenarios:
+
+- Change STREAMING_CHUNK_QUEUE_MAXSIZE default: 100→0 (unbounded)
+- Change STREAMING_EVENT_QUEUE_MAXSIZE default: 100→0 (unbounded)
+- Add STREAMING_EVENT_QUEUE_WARN_SIZE valve (default 1000) for non-spammy queue backlog monitoring with 30s cooldown
+- Improve producer error handling: log exceptions with context instead of silently storing in nonlocal variable
+- Enhance cleanup: gather() now logs non-CancelledError exceptions from producer/worker tasks
+
+Deadlock chain with small bounded queues (<500): drain loop blocks (slow DB/emit) → event_queue fills → workers block on put() → chunk_queue fills → producer blocks → sentinels never propagate
+
+Unbounded queues eliminate the chain while new monitoring detects sustained backlog without log spam.
+
+Documentation updates:
+- streaming_pipeline_and_emitters.md: explain deadlock mechanism
+- valves_and_configuration_atlas.md: update queue valve descriptions
+
+## 2025-12-13 - feat: add gemini thinking config and reasoning docs
+- Commit: `21aa1139b34f9f0ad51f2b7aee1cef1f2be88a9b`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - Stop replaying non-replayable artifacts
+- Commit: `c9899d18fed51e3adcac1088867a77ae47a99d40`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - fix: ensure byte type consistency in SSE event parsing
+- Commit: `c5ee8cc43ecb49ba77b3c9e7fc5ad57b5f81eb34`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - feat: encrypt redis artifacts
+- Commit: `929c3ae54e69c967b0f54c94723ee6e5e54abb4c`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-14 - fix: add defensive type inference to strict schema transformation
+- Commit: `40d4ba81add55aef0dd5bdf04870cf15d8f58ad0`
+- Author: rbb-dev
+
+Fixes OpenAI strict mode validation error for tools with incomplete schemas.
+
+## Problem
+OpenAI strict mode rejects function schemas when properties lack required 'type' keys, causing errors like:
+  "Invalid schema for function '_auth_headers': In context=('properties', 'session'), schema must have a 'type' key."
+
+This occurred when Open WebUI tool registry contained properties with empty schemas ({}) or schemas missing explicit types.
+
+## Solution
+Enhanced _strictify_schema_impl() with intelligent type inference:
+- Empty schemas {} → {"type": "object"}
+- Schemas with 'properties' but no type → {"type": "object"}
+- Schemas with 'items' but no type → {"type": "array"}
+- Applies to properties, items, and anyOf/oneOf branches
+
+## Changes
+- open_webui_openrouter_pipe.py:
+  * Lines 10574-10604: Added type inference to property processing loop
+  * Lines 10617-10621: Added type inference to items processing
+  * Lines 10632-10636: Added type inference to anyOf/oneOf branches
+  * Lines 10524-10537: Updated docstring to document auto-inference
+  * Added DEBUG logging when types are inferred
+
+- tests/test_tool_schema.py:
+  * Added 9 comprehensive test cases covering:
+    - Empty property schemas
+    - Schemas with only metadata (description)
+    - Nested empty schemas
+    - Empty items schemas
+    - Empty anyOf/oneOf branches
+    - Type inference from 'properties' keyword
+    - Type inference from 'items' keyword
+    - Regression prevention for existing behavior
+    - Exact _auth_headers bug scenario
+
+- docs/tooling_and_integrations.md:
+  * Documented auto-inference behavior in schema assembly section
+
+- .gitignore:
+  * Added .qwen/ directory
+
+## Testing
+✅ All 12 tests in test_tool_schema.py pass (3 existing + 9 new)
+✅ All 39 tests in test_helper_utilities.py & test_module_helpers.py pass
+✅ No regressions - existing functionality preserved
+
+## Impact
+- Only affects ENABLE_STRICT_TOOL_CALLING=true mode
+- Non-breaking - purely additive fix
+- No impact on well-formed schemas
+- No impact on non-strict mode, streaming, or MCP tools
+- Negligible performance overhead (cached via LRU)
+
+## Rationale
+Defaulting to "object" type is:
+- Most flexible (becomes empty object with additionalProperties: false)
+- Matches common intent for empty/placeholder schemas
+- Conservative choice for unknown properties
+- Closest to JSON Schema "any" semantics in strict mode
+
+## 2025-12-14 - Docs: enhance navigation with persona-based paths and cross-references
+- Commit: `60ef0bb81cb84ef42e6e75f26a6b52f13b8fb68b`
+- Author: rbb-dev
+
+Comprehensive documentation refinement, adding five layers of navigation improvements while preserving the excellent multi-perspective coverage:
+
+1. Index Reorganisation
+   - Move history_reconstruction_and_context.md to "Modality & Interface Layers" section (better logical fit for data transformation)
+   - Add clarifying scope description for the interface layers section
+   - Add visual relationship map with persona flows (Developer, Operator, Security, Auditor)
+   - Add persona-to-document quick reference guides
+   - Add task-based navigation table mapping 10 common tasks to the docs
+
+2. Strategic Cross-References (6 locations)
+   - error_handling → openrouter_integrations (provider behaviours)
+   - multimodal_ingestion → security (SSRF protection compliance)
+   - persistence → concurrency_controls (Redis worker management)
+   - testing_bootstrap → production_readiness (pre-deployment checklist)
+   - Verified existing bidirectional SSRF references in the security doc
+
+3. Quick Navigation Callouts (15 files)
+   - Add a consistent navigation bar to all primary docs: [📑 Index | 🏗️ Architecture | ⚙️ Configuration | 🔒 Security]
+   - Positioned before the first separator for consistency
+   - Enables quick pivoting between related documentation
+
+4. Related Topics Sections (5 key documents)
+   - developer_guide: 11 related topics grouped by theme
+   - valves_configuration: Links to valve usage in feature docs
+   - security: Implementation, operations, and architecture links
+   - openrouter_integrations: Integration points and operations
+   - error_handling: Error sources, config, and architecture
+
+5. README.md Sync
+   - Fix documentation structure (history_reconstruction categorisation)
+   - Add missing task_models_and_housekeeping.md entry
+   - Highlight persona-based navigation and relationship map
+
+## 2025-12-14 - docs: convert file references to clickable links in documentation index
+- Commit: `32d209b95f35f92f0e29b9e2a71e8e97b8e60bc2`
+- Author: rbb-dev
+
+Transform all backtick-wrapped file references to proper markdown links throughout documentation_index.md for improved navigation:
+
+Changes:
+- Section headers: `docs/filename.md` → [filename.md](filename.md)
+- Reading order section: All 5 items now have clickable links
+- Persona-to-document quick reference: All 22 file references linked
+- Task navigation table: All 20 file references (primary + supporting) linked
+
+Impact:
+- Users can now click to navigate directly from the index
+- Works in GitHub, VS Code, and other markdown viewers
+- Maintains consistency with other cross-references in docs
+- All 15 documentation files now accessible via one-click navigation
+
+## 2025-12-15 - feat: add stream emitter and thinking output valve
+- Commit: `7062998da94b9a02ccb2be01a74f6f99a88c7d5a`
+- Author: rbb-dev
+
+Adds THINKING_OUTPUT_MODE (system + user) to control whether in-progress reasoning is surfaced via the Open WebUI reasoning box, status events, or both.
+
+Implements a stream-mode adapter that converts internal events into OpenAI-style chat completion chunks (content + reasoning_content) and forwards non-token events via {event: ...}.
+
+Adds tests for streaming chunk output and thinking-mode routing; updates the valve atlas.
+
+## 2025-12-15 - fix: prevent duplicate reasoning blocks in OWUI
+- Commit: `07e3119fb14c2da4ae02e2ff18f90fd4c8d28e77`
+- Author: rbb-dev
+
+When streaming through Open WebUI middleware, reasoning deltas (delta.reasoning_content) are rendered into embedded <details> blocks. Late reasoning arriving after assistant text starts could create a second block with near-zero duration.
+
+Gate reasoning_content emission to the pre-answer phase; reroute post-answer reasoning deltas into status events instead. Adds a regression test.
+
+## 2025-12-15 - docs: fix README screenshot
+- Commit: `a719407d6b5e6eb07e48f6a84b57869d1c23f1cb`
+- Author: rbb-dev
+
+Update the README hero image to the correct GitHub attachment.
+
+## 2025-12-15 - Update issue templates
+- Commit: `98f02882859d5e3c0bda77ae5b83e40d10e66b76`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-16 - fix: avoid None.get crashes
+- Commit: `a8153cc9f3b02fe92d48b1fdeb5e02a2384e5a86`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-17 - fix: preserve system/developer messages verbatim
+- Commit: `242a00771f37ce4e85db37de43ad6ab40dc1e5c6`
+- Author: rbb-dev
+
+- Preserve system/developer content in Responses input (no strip/join; remove synthetic instruction-prefix injection)
+- Allow explicit "instructions" field to pass through to OpenRouter
+- Fix Pylance: remove undefined _extract_plain_text usage; narrow middleware event data type
+- Bump manifest/README version to 1.0.11
+- Add regression tests for message preservation
+
+## 2025-12-18 - feat: add valve-gated request identifiers (user/session/metadata)
+- Commit: `a001935c16e3abb46bb32a36a8f20af2df57be7b`
+- Author: rbb-dev
+
+Adds optional (default-off) valves to send OpenRouter user, session_id, and a sanitised metadata map for abuse attribution/observability in multi-user Open WebUI deployments. Full rationale, privacy notes, and JSON examples are in docs/request_identifiers_and_abuse_attribution.md.
+
+## 2025-12-18 - feat: add encrypted session log archives for abuse investigations
+- Commit: `2d6c0f1d1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+- Author: rbb-dev
+
+Archives are valve-gated, encrypted zip files stored as <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip and intended to pair with request identifiers for multi-user abuse attribution. They always capture DEBUG lines while LOG_LEVEL only controls stdout/backend output. See docs/request_identifiers_and_abuse_attribution.md and docs/session_log_storage.md.
+
+## 2025-12-19 - fix: harden session log capture against exceptions
+- Commit: `d711f0a0e5ac9db2c5c4c8a9c1d1e8e7b1a5c3c9`
+- Author: rbb-dev
+
+Wrap SessionLogger filter/process_record with broad try/except so logging failures (formatting/stdout/buffer) cannot crash request handling or background workers.
+
+## 2025-12-20 - feat: support model fallbacks via models[]
+- Commit: `2b0171e8f0c1e8e9f3c4c8a9c1d1e8e7b1a5c3c9`
+- Author: rbb-dev
+
+Map OWUI per-model custom param 'model_fallback' (comma-separated model IDs) to OpenRouter Responses 'models' (fallback list). Primary selection stays in 'model'; the pipe trims/dedupes entries and never forwards 'model_fallback' to OpenRouter. Docs: docs/openrouter_integrations_and_telemetry.md.
+
+## 2025-12-20 - feat: pass through top_k when provided
+- Commit: `4c41fbb7f8c1e8e9f3c4c8a9c1d1e8e7b1a5c3c9`
+- Author: rbb-dev
+
+Allowlist OpenRouter Responses 'top_k' and forward it when present (numeric or numeric string). Invalid/non-numeric values are dropped. Docs: docs/openrouter_integrations_and_telemetry.md. Tests: tests/test_top_k_passthrough.py.
+
+## 2025-12-21 - docs: fix documentation index section placement
+- Commit: `f9583a9e1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+- Author: rbb-dev
+
+Move request identifier + session log docs into the 'reference materials' section and remove the duplicated misnumbered block at the end.
+
+## 2025-12-22 - docs: link session log storage deep-dive
+- Commit: `0fb4877e1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+- Author: rbb-dev
+
+_No additional details provided._
