@@ -141,6 +141,7 @@ Open WebUI does not have a dedicated UI for OpenRouter’s `models` field, so we
 ```text
 openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
 ```
+<img width="815" height="233" alt="image" src="https://github.com/user-attachments/assets/5e391006-67d3-411f-9337-a052eed0fa4c" />
 
 The pipe parses this string, trims whitespace, drops empty entries, deduplicates while preserving order, and sends:
 
