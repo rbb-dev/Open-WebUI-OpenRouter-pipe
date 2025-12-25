@@ -1,49 +1,57 @@
-# encrypted session log storage (optional)
+# Encrypted session log storage (optional)
 
-**file:** [session_log_storage.md](session_log_storage.md)  
-**scope:** optional, valve-gated persistence of per-request SessionLogger output to encrypted zip archives.
+**Scope:** Optional, valve-gated persistence of per-request `SessionLogger` output to encrypted zip archives on local disk.
 
-This feature is intended for operators running multi-user Open WebUI deployments who want a durable, encrypted trail of per-request debug logs that can be correlated using only existing OpenRouter/Open WebUI identifiers.
+> **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
 
-This document covers **local filesystem storage only**. For the companion feature that sends identifiers to OpenRouter for abuse attribution, see `docs/request_identifiers_and_abuse_attribution.md`.
+This feature is intended for operators running multi-user Open WebUI deployments who want a durable, encrypted trail of per-request logs that can be correlated using existing Open WebUI/OpenRouter identifiers.
 
-The pipe **never** sends additional identifiers to OpenRouter beyond the request identifiers feature (`user`, `session_id`, `metadata.user_id/session_id/chat_id/message_id`).
+This document covers **local filesystem storage only**. For the companion feature that sends identifiers to OpenRouter for abuse attribution, see [Request identifiers and abuse attribution](request_identifiers_and_abuse_attribution.md).
 
 ---
 
-## what gets stored
+## What gets stored
 
-When enabled, the pipe writes one encrypted zip file per completed request containing:
+When enabled, the pipe writes **one encrypted zip file per completed request** containing:
 
-- `meta.json` — a small JSON document with timestamps and the four identifiers (plus an internal `request_id` used only as an in-memory log buffer key).
-- `logs.txt` — plain text lines captured by the pipe’s `SessionLogger` in-memory formatter.
+- `meta.json` — a small JSON document with:
+  - `created_at` (UTC ISO timestamp)
+  - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`)
+  - `request_id` (internal per-request key used for in-memory buffering)
+  - `log_format` (`text`)
+- `logs.txt` — plain text log lines captured in the request’s in-memory session log buffer.
 
 Notes:
 
-- Archives include **DEBUG** log lines regardless of the configured `LOG_LEVEL`. The `LOG_LEVEL` valve only controls what is emitted to stdout/backend logs.
-- `logs.txt` is **not** JSONL. Each line is a formatted log string (timestamp + level + user marker + message) and may include multi-line payloads for some log messages.
-- Session logs can contain sensitive data (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
+- `logs.txt` is **not** JSONL. Each line is a formatted log string and may include multi-line payloads for some messages.
+- The `LOG_LEVEL` valve controls what is written to stdout/backend logs for a request. The stored archive is sourced from the in-memory session buffer and can include entries that are not emitted to stdout.
+- Session logs can contain sensitive content (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
 
 ---
 
-## required identifiers (skip rule)
+## When an archive is written (and when it is skipped)
 
-To avoid writing archives that cannot be correlated later, the pipe **skips persistence** unless **all** of the following are present for the request:
+The pipe **skips persistence** when any of the following are true:
 
-- `user_id`
-- `session_id`
-- `chat_id`
-- `message_id`
+- `SESSION_LOG_STORE_ENABLED` is disabled.
+- Any required IDs are missing/empty for the request: `user_id`, `session_id`, `chat_id`, `message_id`.
+- The `pyzipper` package is unavailable at runtime.
+- `SESSION_LOG_DIR` is empty.
+- `SESSION_LOG_ZIP_PASSWORD` is empty/unconfigured.
+- The request produced no captured log lines.
 
-If any are missing, the request still completes normally; the archive is simply not written.
+If persistence is skipped, the request still completes normally; the archive is simply not written.
 
-In most abuse-attribution deployments you should enable this feature together with `docs/request_identifiers_and_abuse_attribution.md`, so the same identifiers you send to OpenRouter/provider support can be used to locate the matching archive on disk.
+Non-blocking behavior:
+
+- Archives are written asynchronously via a bounded internal queue.
+- If the archive queue is full, the pipe logs a warning and drops the archive for that request (it does not block the response).
 
 ---
 
-## archive layout (filesystem)
+## Archive layout (filesystem)
 
-Archives are stored using only existing IDs so operators can locate the right file when OpenRouter/Open WebUI support references an identifier:
+Archives are written under the base directory `SESSION_LOG_DIR` using a directory layout derived from request identifiers:
 
 ```
 <SESSION_LOG_DIR>/
@@ -52,48 +60,62 @@ Archives are stored using only existing IDs so operators can locate the right fi
       <message_id>.zip
 ```
 
-Example:
+Path safety:
 
-```
-session_logs/
-  714affbb-d092-4e39-af42-0c59ee82ab8d/
-    8ec723e5-6553-41bd-a0c6-2ab885c1bcbc/
-      2e5b92d9-04b6-42ae-a1c7-602a3efdb1d2.zip
-```
+- For filesystem safety, the `<user_id>`, `<chat_id>`, and `<message_id>` path components are **sanitized** (non-alphanumeric characters are replaced, and components are length-limited).
+- The original (unsanitized) identifiers are preserved in `meta.json` under `ids.*` for correlation.
 
 ---
 
-## encryption + compression
+## Encryption and compression
 
 Archives are written with `pyzipper` using AES encryption (`WZ_AES`).
 
 - `SESSION_LOG_ZIP_PASSWORD` controls the password used to encrypt each archive.
-- `SESSION_LOG_ZIP_COMPRESSION` and `SESSION_LOG_ZIP_COMPRESSLEVEL` control compression.
+  - Recommendation: set a long random passphrase and store it as an encrypted valve value (requires `WEBUI_SECRET_KEY` so Open WebUI can encrypt/decrypt the stored valve value).
+- `SESSION_LOG_ZIP_COMPRESSION` selects the compression algorithm: `stored`, `deflated`, `bzip2`, or `lzma` (default `lzma`).
+- `SESSION_LOG_ZIP_COMPRESSLEVEL` applies only to `deflated` and `bzip2` (0–9). It is ignored for `stored` and `lzma`.
 
-If `pyzipper` is not available or `SESSION_LOG_ZIP_PASSWORD` is empty, the pipe logs a warning and skips persistence.
+Key rotation note:
+
+- Changing `SESSION_LOG_ZIP_PASSWORD` affects only **future** archives. Previously written archives are not re-encrypted and require the prior password to decrypt.
 
 ---
 
-## retention cleanup
+## Retention and cleanup
 
 When storage is enabled, a background cleanup loop periodically:
 
-1. Deletes `*.zip` files older than `SESSION_LOG_RETENTION_DAYS`.
-2. Removes any empty directories left behind (including the base directory if it becomes empty).
+1. Deletes `*.zip` files older than `SESSION_LOG_RETENTION_DAYS` (based on file modification time).
+2. Removes empty directories left behind (including the base directory if it becomes empty).
 
 Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`.
 
+Operational note:
+
+- Cleanup is performed per-process and tracks the session log directories that have been used in that process. In multi-worker deployments, each worker performs its own cleanup pass.
+
 ---
 
-## valves
+## Relevant valves
 
-See `docs/valves_and_configuration_atlas.md` for the full valve listing. The relevant knobs are:
+See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the canonical list and defaults. Session log storage is controlled by:
 
-- `SESSION_LOG_STORE_ENABLED`
-- `SESSION_LOG_DIR`
-- `SESSION_LOG_ZIP_PASSWORD`
-- `SESSION_LOG_RETENTION_DAYS`
-- `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`
-- `SESSION_LOG_ZIP_COMPRESSION`
-- `SESSION_LOG_ZIP_COMPRESSLEVEL`
-- `SESSION_LOG_MAX_LINES`
+| Valve | Type | Default (verified) | Purpose |
+|---|---:|---:|---|
+| `SESSION_LOG_STORE_ENABLED` | bool | `false` | Enables writing encrypted session log archives to disk. |
+| `SESSION_LOG_DIR` | str | `session_logs` | Base directory for archives. |
+| `SESSION_LOG_ZIP_PASSWORD` | encrypted str | *(empty)* | Password used to encrypt archives (required to store). |
+| `SESSION_LOG_RETENTION_DAYS` | int | `90` | Retention window for stored archives. |
+| `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | int | `3600` | Cleanup loop interval. |
+| `SESSION_LOG_ZIP_COMPRESSION` | enum | `lzma` | Zip compression algorithm. |
+| `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
+| `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory lines retained per request before older lines are dropped. |
+
+---
+
+## Operational guidance
+
+- Restrict access to `SESSION_LOG_DIR` (filesystem permissions, encrypted volume, backups with access controls).
+- Treat archives as sensitive: they are encrypted at rest, but anyone with the zip password can decrypt them.
+- If you enable request identifiers for provider-side attribution, keep the same identifiers available for operators: see [Request identifiers and abuse attribution](request_identifiers_and_abuse_attribution.md).

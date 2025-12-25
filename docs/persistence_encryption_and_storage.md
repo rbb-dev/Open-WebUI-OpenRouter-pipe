@@ -1,123 +1,149 @@
-# persistence, encryption, and storage
+# Persistence, Encryption & Storage
 
-**file:** `docs/persistence_encryption_and_storage.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:3600-7200`, marker helpers at `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:8132+`
+This document explains how the pipe persists response artifacts (reasoning payloads and tool outputs), how artifact replay works across turns, and which valves control encryption, compression, Redis caching, and retention.
 
-The OpenRouter manifold persists reasoning traces, tool inputs/outputs, and other structured artifacts so that regenerations can replay prior context without bloating chat transcripts. This document explains how the storage layer works, how encryption/compression are applied, and how Redis write-behind keeps multi-worker deployments consistent.
-
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+> **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Security](security_and_encryption.md) · [History/Replay](history_reconstruction_and_context.md) · [Concurrency](concurrency_controls_and_resilience.md)
 
 ---
 
-## 1. artifact lifecycle
+## What gets persisted (high level)
 
-1. **Creation** -- Whenever the streaming loop finishes a reasoning chunk or a tool execution completes, `_persist_artifacts` receives a list of dicts (`{"chat_id", "message_id", "payload", ...}`). Each entry receives a ULID (`generate_item_id`) if one was not provided and is stamped with timestamps + metadata.
-2. **Encryption & compression** -- `_prepare_rows_for_storage()` inspects `self._encryption_key`, `self._encrypt_all`, and `self._compression_enabled`:
-   * If no `ARTIFACT_ENCRYPTION_KEY` is configured, payloads are JSON blobs stored as-is.
-   * When a key is present, a Fernet cipher is constructed lazily. Each payload is serialized, optionally compressed via LZ4 (flag stored in a 1-byte header), encrypted, and base64-encoded. Encryption now happens **before** any Redis write so queues/caches only ever contain ciphertext (`{"ciphertext": "...", "enc_v": 1}`).
-   * `ENCRYPT_ALL=False` limits encryption to reasoning tokens while leaving other artifacts plaintext. Set it to `True` to encrypt everything.
-3. **Write path** -- `_persist_artifacts` either writes directly via `_db_persist_direct` or funnels entries through Redis (`_redis_enqueue_rows`) based on the deployment. Direct writes happen through SQLAlchemy sessions running inside a `ThreadPoolExecutor` to keep the event loop non-blocking.
-4. **Marker emission** -- After rows are stored, `_serialize_marker(ulid)` strings are appended to the assistant text so `_transform_messages_to_input` can recover them on the next turn.
+During a chat, the pipe can persist structured “artifacts” so future turns can replay prior context without embedding large JSON blobs directly into the visible chat transcript.
+
+Persisted artifacts include (at least):
+- Reasoning items (when enabled and retention permits).
+- Tool execution artifacts (calls/outputs), subject to replay filtering rules and retention pruning.
+
+**Note:** Not every artifact type is replayed verbatim. The pipe filters certain tool artifact types to avoid wasting context window and to reduce provider-side errors.
+
+---
+
+## How replay works (ULID markers)
+
+Instead of embedding full artifact payloads into the assistant’s visible text, the pipe appends hidden marker lines that reference persisted artifacts by ID.
+
+Marker format:
+- Each marker line contains a 20-character ULID-like identifier and a fixed suffix.
+- Example marker line:
 
 ```text
-# example ULID + marker lines appended to assistant text
-[01J2VVZBDQTP1ZQJ8DSN6BV4KQ]: #
-[01J2VVZBGK3RH0JP7F7C7M7N5H]: #
-
-# corresponding artifact payload (prior to optional encryption/compression)
-{
-  "id": "01J2VVZBDQTP1ZQJ8DSN6BV4KQ",
-  "chat_id": "chat_Ms6u8pWk",
-  "message_id": "msg_9Yf31",
-  "type": "function_call_output",
-  "call_id": "weather_lookup#1",
-  "payload": {
-    "type": "function_call_output",
-    "output": "{\"location\":\"Berlin\",\"conditions\":\"Rain\"}",
-    "call_id": "weather_lookup#1"
-  },
-  "created_at": "2025-01-07T18:22:13.912083Z"
-}
+[01J2VVZBDQTP1ZQJ8DSN]: #
 ```
 
-> The ULID format is Crockford base32 with 16 characters of timestamp and 4 characters of randomness. You never handcraft these IDs--`generate_item_id()` does it automatically whenever `_persist_artifacts` is called.
+On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form.
 
-```python
-# code excerpt: generate_item_id() + marker serialization
-def generate_item_id() -> str:
-    timestamp = time.time_ns() & _ULID_TIME_MASK
-    time_component = _encode_crockford(timestamp, ULID_TIME_LENGTH)
-    random_bits = secrets.randbits(ULID_RANDOM_LENGTH * 5)
-    random_component = _encode_crockford(random_bits, ULID_RANDOM_LENGTH)
-    return f"{time_component}{random_component}"
+---
 
-def _serialize_marker(ulid: str) -> str:
-    return f"[{ulid}{_MARKER_SUFFIX}"
+## Database storage model and table naming
+
+### Table naming
+The pipe stores artifacts in a per-pipe SQL table whose name includes:
+
+- a sanitized fragment derived from the pipe/function ID, and
+- a short hash derived from `(ARTIFACT_ENCRYPTION_KEY + pipe_identifier)`.
+
+Pattern:
+
+```text
+response_items_{pipe_fragment}_{hash8}
 ```
 
-The snippet above lives at `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:8132+`. When `_persist_artifacts()` stores rows, it appends `_serialize_marker(ulid)` lines to the assistant text; `_transform_messages_to_input()` later scans for those markers, fetches the referenced payloads, and replays them as structured Responses blocks.
+Operational implications:
+- Multiple pipe instances (different function IDs) do not collide.
+- Changing `ARTIFACT_ENCRYPTION_KEY` causes the pipe to write to a different table name.
+  - Existing artifacts are not “deleted” automatically, but they will not be read by the pipe unless you restore the prior key (and therefore the prior table name).
+
+### Stored columns (high level)
+Persisted rows include:
+- `id` (the ULID)
+- Open WebUI identifiers such as `chat_id` and `message_id`
+- `item_type`
+- `payload` (plaintext JSON, or an encrypted wrapper when encryption is enabled)
+- `created_at`
 
 ---
 
-## 2. database schema & naming
+## Encryption and compression behavior
 
-* **Table name pattern** -- `_init_artifact_store()` sanitizes `self.id` via `_sanitize_table_fragment()`, hashes `(ARTIFACT_ENCRYPTION_KEY + pipe_id)` with SHA-256, and emits `response_items_{fragment}_{hash[:8]}`. Example: `response_items_openrouter_6d9a1b2c`. This allows multiple copies of the pipe (different IDs or different encryption keys) to coexist without clobbering each other, and key rotation automatically writes to a new table so old ciphertext remains unreadable by design.
-* **Self-healing creation** -- If table creation fails because of orphaned `ix_*` indexes (common after manual DB restores), `_maybe_heal_index_conflict()` drops those indexes and retries. Success is logged ("Dropped orphaned index(es)...") and persistence continues without operator work.
-* **Model shape** -- `_item_model` is generated dynamically with columns for `id` (ULID PK), `chat_id`, `message_id`, `model_id`, `item_type`, `payload`, `is_encrypted`, and `created_at`. JSON payloads are stored plaintext or encrypted blobs depending on valves.
-* **Engine/session reuse** -- The pipe reuses Open WebUI"s engine + `SessionLocal`, so artifacts share the same DB pool/config as the rest of the server. All blocking DB calls run inside `_db_executor` (a `ThreadPoolExecutor`) so async handlers stay responsive.
-* **Bootstrap signature** -- `_artifact_store_signature = (table_fragment, encryption_key)` prevents redundant reinitialization. When either component changes (e.g., new key), the SQLAlchemy model and table are recreated automatically.
+Artifact encryption is controlled by these system valves:
 
----
+- `ARTIFACT_ENCRYPTION_KEY` (enables encryption when non-empty)
+- `ENCRYPT_ALL` (default `True`; controls “encrypt everything” vs “encrypt reasoning only”)
+- `ENABLE_LZ4_COMPRESSION` and `MIN_COMPRESS_BYTES` (optional compression for persisted payloads)
 
-## 3. redis write-behind cache
+### When encryption is active
+- If `ARTIFACT_ENCRYPTION_KEY` is set (non-empty), the pipe encrypts payloads before persistence.
+- When encrypted, the stored `payload` becomes a wrapper containing ciphertext (plus a version field).
+- If compression is enabled and effective, the pipe compresses the JSON payload before encryption and stores a small header indicating whether the stored bytes were compressed.
 
-Redis is optional but recommended for multi-worker deployments:
+### When encryption is not active
+- If `ARTIFACT_ENCRYPTION_KEY` is empty/unset, payloads are stored as normal JSON objects and `is_encrypted=False`.
 
-1. **Eligibility check** -- `_redis_candidate` requires `UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL`, `ENABLE_REDIS_CACHE=True`, and the `redis.asyncio` package. Otherwise the pipe logs why Redis stayed disabled.
-2. **Queueing** -- `_redis_enqueue_rows` pushes serialized JSON rows onto `pending` (list) and caches each payload under `artifact:{chat_id}:{row_id}` with TTL `REDIS_CACHE_TTL_SECONDS`. When encryption is enabled, these rows already contain ciphertext so Redis never stores plaintext artifacts. A pub/sub message (`db-flush`) wakes other workers so they flush immediately.
-3. **Flushing** -- `_redis_periodic_flusher` acquires a short-lived lock (`flush_lock`) to avoid duplicate flushes, pops up to `DB_BATCH_SIZE` entries, rehydrates them, and calls `_db_persist_direct`. Failures requeue the raw JSON and increment `REDIS_FLUSH_FAILURE_LIMIT`. Exceeding the limit disables Redis automatically and logs a critical alert.
-4. **Reads** -- `_redis_fetch_rows` looks up cached artifacts when `_transform_messages_to_input` needs them. Cache hits save DB round-trips and keep multi-worker replay deterministic.
-5. **Namespacing** -- Each pipe instance sets `_redis_namespace = (self.id or \"openrouter\").lower()`, and all keys derive from it: `pending` queue, cache prefix, and flush lock. Multiple pipes can therefore share the same Redis cluster without stepping on one another.
-6. **Graceful degradation** -- If Redis fails mid-run, `_redis_enqueue_rows` logs a warning and falls back to direct DB writes, then retries enabling Redis later. No operator toggle is required.
-
-> **Related**: See [Concurrency Controls and Resilience](concurrency_controls_and_resilience.md#background-workers) for Redis background worker configuration, pool management, and resilience patterns.
+**Operator note:** If you store secret valve values using Open WebUI encryption (`EncryptedStr`), configure `WEBUI_SECRET_KEY` (see [Security & Encryption](security_and_encryption.md)). If `WEBUI_SECRET_KEY` is changed later, encrypted valve values may decrypt differently, which effectively behaves like a key rotation for artifact storage.
 
 ---
 
-## 4. cleanup & retention
+## Redis cache and write-behind (multi-worker deployments)
 
-* **Scheduled worker** -- `_artifact_cleanup_worker` wakes every `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter), deletes rows older than `ARTIFACT_CLEANUP_DAYS`, and logs the number of rows removed. Runs inside the DB executor.
-* **Reasoning retention** -- `PERSIST_REASONING_TOKENS` decides whether reasoning artifacts are deleted immediately, after the next assistant reply, or never (until manual cleanup).
-* **Tool retention** -- `TOOL_OUTPUT_RETENTION_TURNS` limits how many turns worth of tool results are replayed in full; older outputs are pruned inline via `_prune_tool_output`.
-* **Self-healing breakers** -- `_db_breakers` watch for repeated DB errors per user. After `BREAKER_MAX_FAILURES` hits inside the `BREAKER_WINDOW_SECONDS` window (defaults: 5 / 60s), persistence is skipped (a status message warns the user). Once a write succeeds, the breaker drains automatically and normal persistence resumes.
+The pipe has an optional Redis-backed cache/write-behind path intended for multi-worker deployments.
+
+### When Redis is used
+
+`ENABLE_REDIS_CACHE` enables Redis support, but Redis is only used when the runtime environment indicates a multi-worker Open WebUI deployment and Redis tooling is available. In particular, the pipe requires:
+
+- `UVICORN_WORKERS > 1` (multi-worker mode), and
+- `REDIS_URL` is set, and
+- `WEBSOCKET_MANAGER=redis` and `WEBSOCKET_REDIS_URL` are set (Open WebUI websocket/Redis configuration), and
+- the Python Redis client dependency is available at runtime.
+
+If these prerequisites are not met, the pipe runs without Redis and persists artifacts directly to the database (when persistence is enabled).
+
+High-level behavior:
+- When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
+- When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads.
+- Redis keys are namespaced per pipe so multiple pipes can share the same Redis deployment.
+
+Failure handling (operator-relevant):
+- If Redis is unavailable, the pipe degrades to direct database writes and continues serving requests.
+- If database writes repeatedly fail for a user/session, a breaker can temporarily disable persistence and emit warnings rather than causing cascading failures.
+
+See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for Redis-related valves and their defaults.
 
 ---
 
-## 5. valves controlling persistence
+## Retention and cleanup
 
-| Valve | Default | Notes |
+Retention has multiple layers:
+
+### Time-based cleanup
+- A periodic cleanup worker deletes persisted rows older than `ARTIFACT_CLEANUP_DAYS`.
+- Cleanup cadence is controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter).
+
+### Reasoning retention policy (`PERSIST_REASONING_TOKENS`)
+Reasoning retention controls whether replayed reasoning artifacts are deleted after use:
+- `disabled`: no reasoning is retained.
+- `next_reply`: reasoning is kept only until the next assistant reply finishes, then deleted.
+- `conversation`: reasoning is kept for the full chat history (until time-based cleanup removes it).
+
+### Tool output pruning
+Tool artifacts are also subject to replay pruning based on `TOOL_OUTPUT_RETENTION_TURNS` (how far back tool results remain eligible for replay).
+
+---
+
+## Valves controlling persistence (common)
+
+| Valve | Default (verified) | Notes |
 | --- | --- | --- |
-| `ARTIFACT_ENCRYPTION_KEY` | `""` | Minimum 16 chars recommended. Changing it rotates to a new table namespace. Requires `WEBUI_SECRET_KEY` so `EncryptedStr` can decrypt the valve. |
-| `ENCRYPT_ALL` | `False` | Encrypt every artifact, not just reasoning payloads. |
-| `ENABLE_LZ4_COMPRESSION` | `True` | Requires the optional `lz4` extra. When disabled, encrypted payloads remain uncompressed JSON. |
-| `MIN_COMPRESS_BYTES` | `0` | Skip compression for small payloads by raising this threshold. |
-| `ENABLE_REDIS_CACHE` | `True` | Auto-disabled unless the environment indicates a multi-worker Redis setup. |
-| `REDIS_CACHE_TTL_SECONDS` | `600` | TTL for cached artifacts. Keep it long enough to cover the longest expected chat session. |
-| `REDIS_PENDING_WARN_THRESHOLD` | `100` | Emits warnings when the pending queue grows beyond this size. |
-| `REDIS_FLUSH_FAILURE_LIMIT` | `5` | Disables Redis after N consecutive flush failures. |
-| `ARTIFACT_CLEANUP_DAYS` | `90` | How long artifacts remain in the DB before the cleanup job deletes them. |
-| `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `1.0` | Cadence for the cleanup worker. |
-| `DB_BATCH_SIZE` | `10` | Number of rows written per DB transaction when draining Redis. |
+| `ARTIFACT_ENCRYPTION_KEY` | `(empty)` | Enables artifact encryption when set. Changing it changes the table name used for artifact storage. |
+| `ENCRYPT_ALL` | `True` | When encryption is enabled, controls whether all artifacts are encrypted or only reasoning. |
+| `ENABLE_LZ4_COMPRESSION` | `True` | Compresses some payloads before encryption (when `lz4` is available and compression is beneficial). |
+| `MIN_COMPRESS_BYTES` | `0` | Compression threshold; `0` always attempts compression. |
+| `ENABLE_REDIS_CACHE` | `True` | Enables Redis support when Redis is available and the deployment is a candidate for it. |
+| `REDIS_CACHE_TTL_SECONDS` | `600` | TTL for cached artifacts in Redis. |
+| `ARTIFACT_CLEANUP_DAYS` | `90` | Time-based retention window. |
+| `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `1.0` | Cleanup cadence. |
+| `DB_BATCH_SIZE` | `10` | DB transaction batching (also used for Redis flush batching). |
+| `PERSIST_REASONING_TOKENS` | `conversation` | Reasoning retention policy (system default). |
+| `TOOL_OUTPUT_RETENTION_TURNS` | `10` | Limits how many turns back tool outputs remain eligible for replay. |
 
----
-
-## 6. failure modes & mitigations
-
-| Scenario | Behavior | Operator action |
-| --- | --- | --- |
-| DB unreachable | `_db_persist_direct` raises → DB breaker trips → persistence disabled temporarily with user-visible warning. | Fix DB connectivity, then the breaker self-heals after one valve-defined window of successful operations. |
-| Redis offline mid-run | `_redis_enqueue_rows` logs a warning and falls back to direct DB writes. A later success automatically re-enables the cache. | Inspect Redis logs; no manual recovery needed. |
-| Encryption misconfigured | If `ARTIFACT_ENCRYPTION_KEY` is set but `WEBUI_SECRET_KEY` is missing, the pipe warns and treats the encrypted valve as plaintext. Artifacts remain unencrypted until the env var is provided. | Set `WEBUI_SECRET_KEY`, restart the pipe, and consider rotating the artifact key since earlier rows were stored plaintext. |
-| Key rotation | Changing `ARTIFACT_ENCRYPTION_KEY` creates a new table. Existing chats cannot read the old ciphertext (intentional defense-in-depth). | Communicate rotations ahead of time; export/import artifacts if long-term retention is required. |
-
-Persistence is the backbone of the manifold. If you touch any of the helpers mentioned here, update this doc and the production readiness audit so deployers understand the new guarantees.
+For the complete list (including breaker and tool execution settings), see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).

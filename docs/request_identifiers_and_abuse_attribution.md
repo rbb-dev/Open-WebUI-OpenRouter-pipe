@@ -1,13 +1,12 @@
-# request identifiers & abuse attribution
+# Request identifiers and abuse attribution
 
-**file:** `docs/request_identifiers_and_abuse_attribution.md`  
-**scope:** how the pipe can emit `user`, `session_id`, and request `metadata` to help providers/operators attribute abusive traffic to a specific end-user/session without sending PII.
+**Scope:** How the pipe emits OpenRouter request identifiers (`user`, `session_id`, `metadata`) to support abuse attribution and operations in multi-user deployments.
 
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+> **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
 
 ---
 
-## why this matters (multi-user deployments)
+## Why this matters (multi-user deployments)
 
 If you operate Open WebUI for multiple end-users, sending stable identifiers helps OpenRouter/provider safety systems and your own operators:
 
@@ -21,11 +20,11 @@ If you have a trust & safety, privacy, compliance, or incident response team, co
 
 * retention/logging expectations,
 * what identifiers are acceptable to share with third parties,
-* and escalation paths when abuse is reported.
+* escalation paths when abuse is reported.
 
 ---
 
-## what gets sent (and what does not)
+## What gets sent (and what does not)
 
 When enabled, the pipe sends **opaque OWUI identifiers** (GUIDs/UUIDs) only:
 
@@ -35,7 +34,9 @@ When enabled, the pipe sends **opaque OWUI identifiers** (GUIDs/UUIDs) only:
 
 These identifiers are only meaningful inside your Open WebUI database and logs.
 
-### openrouter request fields
+Note: While these are not “direct identifiers” (like email), they may still be considered *pseudonymous identifiers* in some privacy regimes. Treat them as potentially sensitive operational data.
+
+### OpenRouter request fields (pipe-controlled)
 
 Depending on valves, the pipe can include:
 
@@ -45,20 +46,32 @@ Depending on valves, the pipe can include:
 
 `metadata` is only sent when at least one metadata entry is being populated.
 
-### metadata contents
+Important: the pipe **removes** any user-supplied `user`, `session_id`, or `metadata` fields and replaces them with valve-gated values. This prevents clients/users from spoofing attribution identifiers.
 
-Metadata is built as a **string→string** map and currently uses these keys (each gated by a valve):
+### Identifier mapping
 
-* `user_id` → OWUI user GUID
-* `session_id` → OWUI session id
-* `chat_id` → OWUI chat/thread id (metadata only; no OpenRouter top-level field)
-* `message_id` → OWUI message id (metadata only; no OpenRouter top-level field)
+Each identifier is gated by a valve. When enabled, the pipe sources IDs from Open WebUI context and maps them into OpenRouter fields as follows:
 
-The pipe enforces OpenRouter’s documented constraints: max 16 pairs; keys ≤64 chars with no brackets; values ≤512 chars.
+| Valve | OpenRouter top-level | OpenRouter metadata key | Source in Open WebUI context |
+|---|---|---|---|
+| `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]` |
+| `SEND_SESSION_ID` | `session_id` | `session_id` | `__metadata__["session_id"]` |
+| `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` |
+| `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` |
+
+### Sanitization and constraints
+
+The pipe enforces OpenRouter’s documented `metadata` constraints:
+
+* Maximum **16** key/value pairs.
+* Keys must be **≤ 64 chars** and must not contain `[` or `]`.
+* Values must be **≤ 512 chars**.
+
+Additionally, for top-level `user` and `session_id`, the pipe enforces a maximum length of **128 characters**. If the source value is missing or invalid, the corresponding field is omitted even when the valve is enabled.
 
 ---
 
-## pairing with encrypted session log archives (recommended)
+## Pairing with encrypted session log archives (recommended)
 
 If you’re enabling request identifiers specifically for abuse attribution / incident response, consider also enabling **encrypted session log storage**.
 
@@ -70,13 +83,15 @@ Why:
 
 This is optional: you can keep request identifiers enabled without storing archives, and you can store archives purely as local backups even if you choose not to send identifiers to OpenRouter.
 
-Deep-dive: see [session_log_storage.md](session_log_storage.md).
+Deep-dive: see [Encrypted session log storage (optional)](session_log_storage.md).
 
 ---
 
-## example payloads
+## Example payloads
 
-### minimal (only `user`)
+These examples show only the relevant identifier fields; request bodies vary depending on the model and features enabled.
+
+### Minimal (only `user`)
 
 ```json
 {
@@ -89,7 +104,7 @@ Deep-dive: see [session_log_storage.md](session_log_storage.md).
 }
 ```
 
-### full attribution (user + session + chat + message)
+### Full attribution (`user` + `session_id` + `metadata`)
 
 ```json
 {
@@ -108,9 +123,9 @@ Deep-dive: see [session_log_storage.md](session_log_storage.md).
 
 ---
 
-## configuration (valves)
+## Configuration (valves)
 
-See `docs/valves_and_configuration_atlas.md` for the canonical list and defaults. The relevant valves are:
+See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the canonical list and defaults. The relevant valves are:
 
 * `SEND_END_USER_ID` (default: false)
 * `SEND_SESSION_ID` (default: false)
@@ -119,9 +134,9 @@ See `docs/valves_and_configuration_atlas.md` for the canonical list and defaults
 
 ---
 
-## operational guidance
+## Operational guidance
 
 * Enable `SEND_END_USER_ID` in multi-user deployments unless you have a strict policy against sharing identifiers.
 * Enable `SEND_SESSION_ID` when you want provider-side grouping for multi-step agent flows / long sessions.
 * Enable `SEND_CHAT_ID`/`SEND_MESSAGE_ID` if you want a direct pointer back to a specific OWUI thread/turn during incident response.
-* Treat the emitted IDs as **non-secret** (they may appear in logs). They should not encode PII.
+* Treat the emitted IDs as **non-secret** (they may appear in logs), but still handle them as sensitive operational data (they can enable correlation across events).
