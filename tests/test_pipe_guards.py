@@ -48,8 +48,7 @@ async def test_wrap_safe_event_emitter_swallows_transport_errors(caplog):
 def test_resolve_pipe_identifier_returns_class_id():
     pipe = Pipe()
     try:
-        result = pipe._resolve_pipe_identifier(None, fallback_model_id=None)
-        assert result == "open_webui_openrouter_pipe"
+        assert pipe.id == "open_webui_openrouter_pipe"
     finally:
         pipe.shutdown()
 
@@ -571,7 +570,7 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
         openwebui_model_id = metadata["model"]["id"]
-        pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
+        pipe_identifier = pipe.id
         result = await pipe._process_transformed_request(
             body,
             __user__={"id": "u1", "valves": {}},
@@ -586,7 +585,6 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id=openwebui_model_id,
             pipe_identifier=pipe_identifier,
-            pipe_identifier_for_artifacts=pipe_identifier,
             allowed_norm_ids=allowed_norm_ids,
             features={},
         )
@@ -643,7 +641,7 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
         openwebui_model_id = metadata["model"]["id"]
-        pipe_identifier = pipe._resolve_pipe_identifier(openwebui_model_id)
+        pipe_identifier = pipe.id
         result = await pipe._process_transformed_request(
             body,
             __user__={"id": "u1", "valves": {}},
@@ -658,7 +656,6 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id=openwebui_model_id,
             pipe_identifier=pipe_identifier,
-            pipe_identifier_for_artifacts=pipe_identifier,
             allowed_norm_ids=allowed_norm_ids,
             features={},
         )

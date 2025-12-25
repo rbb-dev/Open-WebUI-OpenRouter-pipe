@@ -109,7 +109,6 @@ async def test_direct_tool_servers_are_advertised_and_executable(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id="test-model",
             pipe_identifier="pipe.test",
-            pipe_identifier_for_artifacts="pipe.test",
             allowed_norm_ids=set(),
             features={},
         )
@@ -190,11 +189,9 @@ async def test_direct_tool_servers_skipped_without_event_call(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id="test-model",
             pipe_identifier="pipe.test",
-            pipe_identifier_for_artifacts="pipe.test",
             allowed_norm_ids=set(),
             features={},
         )
         assert result == "ok"
     finally:
         await pipe.close()
-

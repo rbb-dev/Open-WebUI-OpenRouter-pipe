@@ -104,7 +104,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, NotRequired, Optional, Tuple, Type, TypeVar, TypedDict, Union, TYPE_CHECKING, cast, no_type_check
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING, cast, no_type_check
 from urllib.parse import urlparse
 import ast
 import email.utils
@@ -155,7 +155,6 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 # Additional imports for file/image handling
 import io
 import uuid
-from pathlib import Path
 import httpx
 from fastapi import UploadFile, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
@@ -826,68 +825,6 @@ class StatusMessages:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TypedDict Definitions for Type Safety
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class FunctionCall(TypedDict):
-    """Represents a function call within a tool call."""
-    name: str
-    arguments: str  # JSON-encoded string
-
-
-class ToolCall(TypedDict):
-    """Represents a single tool/function call."""
-    id: str
-    type: Literal["function"]
-    function: FunctionCall
-
-
-class Message(TypedDict):
-    """Represents a chat message in OpenAI/OpenRouter format."""
-    role: Literal["user", "assistant", "system", "tool"]
-    content: NotRequired[Optional[str]]
-    name: NotRequired[str]
-    tool_calls: NotRequired[list[ToolCall]]
-    tool_call_id: NotRequired[str]
-
-
-class FunctionSchema(TypedDict):
-    """Represents a function schema for tool definitions."""
-    name: str
-    description: NotRequired[str]
-    parameters: dict[str, Any]  # JSON Schema
-    strict: NotRequired[bool]
-
-
-class ToolDefinition(TypedDict):
-    """Represents a tool definition for OpenAI/OpenRouter."""
-    type: Literal["function"]
-    function: FunctionSchema
-
-
-class UsageStats(TypedDict, total=False):
-    """Token usage statistics from API responses."""
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    prompt_tokens_details: dict[str, Any]
-    completion_tokens_details: dict[str, Any]
-
-
-class ArtifactPayload(TypedDict, total=False):
-    """Represents a persisted artifact (reasoning or tool result)."""
-    type: str
-    content: Any
-    tool_call_id: str
-    name: str
-    arguments: dict[str, Any]
-    output: str
-    timestamp: float
-
-
-
-
 @dataclass(slots=True)
 class _PipeJob:
     """Encapsulate a single OpenRouter request scheduled through the queue."""
@@ -1185,7 +1122,6 @@ class OpenRouterModelRegistry:
     _lock: asyncio.Lock = asyncio.Lock()
     _next_refresh_after: float = 0.0
     _consecutive_failures: int = 0
-    _last_error: Optional[str] = None
     _last_error_time: float = 0.0
 
     @classmethod
@@ -1342,14 +1278,12 @@ class OpenRouterModelRegistry:
         cls._last_fetch = now
         cls._next_refresh_after = now + max(5, cache_seconds)
         cls._consecutive_failures = 0
-        cls._last_error = None
         cls._last_error_time = 0.0
 
     @classmethod
     def _record_refresh_failure(cls, exc: Exception, cache_seconds: int) -> None:
         """Increase backoff delay and track the most recent catalog error."""
         cls._consecutive_failures += 1
-        cls._last_error = str(exc)
         cls._last_error_time = time.time()
         exponent = min(cls._consecutive_failures - 1, 5)
         base_backoff = 5.0
@@ -3155,7 +3089,6 @@ class Pipe:
         self._session_log_lock = threading.Lock()
         self._session_log_cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
         self._session_log_retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
-        self._session_log_dir = self.valves.SESSION_LOG_DIR
         self._session_log_dirs: set[str] = set()
         self._session_log_warning_emitted = False
         self._maybe_start_log_worker()
@@ -3363,7 +3296,6 @@ class Pipe:
                 self._session_log_retention_days = int(
                     getattr(valves, "SESSION_LOG_RETENTION_DAYS", 90) or 90
                 )
-                self._session_log_dir = base_dir
                 self._session_log_dirs.add(base_dir)
 
         if self._session_log_queue is None:
@@ -4406,22 +4338,6 @@ class Pipe:
             table_fragment=table_fragment,
         )
 
-    def _resolve_pipe_identifier(
-        self,
-        openwebui_model_id: Optional[str] = None,
-        *,
-        fallback_model_id: Optional[str] = None,
-    ) -> str:
-        """Return the canonical Open WebUI-assigned id for this pipe."""
-        explicit_id = getattr(self, "id", None)
-        if isinstance(explicit_id, str):
-            trimmed = explicit_id.strip()
-            if trimmed:
-                return trimmed
-        raise RuntimeError(
-            "Pipe identifier missing; Open WebUI did not assign an id to this manifold."
-        )
-
     def _init_artifact_store(
         self,
         pipe_identifier: Optional[str] = None,
@@ -4579,7 +4495,7 @@ class Pipe:
 
         dropped: list[str] = []
         failed_any = False
-        for lowered_name, original_name in names_to_drop.items():
+        for original_name in names_to_drop.values():
             if not original_name:
                 continue
             qualified = self._quote_identifier(original_name)
@@ -6328,12 +6244,8 @@ class Pipe:
 
         model_block = __metadata__.get("model")
         openwebui_model_id = model_block.get("id", "") if isinstance(model_block, dict) else ""
-        request_model_id = body.get("model") if isinstance(body.get("model"), str) else None
-        pipe_identifier_for_artifacts = self._resolve_pipe_identifier(
-            openwebui_model_id,
-            fallback_model_id=request_model_id,
-        )
-        self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier_for_artifacts)
+        pipe_identifier = self.id
+        self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier)
 
         try:
             await OpenRouterModelRegistry.ensure_loaded(
@@ -6369,7 +6281,6 @@ class Pipe:
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
 
         # Full model ID, e.g. "<pipe-id>.gpt-4o"
-        pipe_identifier = pipe_identifier_for_artifacts
         pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
         # Features are nested under the pipe id key – read them dynamically.
         _features_all = __metadata__.get("features", {}) or {}
@@ -6392,7 +6303,6 @@ class Pipe:
                 session,
                 openwebui_model_id,
                 pipe_identifier,
-                pipe_identifier_for_artifacts,
                 allowed_norm_ids,
                 features,
                 user_id=user_id,
@@ -6669,7 +6579,6 @@ class Pipe:
         session: aiohttp.ClientSession,
         openwebui_model_id: str,
         pipe_identifier: str,
-        pipe_identifier_for_artifacts: str,
         allowed_norm_ids: set[str],
         features: dict[str, Any],
         *,
@@ -8256,14 +8165,13 @@ class Pipe:
                 markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
                 db_artifacts: dict[str, dict] = {}
-                valid_call_ids: set[str] = set()
                 orphaned_call_ids: set[str] = set()
                 orphaned_output_ids: set[str] = set()
                 if artifact_loader and chat_id and openwebui_model_id and markers:
                     try:
                         db_artifacts = await artifact_loader(chat_id, msg_id, markers)
                         (
-                            valid_call_ids,
+                            _,
                             orphaned_call_ids,
                             orphaned_output_ids,
                         ) = _classify_function_call_artifacts(db_artifacts)
@@ -10311,7 +10219,7 @@ class Pipe:
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
 
         async def _emit(event: dict[str, Any]) -> None:
-            nonlocal assistant_sent, answer_started, reasoning_status_buffer, reasoning_status_last_emit
+            nonlocal assistant_sent, answer_started
             if not isinstance(event, dict):
                 return
 
@@ -11007,7 +10915,6 @@ class SessionLogger:
                 uid = cls.user_id.get()
                 record.session_id = sid
                 record.request_id = rid
-                record.session_label = sid or "-"
                 record.user_id = uid or "-"
                 record.session_log_level = cls.log_level.get()
                 if rid:
