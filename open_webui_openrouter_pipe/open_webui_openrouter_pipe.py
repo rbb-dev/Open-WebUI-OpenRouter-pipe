@@ -6928,13 +6928,10 @@ class Pipe:
                 plugins.append(plugin_payload)
                 responses_body.plugins = plugins
 
-        # STEP 7: Log the transformed request body
-        self.logger.debug("Transformed ResponsesBody: %s", json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False))
-
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
 
-        # STEP 8: Send to OpenAI Responses API (with provider-specific fallbacks)
+        # STEP 7: Send to OpenAI Responses API (with provider-specific fallbacks)
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
         while True:
