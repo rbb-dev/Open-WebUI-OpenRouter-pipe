@@ -1,90 +1,126 @@
-# tools, plugins, and extra integrations
+# Tools, plugins, and integrations
 
-**file:** `docs/tooling_and_integrations.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:308-420, 5790-7100, 8280-8425`
+**Scope:** How tool schemas are built, how `function_call` items are executed, and how optional integrations (web search plugin, MCP tool specs) are attached.
 
-The Responses manifold treats tool calling as a first-class subsystem. This document covers the entire pipeline--how tool schemas are built, how execution queues behave, how breakers protect the system, and how optional integrations (web search, MCP, filter injections) are merged without surprises.
+> **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [🔒 Security](security_and_encryption.md)
 
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+This pipe supports OpenRouter Responses API tool calling with a controlled execution pipeline and operator-tunable concurrency limits. It also supports optional integrations:
 
----
-
-## 1. schema assembly (`build_tools`)
-
-1. **Prerequisite** -- The target model must advertise `function_calling` support via `ModelFamily.supports("function_calling", model_id)`. If the capability is missing the pipe skips every other step and sends `tools=[]`.
-2. **Open WebUI registry** -- `ResponsesBody.transform_owui_tools(__tools__)` converts each registry entry into an OpenAI-style `{type:"function", name, description, parameters}` dict. When `ENABLE_STRICT_TOOL_CALLING=True`, `_strictify_schema` rewrites every object schema to:
-   * Set `additionalProperties=False` on every object node (root + nested).
-   * Require all declared properties but make optional ones nullable (`{"type": ["string", "null"]}`).
-   * **Auto-infer missing types** -- Properties without a `type` key are automatically fixed: empty schemas `{}` become `{"type": "object"}`, schemas with `properties` but no type get `{"type": "object"}`, schemas with `items` but no type get `{"type": "array"}`. This defensive inference ensures malformed schemas don't cause OpenAI validation errors.
-   * Cache transformed schemas (`_STRICT_SCHEMA_CACHE_SIZE=128`) so repeat calls are cheap.
-3. **MCP servers** -- `REMOTE_MCP_SERVERS_JSON` accepts either one JSON object or a list of objects describing remote servers. `_build_mcp_tools` validates URLs (`http/https/ws/wss` only), whitelists fields (`server_label`, `server_url`, `require_approval`, `allowed_tools`, `headers`), and emits `{"type": "mcp", ...}` entries.
-4. **Filter-provided `extra_tools`** -- Upstream filters can attach a list of already-sanitized tool dicts on `completions_body.extra_tools`. The builder simply appends them.
-5. **OpenRouter plugins** -- When `ENABLE_WEB_SEARCH_TOOL=True` and the model"s pricing indicates paid web search support, the standard `{ "type": "web_search" }` plugin is appended automatically.
-6. **Deduplication** -- `_dedupe_tools` removes duplicates by `(type, name)` identity; later entries win so user overrides beat registry defaults.
+- OpenRouter web-search (as a `plugins` entry, not a function tool).
+- Remote MCP server definitions (as `tools` entries of type `mcp`).
 
 ---
 
-## 2. execution context (`_ToolExecutionContext`)
+## Tool schema assembly (`build_tools`)
 
-Every request that might call a function initializes `_ToolExecutionContext`:
+Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing Responses request as `tools`.
 
-| Field | Meaning |
-| --- | --- |
-| `queue` | `asyncio.Queue` that buffers `_QueuedToolCall` objects. Bounded so producers back off when tools pile up. |
-| `workers` | List of worker tasks (up to `MAX_PARALLEL_TOOLS_PER_REQUEST`). Each worker batches compatible calls (same function, JSON-equal args) up to `TOOL_BATCH_CAP`. |
-| `semaphore` | Global semaphore (`MAX_PARALLEL_TOOLS_GLOBAL`) shared across requests, ensuring one chat cannot starve the process. |
-| `idle_timeout` | Optional timer (`TOOL_IDLE_TIMEOUT_SECONDS`) that cancels workers if no new tool calls arrive, preventing zombie tasks. |
-| `timeout_error` | Remembered string used when workers abort so the user sees why outputs are missing.
+### Preconditions
 
-Workers call `_execute_tool_batch`, which:
+- Tools are only attached when the selected model is recognized as supporting `function_calling`.
+- If the model does not support function calling, the pipe sends no tool schemas.
 
-1. Fetches the Open WebUI callable from `__tools__`. Missing entries raise a structured error so the model can recover.
-2. Runs the callable either synchronously (in the event loop) or via `asyncio.to_thread` / `asyncio.ensure_future` depending on whether it is async.
-3. Applies per-call timeouts: `TOOL_TIMEOUT_SECONDS` for individual tools, `TOOL_BATCH_TIMEOUT_SECONDS` for the whole batch.
-4. Persists outputs via `_persist_artifacts` (unless `PERSIST_TOOL_RESULTS=False`). Outputs get ULID markers so `_transform_messages_to_input` can replay them during the next request.
+### Tool sources (in order)
 
----
+1. **Open WebUI tool registry** (`__tools__` dict)
+   - Converted to OpenAI tool specs (`{"type":"function","name",...}`) via `ResponsesBody.transform_owui_tools(...)`.
+   - When `ENABLE_STRICT_TOOL_CALLING=true`, each tool schema is strictified:
+     - Object nodes get `additionalProperties: false`.
+     - All declared properties are marked required; properties that were not explicitly required become nullable (their type gains `"null"`).
+     - Missing property `type` values are inferred defensively (object/array) so schemas remain valid.
+     - A small LRU cache (size 128) avoids repeated strictification work for identical schemas.
 
-## 3. breaker windows & safety nets
+2. **Remote MCP servers** (`REMOTE_MCP_SERVERS_JSON`)
+   - Parsed from a JSON string (a single object or an array of objects).
+   - Each valid entry produces a tool spec `{ "type": "mcp", ... }`.
+   - Validation and safety notes:
+     - Payloads over 1MB are ignored.
+     - `server_label` and `server_url` are required.
+     - `server_url` schemes are restricted to `http`, `https`, `ws`, `wss` (must include a host).
+     - Only the official MCP keys are forwarded: `server_label`, `server_url`, `require_approval`, `allowed_tools`, `headers`.
 
-| Breaker | Trigger | Recovery |
-| --- | --- | --- |
-| Per-user breaker (`_breaker_records`) | `BREAKER_MAX_FAILURES` hits inside `BREAKER_WINDOW_SECONDS` (defaults: 5 / 60s). History depth follows `BREAKER_HISTORY_SIZE`. | Automatically clears when enough time passes or successes are recorded. Emits a status message so the user knows the request is throttled. |
-| Tool-type breaker (`_tool_breakers[user][tool_name]`) | Same valves but scoped per tool type, so one flaky tool can’t take down the chat. | Status message explains which tool was disabled. The loop continues with other tools. |
-| DB breaker (`_db_breakers[user]`) | Same limits applied to persistence failures (DB offline, migrations missing). | Temporarily skips persistence and emits "DB ops skipped due to repeated errors" so operators investigate. |
+3. **Extra tools** (`extra_tools`)
+   - A caller-provided list of already OpenAI-format tool specs is appended as-is (non-dict entries are ignored).
 
-When a breaker fires, tool events are still surfaced to the UI. Users see which tool failed, why it was skipped, and whether the system will retry later.
+### Deduplication
 
----
-
-## 4. multi-step loop with Responses API
-
-1. **Model emits `tool_call` event** via SSE. `_consume_sse` converts it into `_QueuedToolCall` entries and enqueues them.
-2. **Workers execute tools** as described above, persisting outputs and building `tool_result` blocks.
-3. **Re-injection** -- `_append_tool_outputs_to_input` adds each result to the in-flight `input[]` list so the model receives structured feedback before continuing generation.
-4. **Loop control** -- `MAX_FUNCTION_CALL_LOOPS` caps how many full "model → tools → model" cycles a single request may perform. Hitting the cap surfaces a warning and ends the run cleanly.
+After assembly, tools are deduplicated by `(type, name)` identity. If duplicates exist, the **later** entry wins.
 
 ---
 
-## 5. web search & MCP integrations
+## Tool execution lifecycle (Responses API loop)
 
-* **Web search**: `build_plugins()` (inside `Pipe.pipe()`) inspects the selected model"s pricing metadata. If the provider charges for `web_search` and the valve is enabled, the `{ "id": "web" }` plugin is attached. The pipe also exposes `WEB_SEARCH_MAX_RESULTS` to override the provider"s default result count.
-* **MCP servers**: Beyond schema registration, MCP tools participate in the exact same execution loop. The schema describes remote servers; when the model requests one, the tool executor forwards the call using the MCP transport defined in OpenRouter"s Responses API. Because these tools can be expensive, keep `MAX_PARALLEL_TOOLS_PER_REQUEST` conservative.
+Tool execution happens in the request loop that follows each Responses API call:
+
+1. The pipe calls the provider (streaming mode for normal chats).
+2. When a `response.completed` event arrives, the pipe inspects the response `output` list.
+3. Any `output` items with `type == "function_call"` are treated as tool calls to execute locally.
+4. The pipe executes the tools and converts each result into `function_call_output` items.
+5. The `function_call` items (normalized) and their outputs are appended to the next request’s `input[]`, and the loop continues until either:
+   - no more `function_call` items are returned, or
+   - `MAX_FUNCTION_CALL_LOOPS` is reached.
+
+Notes:
+
+- If a tool name is missing or not present in the tool registry, the pipe returns a structured `function_call_output` indicating the failure.
+- The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.
 
 ---
 
-## 6. telemetry & UX
+## Concurrency, batching, and timeouts (per request)
 
-* **Status updates** (`StatusMessages`) announce when tools start, finish, or fail. These messages are delivered through the Open WebUI event stream so the user sees real-time progress.
-* **Notifications** (`_emit_notification`) summarize tool results or errors in the right-hand notification tray when enabled.
-* **Usage tracking** merges per-tool token/cost estimates into the final completion status so operators can audit expensive workflows.
+Tools are executed via a per-request worker pool backed by a bounded queue:
+
+- Queue size: 50 tool calls per request (bounded).
+- Worker count: `MAX_PARALLEL_TOOLS_PER_REQUEST`.
+- Per-request semaphore: limits concurrent tool executions per request.
+- Global semaphore: `MAX_PARALLEL_TOOLS_GLOBAL` limits tool executions across all requests.
+
+Batching behavior:
+
+- Tool calls may be batched when they share the same tool name and do not declare dependency/ordering blockers in arguments.
+- If tool arguments include any of: `depends_on`, `_depends_on`, `sequential`, `no_batch`, the call is treated as non-batchable.
+- Batching does not require identical arguments; it is a concurrency optimization, not a deduplication mechanism.
+
+Timeouts and retries:
+
+- Each tool call is run with a per-call timeout (`TOOL_TIMEOUT_SECONDS`).
+- Tool calls are retried up to 2 attempts (per call) when they raise exceptions.
+- Tool batches are guarded by a batch timeout (derived from `TOOL_BATCH_TIMEOUT_SECONDS` and the per-call timeout).
+- If the tool queue stays idle for `TOOL_IDLE_TIMEOUT_SECONDS`, the worker loop cancels pending work and surfaces an error.
 
 ---
 
-## 7. extending the tool system
+## Breakers (stability controls)
 
-1. Add new schema sources by editing `build_tools()`--for example, fetch a workspace-wide tool list from another service, merge it, and document the behavior here.
-2. When introducing a new breaker or queue, define matching valves (limits, timeouts) and update `docs/valves_and_configuration_atlas.md` so operators know how to tune them.
-3. If you implement new output types (e.g., streaming tool logs), ensure `_persist_artifacts` stores them and `_transform_messages_to_input` knows how to replay or prune them.
+The pipe applies a shared breaker window (`BREAKER_MAX_FAILURES` within `BREAKER_WINDOW_SECONDS`) across different subsystems:
 
-The manifold"s tool subsystem is intentionally strict and verbose. Treat it as shared infrastructure for every future tool innovation you add.
+- **Per-user request breaker:** prevents repeated failing requests from thrashing the system.
+- **Per-user, per-tool-type breaker:** temporarily disables executing tool calls of a given *type* (for example, `function`) for a user after repeated tool failures.
+- **Per-user DB breaker:** can temporarily suppress persistence-related work after repeated database failures.
+
+When a tool breaker is open, tool calls are skipped and a status message is emitted to the UI (best effort).
+
+---
+
+## OpenRouter web-search plugin
+
+The web-search integration is attached as a `plugins` entry (not as a `tools` function):
+
+- If the selected model supports `web_search_tool` and either:
+  - `ENABLE_WEB_SEARCH_TOOL=true`, or
+  - the model’s catalog-derived features indicate web-search capability,
+  then the pipe appends `{ "id": "web" }` to `plugins`.
+- If `WEB_SEARCH_MAX_RESULTS` is set, it is included as `max_results`.
+- If reasoning effort is `minimal`, the pipe skips adding the web-search plugin.
+
+---
+
+## Notes on MCP tool specs
+
+`REMOTE_MCP_SERVERS_JSON` attaches MCP tool server definitions to the request. Calls involving MCP may appear in provider output as `mcp_call` items.
+
+For persistence behavior and replay rules of tool artifacts, see:
+
+- [Persistence, Encryption & Storage](persistence_encryption_and_storage.md)
+- [History Reconstruction & Context Replay](history_reconstruction_and_context.md)

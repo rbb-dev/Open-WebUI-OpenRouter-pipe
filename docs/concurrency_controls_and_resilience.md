@@ -1,75 +1,68 @@
-# concurrency, guardrails, and resilience
+# Concurrency Controls & Resilience
 
-**file:** `docs/concurrency_controls_and_resilience.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:2880-3600`, `tool worker` + `breaker` sections, `_maybe_start_*` helpers
+This document describes the pipe’s admission control, concurrency limits, breakers, and background workers that protect Open WebUI from overload and cascading failures.
 
-OpenRouter workloads are bursty. This pipe is engineered to accept hundreds of concurrent chats without starving the host or corrupting state. This document walks through every concurrency primitive, admission policy, breaker, and watchdog that keeps the manifold stable.
-
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+> **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Errors](error_handling_and_user_experience.md) · [Persistence](persistence_encryption_and_storage.md)
 
 ---
 
-## 1. admission control
+## Admission control (requests)
 
-| Component | Location | Behavior |
-| --- | --- | --- |
-| Queue | `Pipe._request_queue` (max 500) | Every incoming request becomes a `_PipeJob` and is placed on the queue. If the queue is full, the pipe returns HTTP 503 immediately with a user-facing status ("Server busy"). |
-| Worker task | `_request_worker_loop` | Pulls jobs from the queue, spawns async tasks, and wires cancellation: if Open WebUI cancels the future, the in-flight task receives `cancel()` and cleans up gracefully. |
-| Global semaphore | `_global_semaphore` | Limit determined by `MAX_CONCURRENT_REQUESTS`. Lowering the valve at runtime logs a warning (requires restart) while raising it releases additional permits immediately. |
-| Startup checks | `_maybe_start_startup_checks` | Defers actual work until an API key exists and a warmup probe succeeds. While `_warmup_failed` is true, every request is rejected with "Service unavailable due to startup issues" to avoid partial execution. |
+The pipe applies multiple layers of admission control per process:
 
----
-
-## 2. tool concurrency
-
-* **Global limit** -- `_tool_global_semaphore` enforces `MAX_PARALLEL_TOOLS_GLOBAL` so all chats combined cannot overwhelm CPU-bound tool workers.
-* **Per-request limit** -- `_ToolExecutionContext` caps workers at `MAX_PARALLEL_TOOLS_PER_REQUEST`. Combined with queue batching, this stops a single chat from locking every worker.
-* **Batch cap** -- `TOOL_BATCH_CAP` sets how many identical tool calls run in parallel when the model emits multiple calls with the same arguments.
-* **Idle timeout** -- `TOOL_IDLE_TIMEOUT_SECONDS` (optional) cancels worker tasks when no tools run for the specified duration, preventing leaks.
+- **Request queue:** requests are wrapped into jobs and enqueued into an in-process asyncio queue (`maxsize=500`). If the queue is full, the request is rejected with a user-facing “Server busy (503)” message.
+- **Global request semaphore:** `MAX_CONCURRENT_REQUESTS` limits in-flight requests per process. Increasing the valve can take effect immediately; decreasing it requires a restart to fully reduce concurrency.
+- **Startup warmup gate:** the pipe runs background warmup checks once an API key is configured. If warmup has failed, requests are rejected with “Service unavailable due to startup issues” until a subsequent warmup succeeds.
 
 ---
 
-## 3. background workers
+## Tool concurrency (per request and global)
 
-| Worker | Trigger | Notes |
-| --- | --- | --- |
-| Log worker (`_log_worker_loop`) | Started lazily when the first request runs. Processes `SessionLogger` records asynchronously so slow sinks can"t block request handlers. |
-| Redis listener / flusher | Spawned when `_redis_candidate` is true. Listens for `db-flush` pub/sub messages and also runs a periodic timer. Uses a short-lived lock to ensure only one worker flushes at a time. |
-| Artifact cleanup worker | Created when persistence initializes. Sleeps for `ARTIFACT_CLEANUP_INTERVAL_HOURS` + jitter, deletes rows older than `ARTIFACT_CLEANUP_DAYS`. |
-| Startup warmup task | Only runs once per process. Warms TLS/DNS caches by hitting `/models?limit=1`. Logs warnings instead of crashing when the API key is missing; failures flip `_warmup_failed` until the next successful probe. |
+Tool execution is constrained to prevent a single request (or a single user) from consuming all compute:
 
-All workers are cancelled in `_stop_request_worker`, `_stop_log_worker`, `_shutdown_tool_context`, and `_run_cleanup_once` when the pipe is reloaded.
+- **Global tool semaphore:** `MAX_PARALLEL_TOOLS_GLOBAL` caps the total number of tool executions across all requests in the process.
+- **Per-request tool semaphore:** `MAX_PARALLEL_TOOLS_PER_REQUEST` caps tool parallelism within a single request.
+- **Batching and timeouts:** tool loop ceilings and timeouts are controlled by `MAX_FUNCTION_CALL_LOOPS`, `TOOL_BATCH_CAP`, `TOOL_TIMEOUT_SECONDS`, `TOOL_BATCH_TIMEOUT_SECONDS`, and `TOOL_IDLE_TIMEOUT_SECONDS`.
 
----
-
-## 4. breaker summary
-
-See `docs/tooling_and_integrations.md` for tool-specific breakers. This section covers the shared ones:
-
-| Breaker | Scope | Threshold | Action |
-| --- | --- | --- | --- |
-| `_breaker_records` | per-user request-level | `BREAKER_MAX_FAILURES` hits within `BREAKER_WINDOW_SECONDS` (defaults: 5 / 60s) | Stops admitting new jobs for that user until the window clears. Emits a `chat:status` warning. |
-| `_db_breakers` | per-user persistence | Same valves (`BREAKER_MAX_FAILURES` / `BREAKER_WINDOW_SECONDS`) scoped to persistence failures | Skips DB work for the affected user (falls back to ephemeral mode) until the breaker heals. |
-| Redis pending queue warning | global | queue depth > `REDIS_PENDING_WARN_THRESHOLD` | Emits WARN logs so operators know flushers are behind. |
-
-Breakers automatically drain; no manual reset is required.
+See [Tooling & Integrations](tooling_and_integrations.md) for tool-specific behavior and schema handling.
 
 ---
 
-## 5. resilience tactics
+## Breakers (fast-fail protection)
 
-* **Retry-aware HTTP client** -- `_create_http_session` configures `httpx` with retries and `_RetryableHTTPStatusError` so throttling/backoff signals from OpenRouter are honored.
-* **ContextVars** -- `_TOOL_CONTEXT` and `SessionLogger` store per-request metadata thread-safely even when work jumps between worker queues and thread pools.
-* **Graceful degradation** -- If Redis or the DB fails, `_persist_artifacts` logs, surfaces a user warning, and falls back to the next-best storage path rather than crashing the entire request.
-* **Size guards everywhere** -- From `_download_remote_url` through streaming queues, every pipeline has hard caps with descriptive valve names so operators can tune behavior without code changes.
+Breakers prevent repeated failures from cascading into continuous retries and log storms. They are governed by:
+
+- `BREAKER_MAX_FAILURES`
+- `BREAKER_WINDOW_SECONDS`
+- `BREAKER_HISTORY_SIZE`
+
+Breaker scopes include:
+
+- **Per-user request breaker:** blocks new requests for a user when repeated failures occur within the breaker window.
+- **Per-user persistence breaker:** skips database persistence work for a user when repeated DB failures occur (requests can continue with reduced durability).
+- **Per-user/tool-type breaker:** skips tool execution for specific tool types when repeated tool failures occur.
+
+Breakers are self-healing: once failures age out of the window (or a successful operation occurs where applicable), normal operation resumes without operator intervention.
 
 ---
 
-## 6. tuning checklist
+## Background workers (what runs in the process)
 
-1. **High traffic** -- Raise `MAX_CONCURRENT_REQUESTS` only if CPU/RAM allow it and the upstream OpenRouter rate limit is high enough. Monitor 503 counts.
-2. **Tool-heavy workloads** -- Increase `MAX_PARALLEL_TOOLS_GLOBAL` + `MAX_PARALLEL_TOOLS_PER_REQUEST` together, but keep breakers enabled so runaway tools still trip quickly.
-3. **Slow networks** -- Increase `HTTP_CONNECT_TIMEOUT_SECONDS`/`HTTP_SOCK_READ_SECONDS` rather than disabling timeouts. Streaming reliability benefits more from steady limits than from unbounded waits.
-4. **Verbose debugging** -- Set global `LOG_LEVEL=DEBUG` (or override per user) only temporarily; the async log queue is bounded to 1000 records.
+The pipe uses background tasks/threads to keep request handling responsive:
 
-Properly tuned valves, combined with the guardrails above, let this pipe sustain hundreds of concurrent reasoning + tool-heavy chats without starving the server. When you change any guardrail, update this doc and the valve reference so operators can keep the system stable.
+- **Request worker loop:** dequeues jobs from the request queue and spawns per-request tasks.
+- **Async log worker:** drains a bounded async log queue (`maxsize=1000`) used by `SessionLogger` so log emission does not block request execution.
+- **Redis tasks (optional):** when Redis caching is enabled and available, the pipe starts a Redis client and associated listener/flush tasks.
+- **Artifact cleanup worker:** periodically deletes persisted artifacts older than `ARTIFACT_CLEANUP_DAYS` on an interval controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS`.
+- **Session log storage threads (optional):** when session log storage is enabled, the pipe uses background threads to write and clean up encrypted zip archives.
+
+---
+
+## Operational tuning (practical guidance)
+
+- If you see “Server busy (503)” frequently, lower upstream load or increase capacity; then tune `MAX_CONCURRENT_REQUESTS` and tool parallelism valves based on CPU/RAM headroom.
+- For rate limits and upstream instability, use breakers plus conservative retry windows; avoid “infinite retries”.
+- For multi-worker deployments, consider enabling Redis caching (when appropriate) to improve artifact replay performance and reduce DB contention.
+
+All tunables referenced here are documented (with verified defaults) in [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
+

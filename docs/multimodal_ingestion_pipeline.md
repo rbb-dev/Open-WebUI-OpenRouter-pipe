@@ -1,123 +1,153 @@
-# multimodal intake pipeline
+# Multimodal Intake Pipeline
 
-**file:** `docs/multimodal_ingestion_pipeline.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:1104-2100`, `_download_remote_url`, `_parse_data_url`, `_inline_internal_file_url`
+This document describes how the pipe transforms Open WebUI message content into OpenRouter-compatible multimodal blocks (images, files, audio, and video), including storage behavior, SSRF protections, and size limits.
 
-This document is the canonical reference for every image, file, audio, and video pathway that flows through the OpenRouter Responses pipe. Use it whenever you touch `_to_input_image`, `_to_input_file`, `_to_input_audio`, `_to_input_video`, download helpers, or storage fallbacks.
-
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+> **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Security](security_and_encryption.md) · [History/Replay](history_reconstruction_and_context.md)
 
 ---
 
-## 1. design goals
+## What this pipeline does
 
-1. **Zero data loss** -- every inbound payload (remote URL, base64 blob, Open WebUI file reference) is persisted inside Open WebUI storage before being forwarded to OpenRouter. Chats stay replayable months later.
-2. **Bounded resources** -- every helper enforces MB caps (`REMOTE_FILE_MAX_SIZE_MB`, `BASE64_MAX_SIZE_MB`, `VIDEO_MAX_SIZE_MB`) and chunked buffering (`IMAGE_UPLOAD_CHUNK_BYTES`) so workers stay responsive even under dozens of concurrent uploads.
-3. **Secure by default** -- SSRF guards reject private-network hosts, fallback storage accounts stay least-privileged, and warnings surface immediately when operators override defaults.
-4. **UX feedback** -- emitters broadcast download/upload progress so users know why a response is waiting on a large attachment.
+For user messages that include multimodal content, the pipe normalizes content blocks into the structures it sends to OpenRouter.
 
----
+At a high level:
 
-## 2. storage context resolution
-
-| Helper | Purpose |
-| --- | --- |
-| `_resolve_storage_context(request, user_obj)` | Returns `(request, user)` for uploads. Falls back to `_ensure_storage_user()` when the chat lacks an authenticated user (API automations, system triggers). |
-| `_ensure_storage_user()` | Creates/loads the dedicated service account defined by `FALLBACK_STORAGE_{EMAIL,NAME,ROLE}`. New accounts receive a random `oauth_sub` so they cannot log in interactively. Warns if you configure a privileged role. |
-| `_upload_to_owui_storage()` | Streams bytes into Open WebUI"s `/api/v1/files` endpoint with `process=False`. Returns the internal file URL (e.g., `/api/v1/files/XYZ`). Errors are logged and surfaced via `_emit_error`. |
-
-Every multimodal helper first calls `_resolve_storage_context`. If storage cannot be resolved (e.g., synthetic tests), the helper degrades gracefully by skipping uploads and issuing a warning.
+- **Images** are converted to Responses-style `input_image` blocks and (when sourced from remote URLs or data URLs) are **re-hosted** into Open WebUI storage.
+- **Files** are converted to Responses-style `input_file` blocks and may be re-hosted into Open WebUI storage depending on valve configuration (defaults re-host common cases).
+- **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
+- **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
 
 ---
 
-## 3. image handling
+## Storage context resolution (uploads to Open WebUI)
 
-| Feature | Behavior |
-| --- | --- |
-| **Supported inputs** | `image_url` dicts, nested Open WebUI blocks, markdown image links extracted from assistant text (fallback mode). |
-| **Data URLs** | `_parse_data_url` validates MIME type + size (`BASE64_MAX_SIZE_MB`), decodes the payload, and uploads it to storage. The final Responses block uses the internal URL converted via `_inline_internal_file_url`. |
-| **Remote URLs** | `_download_remote_url` streams bytes with retry/backoff (`REMOTE_DOWNLOAD_*` valves), SSRF checks, and a hard MB cap. Successful downloads are uploaded to storage, ensuring future turns do not depend on third-party hosts. |
-| **Internal URLs** | `/api/v1/files/...` links are streamed in configurable chunks (`IMAGE_UPLOAD_CHUNK_BYTES`) and re-encoded as `data:` URLs so OpenRouter never touches the Open WebUI host directly. |
-| **Selection policy** | `MAX_INPUT_IMAGES_PER_REQUEST` + `IMAGE_INPUT_SELECTION` limit which images accompany a request. When the user supplies no images and the selection mode is `user_then_assistant`, the pipe reuses the most recent assistant-generated image URLs captured from markdown. |
-| **Status messaging** | `_emit_status` posts `StatusMessages.IMAGE_BASE64_SAVED`, `IMAGE_REMOTE_SAVED`, etc., so operators know when uploads finish or fail. |
+When the pipe needs to re-host content into Open WebUI storage, it resolves a storage context `(request, user)`:
 
----
+- If a real Open WebUI request/user context exists, the pipe uploads via Open WebUI’s file APIs.
+- If a user context is missing (for example some automations), the pipe can fall back to a dedicated “storage owner” identity configured by:
+  - `FALLBACK_STORAGE_EMAIL`
+  - `FALLBACK_STORAGE_NAME`
+  - `FALLBACK_STORAGE_ROLE`
 
-## 4. file handling
-
-### Supported block fields
-
-* `file_id`: already stored in Open WebUI. Passed through untouched.
-* `file_data`: base64 string or `data:` URL. Always saved to storage when `SAVE_FILE_DATA_CONTENT=True` (default) so inline blobs do not bloat transcripts.
-* `file_url`: remote URL. Only downloaded when `SAVE_REMOTE_FILE_URLS=True` to avoid surprise storage usage.
-* `filename` and `mime_type`: preserved if provided; otherwise derived from headers or defaults.
-
-### Flow
-
-1. Extract every available field (nested dicts + top-level keys).
-2. If `file_data` is a `data:` URL: validate size, decode, upload, and rewrite `file_url` to the internal path. The inline `file_data` field is dropped from the outgoing payload to save bandwidth.
-3. If `file_data` is an HTTP(S) URL: treat it like a remote download so the final request references an internal storage path.
-4. If `file_url` is remote and `SAVE_REMOTE_FILE_URLS` is true, download + re-host just like `file_data`.
-5. Emit a `type: 
-"input_file"` block containing whichever combination of `file_id`, `file_url`, `filename`, and `mime_type` remain relevant.
-6. If anything fails, the helper emits an inline warning and returns a minimal block so the request stays valid.
+If storage cannot be resolved (for example in tests or synthetic contexts), the pipe degrades by skipping uploads and returning minimal valid blocks.
 
 ---
 
-## 5. audio handling
+## Images (`image_url` → `input_image`)
 
-* Audio is only accepted as base64/data URLs per OpenRouter"s spec. `_to_input_audio` rejects remote URLs outright so users know to upload instead.
-* Supported MIME types map to `wav` or `mp3` (see `_AUDIO_MIME_MAP`). Invalid types produce a warning + status event while leaving the text content untouched.
-* Size validation reuses `_validate_base64_size` so large clips fail before decoding.
-* Audio payloads are kept inline (no storage upload yet) because OpenRouter expects `input_audio` blocks. If you need durable storage, wrap the helper so it stores the file and injects a marker referencing the persisted blob.
+### Inputs accepted
+- Open WebUI content blocks containing `type: "image_url"` with:
+  - a nested object `{ "image_url": { "url": "..." } }`, or
+  - a string `{ "image_url": "..." }`.
 
----
+### Storage behavior (important)
+- If the image is provided as a **data URL** (`data:image/...;base64,...`), the pipe validates size, decodes, and uploads it to Open WebUI storage. The outgoing `input_image.image_url` references the internal Open WebUI file URL.
+- If the image is provided as a **remote URL** (`http://` or `https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and references the internal URL.
+- If the image is already an **Open WebUI file URL** (for example `/api/v1/files/...`), the pipe streams it and inlines it as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
-## 6. video handling
+This image re-hosting behavior is intentionally “always on” for data URLs and remote URLs to avoid chat history bloat and to preserve replayability.
 
-| Feature | Behavior |
-| --- | --- |
-| Block normalization | `_to_input_video` accepts both `video_url` and the legacy `video` key, emitting a Chat Completions-style `{"type":"input_video"}` block. |
-| Data URLs | Enforce `VIDEO_MAX_SIZE_MB` before decoding, then upload to storage so the final URL is internal. |
-| Remote URLs | Allowed when they pass SSRF checks. Unlike images/files, videos are not re-hosted automatically to avoid huge storage bills. The helper emits a warning so operators know why an external URL was passed through. |
-| Status updates | Long downloads emit progress/status lines via `_emit_status`, and failures fall back to text warnings. |
-
----
-
-## 7. remote download subsystem
-
-`_download_remote_url` is shared across image/file helpers and enforces:
-
-* **Retry policy**: `REMOTE_DOWNLOAD_MAX_RETRIES`, `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS`, and `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS`. Retries cover network errors, HTTP 5xx, and HTTP 408/425/429.
-* **Streaming**: Responses stream in chunks with precise byte accounting. The transfer aborts as soon as the real size or `Content-Length` exceeds `REMOTE_FILE_MAX_SIZE_MB` (or Open WebUI"s `FILE_MAX_SIZE` if smaller).
-* **SSRF protection**: `_is_safe_url` resolves every host to IPv4/IPv6 addresses and rejects loopback, RFC1918, link-local, multicast, and reserved ranges.
-* **MIME normalization**: e.g., `image/jpg` → `image/jpeg` so downstream validators stay consistent.
-* **Status hooks**: When an `event_emitter` is provided, downloads broadcast start/finish/abort statuses.
-
-> **Security note**: See [Security and Encryption](security_and_encryption.md#ssrf-protection) for compliance context, security procedures, and key rotation policies related to SSRF protection and other security measures.
+### Limits and selection
+- `MAX_INPUT_IMAGES_PER_REQUEST` limits how many images will be forwarded.
+- `IMAGE_INPUT_SELECTION` controls whether the pipe can fall back to recent assistant images when the current user turn has no attachments.
 
 ---
 
-## 8. configuration summary
+## Files (`input_file` / `file` → `input_file`)
 
-| Valve | Default | Effect |
+### Fields accepted
+The file transformer extracts and forwards the following Responses-compatible fields when present:
+
+- `file_id` (already in Open WebUI storage)
+- `file_data` (base64/data URL, or a URL-like string depending on upstream)
+- `file_url` (URL to a file)
+- `filename`
+
+### Re-hosting behavior (defaults)
+The pipe can re-host both `file_data` and `file_url` into Open WebUI storage:
+
+- When `SAVE_FILE_DATA_CONTENT=True` (default), and `file_data` is:
+  - a `data:` URL, it is decoded and stored; the outgoing block will prefer `file_url` pointing to internal storage and will clear `file_data`.
+  - an `http://` or `https://` URL, it is downloaded and stored; the outgoing block will set `file_url` to internal storage and clear `file_data`.
+- When `SAVE_REMOTE_FILE_URLS=True` (default), and `file_url` is:
+  - a `data:` URL, it is decoded and stored; the outgoing block rewrites `file_url` to the internal storage URL.
+  - an `http://` or `https://` URL, it is downloaded and stored; the outgoing block rewrites `file_url` to the internal storage URL.
+
+If you want to reduce storage growth and accept the tradeoff that chat replay depends on third-party URLs, set `SAVE_REMOTE_FILE_URLS=False`.
+
+---
+
+## Audio (`input_audio` / `audio` → `input_audio`)
+
+OpenRouter audio inputs require base64-encoded audio, and the pipe enforces that:
+
+- Remote URLs (`http://` / `https://`) are rejected and replaced with an empty `input_audio` block.
+- Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits.
+- Raw base64 strings are accepted if valid.
+
+Supported formats are normalized to `mp3` or `wav` based on MIME hints when available; unknown types default to `mp3`.
+
+**Limitation:** The pipe does not currently re-host audio into Open WebUI storage; audio remains inline in the request it sends upstream.
+
+---
+
+## Video (`video_url` / `video` → `video_url`)
+
+### Block format
+The pipe uses Chat Completions-style `video_url` blocks:
+
+```json
+{
+  "type": "video_url",
+  "video_url": { "url": "https://example.com/video.mp4" }
+}
+```
+
+### Validation and SSRF behavior
+- Data URLs (`data:video/...;base64,...`) are accepted only if their estimated decoded size is at or below `VIDEO_MAX_SIZE_MB`.
+- YouTube URLs are allowed (and may only work on certain model/provider combinations).
+- Remote URLs (`http://` / `https://`) that are not Open WebUI file URLs are checked by the SSRF guard when `ENABLE_SSRF_PROTECTION=True`.
+
+**Limitation:** Videos are not downloaded or re-hosted by the pipe; it passes the URL (or data URL) through after applying basic checks. If you need durability for video content, you must ensure the URL remains reachable or implement a storage policy outside this pipe.
+
+---
+
+## Remote downloads (`_download_remote_url`)
+
+Remote downloads are used for images and for files when re-hosting is enabled. The downloader enforces:
+
+- **Protocols:** `http://` and `https://` only.
+- **SSRF protection:** blocks private/internal address targets when enabled.
+- **Retry/backoff:** retries on network errors and transient HTTP statuses (`>=500` and `408/425/429`), with exponential backoff controlled by valves.
+- **Size limits:** enforced via `REMOTE_FILE_MAX_SIZE_MB` (and may be further capped to Open WebUI’s configured upload limits when available).
+
+---
+
+## Configuration summary (key valves)
+
+| Valve | Default (verified) | What it controls |
 | --- | --- | --- |
-| `REMOTE_FILE_MAX_SIZE_MB` | 50 | Applies to remote downloads and inline image/file payloads. Auto-clamps to Open WebUI"s `FILE_MAX_SIZE` when RAG uploads are enabled. |
-| `BASE64_MAX_SIZE_MB` | 50 | Checked before decoding base64 data URLs. Prevents runaway memory usage. |
-| `VIDEO_MAX_SIZE_MB` | 100 | Caps video data URL size. Remote links are not downloaded but are still validated before streaming. |
-| `SAVE_FILE_DATA_CONTENT` | True | Forces all `file_data` payloads into storage for durability. |
-| `SAVE_REMOTE_FILE_URLS` | False | When true, remote `file_url` entries are also downloaded+stored; when false they"re passed through untouched. |
-| `MAX_INPUT_IMAGES_PER_REQUEST` | 5 | Hard limit on how many `input_image` blocks a single request can contain. |
-| `IMAGE_INPUT_SELECTION` | `user_then_assistant` | Governs whether old assistant images can be reused when the user omits attachments. |
-| `IMAGE_UPLOAD_CHUNK_BYTES` | 1 MB | Memory ceiling for inlining Open WebUI files as `data:` URLs. |
+| `ENABLE_SSRF_PROTECTION` | `True` | Blocks remote downloads to private/internal network ranges. |
+| `REMOTE_DOWNLOAD_MAX_RETRIES` | `3` | Retry attempts for remote downloads. |
+| `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `5` | Initial retry delay (exponential backoff). |
+| `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `45` | Max total retry time budget for one download. |
+| `REMOTE_FILE_MAX_SIZE_MB` | `50` | Size cap for remote downloads (images/files) and related payload guards. |
+| `SAVE_FILE_DATA_CONTENT` | `True` | Re-host `file_data` content into Open WebUI storage to avoid transcript bloat. |
+| `SAVE_REMOTE_FILE_URLS` | `True` | Re-host remote/data URLs in `file_url` into Open WebUI storage. |
+| `BASE64_MAX_SIZE_MB` | `50` | Base64 payload size guard before decoding. |
+| `IMAGE_UPLOAD_CHUNK_BYTES` | `1048576 (1 MiB)` | Chunk size used when inlining Open WebUI-hosted images as `data:` URLs. |
+| `MAX_INPUT_IMAGES_PER_REQUEST` | `5` | Maximum images forwarded per request. |
+| `IMAGE_INPUT_SELECTION` | `user_then_assistant` | Image selection policy when the user attaches no images. |
+| `VIDEO_MAX_SIZE_MB` | `100` | Size guard for base64 video data URLs. |
+
+For the complete list, see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
 
 ---
 
-## 9. troubleshooting checklist
+## Troubleshooting checklist
 
-1. **"Image was ignored"** → verify the target model advertises `vision=true` in the catalog and that `MAX_INPUT_IMAGES_PER_REQUEST` was not exceeded.
-2. **"Download blocked"** → check logs for SSRF warnings or size-limit errors; adjust `REMOTE_FILE_MAX_SIZE_MB` / `BASE64_MAX_SIZE_MB` only if you understand the cost.
-3. **"Uploads fail for automations"** → confirm the fallback storage user exists and that `FALLBACK_STORAGE_ROLE` is not a forbidden value in your Open WebUI deployment.
-4. **"Videos never play back"** → remember that videos are not re-hosted yet; ensure the remote URL stays reachable or implement optional storage similar to images.
+1. Image attachments are ignored: confirm the selected model supports vision and that `MAX_INPUT_IMAGES_PER_REQUEST` is not exceeded.
+2. “Download blocked” / “URL blocked”: check SSRF controls (`ENABLE_SSRF_PROTECTION`) and confirm the URL is not internal/private.
+3. Large payload failures: review `REMOTE_FILE_MAX_SIZE_MB`, `BASE64_MAX_SIZE_MB`, and `VIDEO_MAX_SIZE_MB`.
+4. Video inputs do not work: provider/model support varies; the pipe does not re-host video and cannot force upstream providers to accept the URL.
 
-Use this doc alongside `docs/history_reconstruction_and_context.md` to understand how multimodal content is replayed later. Together they guarantee OpenRouter receives the richest possible context without overloading Open WebUI.

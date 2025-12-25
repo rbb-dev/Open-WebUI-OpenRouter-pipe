@@ -1,75 +1,148 @@
-# model catalog & routing intelligence
+# Model Catalog & Routing Intelligence
 
-**file:** `docs/model_catalog_and_routing_intelligence.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:543-1100`, `Pipe._pick_model`, `Pipe._apply_model_capabilities`
+This document explains how the pipe loads OpenRouter’s `/models` catalog, derives per-model capabilities/features, and uses that metadata to shape requests (reasoning, multimodal inputs, web search plugin attachment, and model allowlists).
 
-This document explains how the pipe imports OpenRouter's `/models` catalog, derives per-model capability maps, and applies that metadata when routing user requests. Understanding this layer is essential before tweaking valves such as `MODEL_ID`, `MODEL_CATALOG_REFRESH_SECONDS`, or any of the reasoning/modality toggles.
-
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
+> **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [OpenRouter integration](openrouter_integrations_and_telemetry.md) · [Multimodal](multimodal_ingestion_pipeline.md)
 
 ---
 
-## 1. catalog ingestion pipeline
+## 1. Catalog ingestion and caching
 
-1. **Sanitization** (`sanitize_model_id`). Provider IDs such as `author/model/variant` are converted into dot-friendly identifiers (`author.model.variant`) so Open WebUI can safely store them. Date suffixes (e.g., `-2024-08-01`) are also stripped via `ModelFamily.base_model` to ensure capability lookups remain stable across dated releases.
-2. **Fetching** (`OpenRouterModelRegistry._refresh`). The registry issues a GET to `${BASE_URL}/models` using the decrypted `API_KEY`. The raw JSON, including descriptions and pricing, is stored verbatim (`raw_specs`) so downstream logic can inspect any field the provider exposes.
-3. **Derivation** (`_derive_features`, `_derive_capabilities`). For each model the registry derives:
-   * `features`: `function_calling`, `reasoning`, `reasoning_summary`, `web_search_tool`, `image_gen_tool`, `vision`, `audio_input`, `video_input`, `file_input`.
-   * `capabilities`: the booleans Open WebUI expects (`vision`, `file_upload`, `web_search`, `image_generation`, plus always-on `code_interpreter`, `citations`, `status_updates`, `usage`).
-   * `supported_parameters`: a frozen set of flags that indicate which Responses fields the provider recognizes (`tools`, `parallel_tool_calls`, `reasoning`, etc.).
-   * `max_completion_tokens`: pulled from `top_provider.max_completion_tokens` whenever it exists.
-4. **Caching**. The registry caches both a sorted list of models (for UI selectors) and the derived specs keyed by normalized ID. `ModelFamily.set_dynamic_specs` shares the spec map with helper predicates like `ModelFamily.supports`.
-5. **Refresh cadence**. `MODEL_CATALOG_REFRESH_SECONDS` (default 3600) controls how long the cache is considered fresh. Every failure increases `_consecutive_failures`, which drives an exponential backoff via `_record_refresh_failure`. If the first fetch fails there is no cache to fall back to and the error propagates to the caller.
+### 1.1 ID normalization (sanitized vs normalized IDs)
 
-> **Tip:** If you see the warning `OpenRouter catalog refresh failed... Serving N cached model(s)`, the registry is intentionally serving stale data. Use DEBUG logs to inspect `_last_error` and `_last_error_time` before retrying.
+OpenRouter model IDs use slash-separated provider slugs like `vendor/model`. Open WebUI function model IDs are dot-prefixed and dot-separated. The pipe therefore normalizes IDs in two steps:
+
+- `sanitize_model_id("vendor/model")` → `vendor.model` (slash-to-dot conversion for Open WebUI display).
+- `ModelFamily.base_model(...)` → lowercase, with:
+  - pipe prefix stripped when present (`<pipe-id>.…`), and
+  - date suffixes like `-YYYY-MM-DD` removed.
+
+The normalized ID is used as the stable key for catalog specs and feature lookups.
+
+### 1.2 Fetching `/models` and caching results
+
+The catalog is loaded via `OpenRouterModelRegistry.ensure_loaded(...)`:
+
+- Requires a non-empty API key (`API_KEY` valve or `OPENROUTER_API_KEY` env).
+- Fetches `GET {BASE_URL}/models` and parses the JSON payload.
+- Stores:
+  - a sorted list of models (for Open WebUI selectors), and
+  - a spec map keyed by normalized ID (for routing decisions).
+
+Caching:
+- `MODEL_CATALOG_REFRESH_SECONDS` controls how long the cache is considered fresh (default `3600` seconds).
+- On refresh failures, the registry records an exponential backoff window. If cached models exist, the pipe can continue serving them; if no cache exists yet, the error is surfaced to the caller.
+
+### 1.3 Derived spec fields (what the pipe computes)
+
+For each model, the registry stores the full catalog entry (`full_model`) and derives:
+
+- `supported_parameters`: the provider-reported supported parameter set (stored as a `frozenset`).
+- `features`: a set of higher-level flags derived from `supported_parameters`, model architecture, and pricing metadata:
+  - `function_calling` (based on support for tools-related parameters)
+  - `reasoning` and `reasoning_summary` (based on reasoning-related parameters)
+  - `web_search_tool` (based on web search pricing metadata)
+  - modality flags: `vision`, `audio_input`, `video_input`, `file_input`
+  - `image_gen_tool` (based on output modalities)
+- `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`).
+- `max_completion_tokens`: taken from the model’s `top_provider.max_completion_tokens` field when present.
+
+The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)`, `ModelFamily.capabilities(...)`, and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
 
 ---
 
-## 2. selecting a model per request
+## 2. How models are exposed to Open WebUI (`pipes()`)
 
-1. **User/valve inputs**. `MODEL_ID` can be a comma-separated allowlist (`gpt-4o-mini,gpt-4.1`) or the literal `"auto"` (default) to expose everything OpenRouter returns. Users may also specify a `model` field directly in the Open WebUI UI; the pipe normalizes it through `ModelFamily.base_model` before forwarding to OpenRouter.
-2. **Capability guardrails**. The chosen model"s features drive multiple switches:
-   * If `vision` is false, `_transform_messages_to_input` drops `input_image` blocks and emits a status update so the user knows attachments were ignored.
-   * If `function_calling` is false, the pipe refuses to inject Open WebUI tools and disables multi-step tool loops regardless of per-user settings.
-   * If `web_search_tool` is true and the `ENABLE_WEB_SEARCH_TOOL` valve is enabled, the OpenRouter `web` plugin is appended automatically.
-   * If `supported_parameters` lacks `parallel_tool_calls`, the pipe clears `parallel_tool_calls` on the outgoing request even when the UI requested it.
-3. **Max tokens**. When `USE_MODEL_MAX_OUTPUT_TOKENS` is true, the derived `max_completion_tokens` is forwarded as `max_output_tokens` so the provider enforces its own limit. Otherwise the pipe lets Open WebUI"s `max_output_tokens` input pass through unmodified.
-4. **Reasoning toggles**. Setting `ENABLE_REASONING=False` either globally or per user removes the `reasoning` payload from the Responses request and disables persistence for reasoning markers. `ModelFamily.supports("reasoning")` is checked before enabling the feature; unsupported models simply skip the block regardless of valves.
-5. **Task contexts bypass allowlists (and honor a dedicated effort valve).** Open WebUI schedules several internal tasks (title generation, tag suggestions, etc.) that execute via `__task__` payloads. Those flows still ignore the `MODEL_ID` whitelist so housekeeping keeps working, *but* when the referenced model belongs to this pipe we now consult the `TASK_MODEL_REASONING_EFFORT` valve and (when the effort is `minimal`) skip the OpenRouter `web` plugin entirely. Streaming preferences remain whatever Open WebUI requested; the new default `low` simply gives tasks a small reasoning budget with web-search still available when permitted. Drop to `minimal` for the fastest housekeeping path or raise the valve for richer task workflows. Interactive chats and API calls continue to respect the allowlist.
-6. **Web-search plugin honors minimal reasoning.** The pipe only attaches the OpenRouter `web` plugin when the model advertises the `web_search_tool` feature *and* the request’s effective `reasoning.effort` is higher than `minimal`. When the effort resolves to `minimal` (either because the user requested it or a valve forced it) we skip the plugin and emit a debug log (`Skipping web-search plugin because reasoning.effort is set to 'minimal'`). This prevents OpenRouter 400s such as `The following tools cannot be used with reasoning.effort 'minimal': web_search`. To re-enable search, bump the effort to `low` or higher or disable the auto-attach valve entirely.
+Open WebUI requests the available models from the function by calling `Pipe.pipes()`.
+
+Behavior:
+- The pipe loads/refreshes the OpenRouter catalog (best-effort; may serve cached models on failure).
+- The system valve `MODEL_ID` selects which models are exposed:
+  - `auto` exposes the full catalog.
+  - A comma-separated list restricts the exposed models.
+- Each exposed model entry includes the derived `capabilities` (also duplicated under `meta.capabilities`) so Open WebUI can display capability-related UI affordances.
 
 ---
 
-## 3. capability helpers you can rely on
+## 3. Model allowlists and enforcement in requests
 
-| Helper | Returns | Common uses |
+At request time, the pipe computes the allowed model set based on `MODEL_ID` and the loaded catalog:
+
+- For normal chat/API calls:
+  - if the requested model is not in the allowed set, the pipe emits a user-facing error telling the user to choose an allowed model.
+- For Open WebUI “task” requests (`__task__`):
+  - the pipe **bypasses** the model whitelist (so housekeeping tasks can still run even when end-user models are locked down).
+  - the pipe only applies task-specific reasoning overrides when the task model is one of this pipe’s owned/allowed models.
+
+See also: [Task Models & Housekeeping](task_models_and_housekeeping.md).
+
+---
+
+## 4. Capability-driven behavior (how the catalog influences routing)
+
+### 4.1 Multimodal gating (vision and attachments)
+
+The pipe uses catalog-derived capabilities to decide whether to forward image inputs:
+- If the selected model is not vision-capable, user image attachments are skipped and a status message is emitted so users understand why attachments were ignored.
+
+Details are in: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
+
+### 4.2 Tooling and function calling
+
+Tool definitions are built from Open WebUI tool registries and other configured sources, but the pipe only attaches `responses_body.tools` when the selected model supports function calling per catalog-derived feature flags.
+
+See: [Tooling & Integrations](tooling_and_integrations.md).
+
+### 4.3 Reasoning defaults and compatibility
+
+When `ENABLE_REASONING=True`, the pipe decides how to request reasoning based on `ModelFamily.supported_parameters(...)` for the selected model:
+
+- If the model supports `reasoning`, the pipe populates a `reasoning` object (with defaults from valves such as `REASONING_EFFORT` and `REASONING_SUMMARY_MODE`).
+- If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback.
+- If neither is supported, the pipe disables reasoning for that request.
+
+Provider mismatch recovery:
+- If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)).
+
+### 4.4 Web search plugin attachment (guarded by reasoning effort)
+
+When the selected model supports web search and `ENABLE_WEB_SEARCH_TOOL=True`, the pipe can attach the OpenRouter web search plugin (`plugins: [{"id":"web", ...}]`).
+
+Important compatibility behavior:
+- If effective `reasoning.effort` is `minimal`, the pipe skips attaching the web search plugin (to avoid provider/tool incompatibility errors).
+
+### 4.5 Output token cap selection
+
+When `USE_MODEL_MAX_OUTPUT_TOKENS=True`, the pipe can set `max_output_tokens` using the provider-advertised `max_completion_tokens` derived from the catalog. When it is disabled, the pipe clears `max_output_tokens` so provider limits and upstream defaults apply.
+
+### 4.6 Auto context trimming (transforms)
+
+When `AUTO_CONTEXT_TRIMMING=True`, the pipe may attach OpenRouter’s `middle-out` transform by setting `transforms=["middle-out"]` only when the request does not already specify `transforms`.
+
+See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
+
+---
+
+## 5. Helper APIs you can rely on
+
+| Helper | Returns | Usage |
 | --- | --- | --- |
-| `ModelFamily.supports(feature, model_id)` | `True/False` for derived features | Drop/enable image, audio, video, web search, reasoning, or tool blocks. |
-| `ModelFamily.capabilities(model_id)` | Dict mirroring `OpenRouterModelRegistry._derive_capabilities` | Injects capability metadata into Open WebUI so the UI toggles vision/file upload switches correctly. |
-| `ModelFamily.supported_parameters(model_id)` | Frozen set of provider-supported request parameters | Used when pruning unsupported fields (`parallel_tool_calls`, `response_format`, etc.). |
-| `ModelFamily.max_completion_tokens(model_id)` | Provider-advertised output limit | Enables `USE_MODEL_MAX_OUTPUT_TOKENS`. |
-| `OpenRouterModelRegistry.api_model_id(sanitized_id)` | Original provider ID | Ensures the outbound API call references the exact model slug OpenRouter expects. |
-
-All helpers expect sanitized IDs (period-separated). Internally they normalize everything via `ModelFamily.base_model`, so suffixes such as `.latest` or `pipe-id.` prefixes do not break lookups.
-
----
-
-## 4. routing failure modes & UX
-
-* **Missing catalog**: If `_refresh` fails before any models are cached, the exception propagates and the pipe emits a status message telling the operator to check credentials or network reachability. Requests abort before sending any user data to OpenRouter.
-* **Unknown model**: When a user references a model that was not imported (e.g., `MODEL_ID` allowlist), the pipe responds with an actionable status (`model '<id>' is not available; allowed values: ...`) instead of falling back silently.
-* **Capability drift**: If OpenRouter changes capabilities between refreshes, the pipe respects whatever the provider reports during the next successful refresh. There is no baked-in allowlist; every decision is data-driven. If you detect mismatches, temporarily override behavior via valves while coordinating with OpenRouter support.
-* **Backoff exhaustion**: When repeated failures push `_next_refresh_after` far into the future, you can manually reset the cache (restart the pipe) or drop `OpenRouterModelRegistry._specs` via a REPL. The registry logs `_consecutive_failures` and the backoff ETA to help debugging.
+| `ModelFamily.base_model(model_id)` | normalized model key | Use for stable comparisons and allowlist checks. |
+| `ModelFamily.supports(feature, model_id)` | boolean | Feature gates (vision, tools, web search support, etc.). |
+| `ModelFamily.capabilities(model_id)` | `dict[str,bool]` | Open WebUI capability checkboxes for UI affordances. |
+| `ModelFamily.supported_parameters(model_id)` | `frozenset[str]` | Provider-supported request parameter set (used for reasoning compatibility decisions). |
+| `ModelFamily.max_completion_tokens(model_id)` | `int \| None` | Provider-advertised max completion tokens, used when `USE_MODEL_MAX_OUTPUT_TOKENS=True`. |
+| `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. |
 
 ---
 
-## 5. extending the catalog logic
+## 6. Failure modes and operator signals
 
-When adding new derived metadata:
+- Missing API key: catalog load fails with a configuration error and the pipe cannot expose models.
+- Refresh failures with cache: the pipe can continue serving cached models; logs will show a warning about serving cached catalog data.
+- Refresh failures with no cache: the error propagates, and requests that require the catalog cannot proceed.
+- Empty catalog: the registry treats an empty model list as an error.
 
-1. Update `_derive_features` or `_derive_capabilities` to compute the new flag.
-2. Store it inside `specs[norm_id]` so `ModelFamily` helpers can surface it.
-3. Document the new behavior here and mention whether a valve controls it.
-4. If the flag affects UI toggles, also emit it through `OpenRouterModelRegistry.list_models()` so Open WebUI can show the capability badge.
+Operator guidance:
+- Treat catalog failures like an upstream connectivity/credential issue first (API key, network egress, proxy/gateway, OpenRouter availability), then inspect logs for the last refresh failure.
 
-Never hard-code provider-specific rules elsewhere in the pipe. By keeping every routing decision rooted in the catalog, the manifold stays resilient to OpenRouter changes and keeps behavior explainable.

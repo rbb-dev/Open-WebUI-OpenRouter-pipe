@@ -1,135 +1,260 @@
-# Production Readiness Audit -- OpenRouter Responses Pipe
+# Production readiness report (OpenRouter Responses Pipe)
 
-**Last reviewed:** 2025-12-01  
-**Auditor:** Codex (via GPT-5)  
-**Scope:** End-to-end readiness of the OpenRouter Responses manifold with emphasis on multimodal intake, persistence, and concurrency controls. References: `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py`, Open WebUI sources and OpenRouter docs.
+**Last reviewed:** 2025-12-25  
+**Scope:** Unified production readiness guidance for deploying this pipe in Open WebUI (single-worker and multi-worker), covering security, operations, and failure modes. This document is guidance only and does not guarantee compliance outcomes.
 
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
-
----
-
-## 1. Secrets & Key Material
-
-| Secret | Location | Purpose / Notes |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` (or valves `API_KEY`) | `.env` / OWUI UI | Required for every OpenRouter call. Stored as `EncryptedStr` in valves so it can live in config without plain-text exposure. |
-| `WEBUI_SECRET_KEY` | OWUI env (**required**) | Powers `EncryptedStr` runtime encryption/decryption. Without it, encrypted valve values (API keys, etc.) fall back to plain text and artifact encryption cannot function. |
-| `ARTIFACT_ENCRYPTION_KEY` (>=16 chars) | Valve or env | Derives per-pipe Fernet key. Changing it rotates the storage namespace and intentionally makes prior artifacts unreadable (defense-in-depth). |
-
-Operational guidance:
-- Manage keys via OWUI"s secured settings or deployment-specific secret stores.
-- Document rotation runbooks (rotate `ARTIFACT_ENCRYPTION_KEY` when retiring a cluster; rotate `OPENROUTER_API_KEY` on provider compromise).
+> **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Security](security_and_encryption.md) · [Errors](error_handling_and_user_experience.md) · [Telemetry](openrouter_integrations_and_telemetry.md)
 
 ---
 
-## 2. Persistence, Encryption, and Redis
+## 1. Version and source of truth
 
-### Encrypted Artifacts
-- `ARTIFACT_ENCRYPTION_KEY` seeds a Fernet key; `ENCRYPT_ALL` decides whether only reasoning tokens or every artifact is encrypted. **Important:** Fernet setup also requires `WEBUI_SECRET_KEY` so `EncryptedStr` can derive the runtime secret; if `WEBUI_SECRET_KEY` is missing, the pipe logs a warning, treats encrypted valves as plain text, and artifact encryption silently downgrades to **unencrypted JSON** (defense-in-depth is lost).
-- Storage tables embed the key hash in their name: rotating the key creates a brand-new table and leaves previous data inaccessible (expected behaviour).
+This report is written against:
 
-### Compression
-- Optional LZ4 compression (gated by `ENABLE_LZ4_COMPRESSION`) stores a one-byte header flag (`plain` vs `lz4`). By default the pipe always attempts compression and keeps it only when the LZ4 output is smaller, though operators can raise `MIN_COMPRESS_BYTES` to skip tiny payloads.
+- `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (pipe manifest header: `required_open_webui_version: 0.6.28`, manifest `version: 1.0.12`)
+- `tests/` (behavioral checks for key safety and integration paths)
 
-### Redis Write-Behind
-- When Open WebUI is configured for multi-worker Redis (`UVICORN_WORKERS>1`, `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL`) and `ENABLE_REDIS_CACHE` is true, artifacts flow into a Redis pending list.
-- A background worker flushes JSON blobs to the DB in batches of `DB_BATCH_SIZE`. Each entry is cached with TTL `REDIS_CACHE_TTL_SECONDS` to serve replays from memory.
-- Flush failures now re-queue the raw JSON entries and extend the queue TTL, so artifacts aren"t dropped. Repeated failures trip the `REDIS_FLUSH_FAILURE_LIMIT` breaker and force a fallback to direct DB writes.
-
-### DB Breakers & Error Surfacing
-- Per-user DB breaker avoids hammering a failing database; when tripped, the pipe emits a warning status ("DB ops skipped due to repeated errors") so users know persistence is temporarily disabled.
+When there is any conflict between documentation and runtime behavior, the code and tests are the source of truth.
 
 ---
 
-## 3. Multimodal Intake & Guardrails
+## 2. Executive summary (what to decide before production)
 
-### Remote Downloads
-- `_download_remote_url` streams chunk-by-chunk via `httpx.AsyncClient.stream`, aborting as soon as either `Content-Length` or the running byte counter exceeds `REMOTE_FILE_MAX_SIZE_MB` (auto-clamped to OWUI"s `FILE_MAX_SIZE` when RAG storage is enabled).
-- SSRF protection resolves every IPv4+IPv6 address for a host, blocking private, loopback, link-local, multicast, reserved, or unspecified ranges. DNS failures default to **unsafe**.
+Before enabling this pipe for end users, operators should decide and document:
 
-### Base64 Validation
-- `_validate_base64_size` estimates decoded size (`len * 3 / 4`) and enforces `BASE64_MAX_SIZE_MB` before decoding. Violations raise warnings and surface user-friendly status messages.
+1. **Network egress posture** (especially remote downloads; SSRF risk).
+2. **Persistence posture** (what is stored, retention windows, and who can access it).
+3. **Key management posture** (`OPENROUTER_API_KEY`, `WEBUI_SECRET_KEY`, `ARTIFACT_ENCRYPTION_KEY`, session log zip password).
+4. **Concurrency posture** (request admission limits, tool concurrency, streaming queue sizing).
+5. **Telemetry posture** (whether to export cost snapshots to Redis; whether to send request identifiers).
+6. **Incident response posture** (templates, session logs, and attribution identifiers).
 
-### Image Re-hosting, Inlining, and Selection
-- Every remote or inline image is re-hosted inside Open WebUI storage and then streamed back through `_inline_internal_file_url`, which converts `/api/v1/files/...` entries into `data:<mime>;base64,...` payloads using the `IMAGE_UPLOAD_CHUNK_BYTES` buffer and enforcing `BASE64_MAX_SIZE_MB`. Providers never touch the deployment directly, and transcripts stay small because the on-disk copy remains the source of truth.
-- The transformer now enforces `MAX_INPUT_IMAGES_PER_REQUEST` per user turn; extra attachments trigger a visible status message so operators know when a tenant is hitting the cap.
-- `IMAGE_INPUT_SELECTION` governs how we backfill image context. `user_then_assistant` (default) prefers the user"s latest uploads but automatically reuses the most recent assistant-generated images when the user turn is text-only, keeping "edit my last render" flows alive without re-uploads.
-- When the target model lacks the `vision` capability (per the OpenRouter catalog), image blocks are dropped and a status update explains the decision instead of silently failing.
-
-### Chunked File Encoding
-- `_encode_file_path_base64` now stitches chunk boundaries on 3-byte increments and carries leftovers between reads, so large files stream to base64 without padding drift. A regression test compares the helper against Python"s reference encoder over multi-read inputs.
-
-### Storage Ownership
-- When the chat user is absent (API automations, system calls), uploads use a dedicated fallback identity derived from `FALLBACK_STORAGE_*` valves. Default role is low-privilege `pending`, and the code warns if a privileged role is configured. A random `oauth_sub` is attached to the auto-created user so it cannot log in interactively.
+All of these are controlled via valves and environment configuration; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
 
 ---
 
-## 4. Concurrency & Tooling Pipeline
+## 3. Deployment modes (single-worker vs multi-worker)
 
-### Request Admission Control
-- `MAX_CONCURRENT_REQUESTS` (default 200) is enforced via a global semaphore to cap live OpenRouter calls.
-- `_QUEUE_MAXSIZE = 500` bounds the work queue; when full, new requests immediately return 503 instead of overwhelming worker tasks.
+### Single-worker (no Redis)
 
-### Tool Execution
-- Per-request tool queues enforce:
-  - Global (`MAX_PARALLEL_TOOLS_GLOBAL`) and per-request (`MAX_PARALLEL_TOOLS_PER_REQUEST`) semaphores.
-  - Timeouts (`TOOL_TIMEOUT_SECONDS`, `TOOL_BATCH_TIMEOUT_SECONDS`, optional idle timeout).
-  - Batch execution when tool calls share the same function and have no argument dependencies.
-  - Per-user tool breakers that temporarily disable tool types after consecutive failures and emit UX status updates.
-- Strict tool schema enforcement now runs every registry definition through `_strictify_schema`, making all declared properties explicit, clamping `additionalProperties=False`, and converting optional fields into nullable types. This keeps OpenRouter"s function-calling validator happy without stripping optional arguments that Open WebUI tools rely on.
+This is the simplest production mode:
 
----
+- Requests are executed per-process with bounded admission control and semaphores.
+- Persistence (if enabled) writes directly to the database.
+- Redis features are not used.
 
-## 5. Streaming Pipeline
+### Multi-worker (Redis-enabled candidate)
 
-- SSE producer pumps raw chunks into a bounded queue; multiple worker tasks parse them and enforce in-order delivery via sequence IDs.
-- Text deltas are forwarded immediately; event volume now matches whatever cadence the upstream model produces.
-- A surrogate-pair normalizer ensures UTF-16 pairs aren"t split across updates, preventing Unicode corruption during streaming.
-- Citation annotations are now surfaced via dedicated `_emit_citation` events instead of mutating the streaming text with ad-hoc `[n]` markers, which keeps downstream renderers (including Open WebUI) in sync and avoids race conditions when the output buffer retransmits.
+The pipe only uses Redis when the runtime environment indicates a multi-worker Open WebUI deployment and Redis prerequisites are met:
 
----
+- `UVICORN_WORKERS > 1`
+- `REDIS_URL` is set
+- `WEBSOCKET_MANAGER=redis` and `WEBSOCKET_REDIS_URL` are set
+- `ENABLE_REDIS_CACHE=true`
+- Redis client dependency is available at runtime
 
-## 6. Outstanding Items / Watchlist
+If any prerequisite is missing, the pipe logs warnings and runs without Redis.
 
-| Area | Status | Notes |
-| --- | --- | --- |
-| Tests for streaming download path | [check] | `tests/test_multimodal_inputs.py` now mocks `httpx.AsyncClient.stream` (plus SSRF guards) to exercise `_download_remote_url` in chunked mode. |
-| Integration tests for Redis requeue | Missing | Requeue logic recently added; consider adding a fake Redis or contract test. |
-| Documentation | [check] | `VALVES_REFERENCE.md`, `MULTIMODAL_IMPLEMENTATION.md`, and this audit now describe current behaviour. |
+Related docs: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md).
 
 ---
 
-## 7. Startup & Catalog Resilience
+## 4. Security posture
 
-- `_maybe_start_startup_checks()` performs an asynchronous warmup: it waits for an API key, pings OpenRouter with retries (`_ping_openrouter`), and caches the model catalog up front so the first user request doesn"t pay the entire cold-start penalty. Failures set `_warmup_failed`, which short-circuits future requests with a clear status message until the operator fixes the configuration.
-- `OpenRouterModelRegistry.ensure_loaded()` guards every request; it pulls `/models`, caches it for `MODEL_CATALOG_REFRESH_SECONDS`, and tolerates transient failures by serving stale data. Consecutive errors trigger exponential backoff (`_record_refresh_failure`) so we don"t hammer the API when upstream is down.
-- Model selectors sanitise IDs, strip pipe prefixes, and respect OpenRouter capability metadata so features (reasoning, tool support, vision attachments, tool calling, etc.) are keyed off actual provider declarations rather than user input. The new capability plumbing also exposes helper predicates (`ModelFamily.supports`) that the multimodal pipeline now uses when deciding whether to forward images.
-- **Task payloads bypass model allowlists.** Requests tagged with `__task__` (e.g., title/tag generators) no longer fail when `MODEL_ID` is a narrow allowlist. If the requested model isn’t on the tenant-visible list we log `Bypassing model whitelist for task request...` and continue, ensuring background OWUI tasks remain healthy without exposing those models to end users.
-- **Minimal reasoning disables auto web-search.** The pipe now inspects the effective `reasoning.effort` before appending OpenRouter’s `web` plugin. When the effort resolves to `minimal`, the plugin is skipped to avoid provider 400s (`The following tools cannot be used with reasoning.effort 'minimal': web_search`). Operators should bump the effort to `low`+ or disable `ENABLE_WEB_SEARCH_TOOL` if they truly need tool-less minimal runs.
-- **Task effort valve + OWUI-controlled streaming.** The new `TASK_MODEL_REASONING_EFFORT` valve dictates how much reasoning Open WebUI background tasks request *when they target this pipe’s models*. We no longer override the `stream` flag; Open WebUI keeps full control while the pipe still enforces the “skip web plugin when effort = minimal” rule. Administrators can therefore choose between fast lightweight summaries and slower, richer analysis without touching user-facing models. The default `low` setting provides a small reasoning budget out of the box; drop to `minimal` for the absolute fastest housekeeping or raise the valve for deeper batch tasks.
+### 4.1 Secrets and key material
+
+| Secret | Purpose | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` (or valve `API_KEY`) | Provider authentication | Required for provider requests and catalog refresh. |
+| `WEBUI_SECRET_KEY` | Protects encrypted valve values (`EncryptedStr`) | Recommended in production if storing secrets in valves. |
+| `ARTIFACT_ENCRYPTION_KEY` | Enables artifact encryption at rest (when set) | Changing this changes the artifact table namespace (hash-suffixed table name). |
+| `SESSION_LOG_ZIP_PASSWORD` | Encrypts session log zip archives (when enabled) | Required to write session log archives; treat as a high-value secret. |
+
+Operational notes (code-aligned):
+
+- `WEBUI_SECRET_KEY` protects *stored secret valve values* (encryption/decryption via `EncryptedStr`).
+- If `WEBUI_SECRET_KEY` is missing/mismatched relative to how values were stored, those encrypted values may not decrypt to the intended plaintext at runtime, causing authentication failures or unexpected table namespaces/passwords.
+
+Related docs: [Security & Encryption](security_and_encryption.md).
+
+### 4.2 Remote downloads and SSRF
+
+Remote downloads are security-sensitive. The pipe’s download subsystem:
+
+- permits `http://` and `https://` URLs (it is not HTTPS-only),
+- supports SSRF protection via `ENABLE_SSRF_PROTECTION` (default `True`),
+- enforces size limits and retry/time budgets for downloads.
+
+Operator guidance:
+
+- Keep SSRF protection enabled.
+- Enforce egress restrictions in your network (proxy allowlists, firewall rules).
+- If you require HTTPS-only remote retrieval, enforce it via egress policy (do not rely on the pipe alone).
+
+Related docs: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md), [Security & Encryption](security_and_encryption.md).
+
+### 4.3 Identifiers and privacy
+
+The pipe can emit Open WebUI identifiers to OpenRouter using valve-gated controls:
+
+- top-level `user` and `session_id`
+- `metadata.user_id/session_id/chat_id/message_id`
+
+Operator guidance:
+
+- Treat these as pseudonymous identifiers (they can be used to correlate activity).
+- Enable only what you need for operations/abuse attribution.
+
+Related docs: [Request identifiers and abuse attribution](request_identifiers_and_abuse_attribution.md).
 
 ---
 
-## 8. Logging & Observability
+## 5. Persistence and retention posture
 
-- `SessionLogger` attaches contextvars to every log record (session ID, user ID, per-request log level) and streams through an async queue so slow sinks can"t stall request handlers. Each request accumulates a rotating in-memory buffer (2k entries) that can be cited back to the user when errors occur (`show_error_log_citation=True` in `_emit_error`).
-- `LOG_LEVEL` valves can be overridden globally or per user, making it straightforward to capture DEBUG logs for a single tenant without flooding production logs.
-- Status updates (`_emit_status`, `_emit_notification`, `_emit_completion`) ensure UI feedback is continuous: long tool runs and reasoning phases emit progress, and final status strings summarize elapsed time, cost, token usage, and tokens/sec when available.
+### 5.1 Artifact persistence and encryption
+
+The pipe can persist response artifacts (reasoning and tool outputs) to a per-pipe SQL table.
+
+Key properties (code-aligned):
+
+- The table name includes a sanitized pipe id fragment and a short hash of `(ARTIFACT_ENCRYPTION_KEY + pipe_identifier)`.
+- Artifact encryption is enabled when `ARTIFACT_ENCRYPTION_KEY` is set; `ENCRYPT_ALL` controls whether all artifacts or reasoning-only artifacts are encrypted.
+- Optional LZ4 compression is applied before encryption when enabled and beneficial.
+
+Related docs: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md), [History Reconstruction & Context Replay](history_reconstruction_and_context.md).
+
+### 5.2 Cleanup
+
+The pipe includes:
+
+- a periodic artifact cleanup worker (time-based retention via `ARTIFACT_CLEANUP_DAYS` and interval via `ARTIFACT_CLEANUP_INTERVAL_HOURS`, with jitter),
+- replay pruning rules (for example, tool output retention window in turns).
+
+Operator guidance:
+
+- Set retention windows deliberately (especially in multi-tenant deployments).
+- Validate that your database backups and access controls match your retention and privacy posture.
 
 ---
 
-## 9. Failure Surfacing & UX Backpressure
+## 6. Concurrency and resilience posture
 
-- Multiple breakers exist: user-level (`_breaker_allows`), tool-type (`_tool_type_allows`), and DB-level (`_db_breaker_allows`). When they trip, the pipe emits status messages ("Skipping ... due to repeated failures", "DB ops skipped due to repeated errors") so operators and users know why a request degraded.
-- Breakers are self-healing: each one tracks failures using the valve-defined window (`BREAKER_WINDOW_SECONDS`) and threshold (`BREAKER_MAX_FAILURES`, defaults 60s/5). Successful operations or the passage of time drains the deque, which automatically re-enables the affected path without operator intervention.
-- Request admission control is explicit: `_QUEUE_MAXSIZE` is capped at 500, and a global semaphore enforces `MAX_CONCURRENT_REQUESTS`. If the queue fills the user receives a prompt 503 with a visible status rather than a timeout.
-- Streaming SSE worker pool reorders events by sequence and batches text updates, but still guarantees delivery of reasoning deltas, citations, and final usage stats--even when the downstream client disconnects mid-stream we still flush pending artifacts (`_flush_pending`) before tearing down the job.
+### 6.1 Request admission controls
 
-## 10. Testing Notes
+The pipe uses:
 
-- The pytest plugin `open_webui_openrouter_pipe.pytest_bootstrap` lives at the repo root, so developers must set `PYTHONPATH=.` (or install the repo with `pip install -e .`) before running `pytest`. Without that, Python cannot import the plugin and collection fails with `ModuleNotFoundError: open_webui_openrouter_pipe`.
-- `tests/conftest.py` provides lightweight stubs for Open WebUI, FastAPI, SQLAlchemy, pydantic-core, and tenacity. No external services are required; just activate the `.venv` (Python 3.12) and run the suite.
+- a bounded request queue (`_QUEUE_MAXSIZE = 500`), and
+- a per-process concurrency semaphore controlled by `MAX_CONCURRENT_REQUESTS` (default `200`).
+
+Notes:
+
+- Increasing limits can take effect at runtime; decreasing some global limits may require a restart to fully take effect (the pipe logs when a restart is required).
+
+Related docs: [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
+
+### 6.2 Tool execution controls
+
+Tools are executed between Responses calls (after a run completes and `function_call` items are returned):
+
+- per-request tool queue is bounded (maxsize `50`),
+- per-request concurrency is limited by `MAX_PARALLEL_TOOLS_PER_REQUEST` (default `5`),
+- global tool concurrency is limited by `MAX_PARALLEL_TOOLS_GLOBAL` (default `200`),
+- per-call timeout by `TOOL_TIMEOUT_SECONDS`, batch timeout by `TOOL_BATCH_TIMEOUT_SECONDS`, optional idle timeout by `TOOL_IDLE_TIMEOUT_SECONDS`,
+- limited retries for tool calls are applied.
+
+Related docs: [Tools, plugins, and integrations](tooling_and_integrations.md).
+
+### 6.3 Breakers and degradation
+
+The pipe maintains breaker windows for repeated failures:
+
+- per-user request breaker (temporary rejection with a user-facing message),
+- per-user/per-tool-type breaker (skips tools after repeated failures),
+- per-user DB breaker (temporarily suppresses persistence work after repeated DB failures).
+
+Operator guidance:
+
+- Treat breaker trips as a symptom to investigate, not as a “normal steady state”.
+- Ensure your error templates and logs make it easy for users/operators to understand degraded behavior.
+
+Related docs: [Error Handling & User Experience](error_handling_and_user_experience.md), [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
 
 ---
 
-**Conclusion:** With size limits, SSRF defenses, encryption, and the reworked Redis durability, the manifold meets the production requirements outlined above. Remaining gaps are in automated coverage rather than runtime safeguards. Add the noted tests when bandwidth allows, but the operational story is now consistent and documented.
+## 7. Streaming posture
+
+Provider streaming uses an SSE ingestion pipeline with worker fan-out and ordered emission to Open WebUI. Queue sizing valves exist for streaming chunks and parsed events.
+
+Operator guidance:
+
+- Default streaming queue sizes are unbounded; bounding them too aggressively can cause stalls under tool-heavy load.
+- If you change streaming queue valves, test under realistic concurrency before rollout.
+
+Related docs: [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md).
+
+---
+
+## 8. Telemetry posture (optional)
+
+Optional operator-visible and downstream telemetry includes:
+
+- user-visible final usage banners (valve-gated),
+- optional Redis export of cost snapshots (valve-gated; see `COSTS_REDIS_DUMP`),
+- request identifier emission for attribution (valve-gated; see identifier valves).
+
+Related docs: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md), [Request identifiers and abuse attribution](request_identifiers_and_abuse_attribution.md).
+
+---
+
+## 9. Session logs (optional incident response feature)
+
+When enabled (`SESSION_LOG_STORE_ENABLED=true`) and configured (zip password set and `pyzipper` available), the pipe can write encrypted per-request log archives to disk via a bounded writer queue.
+
+Operator guidance:
+
+- Treat session log archives as sensitive; restrict filesystem access and define retention policies.
+- Verify that zip passwords are managed and rotated intentionally.
+
+Related docs: [Encrypted session log storage (optional)](session_log_storage.md).
+
+---
+
+## 10. Pre-deploy checklist (unified)
+
+Minimum functional:
+
+- Open WebUI meets `required_open_webui_version` (0.6.28+).
+- `OPENROUTER_API_KEY` (or valve `API_KEY`) is configured.
+- `BASE_URL` is correct for your environment (direct OpenRouter or gateway/proxy).
+
+Recommended security:
+
+- `WEBUI_SECRET_KEY` is configured (so secret valves can be stored encrypted and decrypted reliably).
+- SSRF protection is enabled and network egress policy is in place.
+- Persistence posture is decided (encryption key set or intentionally left empty; retention windows set).
+
+Multi-worker readiness (only if applicable):
+
+- Redis prerequisites are met and validated if you expect Redis caching/write-behind to activate.
+
+---
+
+## 11. Post-deploy validation (unified)
+
+Run a minimal validation in a staging environment:
+
+1. **Catalog load**: models appear in Open WebUI; if not, validate connectivity/credentials and check backend logs for catalog refresh errors.
+2. **Basic chat**: normal completion succeeds with streaming.
+3. **Tool call**: enable a simple tool and confirm `function_call` → tool execution → continued completion works.
+4. **Multimodal**: upload an image/file and confirm it is accepted and forwarded on a capable model.
+5. **Persistence/replay** (if enabled): two-turn flow verifies that prior artifacts can be replayed.
+6. **Error templates**: simulate invalid API key / rate limit / provider error and confirm the UI renders actionable templates.
+7. **Session logs** (if enabled): confirm encrypted zip archives are written only for requests that have all required IDs and a configured password.
+
+Related docs: [Testing, bootstrap, and operational playbook](testing_bootstrap_and_operations.md).
+
+---
+
+## 12. Compliance guidance (non-guarantee)
+
+This project can help implement technical controls (encryption, retention, logging, SSRF mitigation), but it does not guarantee GDPR/HIPAA/SOC2/PCI compliance by itself. Compliance is an end-to-end system property (data flows, access control, retention, incident response, audit readiness) and must be assessed in your environment.

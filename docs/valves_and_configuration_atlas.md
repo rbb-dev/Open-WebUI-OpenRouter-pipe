@@ -1,175 +1,199 @@
-# valves & configuration atlas
+# Valves & Configuration Atlas
 
-**file:** `docs/valves_and_configuration_atlas.md`
-**related source:** `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py:2421-2870` (Valve definitions) plus accompanying docs referenced below.
+This document is the authoritative reference for the pipe’s configuration surface: **Open WebUI valves**.
 
-Valves are the sole configuration surface for the OpenRouter Responses pipe. This reference mirrors the order of `Pipe.Valves` and `Pipe.UserValves`, groups related toggles, and explains how each value is used at runtime. Defaults reflect the current code; update this file whenever you add or change a valve.
+Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.12`) and are intended to match current runtime behavior.
 
-> **Quick Navigation**: [📑 Index](documentation_index.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
-
----
-
-## 1. system valves (`Pipe.Valves`)
-
-### 1.1 connection & authentication
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `BASE_URL` | env `OPENROUTER_API_BASE_URL` or `https://openrouter.ai/api/v1` | n/a | Target endpoint for every OpenRouter call. Override when routing through a proxy/gateway. |
-| `API_KEY` | env `OPENROUTER_API_KEY` | n/a | Stored as `EncryptedStr`. Required for catalog fetches and responses. Leave blank for catalog-only mode. |
-| `HTTP_CONNECT_TIMEOUT_SECONDS` | 10 | 1--∞ | TCP/TLS connect timeout for `httpx`. Increase on high-latency networks. |
-| `HTTP_TOTAL_TIMEOUT_SECONDS` | `None` | ≥1 or null | Caps the entire request (including streaming). Keep `None` for long outputs. |
-| `HTTP_SOCK_READ_SECONDS` | 300 | ≥1 | Idle read timeout when `HTTP_TOTAL_TIMEOUT_SECONDS` is unset. Prevents hung streams. |
-
-### 1.2 remote intake & payload guards
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `REMOTE_DOWNLOAD_MAX_RETRIES` | 3 | 0--10 | Retries for `_download_remote_url`. Set 0 to disable. |
-| `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | 5 | 1--60 | Starting backoff delay (doubling each attempt). |
-| `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | 45 | 5--300 | Hard ceiling on time spent retrying a download. |
-| `REMOTE_FILE_MAX_SIZE_MB` | 50 | 1--500 | Applies to remote downloads + inline image/file payloads. Auto-clamped to Open WebUI"s `FILE_MAX_SIZE` when defined. |
-| `SAVE_REMOTE_FILE_URLS` | False | bool | Download + re-host `file_url` links. Leave false unless you trust upstream hosts. |
-| `SAVE_FILE_DATA_CONTENT` | True | bool | Forces `file_data` blobs into storage so transcripts stay lean. |
-| `BASE64_MAX_SIZE_MB` | 50 | 1--500 | Validates base64 data before decoding. |
-| `IMAGE_UPLOAD_CHUNK_BYTES` | 1 MB | 64 KB--8 MB | Max buffer when converting `/api/v1/files/...` images into `data:` URLs. |
-| `VIDEO_MAX_SIZE_MB` | 100 | 1--1000 | Guardrail for video data URLs. |
-| `FALLBACK_STORAGE_EMAIL` | `openrouter-pipe@system.local` | n/a | Owner of uploads when no chat user exists. |
-| `FALLBACK_STORAGE_NAME` | `OpenRouter Pipe Storage` | n/a | Display name for the fallback account. |
-| `FALLBACK_STORAGE_ROLE` | `pending` | n/a | Role assigned to the fallback account. Warns if set to a privileged value. |
-| `ENABLE_SSRF_PROTECTION` | True | bool | Blocks downloads to private/link-local ranges. Disable only when intentionally fetching internal hosts. |
-
-### 1.3 model catalog & reasoning knobs
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `MODEL_ID` | `auto` | CSV | Restrict exposed models. `auto` imports the entire catalog. **Task payloads (`__task__`) bypass this allowlist** so Open WebUI housekeeping (titles, tags, etc.) keeps working even when end-user models are locked down. Interactive chats and API calls still enforce the list. |
-| `MODEL_CATALOG_REFRESH_SECONDS` | 3600 | ≥60 | Cache TTL for the catalog. |
-| `ENABLE_REASONING` | True | bool | Requests reasoning traces whenever supported. |
-| `THINKING_OUTPUT_MODE` | `open_webui` | open_webui/status/both | Controls where live reasoning deltas are surfaced: Open WebUI’s collapsible reasoning box, status messages, or both. Note: the pipe’s initial “Thinking…”/“Building a plan…” placeholders always emit as status updates regardless of this valve. |
-| `REASONING_EFFORT` | `medium` | none/minimal/low/medium/high/xhigh | Default `reasoning.effort`. The pipe now sends the unified `reasoning` payload to OpenRouter and only falls back to the legacy `include_reasoning` flag when a model lacks native support. If a provider rejects the chosen effort, we automatically retry with the closest supported value before disabling reasoning. |
-| `GEMINI_THINKING_LEVEL` | `auto` | auto/low/high | Applies only to Gemini 3.x models. `auto` maps reasoning `minimal/low` → LOW and the rest → HIGH. Override to force a specific level or set `REASONING_EFFORT=none` if you want to skip Gemini thinking entirely. |
-| `GEMINI_THINKING_BUDGET` | `1024` | 0–65536 | Base thinking budget for Gemini 2.5 models. The pipe scales this value based on `REASONING_EFFORT` (¼× for minimal, ½× for low, 2× for high, 4× for xhigh). Set to `0` to disable thinking even when reasoning is requested. |
-| `TASK_MODEL_REASONING_EFFORT` | `low` | none/minimal/low/medium/high/xhigh | Effort applied when Open WebUI schedules background tasks (titles, tags, etc.) against this pipe. `low` balances speed and quality; `minimal` (or `none`) keeps chores fastest and skips auto web-search, while medium/high/xhigh progressively spend more tokens. The same retry/downgrade logic as chats applies when providers expose limited effort options. |
-| `REASONING_SUMMARY_MODE` | `auto` | auto/concise/detailed/disabled | Governs reasoning summary verbosity. |
-| `AUTO_CONTEXT_TRIMMING` | True | bool | When enabled, automatically attaches OpenRouter’s `middle-out` transform so long prompts degrade gracefully instead of hard-failing with 400-over-limit errors. Disable only if you manage `transforms` manually per request. |
-| `PERSIST_REASONING_TOKENS` | `next_reply` | disabled/next_reply/conversation | Retention horizon; see `docs/history_reconstruction_and_context.md`. |
-| `MAX_INPUT_IMAGES_PER_REQUEST` | 5 | 1--20 | Cap on `input_image` blocks. |
-| `IMAGE_INPUT_SELECTION` | `user_then_assistant` | `user_turn_only`/`user_then_assistant` | Selection policy when user omits new images. |
-
-### 1.4 tool execution & artifacts
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `PERSIST_TOOL_RESULTS` | True | bool | Store tool outputs for replay. Disable for ephemeral runs. |
-| `ARTIFACT_ENCRYPTION_KEY` | `""` | string | Enables Fernet encryption. ≥16 chars recommended. |
-| `ENCRYPT_ALL` | False | bool | Encrypt every artifact, not just reasoning. |
-| `ENABLE_LZ4_COMPRESSION` | True | bool | Requires `lz4` package. Compresses large payloads. |
-| `MIN_COMPRESS_BYTES` | 0 | ≥0 | Skip compression for tiny blobs. |
-| `ENABLE_STRICT_TOOL_CALLING` | True | bool | Enforce strict JSON Schema (see `docs/tooling_and_integrations.md`). |
-| `MAX_FUNCTION_CALL_LOOPS` | 10 | ≥1 | Safety valve for multi-step tool loops. |
-| `ENABLE_WEB_SEARCH_TOOL` | True | bool | Auto-attach OpenRouter"s `web` plugin when supported. Requests whose effective `reasoning.effort` resolves to `minimal` skip the plugin entirely (OpenRouter rejects `web_search` when effort is `minimal`), so raise the effort or disable this valve if you need tool-free runs. |
-| `WEB_SEARCH_MAX_RESULTS` | 3 | 1--10 or null | Overrides the plugin"s `max_results`. |
-| `REMOTE_MCP_SERVERS_JSON` | None | JSON | See `docs/tooling_and_integrations.md` for schema. |
-
-### 1.5 logging, streaming, concurrency
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `LOG_LEVEL` | env `GLOBAL_LOG_LEVEL` or `INFO` | enum | Pipe-wide log threshold. |
-| `SESSION_LOG_MAX_LINES` | 20000 | ≥100 | In-memory SessionLogger buffer cap per request (older lines drop). Used for debug/error citations and optional on-disk session log archives. |
-| `MAX_CONCURRENT_REQUESTS` | 200 | 1--2000 | Size of the global request semaphore. |
-| `SSE_WORKERS_PER_REQUEST` | 4 | 1--8 | SSE parser tasks per request. |
-| `STREAMING_CHUNK_QUEUE_MAXSIZE` | 0 | ≥0 | Raw SSE chunk buffer. 0=unbounded (deadlock-proof, recommended); small bounded (&lt;500) risks hangs on tool-heavy loads or slow DB/emit (drain block → event full → workers block → chunk full → producer halt). |
-| `STREAMING_EVENT_QUEUE_MAXSIZE` | 0 | ≥0 | Parsed SSE event buffer. Same deadlock risks as chunk queue; primary bottleneck. |
-| `STREAMING_EVENT_QUEUE_WARN_SIZE` | 1000 | ≥100 | Logs warning when event_queue.qsize() ≥ this (unbounded monitoring; ≥100 avoids spam on sustained load). Tune higher for noisy environments. |
-| `MAX_PARALLEL_TOOLS_GLOBAL` | 200 | 1--2000 | Global tool semaphore. |
-| `MAX_PARALLEL_TOOLS_PER_REQUEST` | 5 | 1--50 | Per-request worker cap. |
-| `TOOL_BATCH_CAP` | 4 | 1--32 | Max compatible tool calls per batch. |
-| `TOOL_OUTPUT_RETENTION_TURNS` | 10 | ≥0 | See `docs/history_reconstruction_and_context.md`. |
-| `TOOL_TIMEOUT_SECONDS` | 60 | 1--600 | Per-tool timeout. |
-| `TOOL_BATCH_TIMEOUT_SECONDS` | 120 | ≥1 | Timeout for an entire batch. |
-| `TOOL_IDLE_TIMEOUT_SECONDS` | None | ≥1 or null | Cancels idle tool queues if set. |
-| `BREAKER_MAX_FAILURES` | 5 | 1--50 | Failures allowed inside the breaker window before requests/tools/DB work are skipped. Applies to user, tool, and DB breakers. |
-| `BREAKER_WINDOW_SECONDS` | 60 | 5--900 | Sliding window length used when counting breaker failures. Increase for slow tools, shrink for fast failovers. |
-| `BREAKER_HISTORY_SIZE` | 5 | 1--200 | Max failures remembered per breaker deque. Set ≥ `BREAKER_MAX_FAILURES` for predictable behavior. |
-
-### 1.6 redis, persistence, maintenance
-
-| Valve | Default | Range | Notes |
-| --- | --- | --- | --- |
-| `ENABLE_REDIS_CACHE` | True | bool | Activates Redis write-behind when the environment supports it. |
-| `REDIS_CACHE_TTL_SECONDS` | 600 | 60--3600 | TTL for cached artifacts. |
-| `REDIS_PENDING_WARN_THRESHOLD` | 100 | 1--10000 | Log warning when pending queue exceeds this size. |
-| `REDIS_FLUSH_FAILURE_LIMIT` | 5 | 1--50 | Disable Redis after this many consecutive flush failures. |
-| `SESSION_LOG_STORE_ENABLED` | False | bool | When enabled, persists per-request SessionLogger output to encrypted zip files on disk. Persistence is skipped when any required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`). See `docs/session_log_storage.md`. |
-| `SESSION_LOG_DIR` | `session_logs` | string | Base directory for archives; files are stored as `<SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip`. |
-| `SESSION_LOG_ZIP_PASSWORD` | `""` | string | Password used to encrypt archives (pyzipper AES). Use an encrypted value (requires `WEBUI_SECRET_KEY`). |
-| `SESSION_LOG_RETENTION_DAYS` | 90 | ≥1 | Cleanup deletes archives older than this many days. |
-| `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | 3600 | ≥60 | Cleanup cadence when session log storage is enabled. |
-| `SESSION_LOG_ZIP_COMPRESSION` | `lzma` | stored/deflated/bzip2/lzma | Compression algorithm for archives. |
-| `SESSION_LOG_ZIP_COMPRESSLEVEL` | null | 0--9 or null | Compression level for deflated/bzip2; ignored for stored/lzma. |
-| `ARTIFACT_CLEANUP_DAYS` | 90 | 1--365 | Age threshold for DB cleanup job. |
-| `ARTIFACT_CLEANUP_INTERVAL_HOURS` | 1.0 | 0.5--24 | Cleanup cadence. |
-| `DB_BATCH_SIZE` | 10 | 5--20 | Rows per DB transaction when draining Redis. |
-
-### 1.7 reporting & UI tweaks
-
-| Valve | Default | Notes |
-| --- | --- | --- |
-| `USE_MODEL_MAX_OUTPUT_TOKENS` | False | Forwards provider-advertised `max_output_tokens` automatically. |
-| `SHOW_FINAL_USAGE_STATUS` | True | Includes timing/cost/tokens in the final status bubble. |
-| `ENABLE_STATUS_CSS_PATCH` | True | Injects a CSS helper so multi-line statuses render nicely. |
-| `SEND_END_USER_ID` | False | When enabled, sends the OpenRouter `user` field using the OWUI user GUID (`__user__["id"]`). Also adds `metadata.user_id` to the request metadata map. See `docs/request_identifiers_and_abuse_attribution.md`. |
-| `SEND_SESSION_ID` | False | When enabled, sends OpenRouter `session_id` using OWUI `__metadata__["session_id"]` (if present). Also adds `metadata.session_id`. See `docs/request_identifiers_and_abuse_attribution.md`. |
-| `SEND_CHAT_ID` | False | When enabled, adds `metadata.chat_id` using OWUI `__metadata__["chat_id"]`. There is no OpenRouter top-level `chat_id` field. See `docs/request_identifiers_and_abuse_attribution.md`. |
-| `SEND_MESSAGE_ID` | False | When enabled, adds `metadata.message_id` using OWUI `__metadata__["message_id"]`. There is no OpenRouter top-level `message_id` field. See `docs/request_identifiers_and_abuse_attribution.md`. |
-| `OPENROUTER_ERROR_TEMPLATE` | (see source) | Markdown template for OpenRouter 400 responses. Supports all placeholders listed in `docs/openrouter_integrations_and_telemetry.md#template-variables` plus Handlebars-style `{{#if variable}} ... {{/if}}` blocks. Lines drop automatically when a placeholder is empty, so admins can restructure the template without touching Python. |
+> **Quick navigation:** [Docs Home](README.md) · [Security](security_and_encryption.md) · [Multimodal](multimodal_ingestion_pipeline.md) · [Telemetry](openrouter_integrations_and_telemetry.md) · [Errors](error_handling_and_user_experience.md)
 
 ---
 
-## 2. user valves (`Pipe.UserValves`)
+## How valves work
 
-Per-user overrides mirror global valves where it makes sense. The literal string `"inherit"` (any case) means "fall back to system default".
+- **System valves** (`Pipe.Valves`) apply globally to the function (all users).
+- **User valves** (`Pipe.UserValves`) allow per-user overrides for a limited subset of settings.
+- When both are present, the pipe merges user valves into system valves; unset values are ignored.
+  - When user valves are provided as a dict, the literal string `inherit` (case-insensitive) is treated as “unset”.
+  - The pipe does **not** allow per-user overrides of the global `LOG_LEVEL`.
 
-| Valve | Default | Range | Notes |
+**Secret handling**
+- Some valves use `EncryptedStr` to mark secret values (for example API keys and zip passwords). Open WebUI’s handling of encrypted values depends on Open WebUI’s own secret configuration (for example `WEBUI_SECRET_KEY`). Treat `EncryptedStr` as *sensitive* and protect backups accordingly.
+
+---
+
+## System valves (`Pipe.Valves`)
+
+### Connection and authentication
+
+| Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `LOG_LEVEL` | `INHERIT` | enum | Lets a single user opt into DEBUG logging without affecting others. |
-| `SHOW_FINAL_USAGE_STATUS` | True | bool | Per-user toggle for final usage banner. |
-| `ENABLE_REASONING` | True | bool | Disable reasoning for a specific user. |
-| `THINKING_OUTPUT_MODE` | `open_webui` | open_webui/status/both | Same as system valve but scoped to a single user. |
-| `REASONING_EFFORT` | `medium` | enum | Personal preference for reasoning depth. |
-| `REASONING_SUMMARY_MODE` | `auto` | enum | Personal verbosity setting for reasoning summaries. |
-| `PERSIST_REASONING_TOKENS` | `next_reply` | enum | Same semantics as system valve but scoped to the user. |
-| `PERSIST_TOOL_RESULTS` | True | bool | Opt out of tool persistence for a single user. |
+| `BASE_URL` | `str` | `env OPENROUTER_API_BASE_URL, else https://openrouter.ai/api/v1` | OpenRouter API base URL. Override this if you are using a gateway or proxy. |
+| `API_KEY` | `EncryptedStr` | `env OPENROUTER_API_KEY (empty if unset)` | Your OpenRouter API key. Defaults to the `OPENROUTER_API_KEY` environment variable. |
+| `HTTP_CONNECT_TIMEOUT_SECONDS` | `int` | `10` | Seconds to wait for the TCP/TLS connection to OpenRouter before failing. |
+| `HTTP_TOTAL_TIMEOUT_SECONDS` | `Optional[int]` | `null` | Overall HTTP timeout (seconds) for OpenRouter requests. Set to null to disable the total timeout so long-running streaming responses are not interrupted. |
+| `HTTP_SOCK_READ_SECONDS` | `int` | `300` | Idle read timeout (seconds) applied to active streams when `HTTP_TOTAL_TIMEOUT_SECONDS` is disabled. |
+
+### Remote downloads, multimodal intake, and SSRF
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `REMOTE_DOWNLOAD_MAX_RETRIES` | `int` | `3` | Maximum number of retry attempts for downloading remote images and files. Set to 0 to disable retries. |
+| `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `int` | `5` | Initial delay in seconds before the first retry attempt. Subsequent retries use exponential backoff (delay * 2^attempt). |
+| `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `int` | `45` | Maximum total time in seconds to spend on retry attempts. Retries stop if this time limit is exceeded. |
+| `REMOTE_FILE_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for downloading remote files/images. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI’s `FILE_MAX_SIZE` (if set). |
+| `SAVE_REMOTE_FILE_URLS` | `bool` | `True` | When True, remote URLs and data URLs in the `file_url` field are downloaded/parsed and re-hosted in Open WebUI storage. When False, `file_url` values pass through untouched. Recommended in code: disable to avoid unexpected storage growth. |
+| `SAVE_FILE_DATA_CONTENT` | `bool` | `True` | When True, base64 content and URLs in the `file_data` field are parsed/downloaded and re-hosted in Open WebUI storage to prevent chat history bloat. When False, `file_data` values pass through untouched. |
+| `BASE64_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for base64-encoded files/images before decoding. Larger payloads are rejected. |
+| `IMAGE_UPLOAD_CHUNK_BYTES` | `int` | `1048576 (1 MiB)` | Max bytes buffered when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage. |
+| `VIDEO_MAX_SIZE_MB` | `int` | `100` | Maximum size in MB for video files (remote URLs or data URLs). Videos exceeding this limit are rejected. |
+| `FALLBACK_STORAGE_EMAIL` | `str` | `env OPENROUTER_STORAGE_USER_EMAIL, else openrouter-pipe@system.local` | Owner email used when multimodal uploads occur without a chat user (for example, API automations). |
+| `FALLBACK_STORAGE_NAME` | `str` | `env OPENROUTER_STORAGE_USER_NAME, else OpenRouter Pipe Storage` | Display name for the fallback storage owner. |
+| `FALLBACK_STORAGE_ROLE` | `str` | `env OPENROUTER_STORAGE_USER_ROLE, else pending` | Role assigned to the fallback storage account when auto-created. Defaults to a low-privilege role; override only if your deployment needs a dedicated service role. |
+| `ENABLE_SSRF_PROTECTION` | `bool` | `True` | Enable SSRF protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, RFC1918, link-local, etc.). |
+| `MAX_INPUT_IMAGES_PER_REQUEST` | `int` | `5` | Maximum number of image inputs (user attachments plus assistant fallbacks) to include in a single provider request. |
+| `IMAGE_INPUT_SELECTION` | `Literal[\"user_turn_only\", \"user_then_assistant\"]` | `user_then_assistant` | Controls which images are forwarded to the provider. `user_turn_only` restricts inputs to the current user message; `user_then_assistant` falls back to the most recent assistant-generated images when the user did not attach any. |
+
+### Models, catalog refresh, and reasoning
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `MODEL_ID` | `str` | `auto` | Comma-separated OpenRouter model IDs to expose in Open WebUI. `auto` imports every available Responses-capable model. |
+| `MODEL_CATALOG_REFRESH_SECONDS` | `int` | `3600` | How long to cache the OpenRouter model catalog (seconds) before refreshing. |
+| `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
+| `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Controls where in-progress thinking is surfaced while a response is being generated. |
+| `AUTO_CONTEXT_TRIMMING` | `bool` | `True` | Automatically attaches OpenRouter’s `middle-out` transform so long prompts are trimmed from the middle instead of failing with context errors. |
+| `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Default reasoning effort requested from supported models. |
+| `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Controls the reasoning summary emitted by supported models. |
+| `GEMINI_THINKING_LEVEL` | `Literal[\"auto\", \"low\", \"high\"]` | `auto` | Controls `thinking_level` for Gemini 3.x models. `auto` maps minimal/low effort to LOW and everything else to HIGH. |
+| `GEMINI_THINKING_BUDGET` | `int` | `1024` | Base thinking budget (tokens) for Gemini 2.5 models (0 disables thinking). |
+| `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `conversation` | Reasoning retention: `disabled` keeps nothing; `next_reply` keeps thoughts until the following assistant reply finishes; `conversation` keeps them for the full chat history. |
+| `TASK_MODEL_REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `low` | Reasoning effort requested for Open WebUI task payloads (titles/tags/etc.) when they target this pipe’s models. |
+
+### Tool execution and function calling
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_STRICT_TOOL_CALLING` | `bool` | `True` | When True, converts Open WebUI registry tools to strict JSON Schema for more predictable function calling. |
+| `MAX_FUNCTION_CALL_LOOPS` | `int` | `10` | Maximum number of full “model → tools → model” execution cycles allowed per request. |
+| `MAX_PARALLEL_TOOLS_GLOBAL` | `int` | `200` | Maximum number of tool executions allowed concurrently per process. |
+| `MAX_PARALLEL_TOOLS_PER_REQUEST` | `int` | `5` | Maximum number of tool executions allowed concurrently per request. |
+| `BREAKER_MAX_FAILURES` | `int` | `5` | Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. Set higher to reduce trip frequency in noisy environments. |
+| `BREAKER_WINDOW_SECONDS` | `int` | `60` | Sliding window length (seconds) used when counting breaker failures. |
+| `BREAKER_HISTORY_SIZE` | `int` | `5` | Maximum failures remembered per user/tool breaker. Increase when using very high `BREAKER_MAX_FAILURES` so history is not truncated. |
+| `TOOL_BATCH_CAP` | `int` | `4` | Maximum number of tool calls executed in one batch (per loop) when batching is possible. |
+| `TOOL_TIMEOUT_SECONDS` | `int` | `60` | Per-tool timeout (seconds). |
+| `TOOL_BATCH_TIMEOUT_SECONDS` | `int` | `120` | Timeout (seconds) for completing an entire tool batch. |
+| `TOOL_IDLE_TIMEOUT_SECONDS` | `Optional[int]` | `null` | Idle timeout (seconds) for tool execution when no progress is observed. |
+| `PERSIST_TOOL_RESULTS` | `bool` | `True` | Persist tool call results across conversation turns. When disabled, tool results stay ephemeral. |
+| `TOOL_OUTPUT_RETENTION_TURNS` | `int` | `10` | How many turns tool outputs remain replayable/available before being eligible for pruning. |
+
+### Persistence, encryption, and compression
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ARTIFACT_ENCRYPTION_KEY` | `EncryptedStr` | `(empty)` | Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. |
+| `ENCRYPT_ALL` | `bool` | `True` | Encrypt every persisted artifact when `ARTIFACT_ENCRYPTION_KEY` is set. When False, only reasoning tokens are encrypted. |
+| `ENABLE_LZ4_COMPRESSION` | `bool` | `True` | When True (and LZ4 is available), compress large encrypted artifacts to reduce DB read/write overhead. |
+| `MIN_COMPRESS_BYTES` | `int` | `0` | Payloads at or above this size (bytes) are candidates for compression before encryption. `0` always attempts compression. |
+
+### Streaming and concurrency
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `MAX_CONCURRENT_REQUESTS` | `int` | `200` | Maximum number of in-flight OpenRouter requests allowed per process. |
+| `SSE_WORKERS_PER_REQUEST` | `int` | `4` | Number of stream processing workers spawned per request (fan-out for parsing/emitting). |
+| `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
+| `STREAMING_EVENT_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of parsed stream events buffered before applying backpressure. `0` means unbounded. |
+| `STREAMING_EVENT_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for buffered stream events. |
+
+### Redis cache and cost snapshots
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_REDIS_CACHE` | `bool` | `True` | Enable Redis write-behind cache when `REDIS_URL` and multi-worker mode are detected. |
+| `REDIS_CACHE_TTL_SECONDS` | `int` | `600` | TTL (seconds) for cached artifacts/state stored in Redis. |
+| `REDIS_PENDING_WARN_THRESHOLD` | `int` | `100` | Warn when Redis write-behind backlog exceeds this many pending items. |
+| `REDIS_FLUSH_FAILURE_LIMIT` | `int` | `5` | Fail-open threshold: when flush failures reach this count, the pipe degrades and stops attempting flushes until conditions improve. |
+| `COSTS_REDIS_DUMP` | `bool` | `False` | When True, push per-request usage snapshots into Redis for downstream cost analytics. |
+| `COSTS_REDIS_TTL_SECONDS` | `int` | `900` | TTL (seconds) for cost snapshots stored in Redis. |
+
+### Cleanup and database batching
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ARTIFACT_CLEANUP_DAYS` | `int` | `90` | Retention window (days) for persisted artifacts before cleanup. |
+| `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `float` | `1.0` | Cleanup cadence (hours). |
+| `DB_BATCH_SIZE` | `int` | `10` | Rows per DB transaction when draining Redis / batching persistence work. |
+
+### Web search and external integrations
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_WEB_SEARCH_TOOL` | `bool` | `True` | When True, allows use of OpenRouter’s web search tool when supported by the selected model/provider. |
+| `WEB_SEARCH_MAX_RESULTS` | `int` | `3` | Maximum number of results to request from the web search tool. |
+| `REMOTE_MCP_SERVERS_JSON` | `Optional[str]` | `null` | JSON configuration for remote MCP servers (global tool integrations). |
+
+### Reporting, UI behavior, and request identifiers
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `USE_MODEL_MAX_OUTPUT_TOKENS` | `bool` | `False` | When enabled, forwards provider-advertised `max_output_tokens` automatically. |
+| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing/cost/tokens in the final status message. |
+| `ENABLE_STATUS_CSS_PATCH` | `bool` | `True` | Injects a CSS helper so multi-line statuses render cleanly in the Open WebUI UI. |
+| `SEND_END_USER_ID` | `bool` | `False` | When enabled, sends the OpenRouter top-level `user` field using the Open WebUI user ID, and also adds `metadata.user_id`. See [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md). |
+| `SEND_SESSION_ID` | `bool` | `False` | When enabled, sends OpenRouter `session_id` using Open WebUI `__metadata__[\"session_id\"]` (if present) and adds `metadata.session_id`. |
+| `SEND_CHAT_ID` | `bool` | `False` | When enabled, adds `metadata.chat_id` using Open WebUI `__metadata__[\"chat_id\"]`. |
+| `SEND_MESSAGE_ID` | `bool` | `False` | When enabled, adds `metadata.message_id` using Open WebUI `__metadata__[\"message_id\"]`. |
+
+### Session log storage
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `SESSION_LOG_STORE_ENABLED` | `bool` | `False` | When True, persist per-request SessionLogger output to encrypted zip files on disk. Persistence is skipped when required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`). |
+| `SESSION_LOG_DIR` | `str` | `session_logs` | Base directory for encrypted session log archives. |
+| `SESSION_LOG_ZIP_PASSWORD` | `EncryptedStr` | `(empty)` | Password used to encrypt session log zip files (pyzipper AES). |
+| `SESSION_LOG_RETENTION_DAYS` | `int` | `90` | Retention window (days) for stored session log archives. |
+| `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | `int` | `3600` | How often (seconds) to run the session log cleanup loop when storage is enabled. |
+| `SESSION_LOG_ZIP_COMPRESSION` | `Literal[\"stored\", \"deflated\", \"bzip2\", \"lzma\"]` | `lzma` | Zip compression algorithm for session log archives. |
+| `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. |
+| `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger lines retained per request (older lines are dropped). |
+
+### Support contact and error templates
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `SUPPORT_EMAIL` | `str` | `(empty)` | Optional support email address inserted into user-facing error templates. |
+| `SUPPORT_URL` | `str` | `(empty)` | Optional support URL inserted into user-facing error templates. |
+| `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 400 responses. Supports Handlebars-style `{{#if var}}...{{/if}}` blocks. |
+| `AUTHENTICATION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter auth failures. |
+| `INSUFFICIENT_CREDITS_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter “insufficient credits” failures. |
+| `RATE_LIMIT_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rate limits. |
+| `SERVER_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for upstream/provider timeouts. |
+| `NETWORK_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for network timeouts. |
+| `CONNECTION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for connection failures. |
+| `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
+| `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
+
+**Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).
+
+### Logging
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `LOG_LEVEL` | `Literal[\"DEBUG\", \"INFO\", \"WARNING\", \"ERROR\", \"CRITICAL\"]` | `env GLOBAL_LOG_LEVEL, else INFO` | Select logging level. Recommend INFO or WARNING for production; use DEBUG for diagnosis. |
 
 ---
 
-## 3. valve hygiene
+## User valves (`Pipe.UserValves`)
 
-1. **Document every change** -- update this file and `docs/documentation_index.md` when you add or rename a valve. Reviewers block PRs that ship undocumented knobs.
-2. **Validate ranges** -- let Pydantic enforce types and ranges; avoid manual `min/max` clamping elsewhere.
-3. **Secret handling** -- use `EncryptedStr` for anything sensitive. Without `WEBUI_SECRET_KEY`, encrypted valves silently degrade to plaintext; log messages warn operators when that happens.
-4. **Testing** -- extend `tests/test_pipe_guards.py` when you add guards or new interactions (e.g., a valve that toggles Redis behavior).
+User valves provide per-user behavior overrides for a subset of settings.
 
-With this atlas you can tune the manifold confidently, knowing exactly how each knob affects the system.
-
-
----
-
-## Related Topics
-
-**Using Valves in Practice** - See specific feature docs for detailed valve usage:
-- **Multimodal Handling**: [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md) - Image/file handling valves, size limits, SSRF protection
-- **Tool Execution**: [Tooling and Integrations](tooling_and_integrations.md) - Tool execution valves, MCP configuration, function calling limits
-- **Streaming Configuration**: [Streaming Pipeline and Emitters](streaming_pipeline_and_emitters.md) - SSE worker pool valves, buffer sizes, latency tuning
-- **Persistence & Redis**: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) - Redis cache valves, encryption keys, cleanup schedules
-- **Concurrency & Resilience**: [Concurrency Controls and Resilience](concurrency_controls_and_resilience.md) - Admission control, breaker windows, queue limits
-
-**Security & Compliance:**
-- **Security Procedures**: [Security and Encryption](security_and_encryption.md) - Key rotation, SSRF protection, secret management
-- **Production Deployment**: [Production Readiness Report](production_readiness_report.md) - Pre-deployment valve checklist
-
-**Architecture & Development:**
-- **System Overview**: [Developer Guide and Architecture](developer_guide_and_architecture.md) - How valves fit into the overall system
-- **Error Handling**: [Error Handling and User Experience](error_handling_and_user_experience.md) - Error template customization valves
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Display tokens, time, and cost at the end of each reply. |
+| `ENABLE_REASONING` | `bool` | `True` | While the AI works, show its step-by-step reasoning when supported. |
+| `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Choose where to show the model’s thinking while it works. |
+| `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). |
+| `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Choose how detailed the reasoning summary should be. |
+| `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `next_reply` | User-level reasoning retention preference. |
+| `PERSIST_TOOL_RESULTS` | `bool` | `True` | Let the AI reuse outputs from tools later in the conversation. |
