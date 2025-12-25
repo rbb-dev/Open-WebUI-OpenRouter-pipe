@@ -2199,7 +2199,7 @@ def _apply_identifier_valves_to_payload(
 
     metadata_out: dict[str, str] = {}
 
-    if getattr(valves, "SEND_END_USER_ID", False):
+    if valves.SEND_END_USER_ID:
         candidate = (owui_user_id or "").strip()
         if candidate and len(candidate) <= _MAX_OPENROUTER_ID_CHARS:
             payload["user"] = candidate
@@ -2210,7 +2210,7 @@ def _apply_identifier_valves_to_payload(
     else:
         payload.pop("user", None)
 
-    if getattr(valves, "SEND_SESSION_ID", False):
+    if valves.SEND_SESSION_ID:
         session_id = owui_metadata.get("session_id")
         if isinstance(session_id, str):
             candidate = session_id.strip()
@@ -2225,14 +2225,14 @@ def _apply_identifier_valves_to_payload(
     else:
         payload.pop("session_id", None)
 
-    if getattr(valves, "SEND_CHAT_ID", False):
+    if valves.SEND_CHAT_ID:
         chat_id = owui_metadata.get("chat_id")
         if isinstance(chat_id, str):
             candidate = chat_id.strip()
             if candidate:
                 metadata_out["chat_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
 
-    if getattr(valves, "SEND_MESSAGE_ID", False):
+    if valves.SEND_MESSAGE_ID:
         message_id = owui_metadata.get("message_id")
         if isinstance(message_id, str):
             candidate = message_id.strip()
@@ -2615,6 +2615,7 @@ class Pipe:
         SESSION_LOG_MAX_LINES: int = Field(
             default=20000,
             ge=100,
+            le=200000,
             description="Maximum number of in-memory SessionLogger lines retained per request (older lines are dropped).",
         )
         MAX_CONCURRENT_REQUESTS: int = Field(
@@ -3207,7 +3208,7 @@ class Pipe:
                 interval = 3600
                 with contextlib.suppress(Exception):
                     with self._session_log_lock:
-                        interval = max(60, int(self._session_log_cleanup_interval_seconds or 3600))
+                        interval = self._session_log_cleanup_interval_seconds
                 try:
                     time.sleep(interval)
                 except Exception:
@@ -3254,7 +3255,7 @@ class Pipe:
         log_lines: list[str],
     ) -> None:
         """Queue the current request's session logs for encrypted zip persistence."""
-        if not getattr(valves, "SESSION_LOG_STORE_ENABLED", False):
+        if not valves.SESSION_LOG_STORE_ENABLED:
             return
         if not (user_id and session_id and chat_id and message_id):
             return
@@ -3266,14 +3267,14 @@ class Pipe:
                 self._session_log_warning_emitted = True
             return
 
-        base_dir = str(getattr(valves, "SESSION_LOG_DIR", "") or "").strip()
+        base_dir = valves.SESSION_LOG_DIR.strip()
         if not base_dir:
             if not self._session_log_warning_emitted:
                 self.logger.warning("Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.")
                 self._session_log_warning_emitted = True
             return
 
-        decrypted = EncryptedStr.decrypt(getattr(valves, "SESSION_LOG_ZIP_PASSWORD", "") or "")
+        decrypted = EncryptedStr.decrypt(valves.SESSION_LOG_ZIP_PASSWORD)
         password = (decrypted or "").strip()
         if not password:
             if not self._session_log_warning_emitted:
@@ -3281,21 +3282,15 @@ class Pipe:
                 self._session_log_warning_emitted = True
             return
 
-        zip_compression = str(getattr(valves, "SESSION_LOG_ZIP_COMPRESSION", "lzma") or "lzma").strip().lower()
-        zip_compresslevel = getattr(valves, "SESSION_LOG_ZIP_COMPRESSLEVEL", None)
-        if zip_compression not in {"stored", "deflated", "bzip2", "lzma"}:
-            zip_compression = "lzma"
+        zip_compression = valves.SESSION_LOG_ZIP_COMPRESSION
+        zip_compresslevel = valves.SESSION_LOG_ZIP_COMPRESSLEVEL
         if zip_compression in {"stored", "lzma"}:
             zip_compresslevel = None
 
         with contextlib.suppress(Exception):
             with self._session_log_lock:
-                self._session_log_cleanup_interval_seconds = int(
-                    getattr(valves, "SESSION_LOG_CLEANUP_INTERVAL_SECONDS", 3600) or 3600
-                )
-                self._session_log_retention_days = int(
-                    getattr(valves, "SESSION_LOG_RETENTION_DAYS", 90) or 90
-                )
+                self._session_log_cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
+                self._session_log_retention_days = valves.SESSION_LOG_RETENTION_DAYS
                 self._session_log_dirs.add(base_dir)
 
         if self._session_log_queue is None:
@@ -3309,7 +3304,7 @@ class Pipe:
             base_dir=base_dir,
             zip_password=password.encode("utf-8"),
             zip_compression=zip_compression,
-            zip_compresslevel=zip_compresslevel if isinstance(zip_compresslevel, int) else None,
+            zip_compresslevel=zip_compresslevel,
             user_id=user_id,
             session_id=session_id,
             chat_id=chat_id,
@@ -4217,9 +4212,9 @@ class Pipe:
         session_id = job.session_id or None
         request_id = job.request_id or None
         user_id = job.user_id or None
-        log_level = getattr(logging, str(job.valves.LOG_LEVEL).upper(), logging.INFO)
+        log_level = getattr(logging, job.valves.LOG_LEVEL)
         with contextlib.suppress(Exception):
-            SessionLogger.set_max_lines(int(getattr(job.valves, "SESSION_LOG_MAX_LINES", 2000) or 2000))
+            SessionLogger.set_max_lines(job.valves.SESSION_LOG_MAX_LINES)
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
         tokens.append((SessionLogger.request_id, SessionLogger.request_id.set(request_id)))
@@ -4604,10 +4599,10 @@ class Pipe:
         """Delete expired session log archives and prune empty directories."""
         with self._session_log_lock:
             dirs = set(self._session_log_dirs)
-            retention_days = int(self._session_log_retention_days or 90)
+            retention_days = self._session_log_retention_days
         if not dirs:
             return
-        cutoff = time.time() - max(1, retention_days) * 86400
+        cutoff = time.time() - retention_days * 86400
 
         for base_dir in dirs:
             base_dir = (base_dir or "").strip()
@@ -6823,7 +6818,7 @@ class Pipe:
             reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             effort = (reasoning_cfg.get("effort") or "").strip().lower()
             if not effort:
-                effort = (valves.REASONING_EFFORT or "").strip().lower()
+                effort = valves.REASONING_EFFORT
             if effort == "minimal":
                 self.logger.debug(
                     "Skipping web-search plugin because reasoning.effort is set to 'minimal' (model=%s)",
@@ -6945,19 +6940,12 @@ class Pipe:
         supported = ModelFamily.supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
-        summary_mode = (
-            (getattr(valves, "REASONING_SUMMARY_MODE", "auto") or "auto")
-            .strip()
-            .lower()
-        )
-        valid_summary_modes = {"auto", "concise", "detailed"}
+        summary_mode = valves.REASONING_SUMMARY_MODE
         requested_summary: Optional[str] = None
         if summary_mode != "disabled":
-            requested_summary = (
-                summary_mode if summary_mode in valid_summary_modes else "auto"
-            )
+            requested_summary = summary_mode
 
-        target_effort = (getattr(valves, "REASONING_EFFORT", "") or "").strip().lower()
+        target_effort = valves.REASONING_EFFORT
 
         if supports_reasoning:
             cfg: dict[str, Any] = {}
@@ -7022,7 +7010,7 @@ class Pipe:
         include_flag = getattr(responses_body, "include_reasoning", None)
         effort_hint = (reasoning_cfg.get("effort") or "").strip().lower()
         if not effort_hint:
-            effort_hint = (getattr(valves, "REASONING_EFFORT", "") or "").strip().lower()
+            effort_hint = valves.REASONING_EFFORT
 
         enabled = reasoning_cfg.get("enabled", True)
         exclude = reasoning_cfg.get("exclude", False)
@@ -8407,7 +8395,7 @@ class Pipe:
         generated_image_count = 0
         reasoning_status_buffer = ""
         reasoning_status_last_emit: float | None = None
-        thinking_mode = str(getattr(valves, "THINKING_OUTPUT_MODE", "both") or "both").strip().lower()
+        thinking_mode = valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
 
@@ -10215,7 +10203,7 @@ class Pipe:
         reasoning_status_buffer = ""
         reasoning_status_last_emit: float | None = None
 
-        thinking_mode = str(getattr(job.valves, "THINKING_OUTPUT_MODE", "both") or "both").strip().lower()
+        thinking_mode = job.valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
 
         async def _emit(event: dict[str, Any]) -> None:
@@ -10493,8 +10481,8 @@ class Pipe:
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
             "session_id": SessionLogger.session_id.get() or "",
             "user_id": SessionLogger.user_id.get() or "",
-            "support_email": self.valves.SUPPORT_EMAIL or "",
-            "support_url": self.valves.SUPPORT_URL or "",
+            "support_email": self.valves.SUPPORT_EMAIL,
+            "support_url": self.valves.SUPPORT_URL,
         }
         return error_id, context
 
