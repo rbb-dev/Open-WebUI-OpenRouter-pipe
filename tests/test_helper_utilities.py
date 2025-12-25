@@ -112,14 +112,9 @@ def test_strictify_schema_enforces_required_and_nullability():
     assert strict["properties"]["child"]["additionalProperties"] is False
 
 
-def test_build_tools_combines_registry_mcp_and_extras(monkeypatch):
+def test_build_tools_combines_registry_and_extras(monkeypatch):
     responses_body = ResponsesBody(model="demo/tool", input=[])
-    valves = Pipe.Valves(
-        ENABLE_STRICT_TOOL_CALLING=True,
-        REMOTE_MCP_SERVERS_JSON=json.dumps(
-            {"server_label": "deep", "server_url": "https://deep.example.com/mcp"}
-        ),
-    )
+    valves = Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=True)
 
     def fake_supports(cls, feature, _model_id):
         return feature == "function_calling"
@@ -147,8 +142,6 @@ def test_build_tools_combines_registry_mcp_and_extras(monkeypatch):
     assert "alpha" in function_names  # dedup keeps last occurrence
     alpha_tool = next(tool for tool in tools if tool["type"] == "function" and tool["name"] == "alpha")
     assert alpha_tool["parameters"]["properties"] == {}
-    mcp_tools = [tool for tool in tools if tool["type"] == "mcp"]
-    assert mcp_tools and mcp_tools[0]["server_label"] == "deep"
 
 
 def test_normalize_persisted_items_and_classifier():

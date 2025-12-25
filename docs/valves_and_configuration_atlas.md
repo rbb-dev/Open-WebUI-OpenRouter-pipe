@@ -2,7 +2,7 @@
 
 This document is the authoritative reference for the pipe’s configuration surface: **Open WebUI valves**.
 
-Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.12`) and are intended to match current runtime behavior.
+Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.13`) and are intended to match current runtime behavior.
 
 > **Quick navigation:** [Docs Home](README.md) · [Security](security_and_encryption.md) · [Multimodal](multimodal_ingestion_pipeline.md) · [Telemetry](openrouter_integrations_and_telemetry.md) · [Errors](error_handling_and_user_experience.md)
 
@@ -125,13 +125,14 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `float` | `1.0` | Cleanup cadence (hours). |
 | `DB_BATCH_SIZE` | `int` | `10` | Rows per DB transaction when draining Redis / batching persistence work. |
 
-### Web search and external integrations
+### Web search
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `ENABLE_WEB_SEARCH_TOOL` | `bool` | `True` | When True, allows use of OpenRouter’s web search tool when supported by the selected model/provider. |
 | `WEB_SEARCH_MAX_RESULTS` | `int` | `3` | Maximum number of results to request from the web search tool. |
-| `REMOTE_MCP_SERVERS_JSON` | `Optional[str]` | `null` | JSON configuration for remote MCP servers (global tool integrations). |
+
+**Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 
 ### Reporting, UI behavior, and request identifiers
 

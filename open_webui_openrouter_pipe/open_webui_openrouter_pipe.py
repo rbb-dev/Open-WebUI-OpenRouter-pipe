@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.12
+version: 1.0.13
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -20,8 +20,9 @@ license: MIT
 - Secure artifact persistence: User-key encryption, LZ4 compression for large payloads, ULID markers for context replay.
 - Tool execution: Per-request FIFO queues, parallel workers with semaphores/timeouts, per-user/type breakers, batching non-dependent calls.
 - Streams SSE with producer-multi-consumer workers, configurable delta batching/zero-copy, inline citations, and usage metrics.
-- Strictifies tool schemas (Open WebUI/MCP/plugins) for predictable function calling; deduplicates definitions.
-- Auto-enables web search plugin if model-supported; configurable MCP servers for global tools.
+- Strictifies tool schemas (Open WebUI registry + Direct Tool Servers) for predictable function calling; deduplicates definitions.
+- Auto-enables web search plugin if model-supported.
+- Supports Open WebUI Direct Tool Servers (client-side OpenAPI tool servers executed via Socket.IO).
 - Exposes valves for concurrency limits, logging levels, Redis/cache settings, tool timeouts, cleanup intervals, and more.
 - OWUI-compatible: Uses internal sync DB, honors pipe IDs for tables, scales to multi-worker via Redis without assumptions.
 """
@@ -70,7 +71,6 @@ _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
         "web_search_call",
         "file_search_call",
         "local_shell_call",
-        "mcp_call",
     }
 )
 
@@ -864,14 +864,6 @@ class ToolDefinition(TypedDict):
     """Represents a tool definition for OpenAI/OpenRouter."""
     type: Literal["function"]
     function: FunctionSchema
-
-
-class MCPServerConfig(TypedDict):
-    """Represents an MCP server configuration."""
-    server_label: str
-    server_url: str
-    require_approval: NotRequired[Literal["never", "always", "auto"]]
-    allowed_tools: NotRequired[list[str]]
 
 
 class UsageStats(TypedDict, total=False):
@@ -2018,67 +2010,6 @@ class ResponsesBody(BaseModel):
                 return {"type": "function", "name": name.strip()}
         return None
 
-    # -----------------------------------------------------------------------
-    # Helper: turn the JSON string into valid MCP tool dicts
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _build_mcp_tools(mcp_json: str) -> list[dict]:
-        """
-        Parse ``REMOTE_MCP_SERVERS_JSON`` and return a list of ready-to-use
-        tool objects (``{\"type\":\"mcp\", …}``).  Silently drops invalid items.
-        """
-        if not mcp_json or not mcp_json.strip():
-            return []
-        if len(mcp_json) > 1_000_000:
-            LOGGER.warning("REMOTE_MCP_SERVERS_JSON ignored: payload exceeds 1MB.")
-            return []
-
-        try:
-            data = json.loads(mcp_json)
-        except json.JSONDecodeError as exc:  # malformed JSON
-            LOGGER.warning("REMOTE_MCP_SERVERS_JSON could not be parsed (invalid JSON): %s", exc)
-            return []
-        except (TypeError, ValueError) as exc:  # wrong type or other parsing error
-            LOGGER.warning("REMOTE_MCP_SERVERS_JSON parsing failed: %s", exc)
-            return []
-
-        # Accept a single object or a list
-        items = data if isinstance(data, list) else [data]
-
-        valid_tools: list[dict] = []
-        for idx, obj in enumerate(items, start=1):
-            if not isinstance(obj, dict):
-                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: not an object.", idx)
-                continue
-
-            # Minimum viable keys
-            label = obj.get("server_label")
-            url   = obj.get("server_url")
-            if not (label and url):
-                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: 'server_label' and 'server_url' are required.", idx)
-                continue
-
-            parsed_url = urlparse(url)
-            scheme = (parsed_url.scheme or "").lower()
-            if scheme not in {"http", "https", "ws", "wss"} or not parsed_url.netloc:
-                LOGGER.warning("REMOTE_MCP_SERVERS_JSON item %d ignored: unsupported server_url '%s'. Only http(s) or ws(s) URLs with a host are allowed.", idx, url)
-                continue
-
-            # Whitelist only official MCP keys so users can copy-paste API examples
-            allowed = {
-                "server_label",
-                "server_url",
-                "require_approval",
-                "allowed_tools",
-                "headers",
-            }
-            tool = {"type": "mcp"}
-            tool.update({k: v for k, v in obj.items() if k in allowed})
-
-            valid_tools.append(tool)
-
-        return valid_tools
-    
     @classmethod
     async def from_completions(
         cls,
@@ -2696,20 +2627,6 @@ class Pipe:
             ge=1,
             le=10,
             description="Number of web results to request when the web-search plugin is enabled (1-10). Set to null to use the provider default.",
-        )
-
-        # Integrations
-        REMOTE_MCP_SERVERS_JSON: Optional[str] = Field(
-            default=None,
-            description=(
-                "[EXPERIMENTAL] A JSON-encoded list (or single JSON object) defining one or more "
-                "remote MCP servers to be automatically attached to each request. This can be useful "
-                "for globally enabling tools across all chats.\n\n"
-                "Note: The Responses API currently caches MCP server definitions at the start of each chat. "
-                "This means the first message in a new thread may be slower. A more efficient implementation is planned."
-                "Each item must follow the MCP tool schema supported by the OpenAI Responses API, for example:\n"
-                '[{"server_label":"deepwiki","server_url":"https://mcp.deepwiki.com/mcp","require_approval":"never","allowed_tools": ["ask_question"]}]'
-            ),
         )
 
         # Logging
@@ -6587,6 +6504,156 @@ class Pipe:
         return result
 
 
+    def _build_direct_tool_server_registry(
+        self,
+        __metadata__: dict[str, Any],
+        *,
+        valves: "Pipe.Valves",
+        event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+        event_emitter: EventEmitter | None,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """Return OWUI-style "direct tool server" entries (callables + tool specs).
+
+        Open WebUI direct tool servers are executed client-side via Socket.IO.
+        The model-visible tool names are plain OpenAPI ``operationId`` values
+        (no namespacing). Collisions overwrite ("last wins"), matching OWUI.
+        """
+
+        direct_registry: dict[str, dict[str, Any]] = {}
+        direct_tool_specs: list[dict[str, Any]] = []
+
+        try:
+            if not isinstance(__metadata__, dict):
+                return {}, []
+            tool_servers = __metadata__.get("tool_servers")
+            if not isinstance(tool_servers, list) or not tool_servers:
+                return {}, []
+            if event_call is None:
+                # No Socket.IO bridge means direct tools cannot run; don't advertise them.
+                return {}, []
+
+            for server in tool_servers:
+                try:
+                    if not isinstance(server, dict):
+                        continue
+                    specs = server.get("specs")
+                    if not isinstance(specs, list) or not specs:
+                        # Best-effort fallback: derive specs from raw OpenAPI if present.
+                        openapi = server.get("openapi")
+                        if isinstance(openapi, dict):
+                            try:
+                                from open_webui.utils.tools import convert_openapi_to_tool_payload  # type: ignore
+                            except Exception:
+                                convert_openapi_to_tool_payload = None  # type: ignore[assignment]
+                            if callable(convert_openapi_to_tool_payload):
+                                try:
+                                    specs = convert_openapi_to_tool_payload(openapi)  # type: ignore[misc]
+                                except Exception:
+                                    specs = []
+                    if not isinstance(specs, list) or not specs:
+                        continue
+
+                    server_payload = dict(server)
+                    with contextlib.suppress(Exception):
+                        server_payload.pop("specs", None)
+
+                    for spec in specs:
+                        try:
+                            if not isinstance(spec, dict):
+                                continue
+                            raw_name = spec.get("name")
+                            name = raw_name.strip() if isinstance(raw_name, str) else ""
+                            if not name:
+                                continue
+
+                            allowed_params: set[str] = set()
+                            try:
+                                parameters = spec.get("parameters")
+                                if isinstance(parameters, dict):
+                                    props = parameters.get("properties")
+                                    if isinstance(props, dict):
+                                        allowed_params = {k for k in props.keys() if isinstance(k, str)}
+                            except Exception:
+                                allowed_params = set()
+
+                            spec_payload = dict(spec)
+                            spec_payload["name"] = name
+
+                            async def _direct_tool_callable(  # noqa: ANN001 - tool kwargs are dynamic
+                                _allowed_params: set[str] = allowed_params,
+                                _tool_name: str = name,
+                                _server_payload: dict[str, Any] = server_payload,
+                                _metadata: dict[str, Any] = __metadata__,
+                                _event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None = event_call,
+                                _event_emitter: EventEmitter | None = event_emitter,
+                                **kwargs,
+                            ) -> Any:
+                                try:
+                                    filtered: dict[str, Any] = {}
+                                    try:
+                                        filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
+                                    except Exception:
+                                        filtered = {}
+
+                                    session_id = None
+                                    try:
+                                        session_id = _metadata.get("session_id")
+                                    except Exception:
+                                        session_id = None
+
+                                    payload = {
+                                        "type": "execute:tool",
+                                        "data": {
+                                            "id": str(uuid.uuid4()),
+                                            "name": _tool_name,
+                                            "params": filtered,
+                                            "server": _server_payload,
+                                            "session_id": session_id,
+                                        },
+                                    }
+                                    if _event_call is None:
+                                        return [{"error": "Direct tool execution unavailable."}, None]
+                                    return await _event_call(payload)  # type: ignore[misc]
+                                except Exception as exc:
+                                    # Never let tool failures crash the pipe/session.
+                                    self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
+                                    with contextlib.suppress(Exception):
+                                        await self._emit_notification(
+                                            _event_emitter,
+                                            f"Tool '{_tool_name}' failed: {exc}",
+                                            level="warning",
+                                        )
+                                    return [{"error": str(exc)}, None]
+
+                            direct_registry[name] = {
+                                "spec": spec_payload,
+                                "direct": True,
+                                "server": server_payload,
+                                "callable": _direct_tool_callable,
+                            }
+                        except Exception:
+                            # Skip malformed tool specs safely.
+                            self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
+                            continue
+                except Exception:
+                    # Skip malformed server entries safely.
+                    self.logger.debug("Skipping malformed direct tool server entry", exc_info=True)
+                    continue
+
+            if direct_registry:
+                try:
+                    direct_tool_specs = ResponsesBody.transform_owui_tools(
+                        direct_registry,
+                        strict=valves.ENABLE_STRICT_TOOL_CALLING,
+                    )
+                except Exception:
+                    direct_tool_specs = []
+            return direct_registry, direct_tool_specs
+        except Exception:
+            self.logger.debug("Direct tool server registry build failed", exc_info=True)
+            return {}, []
+
+
     async def _process_transformed_request(
         self,
         body: dict[str, Any],
@@ -6753,12 +6820,49 @@ class Pipe:
                 )
                 tools_registry = {}
         __tools__ = tools_registry
+
+        # STEP 3a: Merge Open WebUI "direct tool servers" (user-configured OpenAPI servers).
+        # These are executed client-side via Socket.IO (execute:tool) and must not crash the pipe.
+        direct_registry: dict[str, dict[str, Any]] = {}
+        direct_tool_specs: list[dict[str, Any]] = []
+        try:
+            direct_registry, direct_tool_specs = self._build_direct_tool_server_registry(
+                __metadata__,
+                valves=valves,
+                event_call=__event_call__,
+                event_emitter=__event_emitter__,
+            )
+        except Exception:
+            direct_registry, direct_tool_specs = {}, []
+        if direct_registry:
+            try:
+                if isinstance(__tools__, dict):
+                    __tools__.update(direct_registry)
+                elif isinstance(__tools__, list):
+                    __tools__.extend(direct_registry.values())
+                elif __tools__ is None:
+                    __tools__ = dict(direct_registry)
+            except Exception:
+                self.logger.debug("Failed to merge direct tool servers into registry", exc_info=True)
+
+        merged_extra_tools: list[dict[str, Any]] = []
+        try:
+            upstream_extra = getattr(completions_body, "extra_tools", None)
+            if isinstance(upstream_extra, list):
+                merged_extra_tools.extend([t for t in upstream_extra if isinstance(t, dict)])
+        except Exception:
+            merged_extra_tools = []
+        if direct_tool_specs:
+            merged_extra_tools.extend(direct_tool_specs)
+        if not merged_extra_tools:
+            merged_extra_tools = []
+
         tools = build_tools(
             responses_body,
             valves,
             __tools__=__tools__,
             features=features,
-            extra_tools=getattr(completions_body, "extra_tools", None),
+            extra_tools=merged_extra_tools or None,
         )
 
         # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
@@ -9096,8 +9200,6 @@ class Pipe:
                                     image_markdowns = []
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
-                        elif item_type == "mcp_call":
-                            title = "Let me query the MCP server…"
                         elif item_type == "reasoning":
                             title = None # Don't emit a title for reasoning items
                             if (
@@ -11152,7 +11254,6 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[s
         "file_search_call",
         "image_generation_call",
         "local_shell_call",
-        "mcp_call",
     }:
         _ensure_identity()
         if item_type == "file_search_call":
@@ -11378,7 +11479,6 @@ def build_tools(
     - Returns [] if the target model doesn't support function calling.
     - Includes Open WebUI registry tools (strictified if enabled).
     - Adds OpenAI web_search (if allowed + supported + not minimal effort).
-    - Adds MCP tools from REMOTE_MCP_SERVERS_JSON.
     - Appends any caller-provided extra_tools (already-valid OpenAI tool specs).
     - Deduplicates by (type,name) identity; last one wins.
 
@@ -11405,11 +11505,7 @@ def build_tools(
     elif isinstance(__tools__, list) and __tools__:
         tools.extend([tool for tool in __tools__ if isinstance(tool, dict)])
 
-    # 3) Optional MCP servers
-    if valves.REMOTE_MCP_SERVERS_JSON:
-        tools.extend(ResponsesBody._build_mcp_tools(valves.REMOTE_MCP_SERVERS_JSON))
-
-    # 4) Optional extra tools (already OpenAI-format)
+    # 3) Optional extra tools (already OpenAI-format)
     if isinstance(extra_tools, list) and extra_tools:
         tools.extend(extra_tools)
 

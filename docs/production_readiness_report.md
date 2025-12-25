@@ -11,7 +11,7 @@
 
 This report is written against:
 
-- `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (pipe manifest header: `required_open_webui_version: 0.6.28`, manifest `version: 1.0.12`)
+- `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (pipe manifest header: `required_open_webui_version: 0.6.28`, manifest `version: 1.0.13`)
 - `tests/` (behavioral checks for key safety and integration paths)
 
 When there is any conflict between documentation and runtime behavior, the code and tests are the source of truth.

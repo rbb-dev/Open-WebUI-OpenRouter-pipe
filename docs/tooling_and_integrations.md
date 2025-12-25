@@ -1,13 +1,14 @@
 # Tools, plugins, and integrations
 
-**Scope:** How tool schemas are built, how `function_call` items are executed, and how optional integrations (web search plugin, MCP tool specs) are attached.
+**Scope:** How tool schemas are built, how `function_call` items are executed, and how Open WebUI tool sources (registry + Direct Tool Servers) are attached.
 
 > **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [🔒 Security](security_and_encryption.md)
 
-This pipe supports OpenRouter Responses API tool calling with a controlled execution pipeline and operator-tunable concurrency limits. It also supports optional integrations:
+This pipe supports OpenRouter Responses API tool calling with a controlled execution pipeline and operator-tunable concurrency limits. Tool sources and integrations:
 
+- Open WebUI tool registry tools (server-side Python tools).
+- Open WebUI **Direct Tool Servers** (client-side OpenAPI tools executed in the browser via Socket.IO).
 - OpenRouter web-search (as a `plugins` entry, not a function tool).
-- Remote MCP server definitions (as `tools` entries of type `mcp`).
 
 ---
 
@@ -30,14 +31,13 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
      - Missing property `type` values are inferred defensively (object/array) so schemas remain valid.
      - A small LRU cache (size 128) avoids repeated strictification work for identical schemas.
 
-2. **Remote MCP servers** (`REMOTE_MCP_SERVERS_JSON`)
-   - Parsed from a JSON string (a single object or an array of objects).
-   - Each valid entry produces a tool spec `{ "type": "mcp", ... }`.
-   - Validation and safety notes:
-     - Payloads over 1MB are ignored.
-     - `server_label` and `server_url` are required.
-     - `server_url` schemes are restricted to `http`, `https`, `ws`, `wss` (must include a host).
-     - Only the official MCP keys are forwarded: `server_label`, `server_url`, `require_approval`, `allowed_tools`, `headers`.
+2. **Open WebUI Direct Tool Servers** (`__metadata__["tool_servers"]`)
+   - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
+   - Open WebUI includes the selected servers in the request body as `tool_servers`; for pipes this arrives under `__metadata__["tool_servers"]`.
+   - This pipe:
+     - advertises the tools to the model using OpenAPI `operationId` values as tool names (**no namespacing**, collisions overwrite; OWUI-compatible), and
+     - executes tool calls via the Socket.IO bridge (`__event_call__`) by emitting `execute:tool` so the browser performs the request.
+   - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
 
 3. **Extra tools** (`extra_tools`)
    - A caller-provided list of already OpenAI-format tool specs is appended as-is (non-dict entries are ignored).
@@ -116,9 +116,25 @@ The web-search integration is attached as a `plugins` entry (not as a `tools` fu
 
 ---
 
-## Notes on MCP tool specs
+## Open WebUI Direct Tool Servers
 
-`REMOTE_MCP_SERVERS_JSON` attaches MCP tool server definitions to the request. Calls involving MCP may appear in provider output as `mcp_call` items.
+Direct Tool Servers are configured and executed by Open WebUI, but advertised/executed through this pipe:
+
+- Configure servers in **User Settings → External Tools → Manage Tool Servers** (and ensure the server is enabled/toggled).
+- Select tool servers for a chat in the tool picker (Open WebUI sends the selected servers in `tool_servers`).
+- When the model calls a direct tool, the pipe emits `execute:tool` via `__event_call__` and the browser performs the OpenAPI request.
+
+Failure handling:
+- Direct tool execution is wrapped in `try/except`; tool crashes never crash the pipe/session.
+- On failure the tool returns an error payload to the model (and the pipe may emit an OWUI notification best-effort).
+
+---
+
+## MCP note (removed)
+
+This pipe no longer implements “remote MCP server connectivity” (previously surfaced as `REMOTE_MCP_SERVERS_JSON`) because it bypasses Open WebUI’s tool server configuration surface and RBAC/permissions model.
+
+If you want MCP tools in Open WebUI, use an MCP→OpenAPI proxy/aggregator (for example **MCPO** or **MetaMCP**) and add the resulting OpenAPI server through Open WebUI’s tool server UI so access control and future tool server changes remain centralized in OWUI.
 
 For persistence behavior and replay rules of tool artifacts, see:
 

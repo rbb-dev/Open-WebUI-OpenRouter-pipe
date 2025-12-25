@@ -1,7 +1,7 @@
 # Open WebUI pipe for OpenRouter Responses API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.12-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-1.0.13-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 A production-focused Open WebUI “pipe” that routes chat-completions-style traffic through OpenRouter’s Responses API, with capability-aware routing, multimodal transforms, tool calling, optional persistence, and operator controls via valves.
@@ -15,7 +15,7 @@ Eight core capabilities:
 1. **Catalog-smart routing**: loads OpenRouter model metadata and uses it to gate features by capability.
 2. **Request shaping + schema enforcement**: filters outgoing requests to a documented OpenRouter Responses allowlist and normalizes common inputs (including `model_fallback` → `models`).
 3. **Streaming SSE pipeline**: streaming Responses ingestion with Open WebUI event emission (status, message deltas, citations, completion/usage).
-4. **Tool orchestration**: executes `function_call` outputs against Open WebUI’s tool registry between Responses calls, with worker pools and concurrency controls.
+4. **Tool orchestration**: executes `function_call` outputs against Open WebUI’s tool registry and Direct Tool Servers between Responses calls, with worker pools and concurrency controls.
 5. **Multimodal intake guardrails**: validated/normalized image/file/audio/video inputs, with SSRF/size controls where remote retrieval is involved.
 6. **Optional persistence + replay**: persists selected reasoning/tool artifacts and replays them into later turns via marker-based reconstruction.
 7. **Operational resilience**: bounded admission controls plus breaker-style degradation for repeated request/tool/DB failures.
@@ -30,7 +30,7 @@ Eight core capabilities:
 
 - **Catalog + capability detection**: capability-aware behavior for tool calling, vision inputs, supported parameters, and plugin attachment.
 - **Multimodal guardrails**: validated/normalized image/file/audio/video inputs; remote retrieval is size-limited and SSRF-guarded.
-- **Tool execution**: executes `function_call` outputs against Open WebUI’s tool registry between Responses calls; supports per-request/global parallelism controls.
+- **Tool execution**: executes `function_call` outputs against Open WebUI’s tool registry plus Open WebUI Direct Tool Servers; supports per-request/global parallelism controls.
 - **Operational controls**: valve-driven configuration for concurrency, timeouts, retention, templates, and telemetry.
 - **User experience**: status updates and templated provider errors with operator-friendly context.
 
@@ -97,6 +97,7 @@ All runtime configuration is via valves.
 
 - Remote downloads accept both `http://` and `https://` URLs; if you require HTTPS-only, enforce it via network egress policy.
 - Artifact encryption is enabled when `ARTIFACT_ENCRYPTION_KEY` is set. If you store secrets as encrypted valve values, `WEBUI_SECRET_KEY` must be configured so Open WebUI can decrypt them at runtime.
+- This pipe does not implement MCP server connectivity inside the pipe (to avoid bypassing Open WebUI’s tool server RBAC). If you need MCP tools, use an MCP→OpenAPI proxy/aggregator (for example MCPO / MetaMCP) and add it as an OpenAPI tool server in Open WebUI.
 - This project alone does not guarantee GDPR/HIPAA/SOC2 compliance; use it as part of a broader operational and governance program.
 
 Read: [Security & Encryption](docs/security_and_encryption.md) and [Production readiness report (OpenRouter Responses Pipe)](docs/production_readiness_report.md).

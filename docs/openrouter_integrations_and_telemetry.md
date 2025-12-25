@@ -34,7 +34,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `top_p` | Sampling parameter (passed through when present). |
 | `reasoning` | Reasoning configuration; only recognized subfields are forwarded (unknown keys dropped). |
 | `include_reasoning` | Legacy reasoning flag; may be used as a fallback depending on model/provider behavior. |
-| `tools` | Tool definitions (merged from Open WebUI registry, MCP configuration, and provider tooling as applicable). |
+| `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Plugin configuration (for example OpenRouter web search attachment when enabled and supported). |
 | `response_format` | Output format control (when supported). |
@@ -82,13 +82,14 @@ Operational guidance:
 
 ---
 
-## 5. Tooling, plugins, and MCP integration
+## 5. Tooling and plugins
 
 - Web search:
   - When `ENABLE_WEB_SEARCH_TOOL=True` and the selected model/provider supports web search, the pipe can attach OpenRouter web search tooling automatically.
   - `WEB_SEARCH_MAX_RESULTS` caps result count.
-- MCP servers:
-  - `REMOTE_MCP_SERVERS_JSON` allows admins to define workspace-wide MCP server configurations (global tool sources).
+- Tools:
+  - Tool schemas are built from Open WebUI’s `__tools__` registry plus any selected Open WebUI **Direct Tool Servers**.
+  - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO).
 - Tool schema strictness:
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
 
@@ -159,4 +160,3 @@ See [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) f
 - [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md)
 - [Tooling & Integrations](tooling_and_integrations.md)
 - [Error Handling & User Experience](error_handling_and_user_experience.md)
-

@@ -65,7 +65,8 @@ The suite is organized by subsystem. Common entry points:
 - `tests/test_multimodal_inputs.py`: multimodal URL/data handling and SSRF-related input guards.
 - `tests/test_request_identifiers.py`: `SEND_*` valves and OpenRouter identifier mapping.
 - `tests/test_session_log_storage.py`: encrypted session log storage skip rules and archive behavior.
-- `tests/test_tool_schema.py`: strict tool schema transformations and MCP JSON parsing.
+- `tests/test_tool_schema.py`: strict tool schema transformations.
+- `tests/test_direct_tool_servers.py`: Open WebUI Direct Tool Servers (Socket.IO `execute:tool`) wiring.
 - `tests/test_transform_messages.py`: history reconstruction/marker replay behavior.
 - `tests/test_pipe_guards.py`: admission controls, breakers, and runtime guards.
 
