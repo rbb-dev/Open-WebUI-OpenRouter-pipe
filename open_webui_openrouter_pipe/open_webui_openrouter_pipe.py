@@ -7646,6 +7646,7 @@ class Pipe:
                         file_data = source.get("file_data")
                         filename = source.get("filename")
                         file_url = source.get("file_url")
+                        file_url_set_from_file_data = False
 
                         def _is_internal_storage(url: str) -> bool:
                             """Return True when a URL already references internal storage."""
@@ -7745,11 +7746,29 @@ class Pipe:
                             # Handle remote URL (not OWUI file reference)
                             elif file_data.startswith(("http://", "https://")) and not _is_internal_storage(file_data):
                                 try:
-                                    fname = filename or file_data.split("/")[-1].split("?")[0]
-                                    internal_url = await _download_and_store(file_data, name_hint=fname)
+                                    remote_url = file_data
+                                    fname = filename or remote_url.split("/")[-1].split("?")[0]
+                                    internal_url = await _download_and_store(remote_url, name_hint=fname)
                                     if internal_url:
                                         file_url = internal_url
-                                        file_data = None  # Clear, use URL instead
+                                        file_url_set_from_file_data = True
+                                    else:
+                                        if not file_url:
+                                            file_url = remote_url
+                                            file_url_set_from_file_data = True
+                                        if event_emitter:
+                                            label = fname or "remote file"
+                                            if not fname:
+                                                with contextlib.suppress(Exception):
+                                                    host = urlparse(remote_url).netloc
+                                                    if host:
+                                                        label = host
+                                            await self._emit_notification(
+                                                event_emitter,
+                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
+                                                level="warning",
+                                            )
+                                    file_data = None  # Clear, use URL instead
                                 except Exception as exc:
                                     self.logger.error(f"Failed to download remote file: {exc}")
                                     await self._emit_error(
@@ -7763,6 +7782,7 @@ class Pipe:
                             file_url
                             and isinstance(file_url, str)
                             and self.valves.SAVE_REMOTE_FILE_URLS
+                            and not file_url_set_from_file_data
                         ):
                             if file_url.startswith("data:"):
                                 try:
@@ -7790,6 +7810,19 @@ class Pipe:
                                     internal_url = await _download_and_store(file_url, name_hint=name_hint)
                                     if internal_url:
                                         file_url = internal_url
+                                    else:
+                                        if event_emitter:
+                                            label = name_hint or "remote file"
+                                            if not name_hint:
+                                                with contextlib.suppress(Exception):
+                                                    host = urlparse(file_url).netloc
+                                                    if host:
+                                                        label = host
+                                            await self._emit_notification(
+                                                event_emitter,
+                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
+                                                level="warning",
+                                            )
                                 except Exception as exc:
                                     self.logger.error(f"Failed to download remote file_url: {exc}")
                                     await self._emit_error(

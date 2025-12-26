@@ -725,6 +725,106 @@ class TestFileTransformer:
         upload_mock.assert_not_called()
         status_mock.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_file_remote_url_warns_when_download_returns_none(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        monkeypatch,
+    ):
+        remote_url = "https://example.com/manual.pdf"
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
+
+        download_mock = AsyncMock(return_value=None)
+        upload_mock = AsyncMock()
+        notification_mock = AsyncMock()
+
+        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_emit_notification", notification_mock)
+
+        async def event_emitter(_event: dict):
+            return
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "file_url": remote_url,
+                        "filename": "manual.pdf",
+                    }
+                ],
+            }
+        ]
+
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=event_emitter,
+        )
+
+        file_block = transformed[0]["content"][0]
+        assert file_block["file_url"] == remote_url
+        assert "file_data" not in file_block
+
+        download_mock.assert_awaited_once_with(remote_url)
+        upload_mock.assert_not_called()
+        notification_mock.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_file_data_remote_url_moves_to_file_url_when_download_returns_none(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        monkeypatch,
+    ):
+        remote_url = "https://example.com/manual.pdf"
+        pipe_instance.valves.SAVE_FILE_DATA_CONTENT = True
+
+        download_mock = AsyncMock(return_value=None)
+        upload_mock = AsyncMock()
+        notification_mock = AsyncMock()
+
+        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_emit_notification", notification_mock)
+
+        async def event_emitter(_event: dict):
+            return
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "file_data": remote_url,
+                        "filename": "manual.pdf",
+                    }
+                ],
+            }
+        ]
+
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=event_emitter,
+        )
+
+        file_block = transformed[0]["content"][0]
+        assert file_block["file_url"] == remote_url
+        assert "file_data" not in file_block
+
+        download_mock.assert_awaited_once_with(remote_url)
+        upload_mock.assert_not_called()
+        notification_mock.assert_awaited()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio Transformer Tests
