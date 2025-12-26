@@ -1,6 +1,9 @@
 import pytest
 
+from typing import Any, cast
+
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.open_webui_openrouter_pipe import ResponsesBody
 
 
 def _last_input_text_cache_control(message: dict) -> dict | None:
@@ -100,3 +103,61 @@ def test_strip_cache_control_from_input_removes_markers():
     Pipe._strip_cache_control_from_input(payload)
     assert not Pipe._input_contains_cache_control(payload)
 
+
+@pytest.mark.asyncio
+async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch):
+    pipe = Pipe()
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+        }
+    )
+
+    body = ResponsesBody(
+        model="anthropic/claude-sonnet-4.5",
+        input=[
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "SYSTEM"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        ],
+        stream=True,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        captured["request_body"] = request_body
+        yield {"type": "response.output_text.delta", "delta": "ok"}
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"input_tokens": 1, "output_tokens": 1}},
+        }
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert result == "ok"
+    request_body = captured.get("request_body") or {}
+    assert Pipe._input_contains_cache_control(request_body.get("input"))

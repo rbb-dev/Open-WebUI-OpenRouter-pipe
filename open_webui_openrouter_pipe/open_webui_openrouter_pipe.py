@@ -7070,7 +7070,7 @@ class Pipe:
                     not anthropic_prompt_cache_retry_attempted
                     and getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False)
                     and isinstance(api_model_label, str)
-                    and api_model_label.startswith("anthropic/")
+                    and self._is_anthropic_model_id(api_model_label)
                     and exc.status == 400
                     and Pipe._input_contains_cache_control(getattr(responses_body, "input", None))
                 ):
@@ -9016,8 +9016,16 @@ class Pipe:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS):
                 final_response: dict[str, Any] | None = None
                 self._sanitize_request_input(body)
-                request_payload = body.model_dump(exclude_none=True)
                 api_model_override = getattr(body, "api_model", None)
+                model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
+                items = getattr(body, "input", None)
+                if isinstance(items, list):
+                    self._maybe_apply_anthropic_prompt_caching(
+                        items,
+                        model_id=model_for_cache,
+                        valves=valves,
+                    )
+                request_payload = body.model_dump(exclude_none=True)
                 if api_model_override:
                     request_payload["model"] = api_model_override
                     request_payload.pop("api_model", None)
@@ -10027,7 +10035,7 @@ class Pipe:
         if not isinstance(model, str):
             return
         model_id = model.strip()
-        if not model_id.startswith("anthropic/"):
+        if not self._is_anthropic_model_id(model_id):
             return
 
         feature = "interleaved-thinking-2025-05-14"
@@ -10038,6 +10046,13 @@ class Pipe:
         if values:
             headers["x-anthropic-beta"] = ",".join(values)
         headers.pop("X-Anthropic-Beta", None)
+
+    @staticmethod
+    def _is_anthropic_model_id(model_id: Any) -> bool:
+        if not isinstance(model_id, str):
+            return False
+        normalized = model_id.strip()
+        return normalized.startswith("anthropic/") or normalized.startswith("anthropic.")
 
     @staticmethod
     def _input_contains_cache_control(value: Any) -> bool:
@@ -10069,10 +10084,7 @@ class Pipe:
     ) -> None:
         if not getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False):
             return
-        if not isinstance(model_id, str):
-            return
-        normalized = model_id.strip()
-        if not normalized.startswith("anthropic/"):
+        if not self._is_anthropic_model_id(model_id):
             return
 
         ttl = getattr(valves, "ANTHROPIC_PROMPT_CACHE_TTL", "5m")
