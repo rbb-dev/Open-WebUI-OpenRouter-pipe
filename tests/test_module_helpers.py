@@ -383,3 +383,28 @@ async def test_redis_fetch_rows_decrypts_cached_payloads():
     pipe._redis_enabled = True  # type: ignore[attr-defined]
     fetched = await pipe._redis_fetch_rows("chat", ["01TEST"])
     assert fetched["01TEST"]["content"] == "secret"
+
+
+@pytest.mark.asyncio
+async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog):
+    pipe = ow.Pipe()
+    pipe._redis_enabled = True  # type: ignore[attr-defined]
+
+    class FakeRedis:
+        async def set(self, key, value, *, nx=False, ex=None):
+            return True
+
+        async def lpop(self, key):
+            return None
+
+        async def eval(self, script, numkeys, key, token):
+            return 0
+
+    pipe._redis_client = FakeRedis()  # type: ignore[attr-defined]
+
+    caplog.set_level(logging.WARNING)
+    await pipe._flush_redis_queue()
+    assert any(
+        "Redis flush lock was not released" in record.getMessage()
+        for record in caplog.records
+    )

@@ -3616,7 +3616,7 @@ class Pipe:
                     "else return 0 end"
                 )
                 try:
-                    await _wait_for(
+                    released = await _wait_for(
                         self._redis_client.eval(
                             release_script,
                             1,
@@ -3624,6 +3624,16 @@ class Pipe:
                             lock_token,
                         )
                     )
+                    try:
+                        released_int = int(released)
+                    except Exception:
+                        released_int = None
+                    if released_int != 1:
+                        self.logger.warning(
+                            "Redis flush lock was not released (result=%r, key=%s). It may have expired or been replaced.",
+                            released,
+                            self._redis_flush_lock_key,
+                        )
                 except Exception:
                     # Redis errors during lock release are non-fatal - continue pipe operation
                     self.logger.debug("Failed to release Redis flush lock", exc_info=self.logger.isEnabledFor(logging.DEBUG))
