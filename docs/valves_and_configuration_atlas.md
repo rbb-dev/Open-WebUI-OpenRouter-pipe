@@ -86,6 +86,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `TOOL_TIMEOUT_SECONDS` | `int` | `60` | Per-tool timeout (seconds). |
 | `TOOL_BATCH_TIMEOUT_SECONDS` | `int` | `120` | Timeout (seconds) for completing an entire tool batch. |
 | `TOOL_IDLE_TIMEOUT_SECONDS` | `Optional[int]` | `null` | Idle timeout (seconds) for tool execution when no progress is observed. |
+| `TOOL_SHUTDOWN_TIMEOUT_SECONDS` | `float` | `10.0` | Maximum seconds to wait for per-request tool workers to drain/stop during request cleanup. `0` cancels immediately. |
 | `PERSIST_TOOL_RESULTS` | `bool` | `True` | Persist tool call results across conversation turns. When disabled, tool results stay ephemeral. |
 | `TOOL_OUTPUT_RETENTION_TURNS` | `int` | `10` | How many turns tool outputs remain replayable/available before being eligible for pruning. |
 
