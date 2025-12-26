@@ -29,6 +29,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | --- | --- | --- | --- |
 | `BASE_URL` | `str` | `env OPENROUTER_API_BASE_URL, else https://openrouter.ai/api/v1` | OpenRouter API base URL. Override this if you are using a gateway or proxy. |
 | `API_KEY` | `EncryptedStr` | `env OPENROUTER_API_KEY (empty if unset)` | Your OpenRouter API key. Defaults to the `OPENROUTER_API_KEY` environment variable. |
+| `HTTP_REFERER_OVERRIDE` | `str` | `""` | Override `HTTP-Referer` for OpenRouter app attribution. Must be a full URL including scheme (e.g. `https://example.com`), not just a hostname. When empty, the pipe uses its default project URL. |
 | `HTTP_CONNECT_TIMEOUT_SECONDS` | `int` | `10` | Seconds to wait for the TCP/TLS connection to OpenRouter before failing. |
 | `HTTP_TOTAL_TIMEOUT_SECONDS` | `Optional[int]` | `null` | Overall HTTP timeout (seconds) for OpenRouter requests. Set to null to disable the total timeout so long-running streaming responses are not interrupted. |
 | `HTTP_SOCK_READ_SECONDS` | `int` | `300` | Idle read timeout (seconds) applied to active streams when `HTTP_TOTAL_TIMEOUT_SECONDS` is disabled. |

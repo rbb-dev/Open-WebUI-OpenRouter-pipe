@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.14
+version: 1.0.15
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -44,6 +44,15 @@ _MAX_OPENROUTER_ID_CHARS = 128
 _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
+
+
+def _select_openrouter_http_referer(valves: Any | None) -> str:
+    override = (getattr(valves, "HTTP_REFERER_OVERRIDE", "") or "").strip()
+    if override:
+        if override.startswith(("http://", "https://")):
+            return override
+    return _OPENROUTER_REFERER
+
 
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """Infer the Open WebUI function id from the module name.
@@ -1133,6 +1142,7 @@ class OpenRouterModelRegistry:
         api_key: str,
         cache_seconds: int,
         logger: logging.Logger,
+        http_referer: str | None = None,
     ) -> None:
         """Refresh the model catalog if the cache is empty or stale."""
         if not api_key:
@@ -1149,7 +1159,13 @@ class OpenRouterModelRegistry:
             if cls._specs and now < next_refresh:
                 return
             try:
-                await cls._refresh(session, base_url=base_url, api_key=api_key, logger=logger)
+                await cls._refresh(
+                    session,
+                    base_url=base_url,
+                    api_key=api_key,
+                    logger=logger,
+                    http_referer=http_referer,
+                )
             except Exception as exc:
                 # Catch all refresh errors (network, JSON, API errors) to use cache if available
                 cls._record_refresh_failure(exc, cache_seconds)
@@ -1171,13 +1187,14 @@ class OpenRouterModelRegistry:
         base_url: str,
         api_key: str,
         logger: logging.Logger,
+        http_referer: str | None = None,
     ) -> None:
         """Fetch and cache the OpenRouter catalog."""
         url = base_url.rstrip("/") + "/models"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "X-Title": _OPENROUTER_TITLE,
-            "HTTP-Referer": _OPENROUTER_REFERER,
+            "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
         _debug_print_request(headers, {"method": "GET", "url": url})
         try:
@@ -2339,6 +2356,14 @@ class Pipe:
         API_KEY: EncryptedStr = Field(
             default_factory=_default_api_key,
             description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
+        )
+        HTTP_REFERER_OVERRIDE: str = Field(
+            default="",
+            description=(
+                "Override the `HTTP-Referer` header sent to OpenRouter for app attribution. "
+                "Must be a full URL including scheme (e.g. https://example.com), not just a hostname. "
+                "When empty, the pipe uses its default project URL."
+            ),
         )
         HTTP_CONNECT_TIMEOUT_SECONDS: int = Field(
             default=10,
@@ -6061,6 +6086,7 @@ class Pipe:
                 api_key=EncryptedStr.decrypt(self.valves.API_KEY),
                 cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
+                http_referer=_select_openrouter_http_referer(self.valves),
             )
         except ValueError as exc:
             refresh_error = exc
@@ -6121,6 +6147,19 @@ class Pipe:
         safe_event_emitter = self._wrap_safe_event_emitter(__event_emitter__)
         wants_stream = bool(body.get("stream"))
 
+        http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
+        referer_override_invalid = bool(
+            http_referer_override
+            and not http_referer_override.startswith(("http://", "https://"))
+        )
+        if referer_override_invalid and not wants_stream:
+            await self._emit_notification(
+                safe_event_emitter,
+                "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
+                "Falling back to the default pipe referer.",
+                level="warning",
+            )
+
         if not self._breaker_allows(user_id):
             message = "Temporarily disabled due to repeated errors. Please retry later."
             if safe_event_emitter:
@@ -6150,6 +6189,21 @@ class Pipe:
         future = loop.create_future()
         if wants_stream:
             stream_queue = asyncio.Queue()
+            if referer_override_invalid:
+                await stream_queue.put(
+                    {
+                        "event": {
+                            "type": "notification",
+                            "data": {
+                                "type": "warning",
+                                "content": (
+                                    "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
+                                    "Falling back to the default pipe referer."
+                                ),
+                            },
+                        }
+                    }
+                )
 
         job = _PipeJob(
             pipe=self,
@@ -9489,6 +9543,7 @@ class Pipe:
                     task_body,
                     api_key=EncryptedStr.decrypt(valves.API_KEY),
                     base_url=valves.BASE_URL,
+                    valves=valves,
                 )
 
                 usage = response.get("usage") if isinstance(response, dict) else None
@@ -9615,7 +9670,7 @@ class Pipe:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "X-Title": _OPENROUTER_TITLE,
-            "HTTP-Referer": _OPENROUTER_REFERER,
+            "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
         self._maybe_apply_anthropic_beta_headers(
             headers,
@@ -9891,13 +9946,15 @@ class Pipe:
         request_params: dict[str, Any],
         api_key: str,
         base_url: str,
+        *,
+        valves: Pipe.Valves | None = None,
     ) -> Dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "X-Title": _OPENROUTER_TITLE,
-            "HTTP-Referer": _OPENROUTER_REFERER,
+            "HTTP-Referer": _select_openrouter_http_referer(valves or self.valves),
         }
         _debug_print_request(headers, request_params)
         url = base_url.rstrip("/") + "/responses"

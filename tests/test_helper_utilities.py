@@ -8,11 +8,13 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     OpenRouterAPIError,
     Pipe,
     ResponsesBody,
+    _OPENROUTER_REFERER,
     _build_error_template_values,
     _classify_function_call_artifacts,
     _normalize_persisted_item,
     _pretty_json,
     _render_error_template,
+    _select_openrouter_http_referer,
     _strictify_schema,
     _template_value_present,
     build_tools,
@@ -153,6 +155,20 @@ def test_tool_output_clamps_failed_status():
     )
     assert output["type"] == "function_call_output"
     assert output["status"] == "completed"
+
+
+def test_select_openrouter_http_referer_defaults_without_override():
+    assert _select_openrouter_http_referer(None) == _OPENROUTER_REFERER
+
+
+def test_select_openrouter_http_referer_accepts_full_url_override():
+    valves = Pipe.Valves(HTTP_REFERER_OVERRIDE="https://example.com")
+    assert _select_openrouter_http_referer(valves) == "https://example.com"
+
+
+def test_select_openrouter_http_referer_rejects_non_url_override():
+    valves = Pipe.Valves(HTTP_REFERER_OVERRIDE="example.com")
+    assert _select_openrouter_http_referer(valves) == _OPENROUTER_REFERER
 
 
 def test_normalize_persisted_items_and_classifier():

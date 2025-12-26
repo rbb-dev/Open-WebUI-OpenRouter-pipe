@@ -11,7 +11,7 @@ This document covers behaviors that are specific to the OpenRouter Responses API
 - The pipe targets the OpenRouter base URL configured by `BASE_URL` (default `https://openrouter.ai/api/v1`), using the `/responses` endpoint.
 - Requests include OpenRouter-identifying headers:
   - `X-Title` (pipe title)
-  - `HTTP-Referer` (project URL)
+  - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme)
 - Optional provider beta headers:
   - For `anthropic/...` models, when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
 
