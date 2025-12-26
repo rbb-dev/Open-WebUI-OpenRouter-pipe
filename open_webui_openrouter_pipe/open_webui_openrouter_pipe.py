@@ -9604,7 +9604,8 @@ class Pipe:
 
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
-                logs = list(SessionLogger.logs.get(request_id, []))
+                with SessionLogger._state_lock:
+                    logs = list(SessionLogger.logs.get(request_id, []))
                 if logs and self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug("Collected %d session log entries for request %s.", len(logs), request_id)
                 resolved_user_id = str(user_id or metadata.get("user_id") or "")
@@ -9635,7 +9636,8 @@ class Pipe:
 
             # Clear logs
             if request_id:
-                SessionLogger.logs.pop(request_id, None)
+                with SessionLogger._state_lock:
+                    SessionLogger.logs.pop(request_id, None)
             SessionLogger.cleanup()
 
             chat_id = metadata.get("chat_id")
@@ -10752,7 +10754,8 @@ class Pipe:
         # 2) Optionally dump the collected logs to the backend logger
         if show_error_log_citation:
             request_id = SessionLogger.request_id.get()
-            logs = SessionLogger.logs.get(request_id or "", [])
+            with SessionLogger._state_lock:
+                logs = list(SessionLogger.logs.get(request_id or "", []))
             if logs:
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug("Error logs for request %s:\n%s", request_id, "\n".join(logs))
@@ -11219,6 +11222,7 @@ class SessionLogger:
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
+    _state_lock = threading.Lock()
     _console_formatter = logging.Formatter("%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     _memory_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [user=%(user_id)s] %(message)s")
 
@@ -11255,7 +11259,8 @@ class SessionLogger:
                 record.user_id = uid or "-"
                 record.session_log_level = cls.log_level.get()
                 if rid:
-                    cls._session_last_seen[rid] = time.time()
+                    with cls._state_lock:
+                        cls._session_last_seen[rid] = time.time()
             except Exception:
                 # Logging must never break request handling.
                 pass
@@ -11331,15 +11336,21 @@ class SessionLogger:
                     pass
             request_id = getattr(record, "request_id", None)
             if request_id:
-                buffer = cls.logs.get(request_id)
-                if buffer is None or buffer.maxlen != cls.max_lines:
-                    buffer = deque(maxlen=cls.max_lines)
-                    cls.logs[request_id] = buffer
                 try:
-                    buffer.append(cls._memory_formatter.format(record))
-                    cls._session_last_seen[request_id] = time.time()
+                    memory_line = cls._memory_formatter.format(record)
                 except Exception:
-                    pass
+                    memory_line = None
+                with cls._state_lock:
+                    buffer = cls.logs.get(request_id)
+                    if buffer is None or buffer.maxlen != cls.max_lines:
+                        buffer = deque(maxlen=cls.max_lines)
+                        cls.logs[request_id] = buffer
+                    try:
+                        if memory_line is not None:
+                            buffer.append(memory_line)
+                        cls._session_last_seen[request_id] = time.time()
+                    except Exception:
+                        pass
         except Exception:
             # Never raise from logging hooks.
             return
@@ -11348,10 +11359,11 @@ class SessionLogger:
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
         """Remove stale session logs to avoid unbounded growth."""
         cutoff = time.time() - max_age_seconds
-        stale = [sid for sid, ts in cls._session_last_seen.items() if ts < cutoff]
-        for sid in stale:
-            cls.logs.pop(sid, None)
-            cls._session_last_seen.pop(sid, None)
+        with cls._state_lock:
+            stale = [sid for sid, ts in cls._session_last_seen.items() if ts < cutoff]
+            for sid in stale:
+                cls.logs.pop(sid, None)
+                cls._session_last_seen.pop(sid, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
