@@ -64,6 +64,7 @@ Notes:
 
 - If a tool name is missing or not present in the tool registry, the pipe returns a structured `function_call_output` indicating the failure.
 - The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.
+- When `MAX_FUNCTION_CALL_LOOPS` is reached while the model is still requesting more tool rounds, the pipe emits a user-facing warning (toast + markdown message) explaining that the response stopped early and suggesting increasing the limit.
 
 ---
 

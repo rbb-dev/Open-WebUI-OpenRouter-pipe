@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.15
+version: 1.0.16
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -471,6 +471,17 @@ DEFAULT_SERVER_TIMEOUT_TEMPLATE = (
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
+)
+
+DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE = (
+    "### 🧰 Tool step limit reached\n\n"
+    "This chat needed more tool rounds than allowed, so it stopped early to prevent infinite loops.\n\n"
+    "{{#if max_function_call_loops}}\n"
+    "**Current limit:** `{max_function_call_loops}`\n"
+    "{{/if}}\n\n"
+    "**What you can do:**\n"
+    "- Increase the *Max Function Call Loops* valve (e.g. 25–50) and retry\n"
+    "- Simplify the request or reduce tool chaining\n"
 )
 
 
@@ -1131,6 +1142,7 @@ class OpenRouterModelRegistry:
     _lock: asyncio.Lock = asyncio.Lock()
     _next_refresh_after: float = 0.0
     _consecutive_failures: int = 0
+    _last_error: str | None = None
     _last_error_time: float = 0.0
 
     @classmethod
@@ -1295,12 +1307,14 @@ class OpenRouterModelRegistry:
         cls._last_fetch = now
         cls._next_refresh_after = now + max(5, cache_seconds)
         cls._consecutive_failures = 0
+        cls._last_error = None
         cls._last_error_time = 0.0
 
     @classmethod
     def _record_refresh_failure(cls, exc: Exception, cache_seconds: int) -> None:
         """Increase backoff delay and track the most recent catalog error."""
         cls._consecutive_failures += 1
+        cls._last_error = str(exc)
         cls._last_error_time = time.time()
         exponent = min(cls._consecutive_failures - 1, 5)
         base_backoff = 5.0
@@ -2574,7 +2588,7 @@ class Pipe:
             ),
         )
         MAX_FUNCTION_CALL_LOOPS: int = Field(
-            default=10,
+            default=25,
             description=(
                 "Maximum number of full execution cycles (loops) allowed per request. "
                 "Each loop involves the model generating one or more function/tool calls, "
@@ -2783,6 +2797,14 @@ class Pipe:
                 "{session_id}, {user_id}, {support_email}, {support_url}. "
                 "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
             )
+        )
+
+        MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE: str = Field(
+            default=DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
+            description=(
+                "Markdown template emitted when a request reaches MAX_FUNCTION_CALL_LOOPS while the model is still "
+                "requesting additional tool/function calls. Available variables: {max_function_call_loops}."
+            ),
         )
 
         MAX_PARALLEL_TOOLS_GLOBAL: int = Field(
@@ -8764,8 +8786,9 @@ class Pipe:
         # Send OpenAI Responses API request, parse and emit response
         error_occurred = False
         was_cancelled = False
+        loop_limit_reached = False
         try:
-            for _ in range(valves.MAX_FUNCTION_CALL_LOOPS):
+            for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS):
                 final_response: dict[str, Any] | None = None
                 self._sanitize_request_input(body)
                 request_payload = body.model_dump(exclude_none=True)
@@ -9261,6 +9284,8 @@ class Pipe:
                 self.logger.debug("📞 Found %d function_call items in response", len(calls))
                 function_outputs: list[dict[str, Any]] = []
                 if calls:
+                    if loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
+                        loop_limit_reached = True
                     function_outputs = await self._execute_function_calls(calls, tool_registry)
                     if valves.PERSIST_TOOL_RESULTS:
                         self.logger.debug("💾 Persisting %d tool results", len(function_outputs))
@@ -9302,6 +9327,35 @@ class Pipe:
                     self._sanitize_request_input(body)
                 else:
                     break
+
+            if loop_limit_reached:
+                limit_value = int(valves.MAX_FUNCTION_CALL_LOOPS)
+                await self._emit_notification(
+                    event_emitter,
+                    f"Tool step limit reached (MAX_FUNCTION_CALL_LOOPS={limit_value}). "
+                    "Increase the limit or simplify the request to continue.",
+                    level="warning",
+                )
+                try:
+                    notice = _render_error_template(
+                        valves.MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
+                        {"max_function_call_loops": str(limit_value)},
+                    )
+                except Exception:
+                    notice = _render_error_template(
+                        DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
+                        {"max_function_call_loops": str(limit_value)},
+                    )
+                if notice:
+                    delta = f"\n\n{notice}" if assistant_message else notice
+                    assistant_message = f"{assistant_message}{delta}" if assistant_message else notice
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "chat:message",
+                                "data": {"content": assistant_message, "delta": delta},
+                            }
+                        )
 
         # Catch any exceptions during the streaming loop and emit an error
         except asyncio.CancelledError:
