@@ -3138,7 +3138,7 @@ class Pipe:
             self._websocket_manager == "redis"
             and bool(self._websocket_redis_url)
         )
-        redis_valve_enabled = bool(self.valves.ENABLE_REDIS_CACHE)
+        redis_valve_enabled = self.valves.ENABLE_REDIS_CACHE
         if multi_worker and not redis_valve_enabled:
             self.logger.warning("Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off.")
         if multi_worker and redis_valve_enabled:
@@ -4434,10 +4434,10 @@ class Pipe:
         decrypted_encryption_key = EncryptedStr.decrypt(valves.ARTIFACT_ENCRYPTION_KEY)
         encryption_key = (decrypted_encryption_key or "").strip()
         self._encryption_key = encryption_key
-        self._encrypt_all = bool(valves.ENCRYPT_ALL)
+        self._encrypt_all = valves.ENCRYPT_ALL
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES
 
-        wants_compression = bool(valves.ENABLE_LZ4_COMPRESSION)
+        wants_compression = valves.ENABLE_LZ4_COMPRESSION
         compression_enabled = wants_compression and lz4frame is not None
         if wants_compression and lz4frame is None and not self._lz4_warning_emitted:
             self.logger.warning("LZ4 compression requested but the 'lz4' package is not available. Artifacts will be stored without compression.")
@@ -9627,7 +9627,7 @@ class Pipe:
                     break
 
             if loop_limit_reached:
-                limit_value = int(valves.MAX_FUNCTION_CALL_LOOPS)
+                limit_value = valves.MAX_FUNCTION_CALL_LOOPS
                 await self._emit_notification(
                     event_emitter,
                     f"Tool step limit reached (MAX_FUNCTION_CALL_LOOPS={limit_value}). "
