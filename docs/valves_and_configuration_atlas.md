@@ -76,7 +76,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `ENABLE_STRICT_TOOL_CALLING` | `bool` | `True` | When True, converts Open WebUI registry tools to strict JSON Schema for more predictable function calling. |
-| `MAX_FUNCTION_CALL_LOOPS` | `int` | `10` | Maximum number of full “model → tools → model” execution cycles allowed per request. |
+| `MAX_FUNCTION_CALL_LOOPS` | `int` | `25` | Maximum number of full “model → tools → model” execution cycles allowed per request. |
 | `MAX_PARALLEL_TOOLS_GLOBAL` | `int` | `200` | Maximum number of tool executions allowed concurrently per process. |
 | `MAX_PARALLEL_TOOLS_PER_REQUEST` | `int` | `5` | Maximum number of tool executions allowed concurrently per request. |
 | `BREAKER_MAX_FAILURES` | `int` | `5` | Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. Set higher to reduce trip frequency in noisy environments. |
@@ -176,6 +176,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `CONNECTION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for connection failures. |
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
 | `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
+| `MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the request reaches `MAX_FUNCTION_CALL_LOOPS` while the model is still requesting additional tool/function calls. |
 
 **Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).
 

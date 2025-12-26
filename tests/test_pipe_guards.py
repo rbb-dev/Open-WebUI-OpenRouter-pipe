@@ -673,7 +673,7 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
     pipe.valves = pipe.Valves(COSTS_REDIS_DUMP=True)
     captured: dict[str, Any] = {}
 
-    async def fake_send(self, session, request_params, api_key, base_url):
+    async def fake_send(self, session, request_params, api_key, base_url, *, valves=None):
         return {
             "output": [
                 {

@@ -989,10 +989,10 @@ class TestConversationRebuild:
             replayed_reasoning_refs=[],
         )
 
-        first_user = transformed[0]
-        assert first_user["role"] == "user"
-        first_text = first_user["content"][0]["text"]
-        assert "Stay on task." in first_text and "Use CSV outputs." in first_text
+        system_msg = next(item for item in transformed if item.get("role") == "system")
+        assert system_msg["content"][0]["text"] == "Stay on task."
+        developer_msg = next(item for item in transformed if item.get("role") == "developer")
+        assert "Use CSV outputs." in developer_msg["content"][0]["text"]
 
         artifact = next(
             (item for item in transformed if item.get("type") == "function_call_output"),

@@ -1,7 +1,7 @@
 # Open WebUI pipe for OpenRouter Responses API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.15-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-1.0.16-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 A production-focused Open WebUI “pipe” that routes chat-completions-style traffic through OpenRouter’s Responses API, with capability-aware routing, multimodal transforms, tool calling, optional persistence, and operator controls via valves.

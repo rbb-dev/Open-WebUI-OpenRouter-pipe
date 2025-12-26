@@ -461,3 +461,76 @@ def test_anthropic_interleaved_thinking_header_applied():
     headers = {}
     pipe._maybe_apply_anthropic_beta_headers(headers, "anthropic/claude-sonnet-4", valves=valves_disabled)
     assert "x-anthropic-beta" not in headers
+
+
+@pytest.mark.asyncio
+async def test_function_call_loop_limit_emits_warning(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test-loops",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"MAX_FUNCTION_CALL_LOOPS": 1})
+
+    def fake_supports(cls, feature, _model_id):
+        return feature == "function_calling"
+
+    monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
+
+    events = [
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "call-1",
+                        "call_id": "call-1",
+                        "name": "lookup",
+                        "arguments": "{}",
+                    },
+                ],
+                "usage": {},
+            },
+        },
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        assert request_body["model"] == body.model
+        for event in events:
+            yield event
+
+    async def fake_execute(self, calls, _tools):
+        return [
+            {
+                "type": "function_call_output",
+                "status": "completed",
+                "call_id": calls[0].get("call_id"),
+                "output": "ok",
+            }
+        ]
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+    monkeypatch.setattr(Pipe, "_execute_function_calls", fake_execute)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    notifications = [e for e in emitted if e.get("type") == "notification"]
+    assert notifications, "Expected a notification when MAX_FUNCTION_CALL_LOOPS is reached"
+    assert "MAX_FUNCTION_CALL_LOOPS" in notifications[-1]["data"]["content"]
+    chat_messages = [e for e in emitted if e.get("type") == "chat:message"]
+    assert any("Tool step limit reached" in (m.get("data", {}).get("content") or "") for m in chat_messages)
