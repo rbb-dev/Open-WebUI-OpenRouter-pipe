@@ -2890,6 +2890,14 @@ class Pipe:
             ge=1,
             description="Idle timeout (seconds) between tool executions in a queue. Set to null for unlimited idle time so intermittent tool usage does not fail unexpectedly.",
         )
+        TOOL_SHUTDOWN_TIMEOUT_SECONDS: float = Field(
+            default=10.0,
+            ge=0,
+            description=(
+                "Maximum seconds to wait for per-request tool workers to drain/stop during request cleanup. "
+                "0 disables the graceful wait and cancels workers immediately."
+            ),
+        )
         ENABLE_REDIS_CACHE: bool = Field(
             default=True,
             description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected.",
@@ -3933,17 +3941,33 @@ class Pipe:
         SessionLogger.set_log_queue(None)
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
-        """Gracefully stop per-request tool workers."""
-        try:
+        """Stop per-request tool workers (bounded wait, then cancel)."""
+
+        async def _graceful() -> None:
             active_workers = [task for task in context.workers if not task.done()]
             worker_count = len(active_workers)
-            if worker_count:
-                for _ in range(worker_count):
-                    await context.queue.put(None)
-                await context.queue.join()
+            if not worker_count:
+                return
+            for _ in range(worker_count):
+                await context.queue.put(None)
+            await context.queue.join()
+
+        timeout = self.valves.TOOL_SHUTDOWN_TIMEOUT_SECONDS
+        try:
+            if timeout <= 0:
+                raise asyncio.TimeoutError()
+            await asyncio.wait_for(_graceful(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                "Tool shutdown exceeded %.1fs; cancelling workers.",
+                timeout,
+            )
         except Exception:
-            # Ignore errors during graceful shutdown - workers will be cancelled anyway
-            pass
+            self.logger.debug(
+                "Tool shutdown encountered error; cancelling workers.",
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
+
         for task in context.workers:
             if not task.done():
                 task.cancel()
