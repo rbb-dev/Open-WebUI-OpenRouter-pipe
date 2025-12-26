@@ -59,6 +59,16 @@ Defaults are `0` (unbounded) for both queues.
 Monitoring:
 - `STREAMING_EVENT_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the event queue backlog is high.
 
+### Middleware streaming bridge queue (Open WebUI generator)
+
+When `pipe(..., body={"stream": true})` is used, the pipe returns an async generator that yields Open WebUI-compatible chunks. Internally, request-scoped tasks enqueue items into a per-request queue that the generator drains.
+
+This bridge is controlled by:
+- `MIDDLEWARE_STREAM_QUEUE_MAXSIZE` (default `0` = unbounded)
+- `MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS` (only applies when maxsize > 0)
+
+Rationale: a stalled or slow client should not allow unbounded memory growth, and teardown should not hang while attempting to enqueue the final sentinel.
+
 ---
 
 ## 4. What Open WebUI receives (emitters and event types)
@@ -111,4 +121,3 @@ This configuration effectively passes through deltas without batching.
 - Improve observability: set `STREAMING_EVENT_QUEUE_WARN_SIZE` low enough to signal stress early, but high enough to avoid constant warnings.
 
 All related defaults and ranges are listed in [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
-

@@ -2693,6 +2693,22 @@ class Pipe:
             ge=100,
             description="Log warning when event_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
         )
+        MIDDLEWARE_STREAM_QUEUE_MAXSIZE: int = Field(
+            default=0,
+            ge=0,
+            description=(
+                "Maximum number of per-request items buffered for the Open WebUI middleware streaming bridge. "
+                "0=unbounded (default behavior)."
+            ),
+        )
+        MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS: float = Field(
+            default=1.0,
+            ge=0,
+            description=(
+                "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while enqueueing a stream item before aborting the request. "
+                "0 disables the timeout (not recommended; a stalled client can hang producers)."
+            ),
+        )
         OPENROUTER_ERROR_TEMPLATE: str = Field(
             default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
             description=(
@@ -4224,14 +4240,15 @@ class Pipe:
         except Exception as exc:
             self._record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
-                with contextlib.suppress(Exception):
-                    await stream_queue.put({"error": {"detail": str(exc)}})
+                self._try_put_middleware_stream_nowait(
+                    stream_queue,
+                    {"error": {"detail": str(exc)}},
+                )
             if not job.future.done():
                 job.future.set_exception(exc)
         finally:
             if stream_queue is not None:
-                with contextlib.suppress(Exception):
-                    await stream_queue.put(None)
+                self._try_put_middleware_stream_nowait(stream_queue, None)
             if tool_context:
                 await self._shutdown_tool_context(tool_context)
             if tool_token is not None:
@@ -6220,7 +6237,12 @@ class Pipe:
         stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
         future = loop.create_future()
         if wants_stream:
-            stream_queue = asyncio.Queue()
+            stream_queue_maxsize = valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE
+            stream_queue = (
+                asyncio.Queue(maxsize=stream_queue_maxsize)
+                if stream_queue_maxsize > 0
+                else asyncio.Queue()
+            )
             if referer_override_invalid:
                 await stream_queue.put(
                     {
@@ -6269,7 +6291,15 @@ class Pipe:
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
                 try:
                     while True:
-                        item = await stream_queue.get()
+                        if future.done() and stream_queue.empty():
+                            break
+                        if stream_queue.maxsize > 0:
+                            try:
+                                item = await asyncio.wait_for(stream_queue.get(), timeout=0.25)
+                            except asyncio.TimeoutError:
+                                continue
+                        else:
+                            item = await stream_queue.get()
                         stream_queue.task_done()
                         if item is None:
                             break
@@ -10539,6 +10569,46 @@ class Pipe:
 
         return _guarded
 
+    def _try_put_middleware_stream_nowait(
+        self,
+        stream_queue: asyncio.Queue[dict[str, Any] | str | None],
+        item: dict[str, Any] | str | None,
+    ) -> None:
+        try:
+            stream_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            return
+        except Exception:
+            return
+
+    async def _put_middleware_stream_item(
+        self,
+        job: _PipeJob,
+        stream_queue: asyncio.Queue[dict[str, Any] | str | None],
+        item: dict[str, Any] | str,
+    ) -> None:
+        if job.future.cancelled():
+            raise asyncio.CancelledError()
+
+        if job.valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE <= 0:
+            await stream_queue.put(item)
+            return
+
+        timeout = job.valves.MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS
+        if timeout <= 0:
+            await stream_queue.put(item)
+            return
+
+        try:
+            await asyncio.wait_for(stream_queue.put(item), timeout=timeout)
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                "Middleware stream queue enqueue timed out (request_id=%s, maxsize=%s).",
+                job.request_id,
+                stream_queue.maxsize,
+            )
+            raise
+
     def _make_middleware_stream_emitter(
         self,
         job: _PipeJob,
@@ -10603,7 +10673,9 @@ class Pipe:
                                 should_emit = True
                 if not should_emit:
                     return
-                await stream_queue.put(
+                await self._put_middleware_stream_item(
+                    job,
+                    stream_queue,
                     {
                         "event": {
                             "type": "status",
@@ -10636,7 +10708,9 @@ class Pipe:
                     answer_started = True
                     if thinking_status_enabled and reasoning_status_buffer:
                         await _maybe_emit_reasoning_status("", force=True)
-                    await stream_queue.put(
+                    await self._put_middleware_stream_item(
+                        job,
+                        stream_queue,
                         openai_chat_chunk_message_template(model_id, delta_text)
                     )
                 return
@@ -10645,11 +10719,13 @@ class Pipe:
                 delta = data.get("delta")
                 if isinstance(delta, str) and delta:
                     if thinking_box_enabled:
-                        await stream_queue.put(
+                        await self._put_middleware_stream_item(
+                            job,
+                            stream_queue,
                             openai_chat_chunk_message_template(
                                 model_id,
                                 reasoning_content=delta,
-                            )
+                            ),
                         )
                     if thinking_status_enabled:
                         await _maybe_emit_reasoning_status(delta)
@@ -10665,14 +10741,14 @@ class Pipe:
                     await _maybe_emit_reasoning_status("", force=True)
                 error = data.get("error")
                 if isinstance(error, dict) and error:
-                    await stream_queue.put({"error": error})
+                    await self._put_middleware_stream_item(job, stream_queue, {"error": error})
 
                 usage = data.get("usage")
                 if isinstance(usage, dict) and usage:
-                    await stream_queue.put({"usage": usage})
+                    await self._put_middleware_stream_item(job, stream_queue, {"usage": usage})
                 return
 
-            await stream_queue.put({"event": event})
+            await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 
         return _emit
 
