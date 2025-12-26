@@ -6,12 +6,12 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.13
+version: 1.0.14
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
 - This work was based on excellent work by jrkropp (https://github.com/jrkropp/open-webui-developer-toolkit)
-- It was adapted to be used exclusiively with OpenRouter Responses API and extended with additional features.
+- It was adapted to be used exclusively with OpenRouter Responses API and extended with additional features.
 - Auto-discovers and imports full OpenRouter Responses model catalog with capabilities and identifiers.
 - Translates Completions to Responses API, persisting reasoning/tool artifacts per chat via scoped SQLAlchemy tables.
 - Handles 100-500 concurrent users with per-request isolation, async queues, and global semaphores for overload protection (503 rejects).
