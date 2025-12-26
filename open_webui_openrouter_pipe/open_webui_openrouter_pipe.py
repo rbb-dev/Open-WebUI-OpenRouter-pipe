@@ -10181,10 +10181,15 @@ class Pipe:
         status: str = "completed",
     ) -> dict[str, Any]:
         call_id = call.get("call_id") or generate_item_id()
+        # OpenRouter Responses schema does not accept arbitrary status values (e.g. "failed")
+        # for tool items in `input`. Encode failures in the output payload and keep status in
+        # the accepted enum for compatibility.
+        allowed_statuses = {"completed", "incomplete", "in_progress"}
+        normalized_status = status if status in allowed_statuses else "completed"
         return {
             "type": "function_call_output",
             "id": generate_item_id(),
-            "status": status,
+            "status": normalized_status,
             "call_id": call_id,
             "output": output_text,
         }
