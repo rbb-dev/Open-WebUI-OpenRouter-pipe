@@ -63,6 +63,8 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Controls where in-progress thinking is surfaced while a response is being generated. |
 | `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `bool` | `True` | When enabled and the selected model is `anthropic/...`, sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude interleaved thinking streams. |
+| `ENABLE_ANTHROPIC_PROMPT_CACHING` | `bool` | `True` | When enabled and the selected model is `anthropic/...`, inserts `cache_control` breakpoints into system + user text blocks (up to 4) to enable Claude prompt caching for large stable prefixes (system prompts, tools, RAG context). |
+| `ANTHROPIC_PROMPT_CACHE_TTL` | `Literal[\"5m\", \"1h\"]` | `5m` | TTL for Claude prompt caching breakpoints (ephemeral cache). System valve only; default `5m`. |
 | `AUTO_CONTEXT_TRIMMING` | `bool` | `True` | Automatically attaches OpenRouter’s `middle-out` transform so long prompts are trimmed from the middle instead of failing with context errors. |
 | `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Default reasoning effort requested from supported models. |
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Controls the reasoning summary emitted by supported models. |

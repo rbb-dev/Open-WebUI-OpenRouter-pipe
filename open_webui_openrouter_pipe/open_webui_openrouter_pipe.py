@@ -2501,6 +2501,23 @@ class Pipe:
                 "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models."
             ),
         )
+        ENABLE_ANTHROPIC_PROMPT_CACHING: bool = Field(
+            default=True,
+            title="Anthropic prompt caching",
+            description=(
+                "When True and the selected model is `anthropic/...`, insert `cache_control` breakpoints into "
+                "system/user text blocks to enable Claude prompt caching and reduce per-turn costs for large "
+                "stable prefixes (system prompts, tools, RAG context)."
+            ),
+        )
+        ANTHROPIC_PROMPT_CACHE_TTL: Literal["5m", "1h"] = Field(
+            default="5m",
+            title="Anthropic prompt cache TTL",
+            description=(
+                "TTL for Claude prompt caching breakpoints (ephemeral cache). Default is '5m'. "
+                "Note: Longer TTLs can increase cache write costs."
+            ),
+        )
         AUTO_CONTEXT_TRIMMING: bool = Field(
             default=True,
             title="Auto context trimming",
@@ -7017,6 +7034,7 @@ class Pipe:
         # STEP 7: Send to OpenAI Responses API (with provider-specific fallbacks)
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
+        anthropic_prompt_cache_retry_attempted = False
         while True:
             try:
                 if responses_body.stream:
@@ -7047,6 +7065,23 @@ class Pipe:
                     pipe_identifier=pipe_identifier,
                 )
             except OpenRouterAPIError as exc:
+                api_model_label = getattr(responses_body, "api_model", None) or responses_body.model
+                if (
+                    not anthropic_prompt_cache_retry_attempted
+                    and getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False)
+                    and isinstance(api_model_label, str)
+                    and api_model_label.startswith("anthropic/")
+                    and exc.status == 400
+                    and Pipe._input_contains_cache_control(getattr(responses_body, "input", None))
+                ):
+                    self.logger.warning(
+                        "Prompt caching payload rejected by provider; retrying without cache_control (model=%s).",
+                        api_model_label,
+                    )
+                    Pipe._strip_cache_control_from_input(responses_body.input)
+                    anthropic_prompt_cache_retry_attempted = True
+                    continue
+
                 if not reasoning_effort_retry_attempted:
                     error_details = {"provider_raw": exc.provider_raw}
                     if _is_reasoning_effort_error(error_details):
@@ -8468,6 +8503,11 @@ class Pipe:
                         }
                     )
 
+        self._maybe_apply_anthropic_prompt_caching(
+            openai_input,
+            model_id=target_model_id,
+            valves=active_valves,
+        )
         return openai_input
 
     def _should_retry_without_reasoning(
@@ -9998,6 +10038,95 @@ class Pipe:
         if values:
             headers["x-anthropic-beta"] = ",".join(values)
         headers.pop("X-Anthropic-Beta", None)
+
+    @staticmethod
+    def _input_contains_cache_control(value: Any) -> bool:
+        if isinstance(value, dict):
+            if "cache_control" in value:
+                return True
+            return any(Pipe._input_contains_cache_control(v) for v in value.values())
+        if isinstance(value, list):
+            return any(Pipe._input_contains_cache_control(v) for v in value)
+        return False
+
+    @staticmethod
+    def _strip_cache_control_from_input(value: Any) -> None:
+        if isinstance(value, dict):
+            value.pop("cache_control", None)
+            for v in value.values():
+                Pipe._strip_cache_control_from_input(v)
+            return
+        if isinstance(value, list):
+            for item in value:
+                Pipe._strip_cache_control_from_input(item)
+
+    def _maybe_apply_anthropic_prompt_caching(
+        self,
+        input_items: list[dict[str, Any]],
+        *,
+        model_id: str,
+        valves: "Pipe.Valves",
+    ) -> None:
+        if not getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False):
+            return
+        if not isinstance(model_id, str):
+            return
+        normalized = model_id.strip()
+        if not normalized.startswith("anthropic/"):
+            return
+
+        ttl = getattr(valves, "ANTHROPIC_PROMPT_CACHE_TTL", "5m")
+        cache_control_payload: dict[str, Any] = {"type": "ephemeral"}
+        if isinstance(ttl, str) and ttl:
+            cache_control_payload["ttl"] = ttl
+
+        system_message_indices: list[int] = []
+        user_message_indices: list[int] = []
+        for idx, item in enumerate(input_items):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            role = (item.get("role") or "").lower()
+            if role in {"system", "developer"}:
+                system_message_indices.append(idx)
+            elif role == "user":
+                user_message_indices.append(idx)
+
+        target_indices: list[int] = []
+        if system_message_indices:
+            target_indices.append(system_message_indices[-1])
+        if user_message_indices:
+            target_indices.append(user_message_indices[-1])
+        if len(user_message_indices) > 1:
+            target_indices.append(user_message_indices[-2])
+        if len(user_message_indices) > 2:
+            target_indices.append(user_message_indices[-3])
+
+        seen: set[int] = set()
+        for msg_idx in target_indices:
+            if msg_idx in seen:
+                continue
+            seen.add(msg_idx)
+            msg = input_items[msg_idx]
+            content = msg.get("content")
+            if not isinstance(content, list) or not content:
+                continue
+            for block in reversed(content):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "input_text":
+                    continue
+                text = block.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                existing_cc = block.get("cache_control")
+                if existing_cc is None:
+                    block["cache_control"] = dict(cache_control_payload)
+                elif isinstance(existing_cc, dict):
+                    if cache_control_payload.get("ttl") and "ttl" not in existing_cc:
+                        existing_cc["ttl"] = cache_control_payload["ttl"]
+                break
 
     # 4.5 LLM HTTP Request Helpers
     async def send_openai_responses_streaming_request(
