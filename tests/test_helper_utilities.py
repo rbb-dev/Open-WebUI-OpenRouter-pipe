@@ -144,6 +144,17 @@ def test_build_tools_combines_registry_and_extras(monkeypatch):
     assert alpha_tool["parameters"]["properties"] == {}
 
 
+def test_tool_output_clamps_failed_status():
+    pipe = Pipe()
+    output = pipe._build_tool_output(
+        {"call_id": "call-1"},
+        "Tool not found",
+        status="failed",
+    )
+    assert output["type"] == "function_call_output"
+    assert output["status"] == "completed"
+
+
 def test_normalize_persisted_items_and_classifier():
     call = _normalize_persisted_item({"type": "function_call", "name": "fetch", "arguments": {"foo": 1}})
     assert call is not None
