@@ -4089,6 +4089,15 @@ class Pipe:
             if item.future.done():
                 continue
             if isinstance(result, BaseException):
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    call_name = item.call.get("name")
+                    call_id = item.call.get("call_id")
+                    self.logger.debug(
+                        "Tool execution raised exception (name=%s, call_id=%s)",
+                        call_name,
+                        call_id,
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
                 payload = self._build_tool_output(
                     item.call,
                     f"Tool error: {result}",
@@ -4152,7 +4161,13 @@ class Pipe:
                     return ("completed", text)
         except Exception as exc:
             self._record_tool_failure_type(context.user_id, tool_type)
-            raise exc
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Tool '%s' execution failed.",
+                    item.call.get("name"),
+                    exc_info=True,
+                )
+            raise
         return ("failed", "Tool execution produced no output.")
 
     async def _call_tool_callable(self, fn: ToolCallable, args: dict[str, Any]) -> Any:
@@ -10441,6 +10456,13 @@ class Pipe:
                     context.timeout_error = context.timeout_error or message
                 raise RuntimeError(message)
             except Exception as exc:  # pragma: no cover - defensive
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        "Tool '%s' raised while awaiting result (call_id=%s).",
+                        call.get("name"),
+                        call.get("call_id"),
+                        exc_info=True,
+                    )
                 result = self._build_tool_output(
                     call,
                     f"Tool error: {exc}",
