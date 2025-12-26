@@ -8470,6 +8470,10 @@ class Pipe:
         reasoning_buffer = ""
         reasoning_completed_emitted = False
         reasoning_stream_active = False
+        active_reasoning_item_id: str | None = None
+        reasoning_stream_buffers: dict[str, str] = {}
+        reasoning_stream_has_incremental: set[str] = set()
+        reasoning_stream_completed: set[str] = set()
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
         chat_id = metadata.get("chat_id")
@@ -8707,6 +8711,67 @@ class Pipe:
                         return "".join(fragments)
             return ""
 
+        def _reasoning_stream_key(event: dict[str, Any], etype: Optional[str]) -> str:
+            """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
+            item_id = event.get("item_id")
+            if isinstance(item_id, str) and item_id:
+                return item_id
+            if etype in {"response.output_item.added", "response.output_item.done"}:
+                item_raw = event.get("item")
+                item = item_raw if isinstance(item_raw, dict) else {}
+                iid = item.get("id")
+                if isinstance(iid, str) and iid:
+                    return iid
+            if active_reasoning_item_id:
+                return active_reasoning_item_id
+            return "__reasoning__"
+
+        def _extract_reasoning_text_from_item(item: dict[str, Any]) -> str:
+            """Extract reasoning content/summary from a completed output item."""
+            if not isinstance(item, dict):
+                return ""
+            fragments: list[str] = []
+            content = item.get("content")
+            if isinstance(content, list):
+                for entry in content:
+                    if isinstance(entry, dict):
+                        text_val = entry.get("text")
+                        if isinstance(text_val, str) and text_val:
+                            fragments.append(text_val)
+            if fragments:
+                return "".join(fragments)
+            summary = item.get("summary")
+            if isinstance(summary, list):
+                for entry in summary:
+                    if isinstance(entry, dict):
+                        text_val = entry.get("text")
+                        if isinstance(text_val, str) and text_val:
+                            fragments.append(text_val)
+            return "".join(fragments)
+
+        def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
+            """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
+            nonlocal reasoning_buffer
+            candidate = (incoming or "")
+            if not candidate:
+                return ""
+            current = reasoning_stream_buffers.get(key, "")
+            append = ""
+            if not current:
+                append = candidate
+            elif candidate == current:
+                append = ""
+            elif candidate.startswith(current):
+                append = candidate[len(current) :]
+            elif current.startswith(candidate):
+                append = ""
+            else:
+                append = candidate if allow_misaligned else ""
+            if append:
+                reasoning_stream_buffers[key] = f"{current}{append}"
+                reasoning_buffer += append
+            return append
+
         async def _flush_pending(reason: str) -> None:
             """Persist buffered artifacts and emit a warning when the DB fails."""
             if not pending_items:
@@ -8834,6 +8899,15 @@ class Pipe:
                         self.logger.debug("OpenRouter payload: %s",json.dumps(event, indent=2, ensure_ascii=False))
 
                     if etype:
+                        # Track the most-recent reasoning item id so unkeyed reasoning deltas can be associated.
+                        if etype == "response.output_item.added":
+                            item_raw = event.get("item")
+                            item = item_raw if isinstance(item_raw, dict) else {}
+                            if item.get("type") == "reasoning":
+                                iid = item.get("id")
+                                if isinstance(iid, str) and iid:
+                                    active_reasoning_item_id = iid
+
                         is_reasoning_event = (
                             etype.startswith("response.reasoning")
                             and etype != "response.reasoning_summary_text.done"
@@ -8850,11 +8924,24 @@ class Pipe:
                             # Stop "Thinking..." placeholders when reasoning starts
                             note_model_activity()
 
+                            key = _reasoning_stream_key(event, etype)
+                            is_incremental = etype.endswith(".delta") or etype.endswith(".added")
+                            is_final = etype.endswith(".done") or etype.endswith(".completed")
+
                             delta_text = _extract_reasoning_text(event)
                             normalized_delta = _normalize_surrogate_chunk(delta_text, "reasoning") if delta_text else ""
+                            if normalized_delta and is_incremental:
+                                reasoning_stream_has_incremental.add(key)
+
+                            append = ""
                             if normalized_delta:
+                                append = _append_reasoning_text(
+                                    key,
+                                    normalized_delta,
+                                    allow_misaligned=is_incremental,
+                                )
+                            if append:
                                 note_generation_activity()
-                                reasoning_buffer += normalized_delta
 
                                 if event_emitter and thinking_box_enabled:
                                     await event_emitter(
@@ -8862,25 +8949,30 @@ class Pipe:
                                             "type": "reasoning:delta",
                                             "data": {
                                                 "content": reasoning_buffer,
-                                                "delta": normalized_delta,
+                                                "delta": append,
                                                 "event": etype,
                                             },
                                         }
                                     )
 
-                                await _maybe_emit_reasoning_status(normalized_delta)
-                            if etype.endswith(".done") or etype.endswith(".completed"):
+                                await _maybe_emit_reasoning_status(append)
+                            if is_final:
                                 if event_emitter:
                                     await _maybe_emit_reasoning_status("", force=True)
 
-                                    if thinking_box_enabled:
+                                    if (
+                                        thinking_box_enabled
+                                        and reasoning_stream_buffers.get(key)
+                                        and key not in reasoning_stream_completed
+                                    ):
                                         await event_emitter(
                                             {
                                                 "type": "reasoning:completed",
                                                 "data": {"content": reasoning_buffer},
                                             }
                                         )
-                                reasoning_completed_emitted = True
+                                        reasoning_stream_completed.add(key)
+                                        reasoning_completed_emitted = True
                             continue
 
                     # ─── Emit partial delta assistant message
@@ -8926,31 +9018,43 @@ class Pipe:
                             summary = title if not content else f"{title}\n{content}"
                             if event_emitter:
                                 note_model_activity()
-                                if thinking_box_enabled and (not reasoning_buffer):
+                                key = _reasoning_stream_key(event, etype)
+                                if thinking_box_enabled and not reasoning_stream_buffers.get(key):
                                     normalized_summary = (
                                         _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
                                     )
+                                    append = ""
                                     if normalized_summary:
+                                        append = _append_reasoning_text(
+                                            key,
+                                            normalized_summary,
+                                            allow_misaligned=False,
+                                        )
+                                    if append:
                                         note_generation_activity()
                                         reasoning_stream_active = True
-                                        reasoning_buffer += normalized_summary
                                         await event_emitter(
                                             {
                                                 "type": "reasoning:delta",
                                                 "data": {
                                                     "content": reasoning_buffer,
-                                                    "delta": normalized_summary,
+                                                    "delta": append,
                                                     "event": etype,
                                                 },
                                             }
                                         )
-                                    if not reasoning_completed_emitted:
+                                    if (
+                                        key not in reasoning_stream_completed
+                                        and thinking_box_enabled
+                                        and reasoning_stream_buffers.get(key)
+                                    ):
                                         await event_emitter(
                                             {
                                                 "type": "reasoning:completed",
                                                 "data": {"content": reasoning_buffer},
                                             }
                                         )
+                                        reasoning_stream_completed.add(key)
                                         reasoning_completed_emitted = True
                                 if thinking_status_enabled:
                                     cancel_thinking()
@@ -9001,6 +9105,12 @@ class Pipe:
                         item = item_raw if isinstance(item_raw, dict) else {}
                         item_type = item.get("type", "")
                         item_status = item.get("status", "")
+
+                        if item_type == "reasoning":
+                            iid = item.get("id")
+                            if isinstance(iid, str) and iid:
+                                active_reasoning_item_id = iid
+                            continue
 
                         if item_type == "message" and item_status == "in_progress":
                             provider_status_seen = True
@@ -9061,9 +9171,50 @@ class Pipe:
                         # Prepare detailed content per item_type
                         if item_type == "function_call":
                             title = f"Running the {item_name} tool…"
-                            arguments = json.loads(item.get("arguments") or "{}")
-                            args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
-                            content = wrap_code_block(f"{item_name}({args_formatted})", "python")
+                            raw_arguments = item.get("arguments")
+                            parsed_arguments: dict[str, Any] | None = None
+                            if isinstance(raw_arguments, dict):
+                                parsed_arguments = raw_arguments
+                            elif isinstance(raw_arguments, str):
+                                parsed = _safe_json_loads(raw_arguments)
+                                if isinstance(parsed, dict):
+                                    parsed_arguments = parsed
+
+                            if parsed_arguments is not None:
+                                args_formatted = ", ".join(
+                                    f"{k}={json.dumps(v, ensure_ascii=False)}"
+                                    for k, v in parsed_arguments.items()
+                                )
+                                invocation = (
+                                    f"{item_name}({args_formatted})"
+                                    if args_formatted
+                                    else f"{item_name}()"
+                                )
+                            else:
+                                raw_text = ""
+                                if isinstance(raw_arguments, str):
+                                    raw_text = raw_arguments.strip()
+                                elif raw_arguments is not None:
+                                    with contextlib.suppress(TypeError, ValueError):
+                                        raw_text = json.dumps(raw_arguments, ensure_ascii=False)
+                                    if not raw_text:
+                                        raw_text = str(raw_arguments)
+
+                                if not raw_text or raw_text == "{}":
+                                    invocation = f"{item_name}()"
+                                else:
+                                    truncated = (
+                                        raw_text
+                                        if len(raw_text) <= 1000
+                                        else (raw_text[:1000] + "…")
+                                    )
+                                    invocation = (
+                                        "# Unparsed tool arguments "
+                                        "(provider sent invalid/non-object JSON)\n"
+                                        f"{item_name}(raw_arguments={json.dumps(truncated, ensure_ascii=False)})"
+                                    )
+
+                            content = wrap_code_block(invocation, "python")
 
                         elif item_type == "web_search_call":
                             action = item.get("action", {}) or {}
@@ -9189,11 +9340,37 @@ class Pipe:
                             title = "Let me run that command…"
                         elif item_type == "reasoning":
                             title = None # Don't emit a title for reasoning items
+                            key = _reasoning_stream_key(event, etype)
+                            snapshot = _extract_reasoning_text_from_item(item)
+                            normalized_snapshot = (
+                                _normalize_surrogate_chunk(snapshot, "reasoning") if snapshot else ""
+                            )
+                            append = ""
+                            if normalized_snapshot:
+                                append = _append_reasoning_text(
+                                    key,
+                                    normalized_snapshot,
+                                    allow_misaligned=False,
+                                )
+                            if append and event_emitter and thinking_box_enabled:
+                                reasoning_stream_active = True
+                                note_model_activity()
+                                note_generation_activity()
+                                await event_emitter(
+                                    {
+                                        "type": "reasoning:delta",
+                                        "data": {
+                                            "content": reasoning_buffer,
+                                            "delta": append,
+                                            "event": etype,
+                                        },
+                                    }
+                                )
                             if (
                                 event_emitter
                                 and thinking_box_enabled
-                                and reasoning_buffer
-                                and not reasoning_completed_emitted
+                                and reasoning_stream_buffers.get(key)
+                                and key not in reasoning_stream_completed
                             ):
                                 await event_emitter(
                                     {
@@ -9201,6 +9378,7 @@ class Pipe:
                                         "data": {"content": reasoning_buffer},
                                     }
                                 )
+                                reasoning_stream_completed.add(key)
                                 reasoning_completed_emitted = True
 
                         # Log the status with prepared title and detailed content instead of emitting it
@@ -10260,7 +10438,11 @@ class Pipe:
                 tasks.append(asyncio.sleep(0, result=RuntimeError("Tool has no callable configured")))
                 continue
             raw_args = call.get("arguments") or "{}"
-            args = self._parse_tool_arguments(raw_args)
+            try:
+                args = self._parse_tool_arguments(raw_args)
+            except Exception as exc:
+                tasks.append(asyncio.sleep(0, result=RuntimeError(f"Invalid arguments: {exc}")))
+                continue
             if inspect.iscoroutinefunction(fn):
                 tasks.append(fn(**args))
             else:

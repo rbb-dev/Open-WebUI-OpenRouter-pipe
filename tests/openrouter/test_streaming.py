@@ -443,6 +443,205 @@ async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mod
     assert not any("Summary only" in text for text in status_texts)
 
 
+@pytest.mark.asyncio
+async def test_reasoning_summary_part_done_does_not_replay_after_incremental(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+
+    events = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "reasoning", "id": "rs-1", "summary": []},
+        },
+        {
+            "type": "response.reasoning_summary_part.added",
+            "output_index": 0,
+            "item_id": "rs-1",
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": "Hello"},
+        },
+        {"type": "response.output_text.delta", "delta": "Answer"},
+        {
+            "type": "response.reasoning_summary_part.done",
+            "output_index": 0,
+            "item_id": "rs-1",
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": "Hello"},
+        },
+        {
+            "type": "response.reasoning_summary_text.done",
+            "output_index": 0,
+            "item_id": "rs-1",
+            "summary_index": 0,
+            "text": "**Thinking…**\nHello",
+        },
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    deltas = [event for event in emitted if event.get("type") == "reasoning:delta"]
+    assert [event.get("data", {}).get("delta") for event in deltas] == ["Hello"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+
+    events = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "reasoning", "id": "rs-1", "summary": []},
+        },
+        {"type": "response.reasoning_text.delta", "delta": "Step 1."},
+        {"type": "response.output_text.delta", "delta": "Answer"},
+        {
+            "type": "response.reasoning_text.done",
+            "output_index": 0,
+            "item_id": "rs-1",
+            "content_index": 0,
+            "text": "Step 1.",
+        },
+        {
+            "type": "response.content_part.done",
+            "item_id": "rs-1",
+            "output_index": 0,
+            "content_index": 0,
+            "part": {"type": "reasoning_text", "text": "Step 1."},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "reasoning",
+                "id": "rs-1",
+                "summary": [],
+                "content": [{"type": "reasoning_text", "text": "Step 1."}],
+            },
+        },
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    deltas = [event for event in emitted if event.get("type") == "reasoning:delta"]
+    assert [event.get("data", {}).get("delta") for event in deltas] == ["Step 1."]
+
+
+@pytest.mark.asyncio
+async def test_function_call_status_invalid_json_arguments_does_not_crash(monkeypatch):
+    pipe = Pipe()
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves
+
+    events = [
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "function_call",
+                "id": "call-1",
+                "call_id": "call-1",
+                "name": "get_weather_forecast_forecast_get",
+                "arguments": "{",
+            },
+        },
+        {"type": "response.output_text.delta", "delta": "OK"},
+        {"type": "response.completed", "response": {"output": [], "usage": {}}},
+    ]
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert result == "OK"
+    assert not any(event.get("type") == "chat:completion" and event.get("data", {}).get("error") for event in emitted)
+
+
+@pytest.mark.asyncio
+async def test_legacy_tool_execution_invalid_arguments_returns_failed_output():
+    pipe = Pipe()
+    calls = [{"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{"}]
+    tools = {"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}}
+
+    outputs = await pipe._execute_function_calls_legacy(calls, tools)
+
+    assert outputs and outputs[0]["type"] == "function_call_output"
+    assert "Invalid arguments" in outputs[0]["output"]
+
+
 def test_anthropic_interleaved_thinking_header_applied():
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True})
