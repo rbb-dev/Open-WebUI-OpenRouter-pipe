@@ -4626,7 +4626,15 @@ class Pipe:
         executor = self._db_executor
         self._db_executor = None
         if executor:
-            executor.shutdown(wait=True)
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+            except Exception:
+                self.logger.debug(
+                    "Failed to shutdown DB executor cleanly",
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
         self._stop_session_log_workers()
 
     def _write_session_log_archive(self, job: _SessionLogArchiveJob) -> None:
