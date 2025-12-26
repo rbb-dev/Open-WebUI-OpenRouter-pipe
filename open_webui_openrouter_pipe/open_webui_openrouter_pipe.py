@@ -2454,6 +2454,14 @@ class Pipe:
                 "'both' enables both outputs."
             ),
         )
+        ENABLE_ANTHROPIC_INTERLEAVED_THINKING: bool = Field(
+            default=True,
+            title="Anthropic interleaved thinking",
+            description=(
+                "When True, enables Claude's interleaved thinking mode by sending "
+                "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models."
+            ),
+        )
         AUTO_CONTEXT_TRIMMING: bool = Field(
             default=True,
             title="Auto context trimming",
@@ -2955,6 +2963,14 @@ class Pipe:
                 "'open_webui' uses the Open WebUI reasoning box, "
                 "'status' uses status messages, "
                 "or 'both' shows both."
+            ),
+        )
+        ENABLE_ANTHROPIC_INTERLEAVED_THINKING: bool = Field(
+            default=True,
+            title="Interleaved thinking (Claude)",
+            description=(
+                "When enabled, request Claude's interleaved thinking stream by sending "
+                "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models."
             ),
         )
         REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
@@ -8719,6 +8735,7 @@ class Pipe:
                     request_payload,
                     api_key=api_key_value,
                     base_url=valves.BASE_URL,
+                    valves=valves,
                     workers=valves.SSE_WORKERS_PER_REQUEST,
                     breaker_key=user_id or None,
                     delta_char_limit=0,
@@ -9543,6 +9560,36 @@ class Pipe:
         joined = "\n".join(part for part in text_parts if part)
         return joined
       
+    def _maybe_apply_anthropic_beta_headers(
+        self,
+        headers: dict[str, str],
+        model: Any,
+        *,
+        valves: "Pipe.Valves",
+    ) -> None:
+        """Apply provider-specific beta headers when needed.
+
+        Currently used to opt into Claude's interleaved thinking mode when requested.
+        """
+        if not isinstance(headers, dict):
+            return
+        if not getattr(valves, "ENABLE_ANTHROPIC_INTERLEAVED_THINKING", True):
+            return
+        if not isinstance(model, str):
+            return
+        model_id = model.strip()
+        if not model_id.startswith("anthropic/"):
+            return
+
+        feature = "interleaved-thinking-2025-05-14"
+        existing = headers.get("x-anthropic-beta") or headers.get("X-Anthropic-Beta") or ""
+        values = [part.strip() for part in existing.split(",") if part.strip()] if existing else []
+        if feature not in values:
+            values.append(feature)
+        if values:
+            headers["x-anthropic-beta"] = ",".join(values)
+        headers.pop("X-Anthropic-Beta", None)
+
     # 4.5 LLM HTTP Request Helpers
     async def send_openai_responses_streaming_request(
         self,
@@ -9551,6 +9598,7 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
+        valves: "Pipe.Valves | None" = None,
         workers: int = 4,
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
@@ -9561,6 +9609,7 @@ class Pipe:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
+        effective_valves = valves or self.valves
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -9568,6 +9617,11 @@ class Pipe:
             "X-Title": _OPENROUTER_TITLE,
             "HTTP-Referer": _OPENROUTER_REFERER,
         }
+        self._maybe_apply_anthropic_beta_headers(
+            headers,
+            request_body.get("model"),
+            valves=effective_valves,
+        )
         _debug_print_request(headers, request_body)
         url = base_url.rstrip("/") + "/responses"
 
@@ -10205,6 +10259,7 @@ class Pipe:
 
         thinking_mode = job.valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
+        thinking_status_enabled = thinking_mode in {"status", "both"}
 
         async def _emit(event: dict[str, Any]) -> None:
             nonlocal assistant_sent, answer_started
@@ -10267,10 +10322,9 @@ class Pipe:
                     if content.startswith(assistant_sent):
                         delta_text = content[len(assistant_sent) :]
                         assistant_sent = content
-
                 if isinstance(delta_text, str) and delta_text:
                     answer_started = True
-                    if reasoning_status_buffer:
+                    if thinking_status_enabled and reasoning_status_buffer:
                         await _maybe_emit_reasoning_status("", force=True)
                     await stream_queue.put(
                         openai_chat_chunk_message_template(model_id, delta_text)
@@ -10280,27 +10334,24 @@ class Pipe:
             if etype == "reasoning:delta":
                 delta = data.get("delta")
                 if isinstance(delta, str) and delta:
-                    # Open WebUI auto-renders `delta.reasoning_content` into an embedded
-                    # `<details type="reasoning">` block. Once assistant text has started,
-                    # additional reasoning deltas would create a second block. To keep the
-                    # UI tidy (and avoid the duplicate "Thought for <1 second" block),
-                    # reroute late reasoning into status events instead.
-                    if answer_started:
-                        await _maybe_emit_reasoning_status(delta)
-                    elif thinking_box_enabled:
+                    if thinking_box_enabled:
                         await stream_queue.put(
                             openai_chat_chunk_message_template(
                                 model_id,
                                 reasoning_content=delta,
                             )
                         )
+                    if thinking_status_enabled:
+                        await _maybe_emit_reasoning_status(delta)
                 return
 
             if etype == "reasoning:completed":
+                if thinking_status_enabled and reasoning_status_buffer:
+                    await _maybe_emit_reasoning_status("", force=True)
                 return
 
             if etype == "chat:completion":
-                if reasoning_status_buffer:
+                if thinking_status_enabled and reasoning_status_buffer:
                     await _maybe_emit_reasoning_status("", force=True)
                 error = data.get("error")
                 if isinstance(error, dict) and error:

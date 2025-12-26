@@ -289,7 +289,7 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
     ]
     assert reasoning_chunks
     assert reasoning_chunks[0]["choices"][0]["delta"]["reasoning_content"] == "Analysing…"
-    assert not any(
+    assert any(
         chunk["choices"][0]["delta"].get("reasoning_content") == "Late reasoning."
         for chunk in reasoning_chunks
     )
@@ -307,7 +307,7 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
         for item in items
     )
 
-    assert any(
+    assert not any(
         isinstance(item, dict)
         and item.get("event", {}).get("type") == "status"
         and "Late reasoning." in (item.get("event", {}).get("data", {}) or {}).get("description", "")
@@ -441,3 +441,23 @@ async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mod
     status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
     assert any("Thinking" in text for text in status_texts)
     assert not any("Summary only" in text for text in status_texts)
+
+
+def test_anthropic_interleaved_thinking_header_applied():
+    pipe = Pipe()
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True})
+
+    headers: dict[str, str] = {}
+    pipe._maybe_apply_anthropic_beta_headers(headers, "anthropic/claude-sonnet-4", valves=valves)
+    assert headers.get("x-anthropic-beta") == "interleaved-thinking-2025-05-14"
+
+    headers = {"x-anthropic-beta": "fine-grained-tool-streaming-2025-05-14"}
+    pipe._maybe_apply_anthropic_beta_headers(headers, "anthropic/claude-sonnet-4", valves=valves)
+    assert headers.get("x-anthropic-beta") == (
+        "fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14"
+    )
+
+    valves_disabled = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": False})
+    headers = {}
+    pipe._maybe_apply_anthropic_beta_headers(headers, "anthropic/claude-sonnet-4", valves=valves_disabled)
+    assert "x-anthropic-beta" not in headers
