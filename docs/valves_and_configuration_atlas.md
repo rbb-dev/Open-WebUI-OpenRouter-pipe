@@ -61,6 +61,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `MODEL_CATALOG_REFRESH_SECONDS` | `int` | `3600` | How long to cache the OpenRouter model catalog (seconds) before refreshing. |
 | `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Controls where in-progress thinking is surfaced while a response is being generated. |
+| `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `bool` | `True` | When enabled and the selected model is `anthropic/...`, sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude interleaved thinking streams. |
 | `AUTO_CONTEXT_TRIMMING` | `bool` | `True` | Automatically attaches OpenRouter’s `middle-out` transform so long prompts are trimmed from the middle instead of failing with context errors. |
 | `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Default reasoning effort requested from supported models. |
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Controls the reasoning summary emitted by supported models. |
@@ -194,6 +195,7 @@ User valves provide per-user behavior overrides for a subset of settings.
 | `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Display tokens, time, and cost at the end of each reply. |
 | `ENABLE_REASONING` | `bool` | `True` | While the AI works, show its step-by-step reasoning when supported. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Choose where to show the model’s thinking while it works. |
+| `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `bool` | `True` | When enabled and the selected model is `anthropic/...`, send `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude interleaved thinking streams. |
 | `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). |
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Choose how detailed the reasoning summary should be. |
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `next_reply` | User-level reasoning retention preference. |
