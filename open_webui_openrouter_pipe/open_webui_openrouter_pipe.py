@@ -10378,10 +10378,16 @@ class Pipe:
         self._redis_listener_task = None
         self._redis_flush_task = None
         self._redis_ready_task = None
-        if self._redis_client:
-            with contextlib.suppress(Exception):
-                await _wait_for(self._redis_client.close())
-            self._redis_client = None
+        client = self._redis_client
+        self._redis_client = None
+        if client:
+            try:
+                await _wait_for(client.close())
+            except Exception:
+                self.logger.debug(
+                    "Failed to close Redis client",
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
 
     # 4.6 Tool Execution Logic
     async def _execute_function_calls(
