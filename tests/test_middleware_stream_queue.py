@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from typing import Any, cast
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
 
@@ -41,5 +42,8 @@ async def test_put_middleware_stream_item_times_out_when_full() -> None:
     stream_queue.put_nowait({"event": {"type": "notification", "data": {}}})
 
     with pytest.raises(asyncio.TimeoutError):
-        await pipe._put_middleware_stream_item(job, stream_queue, {"event": {"type": "status"}})
-
+        await pipe._put_middleware_stream_item(
+            cast(Any, job),
+            stream_queue,
+            {"event": {"type": "status"}},
+        )
