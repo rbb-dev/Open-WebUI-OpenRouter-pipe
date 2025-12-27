@@ -2,6 +2,8 @@ import asyncio
 import pytest
 from typing import Any, cast
 
+from fastapi.responses import JSONResponse
+
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
     ModelFamily,
     OpenRouterAPIError,
@@ -275,7 +277,7 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
             __metadata__={"model": {"id": "sandbox"}},
             __tools__=None,
         )
-        assert hasattr(result, "__aiter__")
+        assert not isinstance(result, (str, type(None), JSONResponse))
         items = [item async for item in result]
     finally:
         await pipe.close()

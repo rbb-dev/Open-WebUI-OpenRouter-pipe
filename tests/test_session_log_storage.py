@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import json
 
-import pyzipper
+import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe, SessionLogger, _SessionLogArchiveJob, _sanitize_path_component
+pyzipper = pytest.importorskip("pyzipper")
+
+from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+    EncryptedStr,
+    Pipe,
+    SessionLogger,
+    _SessionLogArchiveJob,
+    _sanitize_path_component,
+)
 
 
 def test_sanitize_path_component_blocks_traversal() -> None:
@@ -61,7 +69,7 @@ def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatc
     valves = pipe.Valves(
         SESSION_LOG_STORE_ENABLED=True,
         SESSION_LOG_DIR=str(tmp_path),
-        SESSION_LOG_ZIP_PASSWORD="secret",
+        SESSION_LOG_ZIP_PASSWORD=EncryptedStr("secret"),
     )
 
     called = {"started": False}

@@ -105,6 +105,7 @@ import base64
 import binascii
 import functools
 import threading
+import fnmatch
 from time import perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
@@ -179,7 +180,7 @@ _REASONING_STATUS_IDLE_SECONDS = 0.75
 
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
-_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)/")
+_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 _TEMPLATE_VAR_PATTERN = re.compile(r"{(\w+)}")
 _TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
@@ -2121,6 +2122,436 @@ ALLOWED_OPENROUTER_FIELDS = {
     "transforms",
 }
 
+ALLOWED_OPENROUTER_CHAT_FIELDS = {
+    # Core OpenAI-style chat completion fields (OpenRouter supports additional provider routing keys too).
+    "model",
+    "models",
+    "messages",
+    "stream",
+    "stream_options",
+    "usage",
+    "max_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "top_a",
+    "stop",
+    "seed",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "response_format",
+    "structured_outputs",
+    "reasoning",
+    "include_reasoning",
+    "reasoning_effort",
+    "verbosity",
+    "web_search_options",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "plugins",
+    "user",
+    "session_id",
+    "metadata",
+    # OpenRouter routing extras (best-effort pass-through).
+    "provider",
+    "route",
+    "debug",
+    "image_config",
+    "modalities",
+    # Keep transforms for compatibility; OpenRouter may ignore if unsupported.
+    "transforms",
+}
+
+
+def _filter_openrouter_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter payload to fields accepted by OpenRouter's /chat/completions."""
+    if not isinstance(payload, dict):
+        return {}
+    filtered: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in ALLOWED_OPENROUTER_CHAT_FIELDS:
+            filtered[key] = value
+    return filtered
+
+
+def _parse_model_patterns(value: Any) -> list[str]:
+    """Parse comma-separated fnmatch patterns (order preserved, empty removed)."""
+    if not isinstance(value, str):
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    patterns: list[str] = []
+    for part in raw.split(","):
+        candidate = part.strip()
+        if not candidate:
+            continue
+        patterns.append(candidate)
+    return patterns
+
+
+def normalize_model_id_dotted(model_id: str) -> str:
+    """Return a dotted variant of a model id (e.g. 'anthropic/claude' -> 'anthropic.claude')."""
+    if not isinstance(model_id, str):
+        return ""
+    return model_id.strip().replace("/", ".")
+
+
+def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
+    """Return True when model_id matches any glob-style pattern."""
+    if not isinstance(model_id, str):
+        return False
+    candidate = model_id.strip()
+    if not candidate or not patterns:
+        return False
+    dotted = normalize_model_id_dotted(candidate)
+    for pattern in patterns:
+        if not pattern:
+            continue
+        pattern_stripped = pattern.strip()
+        if not pattern_stripped:
+            continue
+        dotted_pattern = normalize_model_id_dotted(pattern_stripped)
+        if (
+            fnmatch.fnmatchcase(candidate, pattern_stripped)
+            or fnmatch.fnmatchcase(candidate, dotted_pattern)
+            or fnmatch.fnmatchcase(dotted, pattern_stripped)
+            or fnmatch.fnmatchcase(dotted, dotted_pattern)
+        ):
+            return True
+    return False
+
+
+def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
+    """Convert Responses API tools → Chat Completions tools schema."""
+    if not isinstance(tools, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        function: dict[str, Any] = {
+            "name": name,
+        }
+        if isinstance(tool.get("description"), str):
+            function["description"] = tool["description"]
+        if isinstance(tool.get("parameters"), dict):
+            function["parameters"] = tool["parameters"]
+        if "strict" in tool:
+            function["strict"] = tool.get("strict")
+        out.append({"type": "function", "function": function})
+    return out
+
+
+def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
+    """Convert Responses API tool_choice → Chat Completions tool_choice."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return value
+    t = value.get("type")
+    name = value.get("name") or (value.get("function") or {}).get("name")
+    if t == "function" and isinstance(name, str) and name.strip():
+        return {"type": "function", "function": {"name": name.strip()}}
+    return value
+
+
+def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
+    """Convert Responses API input array → Chat Completions messages array.
+
+    Best-effort mapping for supported multimodal blocks. Unsupported blocks are
+    degraded to text notes rather than dropped.
+    """
+    if input_value is None:
+        return []
+    if isinstance(input_value, str):
+        text = input_value.strip()
+        return [{"role": "user", "content": text}] if text else []
+    if not isinstance(input_value, list):
+        return []
+
+    messages: list[dict[str, Any]] = []
+
+    def _to_text_block(text: str, *, cache_control: Any = None) -> dict[str, Any]:
+        block: dict[str, Any] = {"type": "text", "text": text}
+        if isinstance(cache_control, dict) and cache_control:
+            block["cache_control"] = dict(cache_control)
+        return block
+
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+
+        if itype == "message":
+            role = (item.get("role") or "").strip().lower()
+            if not role:
+                continue
+            raw_annotations = item.get("annotations")
+            msg_annotations: list[Any] = (
+                list(raw_annotations)
+                if isinstance(raw_annotations, list) and raw_annotations
+                else []
+            )
+            raw_reasoning_details = item.get("reasoning_details")
+            msg_reasoning_details: list[Any] = (
+                list(raw_reasoning_details)
+                if isinstance(raw_reasoning_details, list) and raw_reasoning_details
+                else []
+            )
+            raw_content = item.get("content")
+            if isinstance(raw_content, str):
+                msg: dict[str, Any] = {"role": role, "content": raw_content}
+                if msg_annotations:
+                    msg["annotations"] = msg_annotations
+                if msg_reasoning_details:
+                    msg["reasoning_details"] = msg_reasoning_details
+                messages.append(msg)
+                continue
+
+            blocks_out: list[dict[str, Any]] = []
+            if isinstance(raw_content, list):
+                for block in raw_content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype in {"input_text", "output_text"}:
+                        text = block.get("text")
+                        if isinstance(text, str) and text:
+                            blocks_out.append(
+                                _to_text_block(text, cache_control=block.get("cache_control"))
+                            )
+                        continue
+                    if btype == "input_image":
+                        url = block.get("image_url")
+                        if isinstance(url, str) and url.strip():
+                            image_url_obj: dict[str, Any] = {"url": url.strip()}
+                            detail = block.get("detail")
+                            if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+                                image_url_obj["detail"] = detail
+                            blocks_out.append({"type": "image_url", "image_url": image_url_obj})
+                        continue
+                    if btype == "image_url":
+                        image_url_val = block.get("image_url")
+                        if isinstance(image_url_val, dict):
+                            blocks_out.append({"type": "image_url", "image_url": dict(image_url_val)})
+                        elif isinstance(image_url_val, str) and image_url_val.strip():
+                            blocks_out.append({"type": "image_url", "image_url": {"url": image_url_val.strip()}})
+                        continue
+                    if btype == "input_audio":
+                        audio = block.get("input_audio")
+                        if isinstance(audio, dict):
+                            blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
+                        continue
+                    if btype == "video_url":
+                        video_url = block.get("video_url")
+                        if isinstance(video_url, dict):
+                            blocks_out.append({"type": "video_url", "video_url": dict(video_url)})
+                        elif isinstance(video_url, str) and video_url.strip():
+                            blocks_out.append({"type": "video_url", "video_url": {"url": video_url.strip()}})
+                        continue
+                    if btype == "input_file":
+                        filename = block.get("filename")
+                        file_data = block.get("file_data")
+                        file_url = block.get("file_url")
+                        file_payload: dict[str, Any] = {}
+                        if isinstance(filename, str) and filename.strip():
+                            file_payload["filename"] = filename.strip()
+                        file_value: Optional[str] = None
+                        if isinstance(file_data, str) and file_data.strip():
+                            file_value = file_data.strip()
+                        elif isinstance(file_url, str) and file_url.strip():
+                            file_value = file_url.strip()
+                        if file_value:
+                            file_payload["file_data"] = file_value
+                        if file_payload:
+                            blocks_out.append({"type": "file", "file": file_payload})
+                        continue
+
+            if not blocks_out:
+                # If the role message had no supported blocks, keep shape with empty content.
+                msg: dict[str, Any] = {"role": role, "content": ""}
+                if msg_annotations:
+                    msg["annotations"] = msg_annotations
+                if msg_reasoning_details:
+                    msg["reasoning_details"] = msg_reasoning_details
+                messages.append(msg)
+            else:
+                msg = {"role": role, "content": blocks_out}
+                if msg_annotations:
+                    msg["annotations"] = msg_annotations
+                if msg_reasoning_details:
+                    msg["reasoning_details"] = msg_reasoning_details
+                messages.append(msg)
+            continue
+
+        if itype == "function_call_output":
+            # Responses tool output -> chat tool message.
+            call_id = item.get("call_id")
+            output = item.get("output")
+            if isinstance(call_id, str) and call_id.strip():
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id.strip(),
+                        "content": output if isinstance(output, str) else (json.dumps(output, ensure_ascii=False) if output is not None else ""),
+                    }
+                )
+            continue
+
+        if itype == "function_call":
+            # Responses tool call -> assistant tool_calls message.
+            call_id = item.get("call_id") or item.get("id")
+            name = item.get("name")
+            args = item.get("arguments")
+            if not (isinstance(call_id, str) and call_id.strip() and isinstance(name, str) and name.strip()):
+                continue
+            if not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False) if args is not None else "{}"
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id.strip(),
+                            "type": "function",
+                            "function": {"name": name.strip(), "arguments": args},
+                        }
+                    ],
+                }
+            )
+            continue
+
+        # Drop other non-message artifacts (reasoning, web_search_call, etc.) by default.
+
+    return messages
+
+
+def _responses_payload_to_chat_completions_payload(
+    responses_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert a Responses API request payload into a Chat Completions payload."""
+    if not isinstance(responses_payload, dict):
+        return {}
+    chat_payload: dict[str, Any] = {}
+
+    # Core routing and identifiers
+    for key in ("model", "models", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms"):
+        if key in responses_payload:
+            chat_payload[key] = responses_payload[key]
+
+    # Streaming flags
+    stream = bool(responses_payload.get("stream"))
+    chat_payload["stream"] = stream
+    if stream:
+        existing_stream_options = responses_payload.get("stream_options")
+        if isinstance(existing_stream_options, dict):
+            stream_options = dict(existing_stream_options)
+        else:
+            stream_options = {}
+        stream_options.setdefault("include_usage", True)
+        chat_payload["stream_options"] = stream_options
+
+    # OpenRouter usage accounting (enables cost + cached/reasoning token metrics).
+    existing_usage = responses_payload.get("usage")
+    if isinstance(existing_usage, dict):
+        merged_usage = dict(existing_usage)
+        merged_usage["include"] = True
+        chat_payload["usage"] = merged_usage
+    else:
+        chat_payload["usage"] = {"include": True}
+
+    # Sampling + misc OpenAI params (may exist as extra fields on ResponsesBody)
+    passthrough = (
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "top_a",
+        "stop",
+        "seed",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+        "logit_bias",
+        "logprobs",
+        "top_logprobs",
+        "response_format",
+        "structured_outputs",
+        "reasoning",
+        "include_reasoning",
+        "reasoning_effort",
+        "verbosity",
+        "web_search_options",
+        "parallel_tool_calls",
+    )
+    for key in passthrough:
+        if key in responses_payload:
+            chat_payload[key] = responses_payload[key]
+
+    # Token limit mapping
+    max_output_tokens = responses_payload.get("max_output_tokens")
+    if max_output_tokens is not None:
+        chat_payload["max_tokens"] = max_output_tokens
+
+    # Tools
+    tools = responses_payload.get("tools")
+    chat_tools = _responses_tools_to_chat_tools(tools)
+    if chat_tools:
+        chat_payload["tools"] = chat_tools
+    tool_choice = _responses_tool_choice_to_chat_tool_choice(responses_payload.get("tool_choice"))
+    if tool_choice is not None:
+        chat_payload["tool_choice"] = tool_choice
+
+    # Input -> messages
+    chat_payload["messages"] = _responses_input_to_chat_messages(responses_payload.get("input"))
+
+    instructions = responses_payload.get("instructions")
+    if isinstance(instructions, str):
+        instructions = instructions.strip()
+    else:
+        instructions = ""
+    if instructions:
+        messages = chat_payload.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+            chat_payload["messages"] = messages
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+            system_msg = messages[0]
+            existing_content = system_msg.get("content")
+            if isinstance(existing_content, str):
+                existing_text = existing_content.strip()
+                if existing_text:
+                    system_msg["content"] = f"{instructions}\n\n{existing_text}"
+                else:
+                    system_msg["content"] = instructions
+            elif isinstance(existing_content, list):
+                prepend_blocks = [{"type": "text", "text": instructions}]
+                if existing_content:
+                    prepend_blocks.append({"type": "text", "text": ""})
+                system_msg["content"] = prepend_blocks + list(existing_content)
+            else:
+                system_msg["content"] = instructions
+        else:
+            messages.insert(0, {"role": "system", "content": instructions})
+
+    return chat_payload
+
 def _parse_model_fallback_csv(value: Any) -> list[str]:
     """Parse a comma-separated model list into a normalized array (order-preserving)."""
     if not isinstance(value, str):
@@ -2366,6 +2797,35 @@ class Pipe:
         BASE_URL: str = Field(
             default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
             description="OpenRouter API base URL. Override this if you are using a gateway or proxy.",
+        )
+        DEFAULT_LLM_ENDPOINT: Literal["responses", "chat_completions"] = Field(
+            default="responses",
+            description=(
+                "Which OpenRouter endpoint to use by default. "
+                "`responses` uses /responses (best feature coverage). "
+                "`chat_completions` uses /chat/completions (needed for some providers/features like cache_control breakpoints on Anthropic)."
+            ),
+        )
+        FORCE_CHAT_COMPLETIONS_MODELS: str = Field(
+            default="",
+            description=(
+                "Comma-separated glob patterns of model ids that must use /chat/completions "
+                "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids."
+            ),
+        )
+        FORCE_RESPONSES_MODELS: str = Field(
+            default="",
+            description=(
+                "Comma-separated glob patterns of model ids that must use /responses "
+                "(overrides FORCE_CHAT_COMPLETIONS_MODELS when both match)."
+            ),
+        )
+        AUTO_FALLBACK_CHAT_COMPLETIONS: bool = Field(
+            default=True,
+            description=(
+                "When True, retry the request against /chat/completions if /responses fails with an "
+                "endpoint/model support error before any streaming output is produced."
+            ),
         )
         API_KEY: EncryptedStr = Field(
             default_factory=_default_api_key,
@@ -8380,6 +8840,18 @@ class Pipe:
                 continue
 
             # -------- assistant message ----------------------------------- #
+            raw_msg_annotations = msg.get("annotations")
+            msg_annotations: list[Any] = (
+                list(raw_msg_annotations)
+                if isinstance(raw_msg_annotations, list) and raw_msg_annotations
+                else []
+            )
+            raw_msg_reasoning_details = msg.get("reasoning_details")
+            msg_reasoning_details: list[Any] = (
+                list(raw_msg_reasoning_details)
+                if isinstance(raw_msg_reasoning_details, list) and raw_msg_reasoning_details
+                else []
+            )
             assistant_text = (
                 raw_content
                 if isinstance(raw_content, str)
@@ -8487,21 +8959,29 @@ class Pipe:
                                 )
                             openai_input.append(item)
                     elif segment["type"] == "text" and segment["text"].strip():
-                        openai_input.append({
+                        item_out = {
                             "type": "message",
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": segment["text"].strip()}]
-                        })
+                        }
+                        if msg_annotations:
+                            item_out["annotations"] = msg_annotations
+                        if msg_reasoning_details:
+                            item_out["reasoning_details"] = msg_reasoning_details
+                        openai_input.append(item_out)
             else:
                 # Plain assistant text (no markers detected)
                 if assistant_text:
-                    openai_input.append(
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": assistant_text}],
-                        }
-                    )
+                    item_out = {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": assistant_text}],
+                    }
+                    if msg_annotations:
+                        item_out["annotations"] = msg_annotations
+                    if msg_reasoning_details:
+                        item_out["reasoning_details"] = msg_reasoning_details
+                    openai_input.append(item_out)
 
         self._maybe_apply_anthropic_prompt_caching(
             openai_input,
@@ -9037,23 +9517,34 @@ class Pipe:
                     logger=self.logger,
                 )
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
-                request_payload = _filter_openrouter_request(request_payload)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
-                async for event in self.send_openai_responses_streaming_request(
-                    session,
-                    request_payload,
-                    api_key=api_key_value,
-                    base_url=valves.BASE_URL,
-                    valves=valves,
-                    workers=valves.SSE_WORKERS_PER_REQUEST,
-                    breaker_key=user_id or None,
-                    delta_char_limit=0,
-                    idle_flush_ms=0,
-                    chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
-                    event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
-                    event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
-                ):
+                is_streaming = bool(request_payload.get("stream"))
+                if is_streaming:
+                    event_iter = self.send_openrouter_streaming_request(
+                        session,
+                        request_payload,
+                        api_key=api_key_value,
+                        base_url=valves.BASE_URL,
+                        valves=valves,
+                        workers=valves.SSE_WORKERS_PER_REQUEST,
+                        breaker_key=user_id or None,
+                        delta_char_limit=0,
+                        idle_flush_ms=0,
+                        chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
+                        event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
+                        event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
+                    )
+                else:
+                    event_iter = self.send_openrouter_nonstreaming_request_as_events(
+                        session,
+                        request_payload,
+                        api_key=api_key_value,
+                        base_url=valves.BASE_URL,
+                        valves=valves,
+                        breaker_key=user_id or None,
+                    )
+                async for event in event_iter:
                     if stream_started_at is None:
                         stream_started_at = perf_counter()
                     etype = event.get("type")
@@ -9822,6 +10313,64 @@ class Pipe:
                         "Unable to save citations for this response. Output was delivered successfully.",
                         level="warning",
                     )
+            assistant_annotations: list[Any] = []
+            if final_response and isinstance(final_response.get("output"), list):
+                for item in final_response.get("output", []):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != "message":
+                        continue
+                    if item.get("role") != "assistant":
+                        continue
+                    raw_annotations = item.get("annotations")
+                    if isinstance(raw_annotations, list) and raw_annotations:
+                        assistant_annotations = list(raw_annotations)
+                    break
+
+            if (not was_cancelled) and chat_id and message_id and assistant_annotations:
+                try:
+                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                        chat_id, message_id, {"annotations": assistant_annotations}
+                    )
+                except Exception as exc:
+                    self.logger.warning("Failed to persist annotations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
+                    await self._emit_notification(
+                        event_emitter,
+                        "Unable to save file annotations for this response. Output was delivered successfully.",
+                        level="warning",
+                    )
+
+            assistant_reasoning_details: list[Any] = []
+            if final_response and isinstance(final_response.get("output"), list):
+                for item in final_response.get("output", []):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != "message":
+                        continue
+                    if item.get("role") != "assistant":
+                        continue
+                    raw_reasoning_details = item.get("reasoning_details")
+                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
+                        assistant_reasoning_details = list(raw_reasoning_details)
+                    break
+
+            if (not was_cancelled) and chat_id and message_id and assistant_reasoning_details:
+                try:
+                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                        chat_id, message_id, {"reasoning_details": assistant_reasoning_details}
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to persist reasoning_details for chat_id=%s message_id=%s: %s",
+                        chat_id,
+                        message_id,
+                        exc,
+                    )
+                    await self._emit_notification(
+                        event_emitter,
+                        "Unable to save reasoning details for this response. Output was delivered successfully.",
+                        level="warning",
+                    )
 
             if not was_cancelled:
                 await _flush_pending("finalize")
@@ -9864,15 +10413,12 @@ class Pipe:
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
     ) -> str:
-        """Unified implementation: reuse the streaming path.
+        """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
 
-        We force `stream=True` and delegate to `_run_streaming_loop`, but wrap the
-        emitter so incremental `chat:message` frames are suppressed. The final
-        message text is returned (same contract as before).
+        This delegates to `_run_streaming_loop` with a wrapped emitter so incremental
+        `chat:message` frames are suppressed while still running all value-add logic
+        (tools, citations, usage snapshots, persistence).
         """
-
-        # Force SSE so we can reuse the streaming machinery
-        body.stream = True
 
         # Pass through status / citations / usage, but do NOT emit partial text
         wrapped_emitter = _wrap_event_emitter(
@@ -10434,6 +10980,1022 @@ class Pipe:
                         result,
                         exc_info=result,
                     )
+
+    def _select_llm_endpoint(
+        self,
+        model_id: str,
+        *,
+        valves: "Pipe.Valves",
+    ) -> Literal["responses", "chat_completions"]:
+        """Choose which OpenRouter endpoint to use for a given model id."""
+        base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
+        force_chat = _parse_model_patterns(getattr(valves, "FORCE_CHAT_COMPLETIONS_MODELS", ""))
+        force_responses = _parse_model_patterns(getattr(valves, "FORCE_RESPONSES_MODELS", ""))
+        if _matches_any_model_pattern(base_id, force_responses):
+            return "responses"
+        if _matches_any_model_pattern(base_id, force_chat):
+            return "chat_completions"
+        default_endpoint = getattr(valves, "DEFAULT_LLM_ENDPOINT", "responses")
+        return "chat_completions" if default_endpoint == "chat_completions" else "responses"
+
+    @staticmethod
+    def _looks_like_responses_unsupported(exc: BaseException) -> bool:
+        """Heuristic: detect 'model doesn't support /responses' so we can retry via /chat/completions."""
+        if isinstance(exc, OpenRouterAPIError):
+            code = exc.openrouter_code
+            code_lower = code.strip().lower() if isinstance(code, str) else ""
+            if code_lower in {
+                "unsupported_endpoint",
+                "unsupported_feature",
+                "endpoint_not_supported",
+                "responses_not_supported",
+            }:
+                return True
+
+            message_parts = [
+                exc.openrouter_message or "",
+                exc.upstream_message or "",
+                exc.raw_body or "",
+                str(exc),
+            ]
+            haystack = " ".join(part for part in message_parts if part).lower()
+            if "response" not in haystack and "responses" not in haystack:
+                return False
+            if any(token in haystack for token in ("not supported", "unsupported", "does not support")):
+                return True
+            if any(token in haystack for token in ("chat/completions", "chat completions")):
+                return True
+            if any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")):
+                return True
+            return False
+
+        haystack_parts: list[str] = [str(exc)]
+        for attr in ("openrouter_message", "upstream_message", "raw_body"):
+            value = getattr(exc, attr, None)
+            if isinstance(value, str) and value:
+                haystack_parts.append(value)
+        haystack = " ".join(haystack_parts).lower()
+        if "response" not in haystack and "responses" not in haystack:
+            return False
+        if any(token in haystack for token in ("not supported", "unsupported", "does not support")):
+            return True
+        if any(token in haystack for token in ("chat/completions", "chat completions")):
+            return True
+        if any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")):
+            return True
+        return False
+
+    @staticmethod
+    def _chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
+        """Normalise Chat Completions usage counters into the Responses-style keys used by this pipe."""
+        if not isinstance(raw_usage, dict):
+            return {}
+        usage: dict[str, Any] = {}
+
+        prompt_tokens = raw_usage.get("prompt_tokens")
+        completion_tokens = raw_usage.get("completion_tokens")
+        total_tokens = raw_usage.get("total_tokens")
+        if prompt_tokens is not None:
+            usage["input_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            usage["output_tokens"] = completion_tokens
+        if total_tokens is not None:
+            usage["total_tokens"] = total_tokens
+
+        for key in ("cost", "cache_discount", "cache_discount_pct"):
+            if key in raw_usage:
+                usage[key] = raw_usage[key]
+
+        prompt_details = raw_usage.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict) and prompt_details:
+            cached = prompt_details.get("cached_tokens")
+            if cached is not None:
+                usage.setdefault("input_tokens_details", {})
+                if isinstance(usage["input_tokens_details"], dict):
+                    usage["input_tokens_details"]["cached_tokens"] = cached
+
+        completion_details = raw_usage.get("completion_tokens_details")
+        if isinstance(completion_details, dict) and completion_details:
+            reasoning_tokens = completion_details.get("reasoning_tokens")
+            if reasoning_tokens is not None:
+                usage.setdefault("output_tokens_details", {})
+                if isinstance(usage["output_tokens_details"], dict):
+                    usage["output_tokens_details"]["reasoning_tokens"] = reasoning_tokens
+
+        return usage
+
+    async def send_openai_chat_completions_streaming_request(
+        self,
+        session: aiohttp.ClientSession,
+        responses_request_body: dict[str, Any],
+        api_key: str,
+        base_url: str,
+        *,
+        valves: "Pipe.Valves | None" = None,
+        breaker_key: Optional[str] = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Send /chat/completions and adapt streaming output into Responses-style events."""
+        effective_valves = valves or self.valves
+        chat_payload = _responses_payload_to_chat_completions_payload(
+            dict(responses_request_body or {}),
+        )
+        chat_payload = _filter_openrouter_chat_request(chat_payload)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "X-Title": _OPENROUTER_TITLE,
+            "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
+        }
+        self._maybe_apply_anthropic_beta_headers(
+            headers,
+            chat_payload.get("model"),
+            valves=effective_valves,
+        )
+        _debug_print_request(headers, chat_payload)
+        url = base_url.rstrip("/") + "/chat/completions"
+
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        tool_call_added: set[int] = set()
+        tool_calls_completed = False
+        assistant_text_parts: list[str] = []
+        latest_usage: dict[str, Any] = {}
+        seen_citation_urls: set[str] = set()
+        latest_message_annotations: list[dict[str, Any]] = []
+        reasoning_item_id: str | None = None
+        reasoning_text_parts: list[str] = []
+        reasoning_summary_text: str | None = None
+        reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        reasoning_details_order: list[tuple[str, str]] = []
+
+        def _ensure_tool_call_id(index: int, current: dict[str, Any]) -> str:
+            tid = current.get("id")
+            if isinstance(tid, str) and tid.strip():
+                return tid.strip()
+            model_val = (chat_payload.get("model") or "model")
+            generated = f"toolcall-{normalize_model_id_dotted(str(model_val))}-{index}"
+            current["id"] = generated
+            return generated
+
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            reraise=True,
+        )
+
+        async def _inline_internal_chat_files() -> None:
+            messages = chat_payload.get("messages")
+            if not isinstance(messages, list) or not messages:
+                return
+            chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self.valves.IMAGE_UPLOAD_CHUNK_BYTES)
+            max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, list) or not content:
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "file":
+                        continue
+                    file_obj = block.get("file")
+                    if not isinstance(file_obj, dict):
+                        continue
+                    file_value = file_obj.get("file_data")
+                    if not isinstance(file_value, str) or not file_value.strip():
+                        file_value = file_obj.get("file_url")
+                    if not isinstance(file_value, str) or not file_value.strip():
+                        continue
+                    file_value = file_value.strip()
+                    if not _is_internal_file_url(file_value):
+                        continue
+                    inlined = await self._inline_internal_file_url(
+                        file_value,
+                        chunk_size=chunk_size,
+                        max_bytes=max_bytes,
+                    )
+                    if not inlined:
+                        raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
+                    file_obj["file_data"] = inlined
+
+        def _record_reasoning_detail(detail: dict[str, Any]) -> None:
+            dtype = detail.get("type")
+            if not isinstance(dtype, str) or not dtype:
+                return
+            did = detail.get("id")
+            if not isinstance(did, str) or not did.strip():
+                did = f"{dtype}:{len(reasoning_details_order)}"
+            key = (dtype, did)
+            existing = reasoning_details_by_key.get(key)
+            if existing is None:
+                reasoning_details_order.append(key)
+                reasoning_details_by_key[key] = dict(detail)
+                return
+            merged = dict(existing)
+            if dtype == "reasoning.text":
+                prev_text = merged.get("text")
+                next_text = detail.get("text")
+                if isinstance(prev_text, str) and isinstance(next_text, str):
+                    merged["text"] = f"{prev_text}{next_text}"
+                elif isinstance(next_text, str):
+                    merged["text"] = next_text
+            elif dtype == "reasoning.summary":
+                next_summary = detail.get("summary")
+                if isinstance(next_summary, str) and next_summary.strip():
+                    merged["summary"] = next_summary
+            elif dtype == "reasoning.encrypted":
+                prev_data = merged.get("data")
+                next_data = detail.get("data")
+                if isinstance(prev_data, str) and isinstance(next_data, str):
+                    merged["data"] = f"{prev_data}{next_data}"
+                elif isinstance(next_data, str):
+                    merged["data"] = next_data
+            for k, v in detail.items():
+                if k in merged:
+                    continue
+                merged[k] = v
+            reasoning_details_by_key[key] = merged
+
+        def _final_reasoning_details() -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for key in reasoning_details_order:
+                detail = reasoning_details_by_key.get(key)
+                if isinstance(detail, dict) and detail:
+                    out.append(dict(detail))
+            return out
+
+        async for attempt in retryer:
+            with attempt:
+                if breaker_key and not self._breaker_allows(breaker_key):
+                    raise RuntimeError("Breaker open for user during stream")
+
+                await _inline_internal_chat_files()
+
+                async with session.post(url, json=chat_payload, headers=headers) as resp:
+                    if resp.status >= 400:
+                        error_body = await _debug_print_error_response(resp)
+                        if breaker_key:
+                            self._record_failure(breaker_key)
+                        special_statuses = {400, 401, 402, 403, 408, 429}
+                        if resp.status in special_statuses:
+                            extra_meta: dict[str, Any] = {}
+                            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                            if retry_after:
+                                extra_meta["retry_after"] = retry_after
+                                extra_meta["retry_after_seconds"] = retry_after
+                            rate_scope = (
+                                resp.headers.get("X-RateLimit-Scope")
+                                or resp.headers.get("x-ratelimit-scope")
+                            )
+                            if rate_scope:
+                                extra_meta["rate_limit_type"] = rate_scope
+                            reason_text = resp.reason or "HTTP error"
+                            raise _build_openrouter_api_error(
+                                resp.status,
+                                reason_text,
+                                error_body,
+                                requested_model=chat_payload.get("model"),
+                                extra_metadata=extra_meta or None,
+                            )
+                        raise RuntimeError(f"OpenRouter request failed ({resp.status}): {resp.reason}")
+
+                    resp.raise_for_status()
+
+                    buf = bytearray()
+                    event_data_parts: list[bytes] = []
+                    done = False
+
+                    async for chunk in resp.content.iter_any():
+                        if not chunk:
+                            continue
+                        buf.extend(chunk)
+                        start_idx = 0
+                        while True:
+                            newline_idx = buf.find(b"\n", start_idx)
+                            if newline_idx == -1:
+                                break
+                            line = buf[start_idx:newline_idx]
+                            start_idx = newline_idx + 1
+                            stripped = line.strip()
+
+                            if not stripped:
+                                if not event_data_parts:
+                                    continue
+                                data_blob = b"\n".join(event_data_parts).strip()
+                                event_data_parts.clear()
+                                if not data_blob:
+                                    continue
+                                if data_blob == b"[DONE]":
+                                    done = True
+                                    break
+                                try:
+                                    chunk_obj = json.loads(data_blob.decode("utf-8"))
+                                except json.JSONDecodeError:
+                                    continue
+
+                                if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
+                                    latest_usage = dict(chunk_obj["usage"])
+
+                                choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
+                                if not isinstance(choices, list) or not choices:
+                                    continue
+                                choice0 = choices[0] if isinstance(choices[0], dict) else {}
+                                delta = choice0.get("delta") if isinstance(choice0, dict) else None
+                                delta_obj = delta if isinstance(delta, dict) else {}
+
+                                delta_reasoning_details = delta_obj.get("reasoning_details")
+                                if isinstance(delta_reasoning_details, list) and delta_reasoning_details:
+                                    for entry in delta_reasoning_details:
+                                        if not isinstance(entry, dict):
+                                            continue
+                                        _record_reasoning_detail(entry)
+                                        rtype = entry.get("type")
+                                        if not isinstance(rtype, str) or not rtype:
+                                            continue
+                                        if reasoning_item_id is None:
+                                            candidate_id = entry.get("id")
+                                            if isinstance(candidate_id, str) and candidate_id.strip():
+                                                reasoning_item_id = candidate_id.strip()
+                                            else:
+                                                reasoning_item_id = f"reasoning-{generate_item_id()}"
+                                            yield {
+                                                "type": "response.output_item.added",
+                                                "item": {
+                                                    "type": "reasoning",
+                                                    "id": reasoning_item_id,
+                                                    "status": "in_progress",
+                                                },
+                                            }
+                                        if rtype == "reasoning.text":
+                                            text = entry.get("text")
+                                            if isinstance(text, str) and text:
+                                                reasoning_text_parts.append(text)
+                                                yield {
+                                                    "type": "response.reasoning_text.delta",
+                                                    "item_id": reasoning_item_id,
+                                                    "delta": text,
+                                                }
+                                        elif rtype == "reasoning.summary":
+                                            summary = entry.get("summary")
+                                            if isinstance(summary, str) and summary.strip():
+                                                reasoning_summary_text = summary.strip()
+                                                yield {
+                                                    "type": "response.reasoning_summary_text.done",
+                                                    "item_id": reasoning_item_id,
+                                                    "text": reasoning_summary_text,
+                                                }
+
+                                annotations: list[Any] = []
+                                delta_annotations = delta_obj.get("annotations")
+                                if isinstance(delta_annotations, list) and delta_annotations:
+                                    annotations.extend(delta_annotations)
+                                message_obj = choice0.get("message") if isinstance(choice0, dict) else None
+                                if isinstance(message_obj, dict):
+                                    message_annotations = message_obj.get("annotations")
+                                    if isinstance(message_annotations, list) and message_annotations:
+                                        annotations.extend(message_annotations)
+                                        latest_message_annotations = [
+                                            dict(a) for a in message_annotations if isinstance(a, dict)
+                                        ]
+                                    message_reasoning_details = message_obj.get("reasoning_details")
+                                    if isinstance(message_reasoning_details, list) and message_reasoning_details:
+                                        for entry in message_reasoning_details:
+                                            if isinstance(entry, dict):
+                                                _record_reasoning_detail(entry)
+
+                                if annotations:
+                                    for raw_ann in annotations:
+                                        if not isinstance(raw_ann, dict):
+                                            continue
+                                        if raw_ann.get("type") != "url_citation":
+                                            continue
+                                        payload = raw_ann.get("url_citation")
+                                        if isinstance(payload, dict):
+                                            url = payload.get("url")
+                                            title = payload.get("title") or url
+                                        else:
+                                            url = raw_ann.get("url")
+                                            title = raw_ann.get("title") or url
+                                        if not isinstance(url, str) or not url.strip():
+                                            continue
+                                        url = url.strip()
+                                        if url in seen_citation_urls:
+                                            continue
+                                        seen_citation_urls.add(url)
+                                        if isinstance(title, str):
+                                            title = title.strip() or url
+                                        else:
+                                            title = url
+                                        yield {
+                                            "type": "response.output_text.annotation.added",
+                                            "annotation": {"type": "url_citation", "url": url, "title": title},
+                                        }
+
+                                content_delta = delta_obj.get("content")
+                                if isinstance(content_delta, str) and content_delta:
+                                    assistant_text_parts.append(content_delta)
+                                    yield {"type": "response.output_text.delta", "delta": content_delta}
+
+                                tool_calls = delta_obj.get("tool_calls")
+                                if isinstance(tool_calls, list) and tool_calls:
+                                    for raw_call in tool_calls:
+                                        if not isinstance(raw_call, dict):
+                                            continue
+                                        index = raw_call.get("index")
+                                        if not isinstance(index, int):
+                                            index = max(tool_calls_by_index.keys(), default=-1) + 1
+                                        current = tool_calls_by_index.setdefault(index, {})
+                                        if isinstance(raw_call.get("id"), str):
+                                            current["id"] = raw_call["id"]
+                                        function = raw_call.get("function")
+                                        if isinstance(function, dict):
+                                            name = function.get("name")
+                                            if isinstance(name, str) and name:
+                                                current["name"] = name
+                                            args_delta = function.get("arguments")
+                                            if isinstance(args_delta, str) and args_delta:
+                                                existing = current.get("arguments") or ""
+                                                current["arguments"] = f"{existing}{args_delta}"
+
+                                        if index not in tool_call_added:
+                                            tool_call_added.add(index)
+                                            call_id = _ensure_tool_call_id(index, current)
+                                            yield {
+                                                "type": "response.output_item.added",
+                                                "item": {
+                                                    "type": "function_call",
+                                                    "id": call_id,
+                                                    "call_id": call_id,
+                                                    "status": "in_progress",
+                                                    "name": current.get("name") or "",
+                                                    "arguments": current.get("arguments") or "",
+                                                },
+                                            }
+
+                                finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
+                                if isinstance(finish_reason, str) and finish_reason:
+                                    if finish_reason == "tool_calls":
+                                        tool_calls_completed = True
+                                    elif finish_reason in {"stop", "length", "content_filter"}:
+                                        tool_calls_completed = True
+
+                            if stripped.startswith(b":"):
+                                continue
+                            if stripped.startswith(b"data:"):
+                                event_data_parts.append(bytes(stripped[5:].lstrip()))
+                                continue
+
+                        if start_idx > 0:
+                            del buf[:start_idx]
+                        if done:
+                            break
+                    break
+
+        if tool_calls_by_index and tool_calls_completed:
+            for index in sorted(tool_calls_by_index.keys()):
+                current = tool_calls_by_index[index]
+                call_id = _ensure_tool_call_id(index, current)
+                yield {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": call_id,
+                        "status": "completed",
+                        "name": current.get("name") or "",
+                        "arguments": current.get("arguments") or "",
+                    },
+                }
+
+        if reasoning_item_id is not None:
+            reasoning_text = "".join(reasoning_text_parts).strip()
+            reasoning_item: dict[str, Any] = {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
+                "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+            }
+            yield {
+                "type": "response.output_item.done",
+                "item": reasoning_item,
+            }
+
+        assistant_text = "".join(assistant_text_parts)
+        message_item: dict[str, Any] = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": assistant_text}],
+        }
+        if latest_message_annotations:
+            message_item["annotations"] = latest_message_annotations
+        final_reasoning_details = _final_reasoning_details()
+        if final_reasoning_details:
+            message_item["reasoning_details"] = final_reasoning_details
+        output: list[dict[str, Any]] = [message_item]
+        for index in sorted(tool_calls_by_index.keys()):
+            current = tool_calls_by_index[index]
+            call_id = _ensure_tool_call_id(index, current)
+            name = current.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            output.append(
+                {
+                    "type": "function_call",
+                    "id": call_id,
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": current.get("arguments") or "{}",
+                }
+            )
+
+        yield {
+            "type": "response.completed",
+            "response": {
+                "output": output,
+                "usage": self._chat_usage_to_responses_usage(latest_usage),
+            },
+        }
+
+    async def send_openai_chat_completions_nonstreaming_request(
+        self,
+        session: aiohttp.ClientSession,
+        responses_request_body: dict[str, Any],
+        api_key: str,
+        base_url: str,
+        *,
+        valves: "Pipe.Valves | None" = None,
+        breaker_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Send /chat/completions with stream=false and return the JSON payload."""
+        effective_valves = valves or self.valves
+        chat_payload = _responses_payload_to_chat_completions_payload(
+            dict(responses_request_body or {}),
+        )
+        chat_payload = _filter_openrouter_chat_request(chat_payload)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Title": _OPENROUTER_TITLE,
+            "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
+        }
+        self._maybe_apply_anthropic_beta_headers(
+            headers,
+            chat_payload.get("model"),
+            valves=effective_valves,
+        )
+        _debug_print_request(headers, chat_payload)
+        url = base_url.rstrip("/") + "/chat/completions"
+
+        async def _inline_internal_chat_files() -> None:
+            messages = chat_payload.get("messages")
+            if not isinstance(messages, list) or not messages:
+                return
+            chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self.valves.IMAGE_UPLOAD_CHUNK_BYTES)
+            max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, list) or not content:
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "file":
+                        continue
+                    file_obj = block.get("file")
+                    if not isinstance(file_obj, dict):
+                        continue
+                    file_value = file_obj.get("file_data")
+                    if not isinstance(file_value, str) or not file_value.strip():
+                        file_value = file_obj.get("file_url")
+                    if not isinstance(file_value, str) or not file_value.strip():
+                        continue
+                    file_value = file_value.strip()
+                    if not _is_internal_file_url(file_value):
+                        continue
+                    inlined = await self._inline_internal_file_url(
+                        file_value,
+                        chunk_size=chunk_size,
+                        max_bytes=max_bytes,
+                    )
+                    if not inlined:
+                        raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
+                    file_obj["file_data"] = inlined
+
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            reraise=True,
+        )
+
+        async for attempt in retryer:
+            with attempt:
+                if breaker_key and not self._breaker_allows(breaker_key):
+                    raise RuntimeError("Breaker open for user during request")
+
+                await _inline_internal_chat_files()
+
+                async with session.post(url, json=chat_payload, headers=headers) as resp:
+                    if resp.status >= 400:
+                        error_body = await _debug_print_error_response(resp)
+                        if breaker_key:
+                            self._record_failure(breaker_key)
+                        special_statuses = {400, 401, 402, 403, 408, 429}
+                        if resp.status in special_statuses:
+                            extra_meta: dict[str, Any] = {}
+                            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                            if retry_after:
+                                extra_meta["retry_after"] = retry_after
+                                extra_meta["retry_after_seconds"] = retry_after
+                            rate_scope = (
+                                resp.headers.get("X-RateLimit-Scope")
+                                or resp.headers.get("x-ratelimit-scope")
+                            )
+                            if rate_scope:
+                                extra_meta["rate_limit_type"] = rate_scope
+                            reason_text = resp.reason or "HTTP error"
+                            raise _build_openrouter_api_error(
+                                resp.status,
+                                reason_text,
+                                error_body,
+                                requested_model=chat_payload.get("model"),
+                                extra_metadata=extra_meta or None,
+                            )
+                        raise RuntimeError(f"OpenRouter request failed ({resp.status}): {resp.reason}")
+                    resp.raise_for_status()
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        text = await resp.text()
+                        try:
+                            data = json.loads(text)
+                        except Exception as exc:
+                            raise RuntimeError("Invalid JSON response from /chat/completions") from exc
+                    return data if isinstance(data, dict) else {}
+
+        return {}
+
+    async def send_openrouter_nonstreaming_request_as_events(
+        self,
+        session: aiohttp.ClientSession,
+        responses_request_body: dict[str, Any],
+        api_key: str,
+        base_url: str,
+        *,
+        valves: "Pipe.Valves | None" = None,
+        breaker_key: Optional[str] = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Send a non-streaming request and yield Responses-style events."""
+        effective_valves = valves or self.valves
+        model_id = (responses_request_body or {}).get("model") or ""
+        endpoint = self._select_llm_endpoint(str(model_id), valves=effective_valves)
+
+        def _extract_chat_message_text(message: Any) -> str:
+            if not isinstance(message, dict):
+                return ""
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                fragments: list[str] = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_val = part.get("text")
+                        if isinstance(text_val, str):
+                            fragments.append(text_val)
+                return "".join(fragments)
+            return ""
+
+        async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
+            request_payload = _filter_openrouter_request(dict(responses_request_body or {}))
+            response = await self.send_openai_responses_nonstreaming_request(
+                session,
+                request_payload,
+                api_key=api_key,
+                base_url=base_url,
+                valves=effective_valves,
+            )
+            output_items = response.get("output") if isinstance(response, dict) else None
+            assistant_text_parts: list[str] = []
+            if isinstance(output_items, list):
+                for item in output_items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "message" and item.get("role") == "assistant":
+                        content = item.get("content")
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "output_text":
+                                    text_val = block.get("text")
+                                    if isinstance(text_val, str) and text_val:
+                                        assistant_text_parts.append(text_val)
+                    if item.get("type") in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call"}:
+                        yield {"type": "response.output_item.done", "item": item}
+                    if item.get("type") == "function_call":
+                        yield {"type": "response.output_item.added", "item": dict(item, status="in_progress")}
+                        yield {"type": "response.output_item.done", "item": dict(item, status="completed")}
+            assistant_text = "".join(assistant_text_parts)
+            if assistant_text:
+                yield {"type": "response.output_text.delta", "delta": assistant_text}
+            yield {"type": "response.completed", "response": response if isinstance(response, dict) else {}}
+
+        async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
+            chat_response = await self.send_openai_chat_completions_nonstreaming_request(
+                session,
+                dict(responses_request_body or {}),
+                api_key=api_key,
+                base_url=base_url,
+                valves=effective_valves,
+                breaker_key=breaker_key,
+            )
+            choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
+            message = None
+            finish_reason = None
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                message = choices[0].get("message")
+                finish_reason = choices[0].get("finish_reason")
+            message_obj = message if isinstance(message, dict) else {}
+
+            usage = chat_response.get("usage") if isinstance(chat_response, dict) else None
+            latest_usage = dict(usage) if isinstance(usage, dict) else {}
+
+            reasoning_item_id: str | None = None
+            reasoning_text_parts: list[str] = []
+            reasoning_summary_text: str | None = None
+            reasoning_details = message_obj.get("reasoning_details")
+            if isinstance(reasoning_details, list) and reasoning_details:
+                for entry in reasoning_details:
+                    if not isinstance(entry, dict):
+                        continue
+                    rtype = entry.get("type")
+                    if not isinstance(rtype, str) or not rtype:
+                        continue
+                    if reasoning_item_id is None:
+                        rid = entry.get("id")
+                        reasoning_item_id = rid.strip() if isinstance(rid, str) and rid.strip() else f"reasoning-{generate_item_id()}"
+                        yield {
+                            "type": "response.output_item.added",
+                            "item": {"type": "reasoning", "id": reasoning_item_id, "status": "in_progress"},
+                        }
+                    if rtype == "reasoning.text":
+                        text = entry.get("text")
+                        if isinstance(text, str) and text:
+                            reasoning_text_parts.append(text)
+                            yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": text}
+                    elif rtype == "reasoning.summary":
+                        summary = entry.get("summary")
+                        if isinstance(summary, str) and summary.strip():
+                            reasoning_summary_text = summary.strip()
+                            yield {"type": "response.reasoning_summary_text.done", "item_id": reasoning_item_id, "text": reasoning_summary_text}
+
+            annotations = message_obj.get("annotations")
+            if isinstance(annotations, list) and annotations:
+                seen_urls: set[str] = set()
+                for raw_ann in annotations:
+                    if not isinstance(raw_ann, dict):
+                        continue
+                    if raw_ann.get("type") != "url_citation":
+                        continue
+                    payload = raw_ann.get("url_citation")
+                    if isinstance(payload, dict):
+                        url = payload.get("url")
+                        title = payload.get("title") or url
+                    else:
+                        url = raw_ann.get("url")
+                        title = raw_ann.get("title") or url
+                    if not isinstance(url, str) or not url.strip():
+                        continue
+                    url = url.strip()
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    if isinstance(title, str):
+                        title = title.strip() or url
+                    else:
+                        title = url
+                    yield {
+                        "type": "response.output_text.annotation.added",
+                        "annotation": {"type": "url_citation", "url": url, "title": title},
+                    }
+
+            tool_calls = message_obj.get("tool_calls")
+            output_calls: list[dict[str, Any]] = []
+            if isinstance(tool_calls, list) and tool_calls:
+                for index, raw_call in enumerate(tool_calls):
+                    if not isinstance(raw_call, dict):
+                        continue
+                    function = raw_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    name = function.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    args = function.get("arguments")
+                    if not isinstance(args, str):
+                        args = json.dumps(args, ensure_ascii=False) if args is not None else "{}"
+                    call_id = raw_call.get("id")
+                    if not isinstance(call_id, str) or not call_id.strip():
+                        model_val = (responses_request_body.get("model") or "model")
+                        call_id = f"toolcall-{normalize_model_id_dotted(str(model_val))}-{index}"
+                    call_id = call_id.strip()
+                    item = {
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": call_id,
+                        "status": "completed",
+                        "name": name,
+                        "arguments": args,
+                    }
+                    yield {"type": "response.output_item.added", "item": dict(item, status="in_progress")}
+                    yield {"type": "response.output_item.done", "item": item}
+                    output_calls.append(
+                        {
+                            "type": "function_call",
+                            "id": call_id,
+                            "call_id": call_id,
+                            "name": name,
+                            "arguments": args,
+                        }
+                    )
+
+            if reasoning_item_id is not None:
+                reasoning_text = "".join(reasoning_text_parts).strip()
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "id": reasoning_item_id,
+                    "status": "completed",
+                    "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
+                    "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+                }
+                yield {"type": "response.output_item.done", "item": reasoning_item}
+
+            assistant_text = _extract_chat_message_text(message_obj)
+            if assistant_text:
+                yield {"type": "response.output_text.delta", "delta": assistant_text}
+
+            output_message: dict[str, Any] = {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": assistant_text}],
+            }
+            if isinstance(annotations, list) and annotations:
+                output_message["annotations"] = [dict(a) for a in annotations if isinstance(a, dict)]
+            if isinstance(reasoning_details, list) and reasoning_details:
+                output_message["reasoning_details"] = [dict(a) for a in reasoning_details if isinstance(a, dict)]
+
+            output: list[dict[str, Any]] = [output_message]
+            output.extend(output_calls)
+
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "output": output,
+                    "usage": self._chat_usage_to_responses_usage(latest_usage),
+                },
+            }
+
+        if endpoint == "chat_completions":
+            async for event in _run_chat():
+                yield event
+            return
+
+        try:
+            async for event in _run_responses():
+                yield event
+        except Exception as exc:
+            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._looks_like_responses_unsupported(exc):
+                self.logger.info(
+                    "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
+                    model_id,
+                    getattr(exc, "status", None),
+                    getattr(exc, "openrouter_code", None),
+                    exc,
+                )
+                async for event in _run_chat():
+                    yield event
+                return
+            raise
+
+    async def send_openrouter_streaming_request(
+        self,
+        session: aiohttp.ClientSession,
+        responses_request_body: dict[str, Any],
+        api_key: str,
+        base_url: str,
+        *,
+        valves: "Pipe.Valves | None" = None,
+        workers: int = 4,
+        breaker_key: Optional[str] = None,
+        delta_char_limit: int = 0,
+        idle_flush_ms: int = 0,
+        chunk_queue_maxsize: int = 100,
+        event_queue_maxsize: int = 100,
+        event_queue_warn_size: int = 1000,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Unified streaming request entrypoint with endpoint routing + fallback."""
+        effective_valves = valves or self.valves
+        model_id = (responses_request_body or {}).get("model") or ""
+        endpoint = self._select_llm_endpoint(str(model_id), valves=effective_valves)
+
+        def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
+            etype = event.get("type")
+            if not isinstance(etype, str) or not etype:
+                return True
+            if etype.startswith("response.output_"):
+                return True
+            if etype.startswith("response.content_part"):
+                return True
+            if etype.startswith("response.reasoning"):
+                return True
+            if etype in {"response.completed", "response.failed", "response.error", "error"}:
+                return True
+            return False
+
+        responses_emitted_user_visible = False
+        responses_buffer: list[dict[str, Any]] = []
+
+        async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
+            nonlocal responses_emitted_user_visible
+            request_payload = _filter_openrouter_request(dict(responses_request_body or {}))
+            async for event in self.send_openai_responses_streaming_request(
+                session,
+                request_payload,
+                api_key=api_key,
+                base_url=base_url,
+                valves=effective_valves,
+                workers=workers,
+                breaker_key=breaker_key,
+                delta_char_limit=delta_char_limit,
+                idle_flush_ms=idle_flush_ms,
+                chunk_queue_maxsize=chunk_queue_maxsize,
+                event_queue_maxsize=event_queue_maxsize,
+                event_queue_warn_size=event_queue_warn_size,
+            ):
+                if not responses_emitted_user_visible and not _responses_event_is_user_visible(event):
+                    responses_buffer.append(event)
+                    continue
+                if not responses_emitted_user_visible:
+                    responses_emitted_user_visible = True
+                    for pending in responses_buffer:
+                        yield pending
+                    responses_buffer.clear()
+                yield event
+
+        async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
+            async for event in self.send_openai_chat_completions_streaming_request(
+                session,
+                dict(responses_request_body or {}),
+                api_key=api_key,
+                base_url=base_url,
+                valves=effective_valves,
+                breaker_key=breaker_key,
+            ):
+                yield event
+
+        if endpoint == "chat_completions":
+            async for event in _run_chat():
+                yield event
+            return
+
+        try:
+            async for event in _run_responses():
+                yield event
+        except Exception as exc:
+            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._looks_like_responses_unsupported(exc):
+                if responses_emitted_user_visible:
+                    self.logger.info(
+                        "Not falling back to /chat/completions for model=%s: /responses already emitted user-visible output before error: %s",
+                        model_id,
+                        exc,
+                    )
+                    raise
+                if responses_buffer:
+                    self.logger.debug(
+                        "Discarding %d non-visible /responses events prior to fallback for model=%s",
+                        len(responses_buffer),
+                        model_id,
+                    )
+                    responses_buffer.clear()
+                self.logger.info(
+                    "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
+                    model_id,
+                    getattr(exc, "status", None),
+                    getattr(exc, "openrouter_code", None),
+                    exc,
+                )
+                async for event in _run_chat():
+                    yield event
+                return
+            raise
 
     async def send_openai_responses_nonstreaming_request(
         self,
