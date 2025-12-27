@@ -15,7 +15,7 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
 @pytest.mark.asyncio
 async def test_completion_events_preserve_streamed_text(monkeypatch):
     pipe = Pipe()
-    body = ResponsesBody(model="openrouter/test", input=[])
+    body = ResponsesBody(model="openrouter/test", input=[], stream=True)
     valves = pipe.valves
 
     events = [
@@ -66,7 +66,7 @@ async def test_completion_events_preserve_streamed_text(monkeypatch):
 @pytest.mark.asyncio
 async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
     pipe = Pipe()
-    body = ResponsesBody(model="openrouter/test", input=[])
+    body = ResponsesBody(model="openrouter/test", input=[], stream=True)
     valves = pipe.valves
 
     error = OpenRouterAPIError(status=400, reason="Bad Request", provider="Test")
