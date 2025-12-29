@@ -6,8 +6,8 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.16
-requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
+version: 1.0.17
+requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
 - This work was based on excellent work by jrkropp (https://github.com/jrkropp/open-webui-developer-toolkit)
@@ -40,6 +40,9 @@ _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
 _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
+_OPENROUTER_FRONTEND_MODELS_URL = "https://openrouter.ai/api/frontend/models"
+_OPENROUTER_SITE_URL = "https://openrouter.ai"
+_MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
 _MAX_OPENROUTER_ID_CHARS = 128
 _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
@@ -115,7 +118,7 @@ import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING, cast, no_type_check
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import ast
 import email.utils
 
@@ -3468,11 +3471,21 @@ class Pipe:
             ),
         )
 
+        # Model metadata synchronization
+        UPDATE_MODEL_IMAGES: bool = Field(
+            default=True,
+            description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata. Disable to manage images manually.",
+        )
+        UPDATE_MODEL_CAPABILITIES: bool = Field(
+            default=True,
+            description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. Disable to manage capabilities manually.",
+        )
 
     class UserValves(BaseModel):
         """Per-user valve overrides."""
 
         model_config = ConfigDict(populate_by_name=True)
+
         @model_validator(mode="before")
         @classmethod
         def _normalize_inherit(cls, values):
@@ -3643,6 +3656,8 @@ class Pipe:
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
         self._redis_ttl = self.valves.REDIS_CACHE_TTL_SECONDS
         self._cleanup_task = None
+        self._model_metadata_sync_task: asyncio.Task | None = None
+        self._model_metadata_sync_key: tuple[Any, ...] | None = None
         self._legacy_tool_warning_emitted = False
         self._storage_user_cache: Optional[Any] = None
         self._storage_user_lock: Optional[asyncio.Lock] = None
@@ -4796,6 +4811,624 @@ class Pipe:
             timeout=timeout,
             json_serialize=json.dumps,
         )
+
+    async def _fetch_frontend_model_catalog(
+        self,
+        session: aiohttp.ClientSession,
+    ) -> dict[str, Any] | None:
+        """Fetch OpenRouter's public frontend model catalog (no auth)."""
+        try:
+            async with session.get(_OPENROUTER_FRONTEND_MODELS_URL) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        except Exception as exc:
+            self.logger.debug("OpenRouter frontend catalog fetch failed: %s", exc)
+            return None
+
+        # Protect against corrupt or malicious JSON from remote source.
+        # Ensure it's a dict before returning, logging invalid responses.
+        if isinstance(payload, dict):
+            return payload
+        self.logger.warning(
+            "OpenRouter frontend catalog returned invalid payload type '%s'; expected dict. Remote corruption or schema change detected.",
+            type(payload).__name__,
+        )
+        return None
+
+    def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:
+        """Build a slug -> icon URL mapping from the frontend catalog."""
+        if not isinstance(frontend_data, dict):
+            return {}
+        raw_items = frontend_data.get("data")
+        if not isinstance(raw_items, list):
+            return {}
+
+        icon_mapping: dict[str, str] = {}
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug:
+                continue
+            if slug in icon_mapping:
+                continue
+
+            def _favicon_url(source_url: str) -> str | None:
+                source_url = (source_url or "").strip()
+                if not source_url.startswith(("http://", "https://")):
+                    return None
+                encoded = quote(source_url, safe="")
+                return (
+                    "https://t0.gstatic.com/faviconV2"
+                    f"?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url={encoded}&size=256"
+                )
+
+            icon_url: str | None = None
+            provider_hint_url: str | None = None
+
+            endpoint = item.get("endpoint")
+            if isinstance(endpoint, dict):
+                provider_info = endpoint.get("provider_info")
+                if isinstance(provider_info, dict):
+                    icon_data = provider_info.get("icon")
+                    if isinstance(icon_data, dict):
+                        candidate = icon_data.get("url")
+                        if isinstance(candidate, str):
+                            icon_url = candidate
+                    elif isinstance(icon_data, str):
+                        icon_url = icon_data
+                    candidate_urls: list[str] = []
+                    base_url = provider_info.get("baseUrl")
+                    if isinstance(base_url, str) and base_url.startswith(("http://", "https://")):
+                        candidate_urls.append(base_url)
+                    status_page_url = provider_info.get("statusPageUrl")
+                    if isinstance(status_page_url, str) and status_page_url.startswith(("http://", "https://")):
+                        candidate_urls.append(status_page_url)
+                    data_policy = provider_info.get("dataPolicy")
+                    if isinstance(data_policy, dict):
+                        terms_url = data_policy.get("termsOfServiceURL")
+                        if isinstance(terms_url, str) and terms_url.startswith(("http://", "https://")):
+                            candidate_urls.append(terms_url)
+                        privacy_url = data_policy.get("privacyPolicyURL")
+                        if isinstance(privacy_url, str) and privacy_url.startswith(("http://", "https://")):
+                            candidate_urls.append(privacy_url)
+                    provider_hint_url = candidate_urls[0] if candidate_urls else None
+
+            if not icon_url:
+                icon_data = item.get("icon")
+                if isinstance(icon_data, dict):
+                    candidate = icon_data.get("url")
+                    if isinstance(candidate, str):
+                        icon_url = candidate
+                elif isinstance(icon_data, str):
+                    icon_url = icon_data
+
+            icon_url = (icon_url or "").strip()
+            if icon_url:
+                if icon_url.startswith("//"):
+                    icon_url = f"https:{icon_url}"
+                elif icon_url.startswith("/"):
+                    icon_url = f"{_OPENROUTER_SITE_URL}{icon_url}"
+                elif not icon_url.startswith(("http://", "https://", "data:image")):
+                    icon_url = f"{_OPENROUTER_SITE_URL}/{icon_url.lstrip('/')}"
+
+            elif provider_hint_url:
+                favicon = _favicon_url(provider_hint_url)
+                if favicon:
+                    icon_url = favicon
+                else:
+                    continue
+            else:
+                continue
+            icon_mapping[slug] = icon_url
+
+        return icon_mapping
+
+    def _build_web_search_support_mapping(
+        self,
+        frontend_data: dict[str, Any] | None,
+    ) -> dict[str, bool]:
+        """Return a slug -> True mapping when the frontend catalog signals web-search support."""
+        if not isinstance(frontend_data, dict):
+            return {}
+        raw_items = frontend_data.get("data")
+        if not isinstance(raw_items, list):
+            return {}
+
+        mapping: dict[str, bool] = {}
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug:
+                continue
+
+            endpoint = item.get("endpoint")
+            if not isinstance(endpoint, dict):
+                continue
+
+            supported_parameters = endpoint.get("supported_parameters")
+            has_web_search_options = False
+            if isinstance(supported_parameters, list):
+                for entry in supported_parameters:
+                    if isinstance(entry, str) and entry.strip() == "web_search_options":
+                        has_web_search_options = True
+                        break
+
+            supports_native_web_search = False
+            features = endpoint.get("features")
+            if isinstance(features, dict):
+                supports_native_web_search = features.get("supports_native_web_search") is True
+
+            supports_priced_web_search = False
+            pricing = endpoint.get("pricing")
+            if isinstance(pricing, dict):
+                supports_priced_web_search = OpenRouterModelRegistry._supports_web_search(pricing)
+
+            if supports_native_web_search or has_web_search_options or supports_priced_web_search:
+                mapping[slug] = True
+
+        return mapping
+
+    @staticmethod
+    def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
+        content_type = (content_type or "").split(";", 1)[0].strip().lower()
+        if content_type.startswith("image/"):
+            return content_type
+        allow_extension_fallback = not content_type or content_type in {
+            "application/octet-stream",
+            "binary/octet-stream",
+        }
+
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data.startswith((b"\x00\x00\x01\x00", b"\x00\x00\x02\x00")):
+            return "image/x-icon"
+
+        head = data[:512].lstrip().lower()
+        if head.startswith((b"<svg", b"<?xml")) and b"<svg" in head:
+            return "image/svg+xml"
+
+        if allow_extension_fallback:
+            path = (urlparse(url).path or "").lower()
+            if path.endswith(".svg"):
+                return "image/svg+xml"
+            if path.endswith(".png"):
+                return "image/png"
+            if path.endswith((".jpg", ".jpeg")):
+                return "image/jpeg"
+            if path.endswith(".webp"):
+                return "image/webp"
+            if path.endswith(".gif"):
+                return "image/gif"
+            if path.endswith((".ico", ".cur")):
+                return "image/x-icon"
+
+        return None
+
+    async def _fetch_image_as_data_url(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+    ) -> str | None:
+        url = (url or "").strip()
+        if not url:
+            return None
+        if url.startswith("data:image"):
+            return url
+        if url.startswith("//"):
+            url = f"https:{url}"
+        elif url.startswith("/"):
+            url = f"{_OPENROUTER_SITE_URL}{url}"
+        elif not url.startswith(("http://", "https://")):
+            url = f"{_OPENROUTER_SITE_URL}/{url.lstrip('/')}"
+
+        try:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
+                if len(data) > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+                    self.logger.debug(
+                        "Skipping oversized model icon (%d bytes, url=%s)",
+                        len(data),
+                        url,
+                    )
+                    return None
+                content_type = resp.headers.get("Content-Type")
+        except Exception as exc:
+            self.logger.debug("Failed to download model icon (url=%s): %s", url, exc)
+            return None
+
+        mime = self._guess_image_mime_type(url, content_type, data)
+        if not mime:
+            self.logger.debug(
+                "Skipping model icon with unsupported content-type (%s, url=%s)",
+                content_type,
+                url,
+            )
+            return None
+        if mime == "image/svg+xml":
+            try:
+                import cairosvg  # type: ignore[import-not-found]
+            except Exception as exc:
+                self.logger.debug("CairoSVG unavailable; skipping SVG model icon (url=%s): %s", url, exc)
+                return None
+
+            try:
+                png_bytes = cairosvg.svg2png(
+                    bytestring=data,
+                    output_width=250,
+                    output_height=250,
+                )
+            except Exception as exc:
+                self.logger.debug("Failed to rasterize SVG model icon (url=%s): %s", url, exc)
+                return None
+
+            if len(png_bytes) > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+                self.logger.debug(
+                    "Skipping oversized rasterized SVG model icon (%d bytes, url=%s)",
+                    len(png_bytes),
+                    url,
+                )
+                return None
+
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
+
+        try:
+            from PIL import Image
+        except Exception as exc:
+            self.logger.debug("Pillow unavailable; skipping model icon conversion (url=%s): %s", url, exc)
+            return None
+
+        try:
+            with Image.open(io.BytesIO(data)) as image:
+                image.load()
+                if image.mode not in ("RGB", "RGBA"):
+                    image = image.convert("RGBA")
+                output = io.BytesIO()
+                image.save(output, format="PNG")
+                png_bytes = output.getvalue()
+        except Exception as exc:
+            self.logger.debug("Failed to convert model icon to PNG (url=%s): %s", url, exc)
+            return None
+
+        if len(png_bytes) > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+            self.logger.debug(
+                "Skipping oversized converted model icon (%d bytes, url=%s)",
+                len(png_bytes),
+                url,
+            )
+            return None
+
+        encoded = base64.b64encode(png_bytes).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _extract_openrouter_og_image(html: str) -> str | None:
+        if not isinstance(html, str) or not html:
+            return None
+        patterns = (
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, html, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    async def _fetch_maker_profile_image_url(
+        self,
+        session: aiohttp.ClientSession,
+        maker_id: str,
+    ) -> str | None:
+        maker_id = (maker_id or "").strip()
+        if not maker_id:
+            return None
+        url = f"{_OPENROUTER_SITE_URL}/{quote(maker_id)}"
+        try:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                html = await resp.text()
+        except Exception as exc:
+            self.logger.debug("OpenRouter maker page fetch failed (maker=%s): %s", maker_id, exc)
+            return None
+
+        # Protect against bad HTML responses that might crash downstream parsing.
+        if not isinstance(html, str):
+            self.logger.warning(
+                "OpenRouter maker page returned non-string content type '%s' (maker=%s); treating as empty.",
+                type(html).__name__,
+                maker_id,
+            )
+            return None
+        return self._extract_openrouter_og_image(html)
+
+    async def _build_maker_profile_image_mapping(
+        self,
+        session: aiohttp.ClientSession,
+        maker_ids: Iterable[str],
+    ) -> dict[str, str]:
+        unique = sorted({(m or "").strip() for m in maker_ids if (m or "").strip()})
+        if not unique:
+            return {}
+
+        semaphore = asyncio.Semaphore(10)
+        results: dict[str, str] = {}
+
+        async def _fetch(maker_id: str) -> None:
+            async with semaphore:
+                image_url = await self._fetch_maker_profile_image_url(session, maker_id)
+                if image_url:
+                    results[maker_id] = image_url
+
+        await asyncio.gather(*(_fetch(maker_id) for maker_id in unique), return_exceptions=True)
+        return results
+
+    def _maybe_schedule_model_metadata_sync(
+        self,
+        selected_models: list[dict[str, Any]],
+        *,
+        pipe_identifier: str,
+    ) -> None:
+        if not (self.valves.UPDATE_MODEL_CAPABILITIES or self.valves.UPDATE_MODEL_IMAGES):
+            return
+        if not selected_models:
+            return
+        last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
+        sync_key = (
+            pipe_identifier,
+            float(last_fetch or 0.0),
+            str(self.valves.MODEL_ID or ""),
+            bool(self.valves.UPDATE_MODEL_IMAGES),
+            bool(self.valves.UPDATE_MODEL_CAPABILITIES),
+        )
+        if sync_key == self._model_metadata_sync_key:
+            return
+        if self._model_metadata_sync_task and not self._model_metadata_sync_task.done():
+            return
+
+        models_copy = [dict(model) for model in selected_models]
+        self._model_metadata_sync_key = sync_key
+        self._model_metadata_sync_task = asyncio.create_task(
+            self._sync_model_metadata_to_owui(
+                models_copy,
+                pipe_identifier=pipe_identifier,
+            )
+        )
+
+    async def _sync_model_metadata_to_owui(
+        self,
+        models: list[dict[str, Any]],
+        *,
+        pipe_identifier: str,
+    ) -> None:
+        """Sync model metadata (capabilities, profile images) into OWUI's Models table."""
+        if not (self.valves.UPDATE_MODEL_CAPABILITIES or self.valves.UPDATE_MODEL_IMAGES):
+            return
+        if not models:
+            return
+        if not pipe_identifier:
+            return
+
+        session = self._create_http_session()
+        try:
+            frontend_data = None
+            if self.valves.UPDATE_MODEL_IMAGES or self.valves.UPDATE_MODEL_CAPABILITIES:
+                frontend_data = await self._fetch_frontend_model_catalog(session)
+
+            icon_mapping: dict[str, str] = {}
+            if self.valves.UPDATE_MODEL_IMAGES:
+                icon_mapping = self._build_icon_mapping(frontend_data)
+
+            web_search_mapping: dict[str, bool] = {}
+            if self.valves.UPDATE_MODEL_CAPABILITIES:
+                web_search_mapping = self._build_web_search_support_mapping(frontend_data)
+
+            maker_mapping: dict[str, str] = {}
+            if self.valves.UPDATE_MODEL_IMAGES:
+                missing_makers: set[str] = set()
+                for model in models:
+                    original_id = model.get("original_id")
+                    if not isinstance(original_id, str) or not original_id:
+                        continue
+                    if original_id in icon_mapping:
+                        continue
+                    maker_id = original_id.split("/", 1)[0]
+                    if maker_id:
+                        missing_makers.add(maker_id)
+                if missing_makers:
+                    maker_mapping = await self._build_maker_profile_image_mapping(
+                        session,
+                        missing_makers,
+                    )
+
+            icon_data_mapping: dict[str, str] = {}
+            maker_data_mapping: dict[str, str] = {}
+            if self.valves.UPDATE_MODEL_IMAGES:
+                slug_to_icon_url: dict[str, str] = {}
+                for model in models:
+                    original_id = model.get("original_id")
+                    if not isinstance(original_id, str) or not original_id:
+                        continue
+                    icon_url = icon_mapping.get(original_id)
+                    if icon_url:
+                        slug_to_icon_url[original_id] = icon_url
+
+                maker_to_image_url = {k: v for k, v in maker_mapping.items() if isinstance(v, str) and v}
+
+                unique_urls = sorted(set(slug_to_icon_url.values()) | set(maker_to_image_url.values()))
+                if unique_urls:
+                    url_to_data: dict[str, str] = {}
+                    fetch_semaphore = asyncio.Semaphore(10)
+
+                    async def _fetch(url: str) -> None:
+                        async with fetch_semaphore:
+                            data_url = await self._fetch_image_as_data_url(session, url)
+                            if data_url:
+                                url_to_data[url] = data_url
+
+                    await asyncio.gather(*(_fetch(url) for url in unique_urls), return_exceptions=True)
+
+                    icon_data_mapping = {
+                        slug: url_to_data.get(url, "")
+                        for slug, url in slug_to_icon_url.items()
+                        if url_to_data.get(url)
+                    }
+                    maker_data_mapping = {
+                        maker: url_to_data.get(url, "")
+                        for maker, url in maker_to_image_url.items()
+                        if url_to_data.get(url)
+                    }
+
+            # DB writes are performed via OWUI helper functions in a threadpool.
+            semaphore = asyncio.Semaphore(10)
+
+            async def _apply(model: dict[str, Any]) -> None:
+                openrouter_id = model.get("id")
+                name = model.get("name")
+                if not isinstance(openrouter_id, str) or not openrouter_id:
+                    return
+                if not isinstance(name, str) or not name:
+                    name = openrouter_id
+
+                openwebui_model_id = f"{pipe_identifier}.{openrouter_id}"
+
+                capabilities = None
+                if self.valves.UPDATE_MODEL_CAPABILITIES:
+                    raw_caps = model.get("capabilities")
+                    if isinstance(raw_caps, dict):
+                        capabilities = dict(raw_caps)
+                        original_id = model.get("original_id")
+                        if (
+                            isinstance(original_id, str)
+                            and original_id
+                            and web_search_mapping.get(original_id)
+                        ):
+                            capabilities["web_search"] = True
+
+                profile_image_url = None
+                if self.valves.UPDATE_MODEL_IMAGES:
+                    original_id = model.get("original_id")
+                    if isinstance(original_id, str) and original_id:
+                        profile_image_url = icon_data_mapping.get(original_id)
+                        if not profile_image_url:
+                            maker_id = original_id.split("/", 1)[0]
+                            profile_image_url = maker_data_mapping.get(maker_id)
+
+                if not capabilities and not profile_image_url:
+                    return
+
+                async with semaphore:
+                    try:
+                        await run_in_threadpool(
+                            self._update_or_insert_model_with_metadata,
+                            openwebui_model_id,
+                            name,
+                            capabilities,
+                            profile_image_url,
+                            self.valves.UPDATE_MODEL_CAPABILITIES,
+                            self.valves.UPDATE_MODEL_IMAGES,
+                        )
+                    except Exception as exc:
+                        self.logger.debug(
+                            "Model metadata sync failed (model=%s): %s",
+                            openwebui_model_id,
+                            exc,
+                        )
+
+            await asyncio.gather(*(_apply(model) for model in models), return_exceptions=True)
+        finally:
+            with contextlib.suppress(Exception):
+                await session.close()
+
+    def _update_or_insert_model_with_metadata(
+        self,
+        openwebui_model_id: str,
+        name: str,
+        capabilities: Optional[dict],
+        profile_image_url: Optional[str],
+        update_capabilities: bool,
+        update_images: bool
+    ):
+        """Safely update existing model or insert new overlay with metadata, never touching owner."""
+        from open_webui.models.models import ModelMeta, ModelParams
+
+        openwebui_model_id = (openwebui_model_id or "").strip()
+        if not openwebui_model_id:
+            return
+        name = (name or "").strip() or openwebui_model_id
+
+        existing = Models.get_model_by_id(openwebui_model_id)
+        
+        if existing:
+            # Update existing model - preserve ALL existing fields including owner
+            meta_dict = {}
+            if existing.meta:
+                meta_dict.update(existing.meta.model_dump())
+            
+            meta_updated = False
+            
+            if update_capabilities and capabilities is not None:
+                if meta_dict.get("capabilities") != capabilities:
+                    meta_dict["capabilities"] = capabilities
+                    meta_updated = True
+                
+            if update_images and profile_image_url:
+                if meta_dict.get("profile_image_url") != profile_image_url:
+                    meta_dict["profile_image_url"] = profile_image_url
+                    meta_updated = True
+                
+            if not meta_updated:
+                return
+
+            meta_obj = ModelMeta(**meta_dict)
+            model_form = ModelForm(
+                id=existing.id,
+                base_model_id=existing.base_model_id,
+                name=existing.name,
+                meta=meta_obj,
+                params=existing.params if existing.params else ModelParams(),
+                access_control=existing.access_control,
+                is_active=existing.is_active,
+            )
+            Models.update_model_by_id(openwebui_model_id, model_form)
+                
+        else:
+            # Insert new overlay model - do NOT set user_id/owner
+            meta_dict = {}
+            if update_capabilities and capabilities is not None:
+                meta_dict["capabilities"] = capabilities
+            if update_images and profile_image_url:
+                meta_dict["profile_image_url"] = profile_image_url
+            if not meta_dict:
+                # Nothing to insert, skip
+                return
+                
+            # Create proper ModelMeta and ModelParams objects
+            meta_obj = ModelMeta(**meta_dict)
+            params_obj = ModelParams()
+            
+            model_form = ModelForm(
+                id=openwebui_model_id,
+                base_model_id=None,
+                name=name,
+                meta=meta_obj,
+                params=params_obj,
+                access_control=None,
+                is_active=True,
+            )
+            # Use empty user_id to let OWUI handle ownership defaults
+            Models.insert_new_model(model_form, user_id="")
 
     @contextlib.asynccontextmanager
     async def _acquire_semaphore(
@@ -6677,15 +7310,14 @@ class Pipe:
             return []
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
-        enriched: list[dict[str, Any]] = []
-        for model in selected_models:
-            capabilities = ModelFamily.capabilities(model["id"])
-            entry: dict[str, Any] = {"id": model["id"], "name": model["name"]}
-            if capabilities:
-                entry["capabilities"] = capabilities
-                entry["meta"] = {"capabilities": capabilities}
-            enriched.append(entry)
-        return enriched
+
+        self._maybe_schedule_model_metadata_sync(
+            selected_models,
+            pipe_identifier=self.id,
+        )
+        
+        # Return simple id/name list - OWUI's get_function_models() only reads these fields
+        return [{"id": m["id"], "name": m["name"]} for m in selected_models]
 
     async def pipe(
         self,

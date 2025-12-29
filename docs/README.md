@@ -29,7 +29,7 @@ Use these docs if you are modifying the pipe, working on tests, or extending the
 3. Save and enable the function.
 
 ### Dependencies
-Open WebUI installs the Python dependencies declared in the function header (`requirements:`). This pipe declares (at least) `aiohttp`, `cryptography`, `fastapi`, `httpx`, `lz4`, `pydantic`, `pydantic_core`, `sqlalchemy`, `tenacity`, and `pyzipper`.
+Open WebUI installs the Python dependencies declared in the function header (`requirements:`). This pipe declares (at least) `aiohttp`, `cryptography`, `fastapi`, `httpx`, `lz4`, `pydantic`, `pydantic_core`, `sqlalchemy`, `tenacity`, and `pyzipper`, plus `cairosvg` and `Pillow` (used to import OpenRouter model icons into Open WebUI as PNG data URLs).
 
 ### Configure
 - Open WebUI **Valves** are the configuration surface for this pipe. At minimum, configure the OpenRouter API key (or set `OPENROUTER_API_KEY` in the Open WebUI environment).
@@ -37,6 +37,13 @@ Open WebUI installs the Python dependencies declared in the function header (`re
 
 ### Use
 After enabling the function, Open WebUI will expose OpenRouter models (imported from OpenRouter’s model catalog) in the model selector. Choose a model and chat normally.
+
+### Optional: model metadata sync (icons + capabilities)
+This pipe can automatically sync Open WebUI model metadata for the OpenRouter models it exposes:
+- `UPDATE_MODEL_IMAGES` controls whether model profile images are downloaded and stored in Open WebUI.
+- `UPDATE_MODEL_CAPABILITIES` controls whether model capability checkboxes are synced.
+
+See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 
 ---
 
