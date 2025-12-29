@@ -72,6 +72,28 @@ Key valves:
 - `MODEL_CATALOG_REFRESH_SECONDS` controls refresh cadence.
 - `USE_MODEL_MAX_OUTPUT_TOKENS` controls whether the pipe forwards provider-advertised output token caps.
 
+### 3.1 Open WebUI model metadata sync (icons + capabilities)
+
+Open WebUI stores additional per-model UI metadata (capabilities checkboxes and profile images) in its own Models table. This pipe can **automatically sync that metadata** for the OpenRouter models it exposes.
+
+What it syncs (best-effort):
+- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here).
+  - SVG icons are rasterized to PNG (requires `cairosvg`).
+  - Other images are converted to PNG (requires `Pillow`).
+- `meta.capabilities`: writes the Open WebUI capability checkboxes (for example `vision`, `file_upload`, `web_search`, `image_generation`).
+  - Web search is **augmented** using OpenRouter’s public frontend catalog signals (in addition to `/models` pricing), so models like `x-ai/grok-4` and `openai/gpt-4o` can correctly show `web_search` even when `pricing.web_search` is `0`.
+
+Data sources / egress:
+- Fetches `https://openrouter.ai/api/frontend/models` (no auth) to discover icons and frontend-only capability signals.
+- Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`).
+
+Controls:
+- `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
+- `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
+
+Operational note:
+- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Disable the valves if you want to manage model icons/capabilities manually.
+
 ---
 
 ## 4. Auto context trimming (OpenRouter transforms)

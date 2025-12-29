@@ -45,6 +45,7 @@ For each model, the registry stores the full catalog entry (`full_model`) and de
   - modality flags: `vision`, `audio_input`, `video_input`, `file_input`
   - `image_gen_tool` (based on output modalities)
 - `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`).
+- When enabled, the pipe can also sync these capability checkboxes into Open WebUI model metadata (`meta.capabilities`) so the UI reflects OpenRouter’s catalog.
 - `max_completion_tokens`: taken from the model’s `top_provider.max_completion_tokens` field when present.
 
 The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)`, `ModelFamily.capabilities(...)`, and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
@@ -60,7 +61,11 @@ Behavior:
 - The system valve `MODEL_ID` selects which models are exposed:
   - `auto` exposes the full catalog.
   - A comma-separated list restricts the exposed models.
-- Each exposed model entry includes the derived `capabilities` (also duplicated under `meta.capabilities`) so Open WebUI can display capability-related UI affordances.
+- The pipe returns a minimal `{"id","name"}` list for the model selector.
+- Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
+  - `meta.capabilities` (capability checkboxes), and
+  - `meta.profile_image_url` (model icon as a PNG data URL).
+  This behavior is controlled by `UPDATE_MODEL_CAPABILITIES` and `UPDATE_MODEL_IMAGES`. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 
 ---
 
@@ -145,4 +150,3 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 
 Operator guidance:
 - Treat catalog failures like an upstream connectivity/credential issue first (API key, network egress, proxy/gateway, OpenRouter availability), then inspect logs for the last refresh failure.
-

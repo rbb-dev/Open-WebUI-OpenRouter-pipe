@@ -1,6 +1,6 @@
 # Production readiness report (OpenRouter Responses Pipe)
 
-**Last reviewed:** 2025-12-25  
+**Last reviewed:** 2025-12-29  
 **Scope:** Unified production readiness guidance for deploying this pipe in Open WebUI (single-worker and multi-worker), covering security, operations, and failure modes. This document is guidance only and does not guarantee compliance outcomes.
 
 > **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Security](security_and_encryption.md) · [Errors](error_handling_and_user_experience.md) · [Telemetry](openrouter_integrations_and_telemetry.md)
@@ -11,7 +11,7 @@
 
 This report is written against:
 
-- `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (pipe manifest header: `required_open_webui_version: 0.6.28`, manifest `version: 1.0.13`)
+- `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (pipe manifest header: `required_open_webui_version: 0.6.28`, manifest `version: 1.0.17`)
 - `tests/` (behavioral checks for key safety and integration paths)
 
 When there is any conflict between documentation and runtime behavior, the code and tests are the source of truth.
@@ -90,6 +90,7 @@ Operator guidance:
 - Keep SSRF protection enabled.
 - Enforce egress restrictions in your network (proxy allowlists, firewall rules).
 - If you require HTTPS-only remote retrieval, enforce it via egress policy (do not rely on the pipe alone).
+- If you enable model icon sync (`UPDATE_MODEL_IMAGES=True`), also allow outbound access to OpenRouter’s public frontend catalog and icon hosts. Disable it in locked-down environments.
 
 Related docs: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md), [Security & Encryption](security_and_encryption.md).
 
@@ -110,6 +111,15 @@ Related docs: [Request identifiers and abuse attribution](request_identifiers_an
 ---
 
 ## 5. Persistence and retention posture
+
+### 5.0 Open WebUI model metadata writes (optional)
+
+In addition to artifact persistence, the pipe can optionally update Open WebUI’s Models table to keep OpenRouter model **icons** and **capability checkboxes** up to date:
+
+- `UPDATE_MODEL_IMAGES` syncs `meta.profile_image_url` (PNG data URLs).
+- `UPDATE_MODEL_CAPABILITIES` syncs `meta.capabilities` (Open WebUI capability toggles).
+
+These updates are performed via Open WebUI helper APIs (not raw SQL), but they are still database writes. Disable both valves if you need a “no model-metadata writes” posture.
 
 ### 5.1 Artifact persistence and encryption
 
