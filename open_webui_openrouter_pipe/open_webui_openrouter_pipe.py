@@ -1911,7 +1911,7 @@ class ResponsesBody(BaseModel):
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
-    response_format: Optional[Dict[str, Any]] = None
+    text: Optional[Dict[str, Any]] = None
     parallel_tool_calls: Optional[bool] = None
     transforms: Optional[List[str]] = None
     model_config = ConfigDict(extra="allow")  # allow additional OpenAI parameters automatically
@@ -2096,11 +2096,15 @@ class ResponsesBody(BaseModel):
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs
 
-        # Build the final ResponsesBody directly
-        return cls(
+        # Apply explicit overrides (e.g. custom Open WebUI model parameters) and then
+        # normalise fields to the OpenRouter `/responses` schema.
+        merged_params = {
             **sanitized_params,
-            **extra_params  # Extra parameters that are passed to the ResponsesBody (e.g., custom parameters configured in Open WebUI model settings)
-        )
+            **extra_params,  # Extra parameters (e.g. custom Open WebUI model settings)
+        }
+        _normalise_openrouter_responses_text_format(merged_params)
+
+        return cls(**merged_params)
 
 ALLOWED_OPENROUTER_FIELDS = {
     "model",
@@ -2118,7 +2122,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "tools",
     "tool_choice",
     "plugins",
-    "response_format",
+    "text",
     "parallel_tool_calls",
     "user",
     "session_id",
@@ -2271,6 +2275,123 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
     if t == "function" and isinstance(name, str) and name.strip():
         return {"type": "function", "function": {"name": name.strip()}}
     return value
+
+
+def _chat_response_format_to_responses_text_format(value: Any) -> Optional[dict[str, Any]]:
+    """Convert Chat Completions `response_format` → Responses `text.format`."""
+    if not isinstance(value, dict):
+        return None
+
+    fmt_type = value.get("type")
+    if fmt_type in {"text", "json_object"}:
+        return {"type": fmt_type}
+
+    if fmt_type == "json_schema":
+        json_schema = value.get("json_schema")
+        if not isinstance(json_schema, dict):
+            return None
+        name = json_schema.get("name")
+        schema = json_schema.get("schema")
+        if not (isinstance(name, str) and name.strip()):
+            return None
+        if not isinstance(schema, dict):
+            return None
+
+        out: dict[str, Any] = {"type": "json_schema", "name": name.strip(), "schema": schema}
+        description = json_schema.get("description")
+        if isinstance(description, str) and description.strip():
+            out["description"] = description.strip()
+        strict = json_schema.get("strict")
+        if isinstance(strict, bool):
+            out["strict"] = strict
+        return out
+
+    return None
+
+
+def _responses_text_format_to_chat_response_format(value: Any) -> Optional[dict[str, Any]]:
+    """Convert Responses `text.format` → Chat Completions `response_format`."""
+    if not isinstance(value, dict):
+        return None
+
+    fmt_type = value.get("type")
+    if fmt_type in {"text", "json_object"}:
+        return {"type": fmt_type}
+
+    if fmt_type == "json_schema":
+        name = value.get("name")
+        schema = value.get("schema")
+        if not (isinstance(name, str) and name.strip()):
+            return None
+        if not isinstance(schema, dict):
+            return None
+        json_schema: dict[str, Any] = {"name": name.strip(), "schema": schema}
+        description = value.get("description")
+        if isinstance(description, str) and description.strip():
+            json_schema["description"] = description.strip()
+        strict = value.get("strict")
+        if isinstance(strict, bool):
+            json_schema["strict"] = strict
+        return {"type": "json_schema", "json_schema": json_schema}
+
+    return None
+
+
+def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None:
+    """Normalise structured output config for OpenRouter `/responses` requests.
+
+    The OpenRouter `/responses` endpoint follows an OpenResponses-style schema:
+    structured outputs are configured via `text.format`, not `response_format`.
+
+    To keep the pipe blast-safe:
+    - Never raise for malformed input.
+    - Prefer `text.format` when both are present (endpoint-native).
+    - Otherwise, accept Chat-style `response_format` as an alias and translate it.
+    """
+    if not isinstance(payload, dict):
+        return
+
+    response_format = payload.get("response_format")
+    response_format_as_text = _chat_response_format_to_responses_text_format(response_format)
+
+    existing_text = payload.get("text")
+    if existing_text is None:
+        existing_text = {}
+    if not isinstance(existing_text, dict):
+        if response_format_as_text is None:
+            return
+        existing_text = {}
+
+    existing_format = existing_text.get("format")
+    existing_as_chat = _responses_text_format_to_chat_response_format(existing_format)
+    existing_canonical = (
+        _chat_response_format_to_responses_text_format(existing_as_chat) if existing_as_chat else None
+    )
+    if existing_format is not None and existing_canonical is None:
+        existing_text.pop("format", None)
+        LOGGER.warning(
+            "Dropping invalid `text.format` on /responses request payload."
+        )
+
+    final_format: Optional[dict[str, Any]] = None
+    if existing_canonical is not None:
+        final_format = dict(existing_canonical)
+        if response_format_as_text is not None and existing_canonical != response_format_as_text:
+            LOGGER.warning(
+                "Conflicting structured output config: preferring `text.format` over `response_format` for /responses."
+            )
+    elif response_format_as_text is not None:
+        final_format = dict(response_format_as_text)
+
+    payload.pop("response_format", None)
+
+    if final_format is None:
+        if isinstance(existing_text, dict) and len(existing_text) == 0:
+            payload.pop("text", None)
+        return
+
+    existing_text["format"] = final_format
+    payload["text"] = existing_text
 
 
 def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
@@ -2507,6 +2628,31 @@ def _responses_payload_to_chat_completions_payload(
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 
+    # Structured outputs adapter: `/responses` uses `text.format` while `/chat/completions`
+    # uses `response_format`. Prefer endpoint-native fields when both exist.
+    existing_response_format = chat_payload.get("response_format")
+    if existing_response_format is not None and _chat_response_format_to_responses_text_format(existing_response_format) is None:
+        chat_payload.pop("response_format", None)
+        existing_response_format = None
+        LOGGER.warning("Dropping invalid `response_format` on /chat/completions payload.")
+
+    responses_text = responses_payload.get("text")
+    if isinstance(responses_text, dict):
+        mapped_response_format = _responses_text_format_to_chat_response_format(responses_text.get("format"))
+        if existing_response_format is None:
+            if mapped_response_format is not None:
+                chat_payload["response_format"] = mapped_response_format
+        elif mapped_response_format is not None and existing_response_format != mapped_response_format:
+            LOGGER.warning(
+                "Conflicting structured output config: preferring `response_format` over `text.format` for /chat/completions."
+            )
+
+        # Best-effort mapping for text verbosity when falling back to /chat/completions.
+        if "verbosity" not in chat_payload:
+            verbosity = responses_text.get("verbosity")
+            if isinstance(verbosity, str) and verbosity.strip():
+                chat_payload["verbosity"] = verbosity.strip()
+
     # Token limit mapping
     max_output_tokens = responses_payload.get("max_output_tokens")
     if max_output_tokens is not None:
@@ -2713,8 +2859,10 @@ def _apply_identifier_valves_to_payload(
 
 def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
+    candidate = dict(payload or {})
+    _normalise_openrouter_responses_text_format(candidate)
     filtered: Dict[str, Any] = {}
-    for key, value in payload.items():
+    for key, value in candidate.items():
         if key not in ALLOWED_OPENROUTER_FIELDS:
             continue
 
@@ -2752,6 +2900,12 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             if not allowed_reasoning:
                 continue
             value = allowed_reasoning
+
+        if key == "text":
+            if not isinstance(value, dict):
+                continue
+            if not value:
+                continue
         filtered[key] = value
     return filtered
 
