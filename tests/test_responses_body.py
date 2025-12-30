@@ -28,8 +28,8 @@ _STUBBED_INPUT = [
 
 
 @pytest.mark.asyncio
-async def test_from_completions_preserves_response_format(monkeypatch, minimal_pipe):
-    """response_format must flow through to the Responses body."""
+async def test_from_completions_maps_response_format_to_text_format(monkeypatch, minimal_pipe):
+    """Structured output config must map onto Responses `text.format`."""
     completions = CompletionsBody(
         model="test",
         messages=[{"role": "user", "content": "hi"}],
@@ -45,7 +45,13 @@ async def test_from_completions_preserves_response_format(monkeypatch, minimal_p
         completions,
         transformer_context=minimal_pipe,
     )
-    assert responses.response_format == completions.response_format
+    assert responses.text == {
+        "format": {
+            "type": "json_schema",
+            "name": "demo",
+            "schema": {"type": "object"},
+        }
+    }
 
 
 @pytest.mark.asyncio
