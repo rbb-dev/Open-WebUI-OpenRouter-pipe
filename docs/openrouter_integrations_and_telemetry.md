@@ -39,7 +39,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Plugin configuration (for example OpenRouter web search attachment when enabled and supported). |
-| `response_format` | Output format control (when supported). |
+| `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
