@@ -201,7 +201,9 @@ async def test_from_completions_preserves_system_message_in_input():
         system_items = [
             item
             for item in responses_body.input
-            if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "system"
+            if isinstance(item, dict)
+            and item.get("type") == "message"
+            and item.get("role") == "system"
         ]
         assert system_items
         assert system_items[0]["content"][0]["type"] == "input_text"
@@ -210,7 +212,9 @@ async def test_from_completions_preserves_system_message_in_input():
         user_items = [
             item
             for item in responses_body.input
-            if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user"
+            if isinstance(item, dict)
+            and item.get("type") == "message"
+            and item.get("role") == "user"
         ]
         assert user_items
         assert user_items[0]["content"][0]["type"] == "input_text"
@@ -496,7 +500,10 @@ def test_apply_gemini_thinking_config_sets_level(monkeypatch):
         body = ResponsesBody(model="google/gemini-3-pro-image-preview", input=[])
         pipe._apply_reasoning_preferences(body, valves)
         pipe._apply_gemini_thinking_config(body, valves)
-        assert body.thinking_config == {"include_thoughts": True, "thinking_level": "HIGH"}
+        assert body.thinking_config == {
+            "include_thoughts": True,
+            "thinking_level": "HIGH",
+        }
         assert body.reasoning is None
         assert body.include_reasoning is None
     finally:
@@ -519,7 +526,10 @@ def test_apply_gemini_thinking_config_sets_budget(monkeypatch):
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         pipe._apply_reasoning_preferences(body, valves)
         pipe._apply_gemini_thinking_config(body, valves)
-        assert body.thinking_config == {"include_thoughts": True, "thinking_budget": 512}
+        assert body.thinking_config == {
+            "include_thoughts": True,
+            "thinking_budget": 512,
+        }
     finally:
         pipe.shutdown()
 
@@ -564,9 +574,15 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
     )
 
     try:
-        body = {"model": "fake.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        body = {
+            "model": "fake.model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        }
         metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "fake.model"}}
-        available_models = [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
+        available_models = [
+            {"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}
+        ]
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
         openwebui_model_id = metadata["model"]["id"]
@@ -635,9 +651,19 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
     )
 
     try:
-        body = {"model": "unlisted.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-        metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "unlisted.model"}}
-        available_models = [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
+        body = {
+            "model": "unlisted.model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        }
+        metadata = {
+            "chat_id": "c1",
+            "message_id": "m1",
+            "model": {"id": "unlisted.model"},
+        }
+        available_models = [
+            {"id": "other.model", "norm_id": "other.model", "name": "Other"}
+        ]
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
         openwebui_model_id = metadata["model"]["id"]
@@ -661,7 +687,9 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
         )
         assert result == "ok"
         task_body = captured["body"]
-        assert task_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
+        assert (
+            task_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
+        )
         assert task_body["stream"] is True
     finally:
         await pipe.close()
@@ -673,7 +701,9 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
     pipe.valves = pipe.Valves(COSTS_REDIS_DUMP=True)
     captured: dict[str, Any] = {}
 
-    async def fake_send(self, session, request_params, api_key, base_url, *, valves=None):
+    async def fake_send(
+        self, session, request_params, api_key, base_url, *, valves=None
+    ):
         return {
             "output": [
                 {
@@ -719,3 +749,235 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
         assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
     finally:
         await pipe.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WEB_SEARCH_MODELS Valve Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_web_search_models_auto_enables_all():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="auto")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "anthropic.claude-3-opus",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_specific_list_enables_only_listed():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(
+            WEB_SEARCH_MODELS="google.gemini-pro,anthropic.claude-3-opus"
+        )
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "anthropic.claude-3-opus",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "openai.gpt-4",
+        )
+        assert result is False
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_empty_filter_fallbacks_to_auto():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_empty_string_enables_all():
+    pipe = Pipe()
+    try:
+        result = pipe._should_enable_web_search_for_model("", "google.gemini-pro")
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_whitespace_only_fallbacks_to_auto():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="   ")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_commas_only_fallbacks_to_auto():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS=",,,")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_mixed_whitespace_and_commas_fallbacks_to_auto():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS=" , , , ")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_case_insensitive_auto():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="AUTO")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="Auto")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="aUtO")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_normalizes_slash_format():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="anthropic/claude-3-opus")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "anthropic.claude-3-opus",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_normalizes_pipe_prefix():
+    pipe = Pipe()
+    try:
+        ModelFamily._PIPE_ID.set("open_webui_openrouter_pipe")
+        pipe.valves = pipe.Valves(
+            WEB_SEARCH_MODELS="open_webui_openrouter_pipe.anthropic.claude-3-opus"
+        )
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "anthropic.claude-3-opus",
+        )
+        assert result is True
+    finally:
+        ModelFamily._PIPE_ID.set(None)
+        pipe.shutdown()
+
+
+def test_web_search_models_normalizes_date_suffix():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="google.gemini-pro-2024-01-01")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_handles_mixed_formats():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(
+            WEB_SEARCH_MODELS="google.gemini-pro,anthropic/claude-3-opus,openai/gpt-4"
+        )
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "anthropic.claude-3-opus",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "openai.gpt-4",
+        )
+        assert result is True
+
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "meta.llama-3",
+        )
+        assert result is False
+    finally:
+        pipe.shutdown()
+
+
+def test_web_search_models_enables_for_partial_matches():
+    pipe = Pipe()
+    try:
+        pipe.valves = pipe.Valves(WEB_SEARCH_MODELS="google.gemini-pro")
+        result = pipe._should_enable_web_search_for_model(
+            pipe.valves.WEB_SEARCH_MODELS,
+            "google.gemini-pro-2024-01-01",
+        )
+        assert result is True
+    finally:
+        pipe.shutdown()
+
+
+

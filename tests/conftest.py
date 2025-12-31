@@ -11,19 +11,20 @@ from unittest.mock import Mock
 import pydantic
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
-
 
 def _ensure_pydantic_backports() -> None:
     if not hasattr(pydantic, "model_validator"):
+
         def _model_validator(*_args, **_kwargs):
             def decorator(func):
                 return func
+
             return decorator
 
         pydantic.model_validator = _model_validator  # type: ignore[attr-defined]
 
     if not hasattr(pydantic, "GetCoreSchemaHandler"):
+
         class _GetCoreSchemaHandler:  # minimal stub for typing
             ...
 
@@ -155,7 +156,6 @@ def _install_open_webui_stubs() -> None:
     open_webui.config = config_mod
 
 
-
 def _install_pydantic_core_stub() -> None:
     core_pkg = cast(Any, _ensure_module("pydantic_core"))
     core_schema_mod = cast(Any, _ensure_module("pydantic_core.core_schema"))
@@ -183,14 +183,11 @@ def _install_sqlalchemy_stub() -> None:
     engine_mod = cast(Any, _ensure_module("sqlalchemy.engine"))
     orm_mod = cast(Any, _ensure_module("sqlalchemy.orm"))
 
-    class _SQLAlchemyError(Exception):
-        ...
+    class _SQLAlchemyError(Exception): ...
 
-    class _Engine:
-        ...
+    class _Engine: ...
 
-    class _Session:
-        ...
+    class _Session: ...
 
     def _placeholder(*_args, **_kwargs):
         return object()
@@ -201,7 +198,16 @@ def _install_sqlalchemy_stub() -> None:
     def _declarative_base(*_args, **_kwargs):
         return type("Base", (), {})
 
-    for attr in ("Boolean", "Column", "DateTime", "JSON", "String", "text", "create_engine", "inspect"):
+    for attr in (
+        "Boolean",
+        "Column",
+        "DateTime",
+        "JSON",
+        "String",
+        "text",
+        "create_engine",
+        "inspect",
+    ):
         setattr(sa_pkg, attr, _placeholder)
 
     exc_mod.SQLAlchemyError = _SQLAlchemyError
@@ -245,50 +251,6 @@ def _install_tenacity_stub() -> None:
     tenacity_mod.retry_if_exception_type = _passthrough
     tenacity_mod.stop_after_attempt = _passthrough
     tenacity_mod.wait_exponential = _passthrough
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared Fixtures
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def pipe_instance():
-    """Return a fresh Pipe instance for tests."""
-    return Pipe()
-
-
-@pytest.fixture
-def mock_request():
-    """Mock FastAPI request used for storage uploads."""
-    request = Mock()
-    request.app = Mock()
-    request.app.url_path_for = Mock(return_value="/api/v1/files/test123")
-    return request
-
-
-@pytest.fixture
-def mock_user():
-    """Mock user object used for uploads and storage context."""
-    user = Mock()
-    user.id = "user123"
-    user.email = "test@example.com"
-    user.name = "Test User"
-    return user
-
-
-@pytest.fixture
-def sample_image_base64() -> str:
-    """Return a 1x1 transparent PNG encoded as base64."""
-    return (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    )
-
-
-@pytest.fixture
-def sample_audio_base64() -> str:
-    """Return sample base64-encoded audio data."""
-    return base64.b64encode(b"FAKE_AUDIO_DATA").decode("utf-8")
 
 
 def _install_fastapi_stub() -> None:
@@ -375,6 +337,18 @@ def _install_fastapi_stub() -> None:
     fastapi_pkg.datastructures = datastructures_mod
     fastapi_pkg.responses = responses_mod
     fastapi_pkg.concurrency = concurrency_mod
+
+
+# Install all stubs before importing Pipe
+_ensure_pydantic_backports()
+_install_pydantic_core_stub()
+_install_open_webui_stubs()
+_install_sqlalchemy_stub()
+_install_tenacity_stub()
+_install_fastapi_stub()
+
+# Now import Pipe after stubs are installed
+from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
 
 
 _ensure_pydantic_backports()
