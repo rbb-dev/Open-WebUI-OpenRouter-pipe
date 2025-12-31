@@ -3243,6 +3243,13 @@ class Pipe:
             le=10,
             description="Number of web results to request when the web-search plugin is enabled (1-10). Set to null to use the provider default.",
         )
+        WEB_SEARCH_MODELS: str = Field(
+            default="auto",
+            description=(
+                "Comma separated OpenRouter model IDs to enable web-search plugin for. "
+                "Set to 'auto' to enable for all models that support it."
+            ),
+        )
 
         # Logging
         LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
@@ -8255,7 +8262,10 @@ class Pipe:
 
         # STEP 6: Configure OpenRouter web-search plugin if supported/enabled
         if ModelFamily.supports("web_search_tool", responses_body.model) and (
-            valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False)
+            self._should_enable_web_search_for_model(
+                valves.WEB_SEARCH_MODELS, responses_body.model
+            )
+            and (valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False))
         ):
             reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             effort = (reasoning_cfg.get("effort") or "").strip().lower()
@@ -9838,6 +9848,20 @@ class Pipe:
         if missing:
             self.logger.warning("Requested models not found in OpenRouter catalog: %s", ", ".join(sorted(missing)))
         return selected or available_models
+
+    def _should_enable_web_search_for_model(self, filter_value: str, model_id: str) -> bool:
+        """Check if web_search should be enabled for a specific model."""
+        filter_value = (filter_value or "").strip()
+        if not filter_value or filter_value.lower() == "auto":
+            return True
+
+        requested = {
+            ModelFamily.base_model(sanitize_model_id(m.strip()))
+            for m in filter_value.split(",")
+            if m.strip()
+        }
+
+        return ModelFamily.base_model(model_id) in requested
 
     # 4.3 Core Multi-Turn Handlers
     @no_type_check

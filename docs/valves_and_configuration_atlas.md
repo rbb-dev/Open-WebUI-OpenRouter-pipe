@@ -138,8 +138,9 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_WEB_SEARCH_TOOL` | `bool` | `True` | When True, allows use of OpenRouter’s web search tool when supported by the selected model/provider. |
+| `ENABLE_WEB_SEARCH_TOOL` | `bool` | `True` | When True, allows use of OpenRouter's web search tool when supported by the selected model/provider. |
 | `WEB_SEARCH_MAX_RESULTS` | `int` | `3` | Maximum number of results to request from the web search tool. |
+| `WEB_SEARCH_MODELS` | `str` | `auto` | Comma-separated OpenRouter model IDs to enable web-search plugin for. Set to 'auto' to enable for all models that support it. |
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 
