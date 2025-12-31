@@ -9860,6 +9860,10 @@ class Pipe:
             for m in filter_value.split(",")
             if m.strip()
         }
+        # If parsing produced no valid model IDs (e.g., ",,," or whitespace-only),
+        # fall back to enabling web search for all models, matching _select_models.
+        if not requested:
+            return True
 
         return ModelFamily.base_model(model_id) in requested
 
