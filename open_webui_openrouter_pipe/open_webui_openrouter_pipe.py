@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.17
+version: 1.0.18
 requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -4545,8 +4545,20 @@ class Pipe:
         worker = cls._queue_worker_task
         if worker:
             worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker
+            try:
+                worker_loop = worker.get_loop()
+            except Exception:  # pragma: no cover - defensive for older asyncio implementations
+                worker_loop = None
+            if worker_loop is None or worker_loop is asyncio.get_running_loop():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+            else:
+                # The queue worker (and its Queue) belong to a different event loop.
+                # This can happen in test runners that create a new loop per test.
+                # Do not await across loops; just drop references so a new loop can recreate them.
+                self.logger.debug(
+                    "Skipping await for request worker bound to a different event loop during close()."
+                )
             cls._queue_worker_task = None
         cls._request_queue = None
 
@@ -6024,9 +6036,12 @@ class Pipe:
             # Prune empty directories, including the root if it's emptied out.
             try:
                 for dirpath, dirnames, filenames in os.walk(root, topdown=False):
-                    if dirnames or filenames:
-                        continue
+                    # Don't rely on os.walk's cached dirnames/filenames; check
+                    # the filesystem live so we can prune parent directories in
+                    # the same pass.
                     with contextlib.suppress(Exception):
+                        if any(Path(dirpath).iterdir()):
+                            continue
                         os.rmdir(dirpath)
             except Exception:
                 continue
@@ -11473,6 +11488,21 @@ class Pipe:
                 break
 
     # 4.5 LLM HTTP Request Helpers
+    @staticmethod
+    def _should_warn_event_queue_backlog(
+        qsize: int,
+        warn_size: int,
+        now: float,
+        last_warn_ts: float,
+        *,
+        cooldown_seconds: float = 30.0,
+    ) -> bool:
+        """Return True when the event queue backlog should log a warning.
+
+        This is a pure helper extracted for testability; behaviour is unchanged.
+        """
+        return qsize >= warn_size and (now - last_warn_ts) >= cooldown_seconds
+
     async def send_openai_responses_streaming_request(
         self,
         session: aiohttp.ClientSession,
@@ -11700,7 +11730,12 @@ class Pipe:
 
                 # Non-spammy queue monitoring
                 now = perf_counter()
-                if event_queue.qsize() >= event_queue_warn_size and (now - event_queue_warn_last_ts) >= 30.0:
+                if self._should_warn_event_queue_backlog(
+                    event_queue.qsize(),
+                    event_queue_warn_size,
+                    now,
+                    event_queue_warn_last_ts,
+                ):
                     self.logger.warning(
                         "Event queue backlog high: %d items (session=%s)",
                         event_queue.qsize(),
