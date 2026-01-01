@@ -94,4 +94,5 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md)
 - [Task Models & Housekeeping](task_models_and_housekeeping.md)
 - [Tooling & Integrations](tooling_and_integrations.md)
+- [Test Suite Audit Snapshot](test_suite_audit_snapshot.md) — one-shot snapshot of a completed test audit; not maintained.
 - `CHANGELOG.md` (repo root) — audit trail for changes.

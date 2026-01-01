@@ -68,10 +68,15 @@ def test_valve_descriptions_warn_deadlock():
 def test_warn_condition_logic(qsize, warn_size, delta_time, expected):
     """Test drain loop warning condition matches implementation logic.
 
-    Implementation: qsize >= warn_size and delta_time >= 30.0
+    Implementation: Pipe._should_warn_event_queue_backlog(...)
     """
-    condition = qsize >= warn_size and delta_time >= 30.0
-    assert condition == expected, f"Failed for qsize={qsize}, warn_size={warn_size}, delta={delta_time}"
+    should_warn = Pipe._should_warn_event_queue_backlog(
+        qsize,
+        warn_size,
+        delta_time,
+        0.0,
+    )
+    assert should_warn == expected, f"Failed for qsize={qsize}, warn_size={warn_size}, delta={delta_time}"
 
 
 def test_queue_valve_constraints():
@@ -118,8 +123,7 @@ def test_warning_cooldown_prevents_spam():
     warnings_emitted = []
 
     for now in timestamps:
-        # Match implementation: qsize >= warn_size and (now - last_ts) >= 30.0
-        if now - last_warn_ts >= 30.0:
+        if Pipe._should_warn_event_queue_backlog(1000, 1000, now, last_warn_ts):
             warnings_emitted.append(now)
             last_warn_ts = now
 

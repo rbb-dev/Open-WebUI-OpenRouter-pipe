@@ -118,6 +118,46 @@ def test_force_chat_completions_models_matches_slash_glob() -> None:
     assert pipe._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "chat_completions"
 
 
+def test_force_responses_models_overrides_force_chat_models() -> None:
+    pipe = Pipe()
+    valves = pipe.valves.model_copy(
+        update={
+            "DEFAULT_LLM_ENDPOINT": "responses",
+            "FORCE_CHAT_COMPLETIONS_MODELS": "anthropic/*",
+            "FORCE_RESPONSES_MODELS": "anthropic/claude-sonnet-4.5",
+        }
+    )
+    assert pipe._select_llm_endpoint("anthropic/claude-sonnet-4.5", valves=valves) == "responses"
+    assert pipe._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "responses"
+
+
+def test_responses_payload_to_chat_converts_tools_schema() -> None:
+    payload = {
+        "model": "openai/gpt-5",
+        "stream": True,
+        "input": [],
+        "tools": [
+            {
+                "type": "function",
+                "name": "search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            }
+        ],
+    }
+    chat = _responses_payload_to_chat_completions_payload(payload)
+    assert chat["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search the web",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            },
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_chat_completions_stream_adapts_tool_calls_and_usage() -> None:
     pipe = Pipe()

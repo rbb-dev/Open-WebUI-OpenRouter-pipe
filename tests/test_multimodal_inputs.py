@@ -198,6 +198,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_successful(self, pipe_instance):
         """Should download remote file successfully."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
         test_content = b"fake image data"
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -220,6 +221,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_normalizes_mime_type(self, pipe_instance):
         """Should normalize image/jpg to image/jpeg."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.headers = {"content-type": "image/jpg; charset=utf-8"}
@@ -237,14 +239,18 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_rejects_files_over_default_limit(self, pipe_instance):
         """Should reject files larger than the configured limit (default 50MB)."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 1
         limit_bytes = pipe_instance._get_effective_remote_file_limit_mb() * 1024 * 1024
-        large_content = b"x" * (limit_bytes + 1)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
-            mock_response.headers = {"content-type": "image/jpeg"}
+            mock_response.headers = {
+                "content-type": "image/jpeg",
+                "content-length": str(limit_bytes + 1),
+            }
             mock_response.raise_for_status = Mock()
-            _set_aiter_bytes(mock_response, [large_content])
+            _set_aiter_bytes(mock_response, [b"x"])
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
@@ -263,20 +269,26 @@ class TestRemoteURLDownloading:
 
     @pytest.mark.asyncio
     async def test_download_network_error_returns_none(self, pipe_instance):
-        """Should return None on network errors."""
+        """Should retry on network errors and return None when exhausted."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
+        pipe_instance.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
+        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
         with patch("httpx.AsyncClient") as mock_client:
             client_ctx = mock_client.return_value.__aenter__.return_value
-            client_ctx.stream = Mock(side_effect=Exception("Network error"))
+            client_ctx.stream = Mock(side_effect=httpx.NetworkError("Network error"))
 
             result = await pipe_instance._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
             assert result is None
+            assert client_ctx.stream.call_count == 2
 
     @pytest.mark.asyncio
     async def test_download_does_not_retry_on_client_errors(self, pipe_instance):
         """Should not retry on non-429 HTTP 4xx errors."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
         url = "https://example.com/forbidden.png"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=403, request=request)
@@ -294,6 +306,55 @@ class TestRemoteURLDownloading:
 
             assert result is None
             assert client_ctx.stream.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_download_blocks_unsafe_url(self, pipe_instance):
+        """SSRF guard should abort before making any HTTP request."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient") as mock_client:
+            result = await pipe_instance._download_remote_url("https://example.com/image.jpg")
+            assert result is None
+            mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_download_retries_on_429_then_succeeds(self, pipe_instance):
+        """HTTP 429 should trigger a retry and succeed on a later attempt."""
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
+        pipe_instance.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
+        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
+
+        url = "https://example.com/limited.png"
+        request = httpx.Request("GET", url)
+        limited_response = httpx.Response(status_code=429, headers={"Retry-After": "0"}, request=request)
+        limited_error = httpx.HTTPStatusError("Too Many Requests", request=request, response=limited_response)
+
+        with patch("httpx.AsyncClient") as mock_client:
+            first = Mock()
+            first.headers = {"content-type": "image/png"}
+            first.raise_for_status = Mock(side_effect=limited_error)
+            _set_aiter_bytes(first, [b"ignored"])
+
+            second = Mock()
+            second.headers = {"content-type": "image/png"}
+            second.raise_for_status = Mock()
+            _set_aiter_bytes(second, [b"ok"])
+
+            client_ctx = mock_client.return_value.__aenter__.return_value
+            client_ctx.stream = Mock(
+                side_effect=[
+                    _make_stream_context(response=first),
+                    _make_stream_context(response=second),
+                ]
+            )
+
+            result = await pipe_instance._download_remote_url(url)
+
+            assert result is not None
+            assert result["data"] == b"ok"
+            assert result["mime_type"] == "image/png"
+            assert client_ctx.stream.call_count == 2
 
 
 class TestSSRFIPv6Validation:
@@ -1115,21 +1176,172 @@ class TestConversationRebuild:
 class TestMultimodalIntegration:
     """Integration tests for combined multimodal inputs."""
 
-    def test_combined_text_image_file(self):
+    @pytest.mark.asyncio
+    async def test_combined_text_image_file(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        sample_image_base64,
+        monkeypatch,
+    ) -> None:
         """Should handle message with text, image, and file."""
-        pass
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
 
-    def test_combined_text_audio_image(self):
+        remote_file_url = "https://example.com/manual.pdf"
+        download_mock = AsyncMock(
+            return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
+        )
+        upload_mock = AsyncMock(side_effect=["/api/v1/files/img123", "/api/v1/files/file123"])
+        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{sample_image_base64}", "detail": "low"},
+                    },
+                    {"type": "input_file", "file_url": remote_file_url, "filename": "manual.pdf"},
+                ],
+            }
+        ]
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=None,
+        )
+
+        assert transformed and transformed[0]["role"] == "user"
+        blocks = transformed[0]["content"]
+        assert [b["type"] for b in blocks] == ["input_text", "input_image", "input_file"]
+        assert blocks[0]["text"] == "hello"
+        assert blocks[1]["image_url"] == "/api/v1/files/img123"
+        assert blocks[1]["detail"] == "low"
+        assert blocks[2]["file_url"] == "/api/v1/files/file123"
+
+        download_mock.assert_awaited_once_with(remote_file_url)
+        assert upload_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_combined_text_audio_image(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        sample_audio_base64,
+        monkeypatch,
+    ) -> None:
         """Should handle message with text, audio, and image."""
-        pass
+        upload_mock = AsyncMock(return_value="/api/v1/files/img999")
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
 
-    def test_multiple_images_in_message(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "listen"},
+                    {"type": "input_audio", "input_audio": f"data:audio/mp3;base64,{sample_audio_base64}"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA", "detail": "auto"}},
+                ],
+            }
+        ]
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=None,
+        )
+
+        blocks = transformed[0]["content"]
+        assert [b["type"] for b in blocks] == ["input_text", "input_audio", "input_image"]
+        assert blocks[0]["text"] == "listen"
+        assert blocks[1]["input_audio"]["data"] == sample_audio_base64
+        assert blocks[1]["input_audio"]["format"] == "mp3"
+        assert blocks[2]["image_url"] == "/api/v1/files/img999"
+
+    @pytest.mark.asyncio
+    async def test_multiple_images_in_message(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        sample_image_base64,
+        monkeypatch,
+    ) -> None:
         """Should handle multiple images in single message."""
-        pass
+        upload_mock = AsyncMock(side_effect=["/api/v1/files/img1", "/api/v1/files/img2"])
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
 
-    def test_error_in_one_block_does_not_crash_others(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "two images"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{sample_image_base64}"}},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            }
+        ]
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=None,
+        )
+
+        blocks = transformed[0]["content"]
+        types = [b["type"] for b in blocks]
+        assert types == ["input_text", "input_image", "input_image"]
+        assert [b["image_url"] for b in blocks[1:]] == ["/api/v1/files/img1", "/api/v1/files/img2"]
+
+    @pytest.mark.asyncio
+    async def test_error_in_one_block_does_not_crash_others(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        monkeypatch,
+    ) -> None:
         """Should process other blocks even if one fails."""
-        pass
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
+        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+
+        remote_file_url = "https://example.com/manual.pdf"
+        download_mock = AsyncMock(
+            return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
+        )
+        upload_mock = AsyncMock(side_effect=[RuntimeError("boom"), "/api/v1/files/file-ok"])
+        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    {"type": "input_file", "file_url": remote_file_url, "filename": "manual.pdf"},
+                ],
+            }
+        ]
+        transformed = await pipe_instance.transform_messages_to_input(
+            messages,
+            __request__=mock_request,
+            user_obj=mock_user,
+            event_emitter=None,
+        )
+
+        blocks = transformed[0]["content"]
+        assert [b["type"] for b in blocks] == ["input_image", "input_file"]
+        # Image failure should fall back to original data URL.
+        assert blocks[0]["image_url"] == "data:image/png;base64,AAAA"
+        # File should still be processed.
+        assert blocks[1]["file_url"] == "/api/v1/files/file-ok"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
