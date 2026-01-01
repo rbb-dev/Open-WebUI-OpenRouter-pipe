@@ -216,6 +216,13 @@ def _install_sqlalchemy_stub() -> None:
 
 
 def _install_tenacity_stub() -> None:
+    import importlib.util
+
+    # Prefer the real tenacity implementation when available so tests exercise
+    # production retry semantics.
+    if importlib.util.find_spec("tenacity") is not None:
+        return
+
     tenacity_mod = cast(Any, _ensure_module("tenacity"))
 
     class _DummyAttempt:

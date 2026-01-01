@@ -1,7 +1,4 @@
-import asyncio
 import logging
-import pytest
-import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -9,16 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import SessionLogger
 
 
-def test_session_logger_thread_safety_filter_and_cleanup():
+def test_session_logger_thread_safety_filter_and_cleanup() -> None:
     """Test that SessionLogger filter and cleanup don't race with RuntimeError."""
     SessionLogger.logs.clear()
     SessionLogger._session_last_seen.clear()
 
     request_id = "test-request-001"
     num_iterations = 100
-    runtime_errors = []
+    runtime_errors: list[RuntimeError] = []
 
-    def cleanup_worker():
+    def cleanup_worker() -> None:
         """Repeatedly call cleanup in a background thread."""
         for _ in range(num_iterations):
             try:
@@ -28,7 +25,7 @@ def test_session_logger_thread_safety_filter_and_cleanup():
                     runtime_errors.append(e)
                 raise
 
-    def logging_worker():
+    def logging_worker() -> None:
         """Repeatedly log with the same request_id in a background thread."""
         logger = SessionLogger.get_logger(__name__)
         for _ in range(num_iterations):
@@ -60,7 +57,7 @@ def test_session_logger_thread_safety_filter_and_cleanup():
     SessionLogger._session_last_seen.clear()
 
 
-def test_session_logger_cleanup_removes_stale_entries():
+def test_session_logger_cleanup_removes_stale_entries() -> None:
     """Test that cleanup removes entries older than max_age_seconds."""
     SessionLogger.logs.clear()
     SessionLogger._session_last_seen.clear()
@@ -85,7 +82,9 @@ def test_session_logger_cleanup_removes_stale_entries():
     old_ts = SessionLogger._session_last_seen.get(request_id_old)
     assert old_ts is not None
 
-    time.sleep(0.1)
+    # Make the first record stale without sleeping.
+    with SessionLogger._state_lock:
+        SessionLogger._session_last_seen[request_id_old] = time.time() - 3600
 
     record_fresh = logging.LogRecord(
         name=__name__,
@@ -115,7 +114,7 @@ def test_session_logger_cleanup_removes_stale_entries():
     SessionLogger._session_last_seen.clear()
 
 
-def test_session_logger_concurrent_writes_same_request():
+def test_session_logger_concurrent_writes_same_request() -> None:
     """Test multiple threads logging to the same request_id don't corrupt."""
     SessionLogger.logs.clear()
     SessionLogger._session_last_seen.clear()
@@ -124,7 +123,7 @@ def test_session_logger_concurrent_writes_same_request():
     num_threads = 8
     messages_per_thread = 50
 
-    def worker(idx: int):
+    def worker(idx: int) -> None:
         logger = SessionLogger.get_logger(__name__)
         for i in range(messages_per_thread):
             SessionLogger.request_id.set(request_id)
@@ -143,9 +142,7 @@ def test_session_logger_concurrent_writes_same_request():
     expected_min_messages = min(
         num_threads * messages_per_thread, SessionLogger.max_lines
     )
-    assert len(buffer) >= expected_min_messages * 0.9, (
-        f"Expected at least {expected_min_messages * 0.9} messages, got {len(buffer)}"
-    )
+    assert len(buffer) == expected_min_messages
 
     SessionLogger.logs.clear()
     SessionLogger._session_last_seen.clear()
