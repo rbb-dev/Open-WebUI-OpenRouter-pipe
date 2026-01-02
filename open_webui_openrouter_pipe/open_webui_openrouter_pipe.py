@@ -2759,6 +2759,54 @@ def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging
     if raw_fallback not in (None, "", []):
         logger.debug("Applied model_fallback -> models (%d fallback(s))", len(fallback_models))
 
+
+def _apply_disable_native_websearch_to_payload(
+    payload: dict[str, Any],
+    *,
+    logger: logging.Logger = LOGGER,
+) -> None:
+    """Apply OWUI per-model `disable_native_websearch` custom param.
+
+    When truthy, this disables OpenRouter's built-in web search integration by removing:
+    - `plugins` entries with `{"id": "web"}`
+    - `web_search_options` (chat/completions)
+    """
+    if not isinstance(payload, dict):
+        return
+
+    raw_flag = payload.pop("disable_native_websearch", None)
+    if raw_flag is None:
+        raw_flag = payload.pop("disable_native_web_search", None)
+
+    disable = _coerce_bool(raw_flag)
+    if disable is not True:
+        return
+
+    removed = False
+    if payload.pop("web_search_options", None) is not None:
+        removed = True
+
+    plugins = payload.get("plugins")
+    if isinstance(plugins, list) and plugins:
+        filtered: list[Any] = []
+        for entry in plugins:
+            if isinstance(entry, dict) and entry.get("id") == "web":
+                removed = True
+                continue
+            filtered.append(entry)
+
+        if removed:
+            if filtered:
+                payload["plugins"] = filtered
+            else:
+                payload.pop("plugins", None)
+
+    if removed:
+        logger.debug(
+            "Native web search disabled via custom param (model=%s).",
+            payload.get("model"),
+        )
+
 def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
     """Return a validated OpenRouter `metadata` dict or None.
 
@@ -10318,6 +10366,7 @@ class Pipe:
                     logger=self.logger,
                 )
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
+                _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                 is_streaming = bool(request_payload.get("stream"))
