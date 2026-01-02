@@ -719,3 +719,61 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
         assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
     finally:
         await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(
+        SEND_END_USER_ID=True,
+        SEND_SESSION_ID=True,
+        SEND_CHAT_ID=True,
+        SEND_MESSAGE_ID=True,
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_send(self, session, request_params, api_key, base_url, *, valves=None):
+        captured["request_params"] = dict(request_params or {})
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "ok"}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        Pipe,
+        "send_openai_responses_nonstreaming_request",
+        fake_send,
+    )
+
+    try:
+        result = await pipe._run_task_model_request(
+            {"model": "openai.gpt-mini"},
+            pipe.valves,
+            session=cast(Any, object()),
+            task_context={"type": "title"},
+            owui_metadata={
+                "user_id": "u_meta",
+                "session_id": "s1",
+                "chat_id": "c1",
+                "message_id": "m1",
+            },
+            user_id="u123",
+        )
+        assert result == "ok"
+
+        request_params = captured["request_params"]
+        assert request_params.get("user") == "u123"
+        assert request_params.get("session_id") == "s1"
+
+        metadata = request_params.get("metadata")
+        assert isinstance(metadata, dict)
+        assert metadata.get("user_id") == "u123"
+        assert metadata.get("session_id") == "s1"
+        assert metadata.get("chat_id") == "c1"
+        assert metadata.get("message_id") == "m1"
+    finally:
+        await pipe.close()

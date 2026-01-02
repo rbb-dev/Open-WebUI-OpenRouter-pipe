@@ -8377,6 +8377,7 @@ class Pipe:
                 valves,
                 session=session,
                 task_context=__task__,
+                owui_metadata=__metadata__,
                 user_id=user_id or "",
                 user_obj=user_model,
                 pipe_id=pipe_identifier,
@@ -11473,6 +11474,7 @@ class Pipe:
         *,
         session: aiohttp.ClientSession | None = None,
         task_context: Optional[Dict[str, Any]] = None,
+        owui_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         user_obj: Optional[Any] = None,
         pipe_id: Optional[str] = None,
@@ -11497,6 +11499,23 @@ class Pipe:
                     task_body["max_output_tokens"] = default_max
         else:
             task_body.pop("max_output_tokens", None)
+
+        identifier_user_id = str(
+            (user_id or "")
+            or (
+                (owui_metadata or {}).get("user_id")
+                if isinstance(owui_metadata, dict)
+                else ""
+            )
+            or ""
+        )
+        _apply_identifier_valves_to_payload(
+            task_body,
+            valves=valves,
+            owui_metadata=owui_metadata or {},
+            owui_user_id=identifier_user_id,
+            logger=self.logger,
+        )
         task_body = _filter_openrouter_request(task_body)
 
         attempts = 2
