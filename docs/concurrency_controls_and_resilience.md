@@ -53,7 +53,7 @@ The pipe uses background tasks/threads to keep request handling responsive:
 - **Request worker loop:** dequeues jobs from the request queue and spawns per-request tasks.
 - **Async log worker:** drains a bounded async log queue (`maxsize=1000`) used by `SessionLogger` so log emission does not block request execution.
 - **Redis tasks (optional):** when Redis caching is enabled and available, the pipe starts a Redis client and associated listener/flush tasks.
-- **Artifact cleanup worker:** periodically deletes persisted artifacts older than `ARTIFACT_CLEANUP_DAYS` on an interval controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS`.
+- **Artifact cleanup worker:** periodically deletes persisted artifacts older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on DB reads) on an interval controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS`.
 - **Session log storage threads (optional):** when session log storage is enabled, the pipe uses background threads to write and clean up encrypted zip archives.
 
 ---
@@ -65,4 +65,3 @@ The pipe uses background tasks/threads to keep request handling responsive:
 - For multi-worker deployments, consider enabling Redis caching (when appropriate) to improve artifact replay performance and reduce DB contention.
 
 All tunables referenced here are documented (with verified defaults) in [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
-

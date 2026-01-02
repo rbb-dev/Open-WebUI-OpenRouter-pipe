@@ -130,7 +130,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ARTIFACT_CLEANUP_DAYS` | `int` | `90` | Retention window (days) for persisted artifacts before cleanup. |
+| `ARTIFACT_CLEANUP_DAYS` | `int` | `90` | Retention window (days) for persisted artifacts before cleanup (measured from `created_at`, which is refreshed on DB reads). |
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `float` | `1.0` | Cleanup cadence (hours). |
 | `DB_BATCH_SIZE` | `int` | `10` | Rows per DB transaction when draining Redis / batching persistence work. |
 

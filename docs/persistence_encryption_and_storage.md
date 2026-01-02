@@ -59,7 +59,7 @@ Persisted rows include:
 - Open WebUI identifiers such as `chat_id` and `message_id`
 - `item_type`
 - `payload` (plaintext JSON, or an encrypted wrapper when encryption is enabled)
-- `created_at`
+- `created_at` (UTC timestamp used for retention; refreshed on DB reads)
 
 ---
 
@@ -116,7 +116,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for Redis-
 Retention has multiple layers:
 
 ### Time-based cleanup
-- A periodic cleanup worker deletes persisted rows older than `ARTIFACT_CLEANUP_DAYS`.
+- A periodic cleanup worker deletes persisted rows older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on DB reads).
 - Cleanup cadence is controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter).
 
 ### Reasoning retention policy (`PERSIST_REASONING_TOKENS`)
