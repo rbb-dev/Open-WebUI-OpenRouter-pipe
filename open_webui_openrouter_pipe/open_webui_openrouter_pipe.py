@@ -126,7 +126,7 @@ import email.utils
 import aiohttp
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 from cryptography.fernet import Fernet, InvalidToken
@@ -1898,23 +1898,125 @@ class ResponsesBody(BaseModel):
     
     # Core parameters
     model: str
+    models: Optional[List[str]] = None
     instructions: Optional[str] = None  # system/developer instructions
     input: Union[str, List[Dict[str, Any]]]  # plain text, or rich array
 
     stream: bool = False                          # SSE chunking
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    top_k: Optional[float] = None
+    min_p: Optional[float] = None
+    top_a: Optional[float] = None
     max_output_tokens: Optional[int] = None
     reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
     include_reasoning: Optional[bool] = None
     thinking_config: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
     text: Optional[Dict[str, Any]] = None
     parallel_tool_calls: Optional[bool] = None
     transforms: Optional[List[str]] = None
+    user: Optional[str] = None
+    session_id: Optional[str] = None
+
+    # OpenRouter /chat/completions parameters (preserved for endpoint fallback).
+    max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
+    stop: Optional[Union[str, List[str]]] = None
+    seed: Optional[int] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    logit_bias: Optional[Dict[str, float]] = None
+    logprobs: Optional[bool] = None
+    top_logprobs: Optional[int] = None
+    response_format: Optional[Dict[str, Any]] = None
+    structured_outputs: Optional[bool] = None
+    reasoning_effort: Optional[str] = None
+    verbosity: Optional[str] = None
+    web_search_options: Optional[Dict[str, Any]] = None
+    stream_options: Optional[Dict[str, Any]] = None
+    usage: Optional[Dict[str, Any]] = None
+
+    # OpenRouter routing extras (best-effort passthrough for /chat/completions).
+    provider: Optional[Dict[str, Any]] = None
+    route: Optional[str] = None
+    debug: Optional[Dict[str, Any]] = None
+    image_config: Optional[Union[str, float]] = None
+    modalities: Optional[List[str]] = None
     model_config = ConfigDict(extra="allow")  # allow additional OpenAI parameters automatically
+
+    @staticmethod
+    def _strip_blank_string(value: Any) -> Any:
+        if isinstance(value, str):
+            candidate = value.strip()
+            return candidate or None
+        return value
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "top_a",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_float_fields(cls, value: Any) -> Any:
+        return cls._strip_blank_string(value)
+
+    @field_validator(
+        "max_output_tokens",
+        "max_tokens",
+        "max_completion_tokens",
+        "seed",
+        "top_logprobs",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_int_fields(cls, value: Any) -> Any:
+        value = cls._strip_blank_string(value)
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError("Boolean is not a valid integer value.")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(round(value))
+        if isinstance(value, str):
+            try:
+                return int(round(float(value)))
+            except ValueError as exc:
+                raise ValueError(f"Invalid integer value: {value!r}") from exc
+        raise ValueError(f"Invalid integer value: {value!r}")
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _coerce_models_list(cls, value: Any) -> Any:
+        value = cls._strip_blank_string(value)
+        if value is None:
+            return None
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            models = [part for part in parts if part]
+            return models or None
+        if isinstance(value, list):
+            models: list[str] = []
+            for entry in value:
+                if not isinstance(entry, str):
+                    continue
+                candidate = entry.strip()
+                if candidate:
+                    models.append(candidate)
+            return models or None
+        raise ValueError("models must be an array of strings (or a CSV string).")
 
     @model_validator(mode='after')
     def _normalize_model_id(self) -> "ResponsesBody":
@@ -2012,10 +2114,8 @@ class ResponsesBody(BaseModel):
         # Step 1: Remove unsupported fields
         unsupported_fields = {
             # Fields that are not supported by OpenAI Responses API
-            "frequency_penalty", "presence_penalty", "seed", "logit_bias",
-            "logprobs", "top_logprobs", "n", "stop",
+            "n",
             "suffix", # Responses API does not support suffix
-            "stream_options", # Responses API does not support stream options
             "function_call", # Deprecated in favor of 'tool_choice'.
             "functions", # Deprecated in favor of 'tools'.
 
@@ -2627,6 +2727,36 @@ def _responses_payload_to_chat_completions_payload(
     for key in passthrough:
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
+
+    def _coerce_chat_int_param(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(round(value))
+        if isinstance(value, str):
+            candidate = value.strip()
+            if not candidate:
+                return None
+            try:
+                return int(round(float(candidate)))
+            except ValueError:
+                return value
+        return value
+
+    # OpenRouter's /chat/completions historically expects integer-ish values for some params
+    # (notably top_k), while /responses schemas may accept floats. Round for chat.
+    for key in ("top_k", "seed", "top_logprobs", "max_tokens", "max_completion_tokens"):
+        if key not in chat_payload:
+            continue
+        rounded = _coerce_chat_int_param(chat_payload.get(key))
+        if rounded is None:
+            chat_payload.pop(key, None)
+        else:
+            chat_payload[key] = rounded
 
     # Structured outputs adapter: `/responses` uses `text.format` while `/chat/completions`
     # uses `response_format`. Prefer endpoint-native fields when both exist.
