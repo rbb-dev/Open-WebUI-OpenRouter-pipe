@@ -61,6 +61,17 @@ Example Open WebUI custom parameter value:
 openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
 ```
 
+### 2.3 `disable_native_websearch` → disable OpenRouter web search plugin
+Open WebUI can attach per-model custom parameters (model settings → `custom_params`). This pipe supports a boolean custom parameter to **disable OpenRouter’s built-in web search** for specific models.
+
+- Custom param: `disable_native_websearch` (bool-ish; accepts `true/false`, `1/0`, etc.)
+  - Alias: `disable_native_web_search`
+- Pipe behavior (when truthy):
+  - Removes `plugins` entries with `{"id": "web"}`.
+  - Removes `web_search_options` when present (OpenRouter `/chat/completions`).
+
+This is useful when `ENABLE_WEB_SEARCH_TOOL=True` globally but you want to block native web search on selected models.
+
 ---
 
 ## 3. Model catalog and capability-aware routing
