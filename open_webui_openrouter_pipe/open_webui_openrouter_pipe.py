@@ -6574,6 +6574,48 @@ class Pipe:
         finally:
             session.close()
 
+        # Best-effort "touch" for retention: update created_at on DB access (not on Redis hits).
+        # This must never crash the read path.
+        if rows:
+            try:
+                touched_ids = [getattr(row, "id", None) for row in rows]
+                touched_ids = [
+                    item_id
+                    for item_id in touched_ids
+                    if isinstance(item_id, str) and item_id
+                ]
+                if touched_ids:
+                    touch_session: Session = self._session_factory()  # type: ignore[call-arg]
+                    try:
+                        now = datetime.datetime.utcnow()
+                        touch_query = touch_session.query(model).filter(model.chat_id == chat_id)
+                        touch_query = touch_query.filter(model.id.in_(touched_ids))
+                        if message_id:
+                            touch_query = touch_query.filter(model.message_id == message_id)
+                        touch_query.update({model.created_at: now}, synchronize_session=False)
+                        touch_session.commit()
+                    except Exception as exc:
+                        with contextlib.suppress(Exception):
+                            touch_session.rollback()
+                        self.logger.debug(
+                            "Artifact touch skipped (chat_id=%s, message_id=%s, rows=%s): %s",
+                            chat_id,
+                            message_id or "",
+                            len(touched_ids),
+                            exc,
+                            exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                        )
+                    finally:
+                        touch_session.close()
+            except Exception as exc:
+                self.logger.debug(
+                    "Artifact touch failed (chat_id=%s, message_id=%s): %s",
+                    chat_id,
+                    message_id or "",
+                    exc,
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
+
         results: dict[str, dict] = {}
         for row in rows:
             payload = row.payload
