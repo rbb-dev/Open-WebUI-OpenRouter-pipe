@@ -120,15 +120,15 @@ async def test_from_completions_converts_legacy_function_call_strings(monkeypatc
 @pytest.mark.asyncio
 async def test_from_completions_preserves_chat_completion_only_params(monkeypatch, minimal_pipe):
     """Chat-only parameters must survive ResponsesBody conversion so /chat/completions fallback can use them."""
-    completions = CompletionsBody(
-        model="test",
-        messages=[{"role": "user", "content": "hi"}],
-        stop=["DONE"],
-        seed=2.5,
-        top_logprobs=2.5,
-        logprobs=True,
-        frequency_penalty="0.5",
-    )
+    completions = CompletionsBody.model_validate({
+        "model": "test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["DONE"],
+        "seed": 2.5,
+        "top_logprobs": 2.5,
+        "logprobs": True,
+        "frequency_penalty": "0.5",
+    })
 
     async def fake_transform(_transformer, *_args, **_kwargs):
         return list(_STUBBED_INPUT)
