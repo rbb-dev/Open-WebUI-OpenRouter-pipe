@@ -106,6 +106,12 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
     assert chat["messages"][0]["content"][2]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:
+    payload = {"model": "openai/gpt-5", "stream": False, "input": [], "top_k": 2.5}
+    chat = _responses_payload_to_chat_completions_payload(payload)
+    assert chat["top_k"] == 2
+
+
 def test_force_chat_completions_models_matches_slash_glob() -> None:
     pipe = Pipe()
     valves = pipe.valves.model_copy(

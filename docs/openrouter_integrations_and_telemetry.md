@@ -32,7 +32,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `stream` | Enables streaming mode. |
 | `max_output_tokens` | Output token cap. The pipe may set/omit this depending on `USE_MODEL_MAX_OUTPUT_TOKENS` and routing decisions. |
 | `temperature` | Sampling parameter (passed through when present). |
-| `top_k` | Sampling parameter; numeric strings are coerced to numbers and invalid values are dropped. |
+| `top_k` | Sampling parameter; numeric strings are coerced to numbers. When the pipe routes via `/chat/completions` (forced or fallback), `top_k` is rounded before sending upstream. |
 | `top_p` | Sampling parameter (passed through when present). |
 | `reasoning` | Reasoning configuration; only recognized subfields are forwarded (unknown keys dropped). |
 | `include_reasoning` | Legacy reasoning flag; may be used as a fallback depending on model/provider behavior. |
@@ -44,6 +44,10 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
 | `transforms` | OpenRouter transforms list (for example automatic middle-out trimming when enabled). |
+
+Operational note:
+- The pipe always constructs a canonical “Responses-style” request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
+- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `top_logprobs`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
 
 ### 2.2 `model_fallback` → OpenRouter `models`
 OpenRouter supports a primary `model` plus a fallback list `models` (array). Open WebUI does not expose a first-class UI for OpenRouter’s `models` field, so this pipe supports a convenience parameter:
