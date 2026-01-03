@@ -25,6 +25,22 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 ```
 
+### Recreate the full dev venv (recommended)
+
+To reproduce the maintained developer environment (including `open-webui`, this repo installed editable, and common test/lint tooling), use:
+
+```bash
+# From the repo root. Recreates `.venv` from scratch.
+FORCE_RECREATE=1 bash scripts/repro_venv.sh
+```
+
+Notes:
+
+- **Python selection**: `PYTHON_BIN=python3.12 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
+- **Alternate venv dir**: `VENV_DIR=.venv2 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
+- **Slow installs** (Open WebUI can take a long time): the script sets long pip timeouts/retries; override if needed:
+  `PIP_DEFAULT_TIMEOUT=1200 PIP_RETRIES=10 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
+
 ### Install dependencies
 
 Install the package in editable mode (this installs runtime dependencies from `pyproject.toml`):
