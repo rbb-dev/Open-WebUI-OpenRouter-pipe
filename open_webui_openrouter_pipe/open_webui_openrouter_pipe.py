@@ -108,6 +108,7 @@ import base64
 import binascii
 import functools
 import threading
+import traceback
 import fnmatch
 from time import perf_counter
 from collections import defaultdict, deque
@@ -923,7 +924,8 @@ class _SessionLogArchiveJob:
     message_id: str
     request_id: str
     created_at: float
-    log_lines: list[str]
+    log_format: str
+    log_events: list[dict[str, Any]]
 
 
 class EncryptedStr(str):
@@ -3475,7 +3477,16 @@ class Pipe:
             default=20000,
             ge=100,
             le=200000,
-            description="Maximum number of in-memory SessionLogger lines retained per request (older lines are dropped).",
+            description="Maximum number of in-memory SessionLogger records retained per request (older entries are dropped).",
+        )
+        SESSION_LOG_FORMAT: Literal["jsonl", "text", "both"] = Field(
+            default="jsonl",
+            description=(
+                "Format written inside session log archives. "
+                "'jsonl' writes logs.jsonl (one JSON object per log record). "
+                "'text' writes logs.txt (plain text). "
+                "'both' writes both files."
+            ),
         )
         MAX_CONCURRENT_REQUESTS: int = Field(
             default=200,
@@ -4163,14 +4174,14 @@ class Pipe:
         chat_id: str,
         message_id: str,
         request_id: str,
-        log_lines: list[str],
+        log_events: list[dict[str, Any]],
     ) -> None:
         """Queue the current request's session logs for encrypted zip persistence."""
         if not valves.SESSION_LOG_STORE_ENABLED:
             return
         if not (user_id and session_id and chat_id and message_id):
             return
-        if not log_lines:
+        if not log_events:
             return
         if pyzipper is None:
             if not self._session_log_warning_emitted:
@@ -4222,7 +4233,8 @@ class Pipe:
             message_id=message_id,
             request_id=request_id,
             created_at=time.time(),
-            log_lines=log_lines,
+            log_format=valves.SESSION_LOG_FORMAT,
+            log_events=log_events,
         )
         try:
             self._session_log_queue.put_nowait(job)
@@ -6155,12 +6167,129 @@ class Pipe:
                 "message_id": str(job.message_id or ""),
             },
             "request_id": str(job.request_id or ""),
-            "log_format": "text",
+            "log_format": str(job.log_format or ""),
         }
         meta_json = json.dumps(meta, ensure_ascii=False, indent=2)
-        logs_payload = "\n".join([line.rstrip("\n") for line in (job.log_lines or [])])
-        if logs_payload and not logs_payload.endswith("\n"):
-            logs_payload += "\n"
+
+        log_format = (job.log_format or "jsonl").strip().lower()
+        if log_format not in {"jsonl", "text", "both"}:
+            log_format = "jsonl"
+        write_text = log_format in {"text", "both"}
+        write_jsonl = log_format in {"jsonl", "both"}
+
+        def _format_asctime_local(created: float) -> str:
+            try:
+                base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
+                msecs = int((created - int(created)) * 1000)
+                return f"{base},{msecs:03d}"
+            except Exception:
+                return datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S,000")
+
+        def _format_event_as_text(event: dict[str, Any]) -> str:
+            created = event.get("created")
+            try:
+                created_val = float(created) if created is not None else time.time()
+            except Exception:
+                created_val = time.time()
+            level = str(event.get("level") or "INFO")
+            uid = str(event.get("user_id") or job.user_id or "-")
+            message = event.get("message")
+            try:
+                message_str = str(message) if message is not None else ""
+            except Exception:
+                message_str = ""
+            return f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
+
+        def _format_iso_utc(created: float) -> str:
+            try:
+                ts = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
+                return ts.replace("+00:00", "Z")
+            except Exception:
+                ts = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
+                return ts.replace("+00:00", "Z")
+
+        def _coerce_event(raw: Any) -> dict[str, Any]:
+            if isinstance(raw, dict):
+                return raw
+            try:
+                msg = str(raw)
+            except Exception:
+                msg = ""
+            return {
+                "created": time.time(),
+                "level": "INFO",
+                "logger": "",
+                "request_id": job.request_id,
+                "session_id": job.session_id,
+                "user_id": job.user_id,
+                "event_type": "pipe",
+                "module": "",
+                "func": "",
+                "lineno": 0,
+                "message": msg,
+            }
+
+        def _build_jsonl_record(event: dict[str, Any]) -> dict[str, Any]:
+            created_raw = event.get("created")
+            try:
+                created_val = float(created_raw) if created_raw is not None else time.time()
+            except Exception:
+                created_val = time.time()
+
+            exception_block = event.get("exception")
+            exception_out = exception_block if isinstance(exception_block, dict) else None
+
+            record_out: dict[str, Any] = {
+                "ts": _format_iso_utc(created_val),
+                "level": str(event.get("level") or "INFO"),
+                "logger": str(event.get("logger") or ""),
+                "request_id": str(job.request_id or ""),
+                "user_id": str(job.user_id or ""),
+                "session_id": str(job.session_id or ""),
+                "chat_id": str(job.chat_id or ""),
+                "message_id": str(job.message_id or ""),
+                "event_type": str(event.get("event_type") or "pipe"),
+                "module": str(event.get("module") or ""),
+                "func": str(event.get("func") or ""),
+                "lineno": int(event.get("lineno") or 0),
+            }
+            if exception_out:
+                record_out["exception"] = exception_out
+
+            message = event.get("message")
+            try:
+                record_out["message"] = str(message) if message is not None else ""
+            except Exception:
+                record_out["message"] = ""
+            return record_out
+
+        logs_payload = ""
+        if write_text:
+            try:
+                text_lines = [_format_event_as_text(_coerce_event(evt)) for evt in (job.log_events or [])]
+                logs_payload = "\n".join([line.rstrip("\n") for line in text_lines])
+                if logs_payload and not logs_payload.endswith("\n"):
+                    logs_payload += "\n"
+            except Exception:
+                logs_payload = ""
+
+        jsonl_payload = ""
+        if write_jsonl:
+            try:
+                jsonl_lines: list[str] = []
+                for raw_evt in (job.log_events or []):
+                    evt = _coerce_event(raw_evt)
+                    record_out = _build_jsonl_record(evt)
+                    try:
+                        jsonl_lines.append(json.dumps(record_out, ensure_ascii=False, separators=(",", ":")))
+                    except Exception:
+                        fallback = {"ts": record_out.get("ts"), "level": record_out.get("level"), "message": "<<failed to encode log record>>"}
+                        jsonl_lines.append(json.dumps(fallback, ensure_ascii=False, separators=(",", ":")))
+                jsonl_payload = "\n".join(jsonl_lines)
+                if jsonl_payload and not jsonl_payload.endswith("\n"):
+                    jsonl_payload += "\n"
+            except Exception:
+                jsonl_payload = ""
 
         zip_kwargs: dict[str, Any] = {
             "mode": "w",
@@ -6174,7 +6303,10 @@ class Pipe:
             with pyzipper.AESZipFile(tmp_path, **zip_kwargs) as zf:
                 zf.setpassword(job.zip_password or b"")
                 zf.writestr("meta.json", meta_json)
-                zf.writestr("logs.txt", logs_payload)
+                if write_text:
+                    zf.writestr("logs.txt", logs_payload)
+                if write_jsonl:
+                    zf.writestr("logs.jsonl", jsonl_payload)
         except Exception:
             with contextlib.suppress(Exception):
                 tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
@@ -11287,9 +11419,9 @@ class Pipe:
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
                 with SessionLogger._state_lock:
-                    logs = list(SessionLogger.logs.get(request_id, []))
-                if logs and self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("Collected %d session log entries for request %s.", len(logs), request_id)
+                    log_events = list(SessionLogger.logs.get(request_id, []))
+                if log_events and self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("Collected %d session log entries for request %s.", len(log_events), request_id)
                 resolved_user_id = str(user_id or metadata.get("user_id") or "")
                 resolved_session_id = str(metadata.get("session_id") or "")
                 resolved_chat_id = str(metadata.get("chat_id") or "")
@@ -11302,7 +11434,7 @@ class Pipe:
                         chat_id=resolved_chat_id,
                         message_id=resolved_message_id,
                         request_id=request_id,
-                        log_lines=logs,
+                        log_events=log_events,
                     )
 
             if (not error_occurred) and (not was_cancelled):
@@ -13701,7 +13833,12 @@ class Pipe:
                 logs = list(SessionLogger.logs.get(request_id or "", []))
             if logs:
                 if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("Error logs for request %s:\n%s", request_id, "\n".join(logs))
+                    try:
+                        rendered = "\n".join(SessionLogger.format_event_as_text(e) for e in logs if isinstance(e, dict))
+                    except Exception:
+                        rendered = ""
+                    if rendered:
+                        self.logger.debug("Error logs for request %s:\n%s", request_id, rendered)
             else:
                 self.logger.warning("No debug logs found for request_id %s", request_id)
 
@@ -14153,7 +14290,7 @@ class SessionLogger:
         session_id: ContextVar storing the Open WebUI session id.
         request_id: ContextVar storing the per-request buffer key.
         log_level:  ContextVar storing the minimum level to emit for this request.
-        logs:       Map of request_id -> fixed-size deque of formatted log strings.
+        logs:       Map of request_id -> fixed-size deque of structured log events (dicts).
     """
 
     session_id: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
@@ -14161,13 +14298,85 @@ class SessionLogger:
     user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
     max_lines: int = 2000
-    logs: Dict[str, deque[str]] = {}
+    logs: Dict[str, deque[dict[str, Any]]] = {}
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
     _console_formatter = logging.Formatter("%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     _memory_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [user=%(user_id)s] %(message)s")
+
+    @staticmethod
+    def _classify_event_type(message: str) -> str:
+        msg = (message or "").lstrip()
+        if msg.startswith("OpenRouter request headers:"):
+            return "openrouter.request.headers"
+        if msg.startswith("OpenRouter request payload:"):
+            return "openrouter.request.payload"
+        if msg.startswith("OpenRouter payload:"):
+            return "openrouter.sse.event"
+        if msg.startswith("Tool ") or msg.startswith("🔧") or msg.startswith("Skipping "):
+            return "pipe.tools"
+        return "pipe"
+
+    @classmethod
+    def _build_event(cls, record: logging.LogRecord) -> dict[str, Any]:
+        """Return a structured session log event extracted from a LogRecord."""
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(getattr(record, "msg", "") or "")
+
+        event_type = cls._classify_event_type(message)
+
+        event: dict[str, Any] = {
+            "created": float(getattr(record, "created", time.time())),
+            "level": str(getattr(record, "levelname", "INFO") or "INFO"),
+            "logger": str(getattr(record, "name", "") or ""),
+            "request_id": getattr(record, "request_id", None),
+            "session_id": getattr(record, "session_id", None),
+            "user_id": getattr(record, "user_id", None),
+            "event_type": event_type,
+            "module": str(getattr(record, "module", "") or ""),
+            "func": str(getattr(record, "funcName", "") or ""),
+            "lineno": int(getattr(record, "lineno", 0) or 0),
+        }
+
+        try:
+            exc_info = getattr(record, "exc_info", None)
+            exc_text = getattr(record, "exc_text", None)
+            if exc_text:
+                event["exception"] = {"text": str(exc_text)}
+            elif exc_info:
+                event["exception"] = {"text": "".join(traceback.format_exception(*exc_info))}
+        except Exception:
+            pass
+
+        event["message"] = message
+        return event
+
+    @classmethod
+    def format_event_as_text(cls, event: dict[str, Any]) -> str:
+        """Best-effort text rendering for debug dumps and optional logs.txt archives."""
+        created_raw = event.get("created")
+        try:
+            created = float(created_raw) if created_raw is not None else time.time()
+        except Exception:
+            created = time.time()
+        try:
+            base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
+            msecs = int((created - int(created)) * 1000)
+            asctime = f"{base},{msecs:03d}"
+        except Exception:
+            asctime = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S,000")
+        level = str(event.get("level") or "INFO")
+        uid = str(event.get("user_id") or "-")
+        message = event.get("message")
+        try:
+            message_str = str(message) if message is not None else ""
+        except Exception:
+            message_str = ""
+        return f"{asctime} [{level}] [user={uid}] {message_str}"
 
     @classmethod
     def get_logger(cls, name=__name__):
@@ -14280,17 +14489,28 @@ class SessionLogger:
             request_id = getattr(record, "request_id", None)
             if request_id:
                 try:
-                    memory_line = cls._memory_formatter.format(record)
+                    event = cls._build_event(record)
                 except Exception:
-                    memory_line = None
+                    event = {
+                        "created": time.time(),
+                        "level": str(getattr(record, "levelname", "INFO") or "INFO"),
+                        "logger": str(getattr(record, "name", "") or ""),
+                        "request_id": request_id,
+                        "session_id": getattr(record, "session_id", None),
+                        "user_id": getattr(record, "user_id", None),
+                        "event_type": "pipe",
+                        "module": str(getattr(record, "module", "") or ""),
+                        "func": str(getattr(record, "funcName", "") or ""),
+                        "lineno": int(getattr(record, "lineno", 0) or 0),
+                        "message": str(getattr(record, "msg", "") or ""),
+                    }
                 with cls._state_lock:
                     buffer = cls.logs.get(request_id)
                     if buffer is None or buffer.maxlen != cls.max_lines:
                         buffer = deque(maxlen=cls.max_lines)
                         cls.logs[request_id] = buffer
                     try:
-                        if memory_line is not None:
-                            buffer.append(memory_line)
+                        buffer.append(event)
                         cls._session_last_seen[request_id] = time.time()
                     except Exception:
                         pass

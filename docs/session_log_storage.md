@@ -18,14 +18,37 @@ When enabled, the pipe writes **one encrypted zip file per completed request** c
   - `created_at` (UTC ISO timestamp)
   - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`)
   - `request_id` (internal per-request key used for in-memory buffering)
-  - `log_format` (`text`)
-- `logs.txt` — plain text log lines captured in the request’s in-memory session log buffer.
+  - `log_format` (`jsonl`, `text`, or `both`)
+- `logs.jsonl` — newline-delimited JSON (one JSON object per log record).
+- `logs.txt` — plain text log output (optional; only when `SESSION_LOG_FORMAT=text|both`).
 
 Notes:
 
-- `logs.txt` is **not** JSONL. Each line is a formatted log string and may include multi-line payloads for some messages.
+- `logs.jsonl` records are always **one JSON object per line**. Multi-line payloads in the original message are stored as JSON strings with `\n` escapes.
+- `logs.txt` may include multi-line payloads for some messages (for example pretty-printed JSON), so a single log record can span multiple physical lines.
 - The `LOG_LEVEL` valve controls what is written to stdout/backend logs for a request. The stored archive is sourced from the in-memory session buffer and can include entries that are not emitted to stdout.
 - Session logs can contain sensitive content (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
+
+---
+
+## JSONL schema (`logs.jsonl`)
+
+Each line in `logs.jsonl` is a single JSON object with the following keys:
+
+- `ts` (string): UTC ISO 8601 timestamp (milliseconds), for example `2026-01-01T06:44:31.491Z`.
+- `level` (string): Log level name (e.g. `DEBUG`, `INFO`, `WARNING`, `ERROR`).
+- `logger` (string): Logger name.
+- `request_id` (string): Internal per-request identifier used for in-memory buffering.
+- `user_id` (string): Open WebUI user id (from request context).
+- `session_id` (string): Open WebUI session id (from request context).
+- `chat_id` (string): Open WebUI chat id (from archive metadata).
+- `message_id` (string): Open WebUI message id (from archive metadata).
+- `event_type` (string): Coarse classification derived from the message prefix (for example `openrouter.request.payload`, `openrouter.sse.event`, `pipe.tools`, `pipe`).
+- `module` (string): Python module name.
+- `func` (string): Function name.
+- `lineno` (int): Source line number.
+- `exception` (object, optional): When present, contains `text` (string) with the formatted exception/traceback.
+- `message` (string): The formatted log message (may be large).
 
 ---
 
@@ -110,7 +133,8 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | int | `3600` | Cleanup loop interval. |
 | `SESSION_LOG_ZIP_COMPRESSION` | enum | `lzma` | Zip compression algorithm. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
-| `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory lines retained per request before older lines are dropped. |
+| `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory log records retained per request before older entries are dropped. |
+| `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
 
 ---
 

@@ -166,7 +166,8 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `SESSION_LOG_CLEANUP_INTERVAL_SECONDS` | `int` | `3600` | How often (seconds) to run the session log cleanup loop when storage is enabled. |
 | `SESSION_LOG_ZIP_COMPRESSION` | `Literal[\"stored\", \"deflated\", \"bzip2\", \"lzma\"]` | `lzma` | Zip compression algorithm for session log archives. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. |
-| `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger lines retained per request (older lines are dropped). |
+| `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger records retained per request (older entries are dropped). |
+| `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
 
 ### Support contact and error templates
 
