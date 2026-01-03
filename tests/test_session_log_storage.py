@@ -37,7 +37,35 @@ def test_write_session_log_archive_creates_encrypted_zip(tmp_path) -> None:
         message_id="2e5b92d9-04b6-42ae-a1c7-602a3efdb1d2",
         request_id="deadbeef",
         created_at=1_700_000_000.0,
-        log_lines=["hello", "world"],
+        log_format="jsonl",
+        log_events=[
+            {
+                "created": 1_700_000_000.0,
+                "level": "INFO",
+                "logger": "session-log-test",
+                "request_id": "deadbeef",
+                "session_id": "Ix-n1ptqDgmpL-8gAAAp",
+                "user_id": "714affbb-d092-4e39-af42-0c59ee82ab8d",
+                "event_type": "pipe",
+                "module": "test_session_log_storage",
+                "func": "test_write_session_log_archive_creates_encrypted_zip",
+                "lineno": 1,
+                "message": "hello",
+            },
+            {
+                "created": 1_700_000_000.1,
+                "level": "INFO",
+                "logger": "session-log-test",
+                "request_id": "deadbeef",
+                "session_id": "Ix-n1ptqDgmpL-8gAAAp",
+                "user_id": "714affbb-d092-4e39-af42-0c59ee82ab8d",
+                "event_type": "pipe",
+                "module": "test_session_log_storage",
+                "func": "test_write_session_log_archive_creates_encrypted_zip",
+                "lineno": 1,
+                "message": "world",
+            },
+        ],
     )
 
     pipe._write_session_log_archive(job)
@@ -53,16 +81,17 @@ def test_write_session_log_archive_creates_encrypted_zip(tmp_path) -> None:
     with pyzipper.AESZipFile(out_path) as zf:
         zf.setpassword(password)
         names = set(zf.namelist())
-        assert {"meta.json", "logs.txt"} <= names
+        assert {"meta.json", "logs.jsonl"} <= names
         meta = json.loads(zf.read("meta.json").decode("utf-8"))
         assert meta["ids"]["user_id"] == job.user_id
         assert meta["ids"]["session_id"] == job.session_id
         assert meta["ids"]["chat_id"] == job.chat_id
         assert meta["ids"]["message_id"] == job.message_id
         assert meta["request_id"] == job.request_id
-        logs = zf.read("logs.txt").decode("utf-8")
-        assert "hello" in logs
-        assert "world" in logs
+        logs = zf.read("logs.jsonl").decode("utf-8").splitlines()
+        records = [json.loads(line) for line in logs if line.strip()]
+        assert any(rec.get("message") == "hello" for rec in records)
+        assert any(rec.get("message") == "world" for rec in records)
 
 
 def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatch) -> None:
@@ -89,7 +118,7 @@ def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatc
         chat_id="c",
         message_id="m",
         request_id="r",
-        log_lines=["x"],
+        log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "x"}],
     )
 
     assert called["started"] is False
@@ -119,8 +148,8 @@ def test_session_log_buffer_captures_debug_even_when_console_level_warning(capsy
     assert "DEBUG_ONLY_TOKEN" not in stdout
 
     lines = list(SessionLogger.logs.get(request_id, []))
-    assert any("DEBUG_ONLY_TOKEN" in line for line in lines)
-    assert any("WARNING_TOKEN" in line for line in lines)
+    assert any("DEBUG_ONLY_TOKEN" in (line.get("message") or "") for line in lines if isinstance(line, dict))
+    assert any("WARNING_TOKEN" in (line.get("message") or "") for line in lines if isinstance(line, dict))
     SessionLogger.logs.pop(request_id, None)
 
 
@@ -144,7 +173,8 @@ class TestSessionLogArchiveEdgeCases:
             message_id="2e5b92d9-04b6-42ae-a1c7-602a3efdb1d2",
             request_id="deadbeef",
             created_at=1_700_000_000.0,
-            log_lines=["hello", "world"],
+            log_format="jsonl",
+            log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
         )
 
         # Should not create archive when user_id is missing
@@ -170,7 +200,8 @@ class TestSessionLogArchiveEdgeCases:
             message_id="2e5b92d9-04b6-42ae-a1c7-602a3efdb1d2",
             request_id="deadbeef",
             created_at=1_700_000_000.0,
-            log_lines=["hello", "world"],
+            log_format="jsonl",
+            log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
         )
 
         pipe._write_session_log_archive(job)
@@ -215,7 +246,8 @@ class TestSessionLogArchiveEdgeCases:
                 message_id=f"msg_{compression}",
                 request_id="deadbeef",
                 created_at=1_700_000_000.0,
-                log_lines=["hello", "world"],
+                log_format="jsonl",
+                log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
             )
 
             pipe._write_session_log_archive(job)
@@ -256,7 +288,8 @@ class TestSessionLogArchiveEdgeCases:
             message_id="msg_old",
             request_id="deadbeef",
             created_at=old_timestamp,
-            log_lines=["old", "data"],
+            log_format="jsonl",
+            log_events=[{"created": old_timestamp, "level": "INFO", "logger": "t", "message": "old"}],
         )
 
         pipe._write_session_log_archive(old_job)
@@ -274,7 +307,8 @@ class TestSessionLogArchiveEdgeCases:
             message_id="msg_new",
             request_id="deadbeef",
             created_at=new_timestamp,
-            log_lines=["new", "data"],
+            log_format="jsonl",
+            log_events=[{"created": new_timestamp, "level": "INFO", "logger": "t", "message": "new"}],
         )
 
         pipe._write_session_log_archive(new_job)
@@ -314,7 +348,8 @@ class TestSessionLogArchiveEdgeCases:
             message_id="msg_test",
             request_id="deadbeef",
             created_at=1_700_000_000.0,
-            log_lines=["test", "data"],
+            log_format="jsonl",
+            log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "test"}],
         )
 
         pipe._write_session_log_archive(job)
