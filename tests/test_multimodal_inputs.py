@@ -37,7 +37,7 @@ async def _transform_single_block(
     block: dict,
     mock_request,
     mock_user,
-) -> dict:
+) -> dict | None:
     """Helper to transform a single user message block."""
     messages = [
         {
@@ -51,7 +51,13 @@ async def _transform_single_block(
         user_obj=mock_user,
         event_emitter=None,
     )
-    return transformed[0]["content"][0]
+    if not transformed:
+        return None
+    content = transformed[0].get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    first = content[0]
+    return first if isinstance(first, dict) else None
 
 
 def _make_stream_context(response=None, error=None):
@@ -159,6 +165,7 @@ class TestImageTransformations:
             mock_user,
         )
 
+        assert transformed is not None
         assert transformed["type"] == "input_image"
         assert transformed["image_url"] == "data:image/png;base64,INLINED=="
         pipe_instance._download_remote_url.assert_awaited_once()
@@ -561,8 +568,10 @@ class TestImageTransformer:
         """Base64 images should be re-hosted and emit status updates."""
         stored_url = "/api/v1/files/img123"
         upload_mock = AsyncMock(return_value=stored_url)
+        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
         monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
 
         block = {
@@ -570,9 +579,11 @@ class TestImageTransformer:
             "image_url": {"url": f"data:image/png;base64,{sample_image_base64}", "detail": "high"},
         }
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
-        assert image_block["image_url"] == stored_url
+        assert image_block is not None
+        assert image_block["image_url"] == "data:image/png;base64,INLINE"
         assert image_block["detail"] == "high"
         upload_mock.assert_awaited()
+        inline_mock.assert_awaited()
         status_mock.assert_awaited_with(
             None,
             StatusMessages.IMAGE_BASE64_SAVED,
@@ -594,17 +605,21 @@ class TestImageTransformer:
             return_value={"data": b"img", "mime_type": "image/png", "url": remote_url}
         )
         upload_mock = AsyncMock(return_value=stored_url)
+        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
         monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
 
         block = {"type": "image_url", "image_url": {"url": remote_url, "detail": "auto"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
-        assert image_block["image_url"] == stored_url
+        assert image_block is not None
+        assert image_block["image_url"] == "data:image/png;base64,INLINE"
         assert image_block["detail"] == "auto"
         download_mock.assert_awaited_once_with(remote_url)
         upload_mock.assert_awaited()
+        inline_mock.assert_awaited()
         status_mock.assert_any_await(
             None,
             StatusMessages.IMAGE_REMOTE_SAVED,
@@ -617,12 +632,19 @@ class TestImageTransformer:
         pipe_instance,
         mock_request,
         mock_user,
+        monkeypatch,
     ):
         """Explicit detail selection should survive transformation."""
+        async def fake_inline(url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+            assert url == "/api/v1/files/abc"
+            return "data:image/png;base64,abc"
+
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert image_block is not None
         assert image_block["detail"] == "low"
-        assert image_block["image_url"] == "/api/v1/files/abc"
+        assert image_block["image_url"] == "data:image/png;base64,abc"
 
     @pytest.mark.asyncio
     async def test_internal_file_url_inlined_to_data_url(
@@ -647,7 +669,26 @@ class TestImageTransformer:
         monkeypatch.setattr(pipe_instance, "_get_file_by_id", fake_get_file)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/inline/content"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert image_block is not None
         assert image_block["image_url"].startswith("data:image/png;base64,")
+
+    @pytest.mark.asyncio
+    async def test_internal_file_url_missing_is_dropped(
+        self,
+        pipe_instance,
+        mock_request,
+        mock_user,
+        monkeypatch,
+    ):
+        """Missing OWUI file ids should not be sent upstream as internal URLs."""
+
+        async def fake_inline(_url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+            return None
+
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", fake_inline)
+        block = {"type": "image_url", "image_url": {"url": "/api/v1/files/missing/content"}}
+        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert image_block is None
 
     @pytest.mark.asyncio
     async def test_image_error_returns_empty_block(
@@ -662,6 +703,7 @@ class TestImageTransformer:
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", AsyncMock(side_effect=boom))
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert image_block is not None
         assert image_block["image_url"] == "data:image/png;base64,AAAA"
         assert image_block["detail"] == "auto"
 
@@ -909,6 +951,7 @@ class TestAudioTransformer:
             "input_audio": {"data": sample_audio_base64, "format": "wav"},
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["data"] == sample_audio_base64
         assert audio_block["input_audio"]["format"] == "wav"
 
@@ -927,6 +970,7 @@ class TestAudioTransformer:
             "input_audio": sample_audio_base64,
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["type"] == "input_audio"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
         assert audio_block["input_audio"]["format"] == "wav"
@@ -946,6 +990,7 @@ class TestAudioTransformer:
             "data": sample_audio_base64,
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["format"] == "wav"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
 
@@ -978,6 +1023,7 @@ class TestAudioTransformer:
             "data": sample_audio_base64,
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["format"] == expected_format
 
     @pytest.mark.asyncio
@@ -990,6 +1036,7 @@ class TestAudioTransformer:
         """Should return empty audio block for malformed payloads."""
         block = {"type": "input_audio", "input_audio": 12345}
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
 
@@ -1010,6 +1057,7 @@ class TestAudioTransformer:
             "input_audio": f"DATA:audio/mp3;base64,{sample_audio_base64}",
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
 
@@ -1027,6 +1075,7 @@ class TestAudioTransformer:
             "input_audio": f"data:audio/mp3;base64,{sample_audio_base64}",
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["data"] == sample_audio_base64
         assert audio_block["input_audio"]["format"] == "mp3"
 
@@ -1043,6 +1092,7 @@ class TestAudioTransformer:
             "input_audio": "https://example.com/audio.mp3",
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
 
@@ -1061,6 +1111,7 @@ class TestAudioTransformer:
             "data": sample_audio_base64,
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        assert audio_block is not None
         assert audio_block["input_audio"]["format"] == "wav"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
 
@@ -1194,8 +1245,10 @@ class TestMultimodalIntegration:
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
         upload_mock = AsyncMock(side_effect=["/api/v1/files/img123", "/api/v1/files/file123"])
+        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
 
         messages = [
             {
@@ -1221,12 +1274,13 @@ class TestMultimodalIntegration:
         blocks = transformed[0]["content"]
         assert [b["type"] for b in blocks] == ["input_text", "input_image", "input_file"]
         assert blocks[0]["text"] == "hello"
-        assert blocks[1]["image_url"] == "/api/v1/files/img123"
+        assert blocks[1]["image_url"] == "data:image/png;base64,INLINE"
         assert blocks[1]["detail"] == "low"
         assert blocks[2]["file_url"] == "/api/v1/files/file123"
 
         download_mock.assert_awaited_once_with(remote_file_url)
         assert upload_mock.await_count == 2
+        inline_mock.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_combined_text_audio_image(
@@ -1239,7 +1293,9 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle message with text, audio, and image."""
         upload_mock = AsyncMock(return_value="/api/v1/files/img999")
+        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
 
         messages = [
             {
@@ -1263,7 +1319,8 @@ class TestMultimodalIntegration:
         assert blocks[0]["text"] == "listen"
         assert blocks[1]["input_audio"]["data"] == sample_audio_base64
         assert blocks[1]["input_audio"]["format"] == "mp3"
-        assert blocks[2]["image_url"] == "/api/v1/files/img999"
+        assert blocks[2]["image_url"] == "data:image/png;base64,INLINE"
+        inline_mock.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_multiple_images_in_message(
@@ -1276,7 +1333,9 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle multiple images in single message."""
         upload_mock = AsyncMock(side_effect=["/api/v1/files/img1", "/api/v1/files/img2"])
+        inline_mock = AsyncMock(side_effect=["data:image/png;base64,img1", "data:image/png;base64,img2"])
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
 
         messages = [
             {
@@ -1298,7 +1357,10 @@ class TestMultimodalIntegration:
         blocks = transformed[0]["content"]
         types = [b["type"] for b in blocks]
         assert types == ["input_text", "input_image", "input_image"]
-        assert [b["image_url"] for b in blocks[1:]] == ["/api/v1/files/img1", "/api/v1/files/img2"]
+        assert [b["image_url"] for b in blocks[1:]] == [
+            "data:image/png;base64,img1",
+            "data:image/png;base64,img2",
+        ]
 
     @pytest.mark.asyncio
     async def test_error_in_one_block_does_not_crash_others(
