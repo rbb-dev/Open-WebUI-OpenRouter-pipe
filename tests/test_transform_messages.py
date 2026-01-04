@@ -204,6 +204,45 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeypatch):
+    pipe = Pipe()
+
+    async def fake_inline(url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+        if url.endswith("/files/missing-img/content"):
+            return None
+        file_id = url.split("/")[-2]
+        return f"data:image/png;base64,{file_id}"
+
+    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
+    messages = [
+        {
+            "role": "assistant",
+            "content": "\n".join(
+                [
+                    "Here you go:",
+                    "![img](/api/v1/files/missing-img/content)",
+                    "![img](/api/v1/files/ok-img/content)",
+                ]
+            ),
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "please edit"}],
+        },
+    ]
+    transformed = await pipe.transform_messages_to_input(
+        messages,
+        model_id="vision-model",
+        valves=pipe.valves,
+    )
+    content = transformed[-1]["content"]
+    images = [b for b in content if isinstance(b, dict) and b.get("type") == "input_image"]
+    assert len(images) == 1
+    assert images[0].get("image_url", "").startswith("data:image/png;base64,ok-img")
+
+
+@pytest.mark.asyncio
 async def test_transform_respects_user_turn_only_selection(monkeypatch):
     pipe = Pipe()
 
