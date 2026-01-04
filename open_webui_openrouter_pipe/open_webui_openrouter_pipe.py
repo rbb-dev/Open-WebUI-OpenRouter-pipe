@@ -9129,7 +9129,7 @@ class Pipe:
                     content_blocks = [{"type": "text", "text": content_blocks}]
 
                 # Only transform known types; leave all others unchanged
-                async def _to_input_image(block: dict) -> dict:
+                async def _to_input_image(block: dict) -> Optional[dict[str, Any]]:
                     """Convert Open WebUI image block into Responses format.
 
                     Handles image URLs and base64 data URLs, downloading remote images and
@@ -9173,9 +9173,12 @@ class Pipe:
                             detail = image_payload.get("detail")
                         elif isinstance(image_payload, str):
                             url = image_payload
+                            block_detail = block.get("detail")
+                            if isinstance(block_detail, str):
+                                detail = block_detail
 
                         if not url:
-                            return {"type": "input_image", "image_url": "", "detail": "auto"}
+                            return None
 
                         storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
 
@@ -9260,8 +9263,15 @@ class Pipe:
                                 chunk_size=chunk_size,
                                 max_bytes=max_inline_bytes,
                             )
-                            if inlined:
-                                url = inlined
+                            if not inlined:
+                                file_id = _extract_internal_file_id(url) or "unknown"
+                                await self._emit_status(
+                                    event_emitter,
+                                    f"Skipping image {file_id}: Open WebUI file unavailable.",
+                                    done=False,
+                                )
+                                return None
+                            url = inlined
 
                         result: dict[str, Any] = {"type": "input_image", "image_url": url}
                         if isinstance(detail, str) and detail in {"auto", "low", "high"}:
@@ -9278,7 +9288,7 @@ class Pipe:
                             f"Image processing error: {exc}",
                             show_error_message=False
                         )
-                        return {"type": "input_image", "image_url": "", "detail": "auto"}
+                        return None
 
                 async def _to_input_file(block: dict) -> dict:
                     """Convert Open WebUI file blocks into Responses API format.
@@ -9883,6 +9893,7 @@ class Pipe:
                 block_transform = {
                     "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
                     "image_url":  _to_input_image,
+                    "input_image": _to_input_image,
                     "input_file": _to_input_file,
                     "file":       _to_input_file,  # Chat Completions format
                     "input_audio": _to_input_audio,  # Responses API audio format
@@ -9930,6 +9941,8 @@ class Pipe:
                             result = await transformer(block)
                         else:
                             result = transformer(block)
+                        if result is None:
+                            continue
                         if is_image_block and result:
                             user_images_used += 1
                         converted_blocks.append(result)
@@ -9955,7 +9968,8 @@ class Pipe:
                     for source_block in last_assistant_images[:fallback_slots]:
                         try:
                             transformed = await _to_input_image(source_block)
-                            fallback_blocks.append(transformed)
+                            if transformed is not None:
+                                fallback_blocks.append(transformed)
                         except Exception as exc:
                             self.logger.error("Failed to reuse assistant image: %s", exc)
                     if fallback_blocks:
