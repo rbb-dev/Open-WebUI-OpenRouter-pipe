@@ -8086,9 +8086,7 @@ class Pipe:
 
         # Full model ID, e.g. "<pipe-id>.gpt-4o"
         pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
-        # Features are nested under the pipe id key – read them dynamically.
-        _features_all = __metadata__.get("features", {}) or {}
-        features = dict(_features_all.get(pipe_identifier, {}) or {})
+        features = _extract_feature_flags(__metadata__)
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
 
@@ -14581,6 +14579,15 @@ def _wrap_event_emitter(
         await emitter(event)
 
     return _wrapped
+
+def _extract_feature_flags(__metadata__: dict[str, Any]) -> dict[str, Any]:
+    """Return flat feature flags from Open WebUI metadata.
+
+    Open WebUI sends feature flags as a flat dict under ``metadata["features"]``
+    (e.g. ``{"web_search": True, "code_interpreter": False}``).
+    """
+    raw_features = __metadata__.get("features") if isinstance(__metadata__, dict) else None
+    return dict(raw_features) if isinstance(raw_features, dict) else {}
 
 def merge_usage_stats(total, new):
     """Recursively merge nested usage statistics.
