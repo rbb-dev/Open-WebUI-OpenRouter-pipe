@@ -312,7 +312,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Commit: `b6656ba200d4c3179304724b814fc9838290054c`
 - Author: rbb-dev
 
-This commit fixes two critical UX issues where users saw silent pauses
+This commit fixes two critical User Interface issues where users saw silent pauses
 during reasoning without any feedback.
 
 Problems Fixed:
@@ -341,7 +341,7 @@ Impact:
 - Users now see progressive thinking messages: "Thinking…" → "Reading..." → "Gathering thoughts..." → etc.
 - Live reasoning content visible in status area during extended reasoning sessions
 - No more silent pauses - continuous feedback throughout reasoning
-- Better UX for reasoning-capable models (OpenRouter extended thinking, etc.)
+- Better User Interface behavior for reasoning-capable models (OpenRouter extended thinking, etc.)
 
 Testing: Verified with reasoning-capable models, status messages now appear
 continuously during both thinking and reasoning phases.

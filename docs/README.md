@@ -74,6 +74,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - [Valves & Configuration Atlas](valves_and_configuration_atlas.md) — authoritative configuration reference (defaults verified against code/tests).
 - [Error Handling & User Experience](error_handling_and_user_experience.md) — what users see, how errors are structured, and how to troubleshoot.
 - [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) — identifiers, metadata, optional telemetry exports, and OpenRouter-facing headers.
+- [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md) — explains the two web-search toggles and how OpenRouter Search is auto-installed, only shown on models where it can work, and enabled by default (while still allowing per-model and per-chat control).
 
 ### Security and compliance guidance (admins)
 - [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls, and hardening guidance.
@@ -83,7 +84,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 
 ### Operations and performance (admins/operators)
 - [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md) — admission control, breaker behavior, and tuning guidance.
-- [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md) — streaming lifecycle, emitters, and UX/performance tradeoffs.
+- [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md) — streaming lifecycle, emitters, and User Interface/performance tradeoffs.
 - [Testing, Bootstrap & Operations](testing_bootstrap_and_operations.md) — test harness, dev bootstrap, and operational runbooks.
 - [Production Readiness Report](production_readiness_report.md) — an assessment-style document (treat as guidance, not a compliance guarantee).
 

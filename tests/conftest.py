@@ -60,6 +60,17 @@ def _install_open_webui_stubs() -> None:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
+    class _ModelMeta(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+        def model_dump(self):
+            return dict(self)
+
+    class _ModelParams(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
     class _Models:
         @staticmethod
         def get_model_by_id(_model_id):
@@ -67,6 +78,10 @@ def _install_open_webui_stubs() -> None:
 
         @staticmethod
         def update_model_by_id(_model_id, _model_form):
+            return None
+
+        @staticmethod
+        def insert_new_model(_model_form, user_id=""):
             return None
 
     class _Files:
@@ -89,6 +104,8 @@ def _install_open_webui_stubs() -> None:
 
     chats_mod.Chats = _Chats
     models_mod.ModelForm = _ModelForm
+    models_mod.ModelMeta = _ModelMeta
+    models_mod.ModelParams = _ModelParams
     models_mod.Models = _Models
     files_mod.Files = _Files
     users_mod.Users = _Users

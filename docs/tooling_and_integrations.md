@@ -108,12 +108,12 @@ When a tool breaker is open, tool calls are skipped and a status message is emit
 
 The web-search integration is attached as a `plugins` entry (not as a `tools` function):
 
-- If the selected model supports `web_search_tool` and either:
-  - `ENABLE_WEB_SEARCH_TOOL=true`, or
-  - the model’s catalog-derived features indicate web-search capability,
-  then the pipe appends `{ "id": "web" }` to `plugins`.
+- If the selected model supports `web_search_tool` and the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via the model’s Default Filters), the pipe appends `{ "id": "web" }` to `plugins`.
 - If `WEB_SEARCH_MAX_RESULTS` is set, it is included as `max_results`.
 - If reasoning effort is `minimal`, the pipe skips adding the web-search plugin.
+
+Important: Open WebUI also has a separate built-in **Web Search** toggle (Open WebUI-native). OpenRouter Search and Open WebUI Web Search are different systems.
+See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
 
 ---
 

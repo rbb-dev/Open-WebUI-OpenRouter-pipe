@@ -2,7 +2,7 @@
 
 This document is the authoritative reference for the pipe’s configuration surface: **Open WebUI valves**.
 
-Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.18`) and are intended to match current runtime behavior.
+Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.19`) and are intended to match current runtime behavior.
 
 > **Quick navigation:** [Docs Home](README.md) · [Security](security_and_encryption.md) · [Multimodal](multimodal_ingestion_pipeline.md) · [Telemetry](openrouter_integrations_and_telemetry.md) · [Errors](error_handling_and_user_experience.md)
 
@@ -138,8 +138,12 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_WEB_SEARCH_TOOL` | `bool` | `True` | When True, allows use of OpenRouter’s web search tool when supported by the selected model/provider. |
+| `AUTO_ATTACH_ORS_FILTER` | `bool` | `True` | Auto-enable the OpenRouter Search toggleable filter in each compatible model’s Advanced Settings (by updating the model’s `filterIds`), so the OpenRouter Search slider appears only where it works. |
+| `AUTO_INSTALL_ORS_FILTER` | `bool` | `True` | Auto-install / auto-update the companion OpenRouter Search filter function into Open WebUI’s Functions DB (recommended with `AUTO_ATTACH_ORS_FILTER`). |
+| `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER` | `bool` | `True` | Auto-enable OpenRouter Search by default on compatible models (by updating the model’s `defaultFilterIds`). This replicates “enabled by default” behavior while still allowing per-chat/per-model control. |
 | `WEB_SEARCH_MAX_RESULTS` | `int` | `3` | Maximum number of results to request from the web search tool. |
+
+See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 

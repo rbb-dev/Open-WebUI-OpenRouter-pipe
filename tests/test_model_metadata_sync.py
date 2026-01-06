@@ -227,7 +227,7 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping():
     args = pipe._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.openai.gpt-4o"
     assert args[1] == "GPT-4o"
-    assert args[2] == {"vision": True}
+    assert args[2] == {"vision": True, "web_search": True}
     assert args[3].startswith("data:image/")
 
 @pytest.mark.asyncio

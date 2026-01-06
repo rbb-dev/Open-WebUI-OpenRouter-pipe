@@ -74,7 +74,10 @@ Open WebUI can attach per-model custom parameters (model settings → `custom_pa
   - Removes `plugins` entries with `{"id": "web"}`.
   - Removes `web_search_options` when present (OpenRouter `/chat/completions`).
 
-This is useful when `ENABLE_WEB_SEARCH_TOOL=True` globally but you want to block native web search on selected models.
+This is useful when OpenRouter Search is enabled by default (via the model’s Default Filters / `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER`) but you want to block provider-native web search on selected models.
+
+Note: Open WebUI’s built-in **Web Search** is separate (OWUI-native) and is not controlled by this parameter.
+See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
 
 ---
 
@@ -124,7 +127,7 @@ Operational guidance:
 ## 5. Tooling and plugins
 
 - Web search:
-  - When `ENABLE_WEB_SEARCH_TOOL=True` and the selected model/provider supports web search, the pipe can attach OpenRouter web search tooling automatically.
+  - When the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches the OpenRouter web-search plugin.
   - `WEB_SEARCH_MAX_RESULTS` caps result count.
 - Tools:
   - Tool schemas are built from Open WebUI’s `__tools__` registry plus any selected Open WebUI **Direct Tool Servers**.
@@ -133,6 +136,7 @@ Operational guidance:
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
 
 See also: [Tooling & Integrations](tooling_and_integrations.md).
+And: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
 
 ---
 
