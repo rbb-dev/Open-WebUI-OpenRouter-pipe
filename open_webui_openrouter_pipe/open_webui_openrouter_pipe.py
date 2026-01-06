@@ -1416,7 +1416,10 @@ class OpenRouterModelRegistry:
         output_modalities = _normalize(architecture.get("output_modalities") or [])
 
         vision_capable = "image" in input_modalities or "video" in input_modalities
-        file_upload_capable = "file" in input_modalities
+        # Open WebUI uses file uploads for attachments and RAG workflows; if we mark this
+        # as False, the UI blocks uploads entirely (including images) even for vision-capable
+        # models. Keep it enabled for all models exposed by this pipe.
+        file_upload_capable = True
         image_generation_capable = "image" in output_modalities
         web_search_capable = OpenRouterModelRegistry._supports_web_search(pricing)
 
