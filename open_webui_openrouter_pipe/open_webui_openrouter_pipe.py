@@ -7439,7 +7439,10 @@ class Filter:
         user,
         file_data: bytes,
         filename: str,
-        mime_type: str
+        mime_type: str,
+        chat_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        owui_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Upload file or image to Open WebUI storage and return internal URL.
 
@@ -7472,6 +7475,16 @@ class Filter:
             >>> # url = '/api/v1/files/abc123...'
         """
         try:
+            upload_metadata: dict[str, Any] = {"mime_type": mime_type}
+            if isinstance(chat_id, str):
+                normalized_chat_id = chat_id.strip()
+                if normalized_chat_id and not normalized_chat_id.startswith("local:"):
+                    upload_metadata["chat_id"] = normalized_chat_id
+            if isinstance(message_id, str):
+                normalized_message_id = message_id.strip()
+                if normalized_message_id:
+                    upload_metadata["message_id"] = normalized_message_id
+
             file_item = await run_in_threadpool(
                 upload_file_handler,
                 request=request,
@@ -7480,7 +7493,7 @@ class Filter:
                     filename=filename,
                     headers=Headers({"content-type": mime_type}),
                 ),
-                metadata={"mime_type": mime_type},
+                metadata=upload_metadata,
                 process=False,  # Disable processing to avoid overhead
                 process_in_background=False,
                 user=user,
@@ -7499,6 +7512,26 @@ class Filter:
             if not file_id:
                 self.logger.error("Upload handler returned an object without an id; aborting OWUI storage write.")
                 return None
+
+            effective_user_id: Optional[str] = None
+            if isinstance(owui_user_id, str) and owui_user_id.strip():
+                effective_user_id = owui_user_id.strip()
+            else:
+                candidate = getattr(user, "id", None)
+                if isinstance(candidate, str) and candidate.strip():
+                    effective_user_id = candidate.strip()
+
+            try:
+                await run_in_threadpool(
+                    self._try_link_file_to_chat,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    file_id=file_id,
+                    user_id=effective_user_id,
+                )
+            except Exception:
+                pass
+
             internal_url = request.app.url_path_for("get_file_content_by_id", id=file_id)
             self.logger.info(
                 f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: {internal_url}"
@@ -7508,6 +7541,63 @@ class Filter:
             self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
             return None
 
+    def _try_link_file_to_chat(
+        self,
+        *,
+        chat_id: Optional[str],
+        message_id: Optional[str],
+        file_id: str,
+        user_id: Optional[str],
+    ) -> bool:
+        if not isinstance(chat_id, str):
+            return False
+        normalized_chat_id = chat_id.strip()
+        if not normalized_chat_id or normalized_chat_id.startswith("local:"):
+            return False
+        if not isinstance(file_id, str) or not file_id.strip():
+            return False
+        if not isinstance(user_id, str):
+            return False
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            return False
+
+        normalized_message_id: Optional[str] = None
+        if isinstance(message_id, str):
+            candidate = message_id.strip()
+            if candidate:
+                normalized_message_id = candidate
+
+        try:
+            from open_webui.models.chats import Chats  # type: ignore[import-not-found]
+        except Exception:
+            return False
+
+        insert_fn = getattr(Chats, "insert_chat_files", None)
+        if not callable(insert_fn):
+            return False
+
+        try:
+            insert_fn(
+                chat_id=normalized_chat_id,
+                message_id=normalized_message_id,
+                file_ids=[file_id.strip()],
+                user_id=normalized_user_id,
+            )
+            return True
+        except TypeError:
+            try:
+                insert_fn(
+                    normalized_chat_id,
+                    normalized_message_id,
+                    [file_id.strip()],
+                    normalized_user_id,
+                )
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
     async def _resolve_storage_context(
         self,
         request: Optional[Request],
@@ -9589,6 +9679,9 @@ class Filter:
                                 file_data=payload,
                                 filename=preferred_name,
                                 mime_type=mime_type,
+                                chat_id=chat_id,
+                                message_id=msg_id,
+                                owui_user_id=getattr(user_obj, "id", None),
                             )
                             if internal_url:
                                 await self._emit_status(event_emitter, status_message, done=False)
@@ -9759,6 +9852,9 @@ class Filter:
                                 file_data=payload,
                                 filename=fname,
                                 mime_type=safe_mime,
+                                chat_id=chat_id,
+                                message_id=msg_id,
+                                owui_user_id=getattr(user_obj, "id", None),
                             )
                             if internal_url:
                                 await self._emit_status(
@@ -10743,6 +10839,9 @@ class Filter:
                 file_data=data,
                 filename=filename,
                 mime_type=mime_type,
+                chat_id=chat_id if isinstance(chat_id, str) else None,
+                message_id=message_id if isinstance(message_id, str) else None,
+                owui_user_id=user_id,
             )
 
         async def _materialize_image_from_str(data_str: str) -> Optional[str]:
