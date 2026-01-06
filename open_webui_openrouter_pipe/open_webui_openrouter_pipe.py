@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.18
+version: 1.0.19
 requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -47,6 +47,10 @@ _MAX_OPENROUTER_ID_CHARS = 128
 _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
+
+_ORS_FILTER_MARKER = "openrouter_pipe:ors_filter:v1"
+_ORS_FILTER_FEATURE_FLAG = "openrouter_web_search"
+_ORS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_search"
 
 
 def _select_openrouter_http_referer(valves: Any | None) -> str:
@@ -3189,7 +3193,7 @@ class Pipe:
         HTTP_SOCK_READ_SECONDS: int = Field(
             default=300,
             ge=1,
-            description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors UX for slow providers.",
+            description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors smoother User Interface behavior for slow providers.",
         )
 
         # Remote File/Image Download Settings
@@ -3413,10 +3417,6 @@ class Pipe:
         )
 
         # Web search
-        ENABLE_WEB_SEARCH_TOOL: bool = Field(
-            default=True,
-            description="Enable the OpenRouter web-search plugin (id='web') when supported by the selected model.",
-        )
         WEB_SEARCH_MAX_RESULTS: Optional[int] = Field(
             default=3,
             ge=1,
@@ -3822,6 +3822,28 @@ class Pipe:
         UPDATE_MODEL_CAPABILITIES: bool = Field(
             default=True,
             description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. Disable to manage capabilities manually.",
+        )
+        AUTO_ATTACH_ORS_FILTER: bool = Field(
+            default=True,
+            description=(
+                "When enabled, automatically attaches the OpenRouter Search toggleable filter to models that support "
+                "OpenRouter native web search (so the OpenRouter Search switch appears in the Integrations menu only where it works)."
+            ),
+        )
+        AUTO_INSTALL_ORS_FILTER: bool = Field(
+            default=True,
+            description=(
+                "When enabled, automatically installs/updates the companion OpenRouter Search filter function in Open WebUI. "
+                "This is required for AUTO_ATTACH_ORS_FILTER when the filter hasn't been installed manually."
+            ),
+        )
+        AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER: bool = Field(
+            default=True,
+            description=(
+                "When enabled, automatically marks OpenRouter Search as a Default Filter on models that support OpenRouter native "
+                "web search (by updating the model's meta.defaultFilterIds). This replicates \"web search enabled by default\" "
+                "behavior while still allowing operators/users to turn it off per model or per chat."
+            ),
         )
 
     class UserValves(BaseModel):
@@ -5530,13 +5552,212 @@ class Pipe:
         await asyncio.gather(*(_fetch(maker_id) for maker_id in unique), return_exceptions=True)
         return results
 
+    @staticmethod
+    def _render_ors_filter_source() -> str:
+        """Return the canonical OWUI filter source for the OpenRouter Search toggle."""
+        # NOTE: This file is inserted into Open WebUI's Functions table as a *filter* function.
+        # It must not depend on this pipe module at runtime.
+        return f'''"""
+title: OpenRouter Search
+author: Open-WebUI-OpenRouter-pipe
+	author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
+	id: openrouter_search
+	description: Enables OpenRouter's web-search plugin for the OpenRouter pipe and disables Open WebUI Web Search for this request (OpenRouter Search overrides Web Search).
+	version: 0.1.0
+	license: MIT
+	"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from open_webui.env import SRC_LOG_LEVELS
+
+OWUI_OPENROUTER_PIPE_MARKER = "{_ORS_FILTER_MARKER}"
+_FEATURE_FLAG = "{_ORS_FILTER_FEATURE_FLAG}"
+
+
+class Filter:
+    # Toggleable filter (shows a switch in the Integrations menu).
+    toggle = True
+
+    def __init__(self) -> None:
+        self.log = logging.getLogger("openrouter.search.toggle")
+        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
+        self.toggle = True
+
+    def inlet(
+        self,
+        body: dict[str, Any],
+        __metadata__: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Signal the pipe via request metadata (preferred path).
+        if __metadata__ is not None and not isinstance(__metadata__, dict):
+            return body
+
+        features = body.get("features")
+        if not isinstance(features, dict):
+            features = {{}}
+            body["features"] = features
+
+        # Enforce: OpenRouter Search overrides Web Search (prevent OWUI native web search handler).
+        features["web_search"] = False
+
+        if isinstance(__metadata__, dict):
+            meta_features = __metadata__.get("features")
+            if meta_features is None:
+                meta_features = {{}}
+                __metadata__["features"] = meta_features
+
+            # OWUI builds __metadata__["features"] as a reference to body["features"].
+            # Break the reference so we can preserve the marker for the pipe while forcing
+            # body.features.web_search = False.
+            if meta_features is features:
+                meta_features = dict(meta_features)
+                __metadata__["features"] = meta_features
+
+            if isinstance(meta_features, dict):
+                meta_features[_FEATURE_FLAG] = True
+
+        self.log.debug("Enabled OpenRouter Search; disabled OWUI web_search")
+        return body
+'''
+
+    def _ensure_ors_filter_function_id(self) -> str | None:
+        """Ensure the OpenRouter Search companion filter exists (and is up to date), returning its OWUI function id."""
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except Exception:
+            return None
+
+        desired_source = self._render_ors_filter_source().strip() + "\n"
+        desired_name = "OpenRouter Search"
+        desired_meta = {
+            "description": (
+                "Enable OpenRouter native web search for this request. "
+                "When OpenRouter Search is enabled, OWUI Web Search is disabled to avoid double-search."
+            ),
+            "toggle": True,
+            "manifest": {
+                "title": "OpenRouter Search",
+                "id": "openrouter_search",
+                "version": "0.1.0",
+                "license": "MIT",
+            },
+        }
+
+        def _matches_candidate(content: str) -> bool:
+            if not isinstance(content, str) or not content:
+                return False
+            if _ORS_FILTER_MARKER in content:
+                return True
+            # Back-compat for manual installs of earlier drafts: detect by the feature flag string.
+            return _ORS_FILTER_FEATURE_FLAG in content and "class Filter" in content
+
+        try:
+            filters = Functions.get_functions_by_type("filter", active_only=False)
+        except Exception:
+            return None
+
+        candidates = [f for f in filters if _matches_candidate(getattr(f, "content", ""))]
+        chosen = None
+        if candidates:
+            # Prefer the canonical marker when present.
+            marked = [f for f in candidates if _ORS_FILTER_MARKER in (getattr(f, "content", "") or "")]
+            if marked:
+                candidates = marked
+            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
+            if len(candidates) > 1:
+                self.logger.warning(
+                    "Multiple OpenRouter Search filter candidates found (%d); using '%s'.",
+                    len(candidates),
+                    getattr(chosen, "id", ""),
+                )
+
+        if chosen is None:
+            if not getattr(self.valves, "AUTO_INSTALL_ORS_FILTER", False):
+                return None
+
+            candidate_id = _ORS_FILTER_PREFERRED_FUNCTION_ID
+            suffix = 0
+            while True:
+                existing = None
+                try:
+                    existing = Functions.get_function_by_id(candidate_id)
+                except Exception:
+                    existing = None
+                if existing is None:
+                    break
+                suffix += 1
+                candidate_id = f"{_ORS_FILTER_PREFERRED_FUNCTION_ID}_{suffix}"
+                if suffix > 50:
+                    return None
+
+            try:
+                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
+            except Exception:
+                return None
+
+            meta_obj = FunctionMeta(**desired_meta)
+            form = FunctionForm(
+                id=candidate_id,
+                name=desired_name,
+                content=desired_source,
+                meta=meta_obj,
+            )
+            created = Functions.insert_new_function("", "filter", form)
+            if not created:
+                return None
+            Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
+            self.logger.info("Installed OpenRouter Search filter: %s", candidate_id)
+            return candidate_id
+
+        function_id = str(getattr(chosen, "id", "") or "").strip()
+        if not function_id:
+            return None
+
+        if getattr(self.valves, "AUTO_INSTALL_ORS_FILTER", False):
+            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
+            if existing_content != desired_source:
+                self.logger.info("Updating OpenRouter Search filter: %s", function_id)
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "content": desired_source,
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+            else:
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+
+        return function_id
+
     def _maybe_schedule_model_metadata_sync(
         self,
         selected_models: list[dict[str, Any]],
         *,
         pipe_identifier: str,
     ) -> None:
-        if not (self.valves.UPDATE_MODEL_CAPABILITIES or self.valves.UPDATE_MODEL_IMAGES):
+        if not (
+            self.valves.UPDATE_MODEL_CAPABILITIES
+            or self.valves.UPDATE_MODEL_IMAGES
+            or self.valves.AUTO_ATTACH_ORS_FILTER
+            or self.valves.AUTO_INSTALL_ORS_FILTER
+        ):
             return
         if not selected_models:
             return
@@ -5547,6 +5768,8 @@ class Pipe:
             str(self.valves.MODEL_ID or ""),
             bool(self.valves.UPDATE_MODEL_IMAGES),
             bool(self.valves.UPDATE_MODEL_CAPABILITIES),
+            bool(self.valves.AUTO_ATTACH_ORS_FILTER),
+            bool(self.valves.AUTO_INSTALL_ORS_FILTER),
         )
         if sync_key == self._model_metadata_sync_key:
             return
@@ -5569,7 +5792,12 @@ class Pipe:
         pipe_identifier: str,
     ) -> None:
         """Sync model metadata (capabilities, profile images) into OWUI's Models table."""
-        if not (self.valves.UPDATE_MODEL_CAPABILITIES or self.valves.UPDATE_MODEL_IMAGES):
+        if not (
+            self.valves.UPDATE_MODEL_CAPABILITIES
+            or self.valves.UPDATE_MODEL_IMAGES
+            or self.valves.AUTO_ATTACH_ORS_FILTER
+            or self.valves.AUTO_INSTALL_ORS_FILTER
+        ):
             return
         if not models:
             return
@@ -5579,7 +5807,11 @@ class Pipe:
         session = self._create_http_session()
         try:
             frontend_data = None
-            if self.valves.UPDATE_MODEL_IMAGES or self.valves.UPDATE_MODEL_CAPABILITIES:
+            if (
+                self.valves.UPDATE_MODEL_IMAGES
+                or self.valves.UPDATE_MODEL_CAPABILITIES
+                or self.valves.AUTO_ATTACH_ORS_FILTER
+            ):
                 frontend_data = await self._fetch_frontend_model_catalog(session)
 
             icon_mapping: dict[str, str] = {}
@@ -5587,7 +5819,7 @@ class Pipe:
                 icon_mapping = self._build_icon_mapping(frontend_data)
 
             web_search_mapping: dict[str, bool] = {}
-            if self.valves.UPDATE_MODEL_CAPABILITIES:
+            if self.valves.UPDATE_MODEL_CAPABILITIES or self.valves.AUTO_ATTACH_ORS_FILTER:
                 web_search_mapping = self._build_web_search_support_mapping(frontend_data)
 
             maker_mapping: dict[str, str] = {}
@@ -5648,6 +5880,32 @@ class Pipe:
 
             # DB writes are performed via OWUI helper functions in a threadpool.
             semaphore = asyncio.Semaphore(10)
+            ors_filter_function_id: str | None = None
+            if self.valves.AUTO_ATTACH_ORS_FILTER or self.valves.AUTO_INSTALL_ORS_FILTER:
+                try:
+                    ors_filter_function_id = await run_in_threadpool(self._ensure_ors_filter_function_id)
+                except Exception as exc:
+                    self.logger.debug("OpenRouter Search filter ensure failed: %s", exc)
+                    ors_filter_function_id = None
+
+            if self.valves.AUTO_ATTACH_ORS_FILTER:
+                if not ors_filter_function_id:
+                    self.logger.warning(
+                        "AUTO_ATTACH_ORS_FILTER is enabled but the OpenRouter Search filter is not installed. "
+                        "Enable AUTO_INSTALL_ORS_FILTER (or install the filter manually) to show the OpenRouter Search toggle in the UI."
+                    )
+                else:
+                    supported_models = 0
+                    for model in models:
+                        original_id = model.get("original_id")
+                        if isinstance(original_id, str) and original_id and web_search_mapping.get(original_id):
+                            supported_models += 1
+                    self.logger.info(
+                        "Auto-attaching OpenRouter Search filter '%s' to %d/%d model(s) that support OpenRouter web search.",
+                        ors_filter_function_id,
+                        supported_models,
+                        len(models),
+                    )
 
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -5664,13 +5922,9 @@ class Pipe:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):
                         capabilities = dict(raw_caps)
-                        original_id = model.get("original_id")
-                        if (
-                            isinstance(original_id, str)
-                            and original_id
-                            and web_search_mapping.get(original_id)
-                        ):
-                            capabilities["web_search"] = True
+                        # OWUI Web Search is OWUI-native and works with any model. Keep the
+                        # Integrations "Web Search" toggle available for all OpenRouter-pipe models.
+                        capabilities["web_search"] = True
 
                 profile_image_url = None
                 if self.valves.UPDATE_MODEL_IMAGES:
@@ -5681,7 +5935,20 @@ class Pipe:
                             maker_id = original_id.split("/", 1)[0]
                             profile_image_url = maker_data_mapping.get(maker_id)
 
-                if not capabilities and not profile_image_url:
+                ors_supported = False
+                auto_attach_or_default = bool(
+                    ors_filter_function_id
+                    and (
+                        self.valves.AUTO_ATTACH_ORS_FILTER
+                        or self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
+                    )
+                )
+                if auto_attach_or_default:
+                    original_id = model.get("original_id")
+                    if isinstance(original_id, str) and original_id and web_search_mapping.get(original_id):
+                        ors_supported = True
+
+                if not capabilities and not profile_image_url and not auto_attach_or_default:
                     return
 
                 async with semaphore:
@@ -5694,6 +5961,10 @@ class Pipe:
                             profile_image_url,
                             self.valves.UPDATE_MODEL_CAPABILITIES,
                             self.valves.UPDATE_MODEL_IMAGES,
+                            filter_function_id=ors_filter_function_id,
+                            filter_supported=ors_supported,
+                            auto_attach_filter=auto_attach_or_default,
+                            auto_default_filter=self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
                         )
                     except Exception as exc:
                         self.logger.debug(
@@ -5714,7 +5985,12 @@ class Pipe:
         capabilities: Optional[dict],
         profile_image_url: Optional[str],
         update_capabilities: bool,
-        update_images: bool
+        update_images: bool,
+        *,
+        filter_function_id: str | None = None,
+        filter_supported: bool = False,
+        auto_attach_filter: bool = False,
+        auto_default_filter: bool = False,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelMeta, ModelParams
@@ -5725,6 +6001,100 @@ class Pipe:
         name = (name or "").strip() or openwebui_model_id
 
         existing = Models.get_model_by_id(openwebui_model_id)
+
+        def _ensure_pipe_meta(meta_dict: dict) -> dict:
+            pipe_meta = meta_dict.get("openrouter_pipe")
+            if isinstance(pipe_meta, dict):
+                return pipe_meta
+            pipe_meta = {}
+            meta_dict["openrouter_pipe"] = pipe_meta
+            return pipe_meta
+
+        def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
+            current = meta_dict.get(key, [])
+            if not isinstance(current, list):
+                return []
+            normalized: list[str] = []
+            for entry in current:
+                if isinstance(entry, str) and entry:
+                    normalized.append(entry)
+            return normalized
+
+        def _dedupe_preserve_order(entries: list[str]) -> list[str]:
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for entry in entries:
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                deduped.append(entry)
+            return deduped
+
+        def _apply_filter_ids(meta_dict: dict) -> bool:
+            if not auto_attach_filter or not filter_function_id:
+                return False
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            pipe_meta = meta_dict.get("openrouter_pipe")
+            previous_id = None
+            if isinstance(pipe_meta, dict):
+                prev = pipe_meta.get("openrouter_search_filter_id")
+                if isinstance(prev, str) and prev and prev != filter_function_id:
+                    previous_id = prev
+            had = set(normalized)
+            wanted = set(had)
+            if filter_supported:
+                wanted.add(filter_function_id)
+            else:
+                wanted.discard(filter_function_id)
+            if previous_id:
+                wanted.discard(previous_id)
+            if wanted == had:
+                return False
+            # Preserve order as much as possible; append new id at the end.
+            if filter_supported and filter_function_id not in normalized:
+                normalized.append(filter_function_id)
+            normalized = [fid for fid in normalized if fid in wanted]
+            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+            return True
+
+        def _apply_default_filter_ids(meta_dict: dict) -> bool:
+            if not auto_default_filter or not filter_function_id or not filter_supported:
+                return False
+
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            seeded_key = "openrouter_search_default_seeded"
+            previous_id = pipe_meta.get("openrouter_search_filter_id")
+            previous_id_str = previous_id if isinstance(previous_id, str) else ""
+
+            default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
+            changed = False
+
+            # If the filter id changed (rare), migrate defaults while preserving operator intent.
+            if previous_id_str and previous_id_str != filter_function_id and previous_id_str in default_ids:
+                default_ids = [filter_function_id if fid == previous_id_str else fid for fid in default_ids]
+                changed = True
+
+            seeded = bool(pipe_meta.get(seeded_key, False))
+            if filter_function_id in default_ids:
+                if not seeded:
+                    pipe_meta[seeded_key] = True
+                    changed = True
+            else:
+                if not seeded:
+                    default_ids.append(filter_function_id)
+                    pipe_meta[seeded_key] = True
+                    changed = True
+
+            if previous_id_str != filter_function_id:
+                pipe_meta["openrouter_search_filter_id"] = filter_function_id
+                changed = True
+
+            if not changed:
+                return False
+
+            meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
+            meta_dict["openrouter_pipe"] = pipe_meta
+            return True
         
         if existing:
             # Update existing model - preserve ALL existing fields including owner
@@ -5743,6 +6113,12 @@ class Pipe:
                 if meta_dict.get("profile_image_url") != profile_image_url:
                     meta_dict["profile_image_url"] = profile_image_url
                     meta_updated = True
+
+            if _apply_filter_ids(meta_dict):
+                meta_updated = True
+
+            if _apply_default_filter_ids(meta_dict):
+                meta_updated = True
                 
             if not meta_updated:
                 return
@@ -5766,6 +6142,8 @@ class Pipe:
                 meta_dict["capabilities"] = capabilities
             if update_images and profile_image_url:
                 meta_dict["profile_image_url"] = profile_image_url
+            _apply_filter_ids(meta_dict)
+            _apply_default_filter_ids(meta_dict)
             if not meta_dict:
                 # Nothing to insert, skip
                 return
@@ -7830,6 +8208,12 @@ class Pipe:
         if refresh_error and not available_models:
             return []
 
+        if self.valves.AUTO_INSTALL_ORS_FILTER:
+            try:
+                await run_in_threadpool(self._ensure_ors_filter_function_id)
+            except Exception as exc:
+                self.logger.debug("AUTO_INSTALL_ORS_FILTER failed: %s", exc)
+
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
 
         self._maybe_schedule_model_metadata_sync(
@@ -8620,9 +9004,8 @@ class Pipe:
                 responses_body.tools = tools
 
         # STEP 6: Configure OpenRouter web-search plugin if supported/enabled
-        if ModelFamily.supports("web_search_tool", responses_body.model) and (
-            valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False)
-        ):
+        ors_requested = bool(features.get(_ORS_FILTER_FEATURE_FLAG, False))
+        if ModelFamily.supports("web_search_tool", responses_body.model) and ors_requested:
             reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             effort = (reasoning_cfg.get("effort") or "").strip().lower()
             if not effort:

@@ -451,7 +451,7 @@ create a new snapshot (or resurrect a progress tracker) rather than editing this
 | `test_is_safe_url_respects_disabled_valve` | Disabled valve allows private URLs. | Operator override | `Pipe._is_safe_url` | valve set to False | Asserts True for private URL | low | yes | Ensures feature flag respected. |  |
 | `test_download_remote_url_halts_when_ssrf_blocks` | Download short-circuits when SSRF blocks. | SSRF integration | `Pipe._download_remote_url` | AsyncMock `_is_safe_url`, monkeypatch httpx.AsyncClient | Asserts None and no HTTP client created | med | yes | Ensures SSRF blocks before network IO. |  |
 | `test_is_youtube_url_variants` | Detects YouTube standard/short URLs. | URL classification | `Pipe._is_youtube_url` | none | Asserts True/False for known formats | low | yes | Avoids drift in regex/hostname logic. |  |
-| `test_status_messages_are_strings` | Status messages are non-empty and include emoji cues. | Operator/UI strings | `StatusMessages` | none | Asserts non-empty string and emoji | low | yes | Protects UI/UX contract for statuses. |  |
+| `test_status_messages_are_strings` | Status messages are non-empty and include emoji cues. | Operator/UI strings | `StatusMessages` | none | Asserts non-empty string and emoji | low | yes | Protects UI/User Interface contract for statuses. |  |
 | `test_valve_defaults_are_sensible` | Safety valves stay within bounds. | Valve defaults | `Pipe.Valves` | none | Asserts VIDEO_MAX_SIZE range and SSRF default | low | yes | Guards default safety posture. |  |
 
 ## `tests/test_session_log_storage.py`
