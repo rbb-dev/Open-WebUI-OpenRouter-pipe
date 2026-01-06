@@ -31,6 +31,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/rbb-dev"
 Repository = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe"
+Documentation = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/blob/main/docs/README.md"
+"Bug Tracker" = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues"
 
 [tool.setuptools.packages.find]
 include = ["open_webui_openrouter_pipe"]
