@@ -24,7 +24,7 @@ Eight core capabilities:
 ## Compatibility
 
 - Open WebUI: requires **0.6.28+** (per pipe manifest header).
-- Python: **3.12+** (per `pyproject.toml`).
+- Python: **3.11+** (per `pyproject.toml`; matches official Open WebUI Docker images).
 
 ## Feature highlights
 

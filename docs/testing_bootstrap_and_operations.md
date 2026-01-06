@@ -15,13 +15,13 @@ Conventions:
 - Commands run from the repository root.
 - Prefer prefixing Python tooling with `PYTHONPATH=.` so imports resolve consistently when running from source.
 
-### Python + virtualenv bootstrapping (Python 3.12)
+### Python + virtualenv bootstrapping (Python 3.11+)
 
-This project declares `requires-python = ">=3.12"` in `pyproject.toml`. Use Python 3.12 for local development and tests.
+This project declares `requires-python = ">=3.11"` in `pyproject.toml`. Use Python 3.11+ for local development and tests (Python 3.11 matches official Open WebUI Docker images).
 
 ```bash
-python3.12 --version
-python3.12 -m venv .venv
+python3.11 --version  # or python3.12
+python3.11 -m venv .venv  # or python3.12
 source .venv/bin/activate
 ```
 
@@ -36,7 +36,7 @@ FORCE_RECREATE=1 bash scripts/repro_venv.sh
 
 Notes:
 
-- **Python selection**: `PYTHON_BIN=python3.12 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
+- **Python selection**: `PYTHON_BIN=python3.11 FORCE_RECREATE=1 bash scripts/repro_venv.sh` (or `python3.12`)
 - **Alternate venv dir**: `VENV_DIR=.venv2 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
 - **Slow installs** (Open WebUI can take a long time): the script sets long pip timeouts/retries; override if needed:
   `PIP_DEFAULT_TIMEOUT=1200 PIP_RETRIES=10 FORCE_RECREATE=1 bash scripts/repro_venv.sh`
