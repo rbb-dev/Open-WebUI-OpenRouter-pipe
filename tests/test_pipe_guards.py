@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import types
+from decimal import Decimal
 from typing import Any, cast
 
 import pytest
@@ -569,6 +570,7 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
         available_models = [{"id": "fake.model", "norm_id": "fake.model", "name": "Fake"}]
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+        catalog_norm_ids = {m["norm_id"] for m in available_models}
         openwebui_model_id = metadata["model"]["id"]
         pipe_identifier = pipe.id
         result = await pipe._process_transformed_request(
@@ -585,7 +587,9 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id=openwebui_model_id,
             pipe_identifier=pipe_identifier,
-            allowed_norm_ids=allowed_norm_ids,
+            allowlist_norm_ids=allowed_norm_ids,
+            enforced_norm_ids=allowed_norm_ids,
+            catalog_norm_ids=catalog_norm_ids,
             features={},
         )
         assert result == "ok"
@@ -640,6 +644,7 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
         available_models = [{"id": "other.model", "norm_id": "other.model", "name": "Other"}]
         allowed_models = pipe._select_models(pipe.valves.MODEL_ID, available_models)
         allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+        catalog_norm_ids = {m["norm_id"] for m in available_models}
         openwebui_model_id = metadata["model"]["id"]
         pipe_identifier = pipe.id
         result = await pipe._process_transformed_request(
@@ -656,7 +661,9 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
             session=cast(Any, object()),
             openwebui_model_id=openwebui_model_id,
             pipe_identifier=pipe_identifier,
-            allowed_norm_ids=allowed_norm_ids,
+            allowlist_norm_ids=allowed_norm_ids,
+            enforced_norm_ids=allowed_norm_ids,
+            catalog_norm_ids=catalog_norm_ids,
             features={},
         )
         assert result == "ok"
@@ -775,5 +782,132 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
         assert metadata.get("session_id") == "s1"
         assert metadata.get("chat_id") == "c1"
         assert metadata.get("message_id") == "m1"
+    finally:
+        await pipe.close()
+
+
+def test_sum_pricing_values_walks_all_nodes():
+    pricing = {
+        "prompt": "0",
+        "completion": 0,
+        "image": {"base": "0.5", "modifier": "-1.5"},
+        "extra": ["2", "not-a-number", 1],
+    }
+    total, numeric_count = Pipe._sum_pricing_values(pricing)
+    assert total == Decimal("2.0")
+    assert numeric_count == 6
+
+
+def test_free_model_requires_numeric_pricing(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(FREE_MODEL_FILTER="only", TOOL_CALLING_FILTER="all")
+
+    def fake_spec(cls, model_id: str):
+        return {"pricing": {"prompt": "not-a-number", "completion": ""}}
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.spec",
+        classmethod(fake_spec),
+    )
+
+    try:
+        assert pipe._is_free_model("weird.model") is False
+    finally:
+        pipe.shutdown()
+
+
+def test_model_filters_respect_free_mode(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(FREE_MODEL_FILTER="only", TOOL_CALLING_FILTER="all")
+
+    def fake_spec(cls, model_id: str):
+        if model_id == "free.model":
+            return {"pricing": {"prompt": "0", "completion": "0"}}
+        return {"pricing": {"prompt": "1", "completion": "0"}}
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.spec",
+        classmethod(fake_spec),
+    )
+
+    try:
+        models = [
+            {"id": "free.model", "norm_id": "free.model", "name": "Free"},
+            {"id": "paid.model", "norm_id": "paid.model", "name": "Paid"},
+        ]
+        filtered = pipe._apply_model_filters(models, pipe.valves)
+        assert [m["norm_id"] for m in filtered] == ["free.model"]
+    finally:
+        pipe.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_model_restricted_template_includes_filter_name(monkeypatch):
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(FREE_MODEL_FILTER="only", TOOL_CALLING_FILTER="all")
+
+    class FakeResponses:
+        model = "paid.model"
+        max_output_tokens = None
+        reasoning = None
+        thinking_config = None
+
+    async def fake_from_completions(_cls, *_, **__):
+        return FakeResponses()
+
+    monkeypatch.setattr(CompletionsBody, "model_validate", classmethod(lambda _cls, body: body))
+    monkeypatch.setattr(ResponsesBody, "from_completions", classmethod(fake_from_completions))
+    monkeypatch.setattr(Pipe, "_sanitize_request_input", lambda *_a, **_k: None)
+    monkeypatch.setattr(Pipe, "_apply_reasoning_preferences", lambda *_a, **_k: None)
+    monkeypatch.setattr(Pipe, "_apply_gemini_thinking_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(Pipe, "_apply_context_transforms", lambda *_a, **_k: None)
+
+    def fake_spec(cls, model_id: str):
+        return {"pricing": {"prompt": "1"}}
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry.spec",
+        classmethod(fake_spec),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_emit(
+        self,
+        _event_emitter,
+        *,
+        template: str,
+        variables: dict[str, Any],
+        log_message: str,
+        log_level: int = logging.ERROR,
+    ) -> None:
+        captured["template"] = template
+        captured["variables"] = variables
+        captured["log_message"] = log_message
+
+    monkeypatch.setattr(Pipe, "_emit_templated_error", fake_emit)
+
+    try:
+        result = await pipe._process_transformed_request(
+            {"model": "paid.model", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+            __user__={"id": "u1", "valves": {}},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"model": {"id": "paid.model"}},
+            __tools__={},
+            __task__=None,
+            __task_body__=None,
+            valves=pipe.valves,
+            session=cast(Any, object()),
+            openwebui_model_id="paid.model",
+            pipe_identifier="pipe.test",
+            allowlist_norm_ids={"paid.model", "free.model"},
+            enforced_norm_ids={"free.model"},
+            catalog_norm_ids={"paid.model", "free.model"},
+            features={"x": True},
+        )
+        assert result == ""
+        assert "FREE_MODEL_FILTER=only" in (captured.get("variables", {}) or {}).get("restriction_reasons", "")
     finally:
         await pipe.close()

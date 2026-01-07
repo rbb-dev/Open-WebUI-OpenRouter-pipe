@@ -39,6 +39,7 @@ If a `MODEL_ID` allowlist is configured, normal chat requests enforce it. Task r
 Important nuance:
 
 - Reasoning overrides described below apply only when the task request targets a model that the pipe considers “owned” (i.e., inside the pipe’s allowed model set when an allowlist is configured). When a task bypasses the allowlist, the pipe does not force task reasoning overrides for that model.
+- Model catalog filters (for example `FREE_MODEL_FILTER` and `TOOL_CALLING_FILTER`) control which models are shown to users and enforced for normal chat requests. Task requests are not guaranteed to respect those filters; choose task models explicitly if you need “free only” or “tool calling required” behavior for housekeeping.
 
 ### Task reasoning effort override (valve-gated)
 

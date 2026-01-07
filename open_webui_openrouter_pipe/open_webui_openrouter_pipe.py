@@ -118,6 +118,7 @@ from time import perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
 import contextvars
+from decimal import Decimal, InvalidOperation
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from dataclasses import dataclass, field
@@ -491,6 +492,28 @@ DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE = (
     "**What you can do:**\n"
     "- Increase the *Max Function Call Loops* valve (e.g. 25–50) and retry\n"
     "- Simplify the request or reduce tool chaining\n"
+)
+
+DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
+    "### 🚫 Model restricted\n\n"
+    "This pipe rejected the requested model due to configuration restrictions.\n\n"
+    "- **Requested model**: `{requested_model}`\n"
+    "{{#if normalized_model_id}}\n"
+    "- **Normalized model id**: `{normalized_model_id}`\n"
+    "{{/if}}\n"
+    "{{#if restriction_reasons}}\n"
+    "- **Restricted by**: {restriction_reasons}\n"
+    "{{/if}}\n"
+    "{{#if model_id_filter}}\n"
+    "- **MODEL_ID**: `{model_id_filter}`\n"
+    "{{/if}}\n"
+    "{{#if free_model_filter}}\n"
+    "- **FREE_MODEL_FILTER**: `{free_model_filter}`\n"
+    "{{/if}}\n"
+    "{{#if tool_calling_filter}}\n"
+    "- **TOOL_CALLING_FILTER**: `{tool_calling_filter}`\n"
+    "{{/if}}\n\n"
+    "Choose an allowed model or ask your admin to update the pipe filters.\n"
 )
 
 
@@ -1452,6 +1475,12 @@ class OpenRouterModelRegistry:
         """Map sanitized Open WebUI ids back to provider ids."""
         norm = ModelFamily.base_model(model_id)
         return cls._id_map.get(norm)
+
+    @classmethod
+    def spec(cls, model_id: str) -> Dict[str, Any]:
+        """Return the cached spec for ``model_id`` (or an empty dict)."""
+        norm = ModelFamily.base_model(model_id)
+        return cls._specs.get(norm) or {}
 
 # Temporary debug helpers shared by registry + pipe (safe to remove later)
 def _debug_print_request(headers: Dict[str, str], payload: Optional[Dict[str, Any]]) -> None:
@@ -3281,6 +3310,26 @@ class Pipe:
             ge=60,
             description="How long to cache the OpenRouter model catalog (in seconds) before refreshing.",
         )
+        FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
+            default="all",
+            title="Free model filter",
+            description=(
+                "Filter models based on OpenRouter pricing totals. "
+                "'all' disables filtering. "
+                "'only' restricts to models whose summed pricing fields equal 0. "
+                "'exclude' hides those free models."
+            ),
+        )
+        TOOL_CALLING_FILTER: Literal["all", "only", "exclude"] = Field(
+            default="all",
+            title="Tool calling filter",
+            description=(
+                "Filter models based on tool-calling capability (supported_parameters includes 'tools' or 'tool_choice'). "
+                "'all' disables filtering. "
+                "'only' restricts to tool-capable models. "
+                "'exclude' hides tool-capable models."
+            ),
+        )
 
         ENABLE_REASONING: bool = Field(
             default=True,
@@ -3646,6 +3695,15 @@ class Pipe:
             description=(
                 "Markdown template emitted when a request reaches MAX_FUNCTION_CALL_LOOPS while the model is still "
                 "requesting additional tool/function calls. Available variables: {max_function_call_loops}."
+            ),
+        )
+        MODEL_RESTRICTED_TEMPLATE: str = Field(
+            default=DEFAULT_MODEL_RESTRICTED_TEMPLATE,
+            description=(
+                "Markdown template emitted when the requested model is blocked by MODEL_ID and/or model filter valves. "
+                "Available variables: {requested_model}, {normalized_model_id}, {restriction_reasons}, "
+                "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, plus standard context variables "
+                "like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, and {support_url}."
             ),
         )
 
@@ -8308,6 +8366,7 @@ class Filter:
                 self.logger.debug("AUTO_INSTALL_ORS_FILTER failed: %s", exc)
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
+        selected_models = self._apply_model_filters(selected_models, self.valves)
 
         self._maybe_schedule_model_metadata_sync(
             selected_models,
@@ -8558,8 +8617,11 @@ class Filter:
             self.logger.warning("OpenRouter catalog refresh failed (%s). Serving %d cached model(s).", exc, len(available_models))
         else:
             available_models = OpenRouterModelRegistry.list_models()
-        allowed_models = self._select_models(valves.MODEL_ID, available_models) or available_models
-        allowed_norm_ids = {m["norm_id"] for m in allowed_models}
+        catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
+        allowlist_models = self._select_models(valves.MODEL_ID, available_models) or available_models
+        allowlist_norm_ids = {m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")}
+        enforced_models = self._apply_model_filters(allowlist_models, valves)
+        enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
 
         # Full model ID, e.g. "<pipe-id>.gpt-4o"
         pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
@@ -8582,7 +8644,9 @@ class Filter:
                 session,
                 openwebui_model_id,
                 pipe_identifier,
-                allowed_norm_ids,
+                allowlist_norm_ids,
+                enforced_norm_ids,
+                catalog_norm_ids,
                 features,
                 user_id=user_id,
             )
@@ -8858,7 +8922,9 @@ class Filter:
         session: aiohttp.ClientSession,
         openwebui_model_id: str,
         pipe_identifier: str,
-        allowed_norm_ids: set[str],
+        allowlist_norm_ids: set[str],
+        enforced_norm_ids: set[str],
+        catalog_norm_ids: set[str],
         features: dict[str, Any],
         *,
         user_id: str = "",
@@ -8944,19 +9010,38 @@ class Filter:
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)
         task_mode = bool(__task__)
-        if allowed_norm_ids and normalized_model_id not in allowed_norm_ids:
-            if task_mode:
+        if task_mode:
+            if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:
                 self.logger.debug(
                     "Bypassing model whitelist for task request (model=%s, task=%s)",
                     normalized_model_id,
                     (__task__ or {}).get("type") or "task",
                 )
-            else:
-                await self._emit_error(
+        else:
+            if catalog_norm_ids and normalized_model_id not in enforced_norm_ids:
+                reasons = self._model_restriction_reasons(
+                    normalized_model_id,
+                    valves=valves,
+                    allowlist_norm_ids=allowlist_norm_ids,
+                    catalog_norm_ids=catalog_norm_ids,
+                )
+                model_id_filter = (valves.MODEL_ID or "").strip()
+                free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
+                tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
+                await self._emit_templated_error(
                     __event_emitter__,
-                    f"Model '{responses_body.model}' is not enabled for this pipe. Please choose one of the allowed models.",
-                    show_error_message=True,
-                    done=True,
+                    template=valves.MODEL_RESTRICTED_TEMPLATE,
+                    variables={
+                        "requested_model": responses_body.model,
+                        "normalized_model_id": normalized_model_id,
+                        "restriction_reasons": ", ".join(reasons) if reasons else "restricted",
+                        "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
+                        "free_model_filter": free_mode if free_mode != "all" else "",
+                        "tool_calling_filter": tool_mode if tool_mode != "all" else "",
+                    },
+                    log_message=(
+                        f"Model restricted (requested={responses_body.model}, normalized={normalized_model_id}, reasons={reasons})"
+                    ),
                 )
                 return ""
         if not features:
@@ -8973,7 +9058,7 @@ class Filter:
             self.logger.debug("Detected task model: %s", __task__)
 
             requested_model = responses_body.model
-            owns_task_model = ModelFamily.base_model(requested_model) in allowed_norm_ids if allowed_norm_ids else True
+            owns_task_model = ModelFamily.base_model(requested_model) in allowlist_norm_ids if allowlist_norm_ids else True
             if owns_task_model:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
                 self._apply_task_reasoning_preferences(responses_body, task_effort)
@@ -10700,6 +10785,123 @@ class Filter:
         if missing:
             self.logger.warning("Requested models not found in OpenRouter catalog: %s", ", ".join(sorted(missing)))
         return selected or available_models
+
+    @staticmethod
+    def _sum_pricing_values(node: Any) -> tuple[Decimal, int]:
+        """Return (sum, count) of numeric values found in a pricing node."""
+        total = Decimal(0)
+        count = 0
+
+        if isinstance(node, dict):
+            for value in node.values():
+                child_total, child_count = Pipe._sum_pricing_values(value)
+                total += child_total
+                count += child_count
+            return total, count
+
+        if isinstance(node, (list, tuple, set)):
+            for value in node:
+                child_total, child_count = Pipe._sum_pricing_values(value)
+                total += child_total
+                count += child_count
+            return total, count
+
+        if isinstance(node, (int, float, Decimal)):
+            try:
+                return Decimal(str(node)), 1
+            except (InvalidOperation, ValueError):
+                return Decimal(0), 0
+
+        if isinstance(node, str):
+            raw = node.strip()
+            if not raw:
+                return Decimal(0), 0
+            try:
+                return Decimal(raw), 1
+            except (InvalidOperation, ValueError):
+                return Decimal(0), 0
+
+        return Decimal(0), 0
+
+    def _is_free_model(self, model_norm_id: str) -> bool:
+        pricing = OpenRouterModelRegistry.spec(model_norm_id).get("pricing") or {}
+        total, numeric_count = self._sum_pricing_values(pricing)
+        if numeric_count <= 0:
+            return False
+        return total == Decimal(0)
+
+    @staticmethod
+    def _supports_tool_calling(model_norm_id: str) -> bool:
+        return bool({"tools", "tool_choice"} & set(ModelFamily.supported_parameters(model_norm_id)))
+
+    def _apply_model_filters(self, models: list[dict[str, Any]], valves: "Pipe.Valves") -> list[dict[str, Any]]:
+        """Apply model capability filters (free pricing/tool calling) to a model list."""
+        if not models:
+            return []
+
+        free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
+        tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
+        if free_mode == "all" and tool_mode == "all":
+            return models
+
+        filtered: list[dict[str, Any]] = []
+        for model in models:
+            norm_id = model.get("norm_id") or ""
+            if not norm_id:
+                continue
+
+            if free_mode != "all":
+                is_free = self._is_free_model(norm_id)
+                if free_mode == "only" and not is_free:
+                    continue
+                if free_mode == "exclude" and is_free:
+                    continue
+
+            if tool_mode != "all":
+                supports_tools = self._supports_tool_calling(norm_id)
+                if tool_mode == "only" and not supports_tools:
+                    continue
+                if tool_mode == "exclude" and supports_tools:
+                    continue
+
+            filtered.append(model)
+
+        return filtered
+
+    def _model_restriction_reasons(
+        self,
+        model_norm_id: str,
+        *,
+        valves: "Pipe.Valves",
+        allowlist_norm_ids: set[str],
+        catalog_norm_ids: set[str],
+    ) -> list[str]:
+        reasons: list[str] = []
+        if catalog_norm_ids and model_norm_id not in catalog_norm_ids:
+            reasons.append("not_in_catalog")
+
+        model_id_filter = (valves.MODEL_ID or "").strip()
+        if model_id_filter and model_id_filter.lower() != "auto":
+            if model_norm_id not in allowlist_norm_ids:
+                reasons.append("MODEL_ID")
+
+        free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
+        if free_mode != "all" and model_norm_id in catalog_norm_ids:
+            is_free = self._is_free_model(model_norm_id)
+            if free_mode == "only" and not is_free:
+                reasons.append("FREE_MODEL_FILTER=only")
+            elif free_mode == "exclude" and is_free:
+                reasons.append("FREE_MODEL_FILTER=exclude")
+
+        tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
+        if tool_mode != "all" and model_norm_id in catalog_norm_ids:
+            supports_tools = self._supports_tool_calling(model_norm_id)
+            if tool_mode == "only" and not supports_tools:
+                reasons.append("TOOL_CALLING_FILTER=only")
+            elif tool_mode == "exclude" and supports_tools:
+                reasons.append("TOOL_CALLING_FILTER=exclude")
+
+        return reasons
 
     # 4.3 Core Multi-Turn Handlers
     @no_type_check

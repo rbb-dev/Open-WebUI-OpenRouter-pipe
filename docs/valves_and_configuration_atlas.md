@@ -60,6 +60,8 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | --- | --- | --- | --- |
 | `MODEL_ID` | `str` | `auto` | Comma-separated OpenRouter model IDs to expose in Open WebUI. `auto` imports every available Responses-capable model. |
 | `MODEL_CATALOG_REFRESH_SECONDS` | `int` | `3600` | How long to cache the OpenRouter model catalog (seconds) before refreshing. |
+| `FREE_MODEL_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on summed OpenRouter pricing fields. `all` disables filtering; `only` restricts to free models (sum==0 and at least one numeric pricing value); `exclude` hides free models. |
+| `TOOL_CALLING_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on tool calling support (supported_parameters includes `tools` or `tool_choice`). `all` disables filtering; `only` restricts to tool-capable models; `exclude` hides tool-capable models. |
 | `UPDATE_MODEL_IMAGES` | `bool` | `True` | When enabled, sync OpenRouter model icons into Open WebUI model metadata (`meta.profile_image_url`) as PNG data URLs. Disabling avoids extra outbound fetches and model-metadata writes. |
 | `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Disabling avoids model-metadata writes. |
 | `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
@@ -189,6 +191,7 @@ See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openroute
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
 | `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
 | `MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the request reaches `MAX_FUNCTION_CALL_LOOPS` while the model is still requesting additional tool/function calls. |
+| `MODEL_RESTRICTED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the requested model is blocked by `MODEL_ID` and/or model filter valves. |
 
 **Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).
 
