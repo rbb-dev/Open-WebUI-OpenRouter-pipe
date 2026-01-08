@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+    EncryptedStr,
     OpenRouterAPIError,
     Pipe,
     CompletionsBody,
@@ -136,6 +137,7 @@ async def test_handle_pipe_call_tolerates_metadata_model_none(monkeypatch):
     monkeypatch.setattr(Pipe, "_process_transformed_request", fake_process)
 
     try:
+        valves = pipe.Valves().model_copy(update={"API_KEY": EncryptedStr("sk-test")})
         result = await pipe._handle_pipe_call(
             body={},
             __user__={"valves": {}},
@@ -144,7 +146,7 @@ async def test_handle_pipe_call_tolerates_metadata_model_none(monkeypatch):
             __event_call__=None,
             __metadata__={"model": None},
             __tools__=None,
-            valves=pipe.Valves(),
+            valves=valves,
             session=object(),  # type: ignore[arg-type]
         )
         assert result == "ok"

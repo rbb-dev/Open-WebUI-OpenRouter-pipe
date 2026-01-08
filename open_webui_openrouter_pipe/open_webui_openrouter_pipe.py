@@ -4013,6 +4013,9 @@ class Pipe:
 
     # Core Structure — shared concurrency primitives
     _QUEUE_MAXSIZE = 500
+    _AUTH_FAILURE_TTL_SECONDS = 60
+    _AUTH_FAILURE_UNTIL: dict[str, float] = {}
+    _AUTH_FAILURE_LOCK = threading.Lock()
     _request_queue: asyncio.Queue[_PipeJob] | None = None
     _queue_worker_task: asyncio.Task | None = None
     _queue_worker_lock: asyncio.Lock | None = None
@@ -4139,7 +4142,8 @@ class Pipe:
             return
         if self._startup_task and self._startup_task.done():
             self._startup_task = None
-        api_key_available = bool(EncryptedStr.decrypt(self.valves.API_KEY))
+        api_key_value, api_key_error = self._resolve_openrouter_api_key(self.valves)
+        api_key_available = bool(api_key_value) and (not api_key_error)
         if not api_key_available:
             if not self._startup_checks_pending:
                 self.logger.debug("Deferring OpenRouter warmup until an API key is configured.")
@@ -4384,9 +4388,12 @@ class Pipe:
         """Warm OpenRouter connections and log readiness without blocking startup."""
         session: aiohttp.ClientSession | None = None
         try:
-            api_key = EncryptedStr.decrypt(self.valves.API_KEY)
-            if not api_key:
-                self.logger.debug("Skipping OpenRouter warmup: API key missing (will retry when configured).")
+            api_key, api_key_error = self._resolve_openrouter_api_key(self.valves)
+            if api_key_error or not api_key:
+                self.logger.debug(
+                    "Skipping OpenRouter warmup: %s",
+                    api_key_error or "API key missing (will retry when configured).",
+                )
                 self._startup_checks_pending = True
                 return
             session = self._create_http_session()
@@ -8365,15 +8372,19 @@ class Filter:
         self._maybe_start_cleanup()
         session = self._create_http_session()
         refresh_error: Exception | None = None
+        api_key_value, api_key_error = self._resolve_openrouter_api_key(self.valves)
+        if api_key_error:
+            refresh_error = ValueError(api_key_error)
         try:
-            await OpenRouterModelRegistry.ensure_loaded(
-                session,
-                base_url=self.valves.BASE_URL,
-                api_key=EncryptedStr.decrypt(self.valves.API_KEY),
-                cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
-                logger=self.logger,
-                http_referer=_select_openrouter_http_referer(self.valves),
-            )
+            if api_key_value and not api_key_error:
+                await OpenRouterModelRegistry.ensure_loaded(
+                    session,
+                    base_url=self.valves.BASE_URL,
+                    api_key=api_key_value,
+                    cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
+                    logger=self.logger,
+                    http_referer=_select_openrouter_http_referer(self.valves),
+                )
         except ValueError as exc:
             refresh_error = exc
             self.logger.error("OpenRouter configuration error: %s", exc)
@@ -8415,8 +8426,8 @@ class Filter:
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
-        __task__: Optional[dict[str, Any]] = None,
-        __task_body__: Optional[dict[str, Any]] = None,
+        __task__: Any = None,
+        __task_body__: Any = None,
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
 
@@ -8584,8 +8595,8 @@ class Filter:
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
-        __task__: Optional[dict[str, Any]] = None,
-        __task_body__: Optional[dict[str, Any]] = None,
+        __task__: Any = None,
+        __task_body__: Any = None,
         *,
         valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
@@ -8617,11 +8628,72 @@ class Filter:
         pipe_identifier = self.id
         self._ensure_artifact_store(valves, pipe_identifier=pipe_identifier)
 
+        task_name = self._task_name(__task__)
+        if task_name and self._auth_failure_active():
+            # Suppress background task calls after an auth failure to avoid log spam
+            # and repeated upstream requests.
+            fallback = self._build_task_fallback_content(task_name)
+            return self._build_chat_completion_payload(
+                model=str(body.get("model") or openwebui_model_id or "pipe"),
+                content=fallback,
+            )
+
+        api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
+        if api_key_error:
+            self._note_auth_failure()
+            # Task calls are background; return a safe stub without emitting UI errors.
+            if task_name:
+                fallback = self._build_task_fallback_content(task_name)
+                return self._build_chat_completion_payload(
+                    model=str(body.get("model") or openwebui_model_id or "pipe"),
+                    content=fallback,
+                )
+
+            template = valves.AUTHENTICATION_ERROR_TEMPLATE
+            variables = {
+                "openrouter_code": 401,
+                "openrouter_message": api_key_error,
+            }
+            # For streaming requests we must emit and finish the stream.
+            if bool(body.get("stream")) and __event_emitter__:
+                await self._emit_templated_error(
+                    __event_emitter__,
+                    template=template,
+                    variables=variables,
+                    log_message=f"Auth configuration error: {api_key_error}",
+                    log_level=logging.WARNING,
+                )
+                return ""
+
+            # Non-streaming: return a normal chat completion payload with the markdown.
+            error_id, context_defaults = self._build_error_context()
+            enriched_variables = {**context_defaults, **variables}
+            try:
+                markdown = _render_error_template(template, enriched_variables)
+            except Exception:
+                markdown = (
+                    "### 🔐 Authentication Failed\n\n"
+                    f"{api_key_error}\n\n"
+                    f"**Error ID:** `{error_id}`\n\n"
+                    "Verify the API key configured for this pipe."
+                )
+            self.logger.warning(
+                "[%s] Auth configuration error (session=%s, user=%s): %s",
+                error_id,
+                enriched_variables.get("session_id") or "",
+                enriched_variables.get("user_id") or "",
+                api_key_error,
+            )
+            return self._build_chat_completion_payload(
+                model=str(body.get("model") or openwebui_model_id or "pipe"),
+                content=markdown,
+            )
+
         try:
             await OpenRouterModelRegistry.ensure_loaded(
                 session,
                 base_url=valves.BASE_URL,
-                api_key=EncryptedStr.decrypt(valves.API_KEY),
+                api_key=api_key_value or "",
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
             )
@@ -8947,8 +9019,8 @@ class Filter:
         __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
-        __task__: Optional[dict[str, Any]],
-        __task_body__: Optional[dict[str, Any]],
+        __task__: Any,
+        __task_body__: Any,
         valves: "Pipe.Valves",
         session: aiohttp.ClientSession,
         openwebui_model_id: str,
@@ -9046,7 +9118,7 @@ class Filter:
                 self.logger.debug(
                     "Bypassing model whitelist for task request (model=%s, task=%s)",
                     normalized_model_id,
-                    (__task__ or {}).get("type") or "task",
+                    self._task_name(__task__) or "task",
                 )
         else:
             if catalog_norm_ids and normalized_model_id not in enforced_norm_ids:
@@ -12708,7 +12780,7 @@ class Filter:
         valves: Pipe.Valves,
         *,
         session: aiohttp.ClientSession | None = None,
-        task_context: Optional[Dict[str, Any]] = None,
+        task_context: Any = None,
         owui_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         user_obj: Optional[Any] = None,
@@ -12799,12 +12871,26 @@ class Filter:
 
             except Exception as exc:
                 last_error = exc
-                self.logger.warning("Task model attempt %d/%d failed: %s", attempt, attempts, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                is_auth_failure = (
+                    isinstance(exc, OpenRouterAPIError)
+                    and getattr(exc, "status", None) in {401, 403}
+                )
+                if is_auth_failure:
+                    self._note_auth_failure()
+                self.logger.warning(
+                    "Task model attempt %d/%d failed: %s",
+                    attempt,
+                    attempts,
+                    exc,
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG) and (not is_auth_failure),
+                )
+                if is_auth_failure:
+                    break
                 if attempt < attempts:
                     await asyncio.sleep(delay_seconds)
                     delay_seconds = min(delay_seconds * 2, 0.8)
 
-        task_type = (task_context or {}).get("type") or "task"
+        task_type = self._task_name(task_context) or "task"
         error_message = (
             f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
         )
@@ -13116,11 +13202,22 @@ class Filter:
                                         # self.logger.debug("Enqueued SSE chunk seq=%s size=%s",seq,len(data_blob))
                                         seq += 1
                         except Exception as producer_exc:
-                            self.logger.error(
-                                "Producer encountered error while streaming from OpenRouter: %s",
-                                producer_exc,
-                                exc_info=True,
+                            is_auth_failure = (
+                                isinstance(producer_exc, OpenRouterAPIError)
+                                and getattr(producer_exc, "status", None) in {401, 403}
                             )
+                            if is_auth_failure:
+                                self._note_auth_failure()
+                                self.logger.warning(
+                                    "Producer encountered auth error while streaming from OpenRouter: %s",
+                                    producer_exc,
+                                )
+                            else:
+                                self.logger.error(
+                                    "Producer encountered error while streaming from OpenRouter: %s",
+                                    producer_exc,
+                                    exc_info=True,
+                                )
                             if breaker_key:
                                 self._record_failure(breaker_key)
                             raise
@@ -14947,6 +15044,8 @@ class Filter:
         template: Optional[str] = None,
     ) -> None:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
+        if getattr(exc, "status", None) in {401, 403}:
+            self._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
         template_to_use = template or self._select_openrouter_template(exc.status)
         retry_after_hint = (
@@ -14992,6 +15091,120 @@ class Filter:
         if status == 429:
             return self.valves.RATE_LIMIT_TEMPLATE
         return self.valves.OPENROUTER_ERROR_TEMPLATE
+
+    @classmethod
+    def _auth_failure_scope_key(cls) -> str:
+        """Return an identifier used to suppress repeated auth failures.
+
+        Prefer stable user ids, otherwise fall back to session id. When both are
+        absent, return an empty string (no suppression).
+        """
+        user_id = (SessionLogger.user_id.get() or "").strip()
+        if user_id:
+            return f"user:{user_id}"
+        session_id = (SessionLogger.session_id.get() or "").strip()
+        if session_id:
+            return f"session:{session_id}"
+        return ""
+
+    @classmethod
+    def _note_auth_failure(cls, *, ttl_seconds: Optional[int] = None) -> None:
+        key = cls._auth_failure_scope_key()
+        if not key:
+            return
+        ttl = int(ttl_seconds or cls._AUTH_FAILURE_TTL_SECONDS)
+        if ttl <= 0:
+            return
+        until = time.time() + ttl
+        with cls._AUTH_FAILURE_LOCK:
+            cls._AUTH_FAILURE_UNTIL[key] = until
+
+    @classmethod
+    def _auth_failure_active(cls) -> bool:
+        key = cls._auth_failure_scope_key()
+        if not key:
+            return False
+        now = time.time()
+        with cls._AUTH_FAILURE_LOCK:
+            until = cls._AUTH_FAILURE_UNTIL.get(key)
+            if until is None:
+                return False
+            if now >= until:
+                cls._AUTH_FAILURE_UNTIL.pop(key, None)
+                return False
+            return True
+
+    @staticmethod
+    def _task_name(task: Any) -> str:
+        """Return a stable string task name from OWUI task metadata.
+
+        Open WebUI passes `metadata.task` as a string (e.g. "tags_generation").
+        Some callers may pass a dict-like task payload; handle both.
+        """
+        if isinstance(task, str):
+            return task.strip()
+        if isinstance(task, dict):
+            name = task.get("type") or task.get("task") or task.get("name")
+            return name.strip() if isinstance(name, str) else ""
+        return ""
+
+    def _resolve_openrouter_api_key(self, valves: "Pipe.Valves") -> tuple[str | None, str | None]:
+        """Return (api_key, error_message) where api_key is a usable bearer token.
+
+        This guards against cases where `API_KEY` is stored encrypted but cannot
+        be decrypted (WEBUI_SECRET_KEY mismatch / missing), which would
+        otherwise be sent upstream as `Bearer encrypted:...` and cause noisy 401s.
+        """
+        raw_value = str(getattr(valves, "API_KEY", "") or "")
+        raw_value = raw_value.strip()
+        decrypted = EncryptedStr.decrypt(raw_value)
+        decrypted = decrypted.strip() if isinstance(decrypted, str) else ""
+
+        if not decrypted:
+            return None, "OpenRouter API key is not configured."
+
+        if raw_value.startswith(EncryptedStr._ENCRYPTION_PREFIX):
+            # If the key was stored encrypted but decryption did not yield a plausible plaintext key,
+            # treat it as an operator config issue.
+            if decrypted.startswith(EncryptedStr._ENCRYPTION_PREFIX) or (not decrypted.startswith("sk-")):
+                return (
+                    None,
+                    "OpenRouter API key is encrypted but cannot be decrypted. "
+                    "This usually means WEBUI_SECRET_KEY changed. Re-enter the API key in this pipe's settings.",
+                )
+
+        return decrypted, None
+
+    def _build_chat_completion_payload(self, *, model: str, content: str) -> dict[str, Any]:
+        """Return a minimal OpenAI chat.completions-style payload."""
+        model_id = (model or "pipe").strip() if isinstance(model, str) else "pipe"
+        return {
+            "id": f"{model_id}-{uuid.uuid4()}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model_id,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                    "logprobs": None,
+                }
+            ],
+        }
+
+    def _build_task_fallback_content(self, task_name: str) -> str:
+        """Return OWUI-parseable JSON content for known task types."""
+        name = (task_name or "").strip().lower()
+        if not name:
+            return ""
+        if "follow" in name:
+            return json.dumps({"follow_ups": []})
+        if "tag" in name:
+            return json.dumps({"tags": ["General"]})
+        if "title" in name:
+            return json.dumps({"title": "Chat"})
+        return ""
     async def _emit_error(
         self,
         event_emitter: EventEmitter | None,
