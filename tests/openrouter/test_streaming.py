@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from typing import Any, cast
+from typing import Any, AsyncGenerator, cast
 
 from fastapi.responses import JSONResponse
 
@@ -278,7 +278,8 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
             __tools__=None,
         )
         assert not isinstance(result, (str, type(None), JSONResponse))
-        items = [item async for item in result]
+        stream = cast(AsyncGenerator[dict[str, Any] | str, None], result)
+        items = [item async for item in stream]
     finally:
         await pipe.close()
 

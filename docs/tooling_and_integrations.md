@@ -4,11 +4,50 @@
 
 > **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🏗️ Architecture](developer_guide_and_architecture.md) | [🔒 Security](security_and_encryption.md)
 
-This pipe supports OpenRouter Responses API tool calling with a controlled execution pipeline and operator-tunable concurrency limits. Tool sources and integrations:
+This pipe supports OpenRouter tool calling either via an internal execution pipeline (pipe-run tools) or via Open WebUI pass-through (OWUI-run tools). Tool sources and integrations:
 
 - Open WebUI tool registry tools (server-side Python tools).
 - Open WebUI **Direct Tool Servers** (client-side OpenAPI tools executed in the browser via Socket.IO).
 - OpenRouter web-search (as a `plugins` entry, not a function tool).
+
+---
+
+## Tool backends (`TOOL_EXECUTION_MODE`)
+
+This pipe supports two tool execution backends. Choose based on whether you want the pipe to run tools itself, or you want Open WebUI to run them.
+
+### `Pipeline` (default)
+
+The pipe runs the tool loop itself:
+
+- Provider returns `function_call` items.
+- The pipe executes those tools (Open WebUI registry tools + Direct Tool Servers where available).
+- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools (or `MAX_FUNCTION_CALL_LOOPS` is reached).
+
+**You gain:**
+- Pipe-level concurrency controls, batching, retries/timeouts, and breaker protections around tool execution.
+- Optional persistence/replay of tool results via the pipe artifact store (`PERSIST_TOOL_RESULTS`, `TOOL_OUTPUT_RETENTION_TURNS`), which can reduce repeated tool calls and help with long chats.
+- Optional strictification of tool schemas (`ENABLE_STRICT_TOOL_CALLING`) for more predictable function calling.
+
+**You lose / trade off:**
+- Tool execution behavior is “owned” by the pipe rather than Open WebUI’s native tool runner (so Open WebUI UX/logs may not exactly match the built-in tool flow).
+
+### `Open-WebUI` (tool bypass / pass-through)
+
+The pipe does **not** execute tools. Instead, it returns tool calls in an OpenAI-compatible `tool_calls` shape and expects Open WebUI to:
+
+- execute tools locally (registry tools and/or Direct Tool Servers), and then
+- replay tool outputs back through the pipe as `role:"tool"` messages on the next request.
+
+**You gain:**
+- Open WebUI-native tool execution behavior and UI (tool boxes, retries, and tool server flows are handled by OWUI).
+- A simpler “adapter-only” path: the pipe focuses on transport translation between Open WebUI and OpenRouter.
+- Better compatibility with OpenRouter streaming quirks: OpenRouter `/responses` can emit tool calls with `arguments:""` early; in this mode the pipe will **never** emit `arguments:""` to Open WebUI (it waits for complete args or normalizes to `{}`).
+
+**You lose / trade off:**
+- The pipe does not run tool batching/retries/breakers; Open WebUI’s behavior governs execution.
+- Tool result persistence in the pipe artifact store is disabled (even if `PERSIST_TOOL_RESULTS=True`). Tool outputs still exist in chat history, but large tool outputs may increase context size/cost versus persistence-based replay.
+- In pass-through, the pipe does not strictify or mutate tool schemas; Open WebUI’s schemas are forwarded as-is.
 
 ---
 
@@ -19,13 +58,13 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
 ### Preconditions
 
 - Tools are only attached when the selected model is recognized as supporting `function_calling`.
-- If the model does not support function calling, the pipe sends no tool schemas.
+- In `TOOL_EXECUTION_MODE="Open-WebUI"`, the pipe does not block tools based on its model capability registry (it forwards tools as Open WebUI provided them).
 
 ### Tool sources (in order)
 
 1. **Open WebUI tool registry** (`__tools__` dict)
    - Converted to OpenAI tool specs (`{"type":"function","name",...}`) via `ResponsesBody.transform_owui_tools(...)`.
-   - When `ENABLE_STRICT_TOOL_CALLING=true`, each tool schema is strictified:
+   - When `TOOL_EXECUTION_MODE="Pipeline"` and `ENABLE_STRICT_TOOL_CALLING=true`, each tool schema is strictified:
      - Object nodes get `additionalProperties: false`.
      - All declared properties are marked required; properties that were not explicitly required become nullable (their type gains `"null"`).
      - Missing property `type` values are inferred defensively (object/array) so schemas remain valid.

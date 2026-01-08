@@ -1,7 +1,7 @@
 # Open WebUI pipe for OpenRouter Responses API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.19-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-1.0.20-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 A production-focused Open WebUI “pipe” that routes chat-completions-style traffic through OpenRouter’s Responses API, with capability-aware routing, multimodal transforms, tool calling, optional persistence, and operator controls via valves.
@@ -32,7 +32,7 @@ Eight core capabilities:
 - **Automatic model metadata sync (optional)**: syncs OpenRouter model icons and capability checkboxes into Open WebUI model metadata (valves: `UPDATE_MODEL_IMAGES`, `UPDATE_MODEL_CAPABILITIES`).
 - **Dual web search toggles (Web Search vs OpenRouter Search)**: Open WebUI’s built-in **Web Search** stays Open WebUI-native, while OpenRouter-native web search is surfaced as a separate **OpenRouter Search** toggle. The pipe can auto-install the companion toggle, show it only on models where it can work, and enable it by default for those models (admins can turn the default off per model; users can toggle it per chat). If both are enabled, OpenRouter Search takes precedence to avoid double-search.
 - **Multimodal guardrails**: validated/normalized image/file/audio/video inputs; remote retrieval is size-limited and SSRF-guarded.
-- **Tool execution**: executes `function_call` outputs against Open WebUI’s tool registry plus Open WebUI Direct Tool Servers; supports per-request/global parallelism controls.
+- **Tool execution**: choose between pipe-run tools (`TOOL_EXECUTION_MODE="Pipeline"`) and Open WebUI pass-through (`TOOL_EXECUTION_MODE="Open-WebUI"`); supports per-request/global parallelism controls (see [Tools, plugins, and integrations](docs/tooling_and_integrations.md)).
 - **Operational controls**: valve-driven configuration for concurrency, timeouts, retention, templates, and telemetry.
 - **User experience**: status updates and templated provider errors with operator-friendly context.
 

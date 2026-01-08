@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.19
+version: 1.0.20
 requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -2240,6 +2240,21 @@ class ResponsesBody(BaseModel):
             **sanitized_params,
             **extra_params,  # Extra parameters (e.g. custom Open WebUI model settings)
         }
+        # Normalize OpenAI chat tool_choice shape → OpenRouter /responses tool_choice shape.
+        # OWUI uses: {"type":"function","function":{"name":"..."}}.
+        # OpenRouter /responses expects: {"type":"function","name":"..."}.
+        tool_choice = merged_params.get("tool_choice")
+        if isinstance(tool_choice, dict):
+            t = tool_choice.get("type")
+            if t == "function":
+                name = tool_choice.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    fn = tool_choice.get("function")
+                    if isinstance(fn, dict):
+                        name = fn.get("name")
+                if isinstance(name, str) and name.strip():
+                    merged_params["tool_choice"] = {"type": "function", "name": name.strip()}
+
         _normalise_openrouter_responses_text_format(merged_params)
 
         return cls(**merged_params)
@@ -2394,8 +2409,6 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
             function["description"] = tool["description"]
         if isinstance(tool.get("parameters"), dict):
             function["parameters"] = tool["parameters"]
-        if "strict" in tool:
-            function["strict"] = tool.get("strict")
         out.append({"type": "function", "function": function})
     return out
 
@@ -3425,8 +3438,17 @@ class Pipe:
                 "or use medium/high for progressively deeper background reasoning at higher cost."
             ),
         )
-        
+
         # Tool execution behavior
+        TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
+            default="Pipeline",
+            title="Tool execution mode",
+            description=(
+                "Where to execute tools. 'Pipeline' executes tool calls inside this pipe "
+                "(batching/breakers/special backends). 'Open-WebUI' bypasses the internal executor and "
+                "passes tool calls through so Open WebUI executes them and renders the native tool UI."
+            ),
+        )
         PERSIST_TOOL_RESULTS: bool = Field(
             default=True,
             title="Keep tool results",
@@ -3979,6 +4001,14 @@ class Pipe:
             default=True,
             title="Remember tool and search results",
             description="Let the AI reuse outputs from tools (for example web searches or other apps) later in the conversation.",
+        )
+        TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
+            default="Pipeline",
+            title="Tool execution mode",
+            description=(
+                "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
+                "'Open-WebUI' bypasses the internal executor and lets Open WebUI run tools."
+            ),
         )
 
     # Core Structure — shared concurrency primitives
@@ -8387,7 +8417,7 @@ class Filter:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
-    ) -> AsyncGenerator[dict[str, Any] | str, None] | str | None | JSONResponse:
+    ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
 
         self._maybe_start_log_worker()
@@ -8559,7 +8589,7 @@ class Filter:
         *,
         valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
-    ) -> AsyncGenerator[str, None] | str | None:
+    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         """Process a user request and return either a stream or final text.
 
         When ``body['stream']`` is ``True`` the method yields deltas from
@@ -8897,7 +8927,8 @@ class Filter:
                 try:
                     direct_tool_specs = ResponsesBody.transform_owui_tools(
                         direct_registry,
-                        strict=valves.ENABLE_STRICT_TOOL_CALLING,
+                        strict=bool(valves.ENABLE_STRICT_TOOL_CALLING)
+                        and (getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") != "Open-WebUI"),
                     )
                 except Exception:
                     direct_tool_specs = []
@@ -8928,7 +8959,7 @@ class Filter:
         features: dict[str, Any],
         *,
         user_id: str = "",
-    ) -> AsyncGenerator[str, None] | str | None:
+    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         # Optional: inject CSS tweak for multi-line statuses when enabled.
         if valves.ENABLE_STATUS_CSS_PATCH:
@@ -9140,7 +9171,8 @@ class Filter:
         )
 
         # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
-        if tools and ModelFamily.supports("function_calling", openwebui_model_id):
+        owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
+        if (not owui_tool_passthrough) and tools and ModelFamily.supports("function_calling", openwebui_model_id):
             try:
                 model = await run_in_threadpool(Models.get_model_by_id, openwebui_model_id)
             except Exception as exc:
@@ -9177,8 +9209,11 @@ class Filter:
                         )
 
         # STEP 5: Add tools to responses body, if supported
-        if ModelFamily.supports("function_calling", responses_body.model):
-            if tools:
+        if tools:
+            if owui_tool_passthrough:
+                # Full bypass: do not gate tools on model capability here; forward as OWUI provided.
+                responses_body.tools = tools
+            elif ModelFamily.supports("function_calling", responses_body.model):
                 responses_body.tools = tools
 
         # STEP 6: Configure OpenRouter web-search plugin if supported/enabled
@@ -9642,6 +9677,12 @@ class Filter:
             raw_content = msg.get("content", "")
             msg_id = msg.get("message_id") or _message_identifier(msg)
             msg_turn_index = turn_indices[idx]
+            raw_tool_calls = msg.get("tool_calls")
+            msg_tool_calls: list[dict[str, Any]] = (
+                list(raw_tool_calls)
+                if isinstance(raw_tool_calls, list) and raw_tool_calls
+                else []
+            )
 
             # -------- system / developer messages --------------------------- #
             if role in {"system", "developer"}:
@@ -9678,6 +9719,35 @@ class Filter:
                             "content": blocks,
                         }
                     )
+                continue
+
+            # -------- tool response ---------------------------------------- #
+            if role == "tool":
+                call_id = msg.get("tool_call_id") or msg.get("id") or msg.get("call_id")
+                call_id = call_id.strip() if isinstance(call_id, str) else ""
+                if not call_id:
+                    # Tool messages without an id cannot be correlated; skip safely.
+                    continue
+
+                tool_content = raw_content
+                if tool_content is None:
+                    tool_content_text = ""
+                elif isinstance(tool_content, str):
+                    tool_content_text = tool_content
+                else:
+                    try:
+                        tool_content_text = json.dumps(tool_content, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        tool_content_text = str(tool_content)
+
+                openai_input.append(
+                    {
+                        "type": "function_call_output",
+                        "id": f"fc_output_{generate_item_id()}",
+                        "call_id": call_id,
+                        "output": tool_content_text,
+                    }
+                )
                 continue
 
             # -------- user message ---------------------------------------- #
@@ -10600,7 +10670,9 @@ class Filter:
             else:
                 last_assistant_images = []
 
-            if contains_marker(assistant_text):
+            # If tool_calls are provided explicitly (native OWUI tool execution flow),
+            # do not attempt DB artifact replay for this message to avoid duplicate injection.
+            if (not msg_tool_calls) and contains_marker(assistant_text):
                 segments = split_text_by_markers(assistant_text)
                 markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
@@ -10715,6 +10787,46 @@ class Filter:
                     if msg_reasoning_details:
                         item_out["reasoning_details"] = msg_reasoning_details
                     openai_input.append(item_out)
+
+            # Native OWUI tool calling: assistant.tool_calls → Responses function_call items.
+            if msg_tool_calls:
+                for index, tool_call in enumerate(msg_tool_calls):
+                    if not isinstance(tool_call, dict):
+                        continue
+                    if tool_call.get("type") not in (None, "function"):
+                        continue
+
+                    tool_call_id = tool_call.get("id") or tool_call.get("call_id")
+                    tool_call_id = tool_call_id.strip() if isinstance(tool_call_id, str) else ""
+                    if not tool_call_id:
+                        tool_call_id = f"call_{generate_item_id()}_{index}"
+
+                    function = tool_call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    name = function.get("name")
+                    name = name.strip() if isinstance(name, str) else ""
+                    if not name:
+                        continue
+
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str):
+                        args_text = arguments.strip() or "{}"
+                    else:
+                        try:
+                            args_text = json.dumps(arguments or {}, ensure_ascii=False)
+                        except (TypeError, ValueError):
+                            args_text = "{}"
+
+                    openai_input.append(
+                        {
+                            "type": "function_call",
+                            "id": tool_call_id,
+                            "call_id": tool_call_id,
+                            "name": name,
+                            "arguments": args_text,
+                        }
+                    )
 
         self._maybe_apply_anthropic_prompt_caching(
             openai_input,
@@ -10928,8 +11040,21 @@ class Filter:
         if not isinstance(metadata, dict):
             metadata = {}
 
-        self.logger.debug("🔧 PERSIST_TOOL_RESULTS=%s", valves.PERSIST_TOOL_RESULTS)
+        owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
+        persist_tools_enabled = bool(valves.PERSIST_TOOL_RESULTS) and (not owui_tool_passthrough)
+        self.logger.debug(
+            "🔧 TOOL_EXECUTION_MODE=%s owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s",
+            getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline"),
+            owui_tool_passthrough,
+            bool(valves.PERSIST_TOOL_RESULTS),
+            persist_tools_enabled,
+        )
         self.logger.debug("Streaming config: direct pass-through (no server batching)")
+        streamed_tool_call_ids: set[str] = set()
+        streamed_tool_call_indices: dict[str, int] = {}
+        tool_call_names: dict[str, str] = {}
+        streamed_tool_call_args: dict[str, str] = {}
+        streamed_tool_call_name_sent: set[str] = set()
 
         raw_tools = tools or {}
         tool_registry: dict[str, dict[str, Any]] = {}
@@ -11409,7 +11534,10 @@ class Filter:
                     # Emit OpenRouter SSE frames at DEBUG (non-delta) only; skip delta spam entirely.
                     is_delta_event = bool(etype and etype.endswith(".delta"))
                     if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug("OpenRouter payload: %s",json.dumps(event, indent=2, ensure_ascii=False))
+                        self.logger.debug(
+                            "OpenRouter payload: %s",
+                            json.dumps(event, indent=2, ensure_ascii=False),
+                        )
 
                     if etype:
                         # Track the most-recent reasoning item id so unkeyed reasoning deltas can be associated.
@@ -11518,6 +11646,102 @@ class Filter:
                                         "delta": normalized_delta,
                                     },
                                 }
+                            )
+                        continue
+
+                    if owui_tool_passthrough and event_emitter and etype in {
+                        "response.function_call_arguments.delta",
+                        "response.function_call_arguments.done",
+                    }:
+                        try:
+                            raw_call_id = event.get("item_id") or event.get("call_id") or event.get("id")
+                            call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+                            if not call_id:
+                                continue
+                            index = streamed_tool_call_indices.setdefault(
+                                call_id, len(streamed_tool_call_indices)
+                            )
+                            raw_name = event.get("name") or tool_call_names.get(call_id)
+                            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                            if not tool_name:
+                                continue
+
+                            if etype == "response.function_call_arguments.delta":
+                                raw_delta = (
+                                    event.get("delta")
+                                    or event.get("arguments_delta")
+                                    or event.get("arguments")
+                                )
+                                delta_text = raw_delta if isinstance(raw_delta, str) else ""
+                                if not delta_text:
+                                    continue
+                                streamed_tool_call_ids.add(call_id)
+                                prev_args = streamed_tool_call_args.get(call_id, "")
+                                streamed_tool_call_args[call_id] = f"{prev_args}{delta_text}"
+                                include_name = call_id not in streamed_tool_call_name_sent
+                                if include_name:
+                                    streamed_tool_call_name_sent.add(call_id)
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool_calls",
+                                        "data": {
+                                            "tool_calls": [
+                                                {
+                                                    "index": index,
+                                                    "id": call_id,
+                                                    "type": "function",
+                                                    "function": {
+                                                        **({"name": tool_name} if include_name else {}),
+                                                        "arguments": delta_text,
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    }
+                                )
+                                continue
+
+                            raw_args = event.get("arguments")
+                            args_text = raw_args.strip() if isinstance(raw_args, str) else ""
+                            if args_text:
+                                prev_args = streamed_tool_call_args.get(call_id, "")
+                                suffix = ""
+                                if not prev_args:
+                                    suffix = args_text
+                                elif args_text.startswith(prev_args):
+                                    suffix = args_text[len(prev_args) :]
+                                if not suffix:
+                                    # If we cannot safely compute a suffix, fall back to completion payload later.
+                                    continue
+
+                                streamed_tool_call_ids.add(call_id)
+                                streamed_tool_call_args[call_id] = f"{prev_args}{suffix}"
+                                include_name = call_id not in streamed_tool_call_name_sent
+                                if include_name:
+                                    streamed_tool_call_name_sent.add(call_id)
+                                await event_emitter(
+                                    {
+                                        "type": "chat:tool_calls",
+                                        "data": {
+                                            "tool_calls": [
+                                                {
+                                                    "index": index,
+                                                    "id": call_id,
+                                                    "type": "function",
+                                                    "function": {
+                                                        **({"name": tool_name} if include_name else {}),
+                                                        "arguments": suffix,
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    }
+                                )
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Failed to stream tool-call arguments: %s",
+                                exc,
+                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
                             )
                         continue
 
@@ -11637,6 +11861,19 @@ class Filter:
                                 )
                             continue
 
+                        if owui_tool_passthrough and item_type == "function_call":
+                            raw_call_id = item.get("call_id") or item.get("id")
+                            call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+                            raw_name = item.get("name")
+                            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                            if call_id:
+                                streamed_tool_call_indices.setdefault(
+                                    call_id, len(streamed_tool_call_indices)
+                                )
+                                if tool_name:
+                                    tool_call_names[call_id] = tool_name
+                            continue
+
                     # ─── Emit detailed tool status upon completion ────────────────────────
                     if etype == "response.output_item.done":
                         item_raw = event.get("item")
@@ -11660,7 +11897,7 @@ class Filter:
 
                         else:
                             # Persist all other non-message items if valve enabled
-                            should_persist = valves.PERSIST_TOOL_RESULTS
+                            should_persist = persist_tools_enabled
 
                         if item_type == "function_call":
                             # Defer persistence until the corresponding tool result is stored
@@ -11685,49 +11922,56 @@ class Filter:
                         if item_type == "function_call":
                             title = f"Running the {item_name} tool…"
                             raw_arguments = item.get("arguments")
-                            parsed_arguments: dict[str, Any] | None = None
-                            if isinstance(raw_arguments, dict):
-                                parsed_arguments = raw_arguments
-                            elif isinstance(raw_arguments, str):
-                                parsed = _safe_json_loads(raw_arguments)
-                                if isinstance(parsed, dict):
-                                    parsed_arguments = parsed
-
-                            if parsed_arguments is not None:
-                                args_formatted = ", ".join(
-                                    f"{k}={json.dumps(v, ensure_ascii=False)}"
-                                    for k, v in parsed_arguments.items()
-                                )
-                                invocation = (
-                                    f"{item_name}({args_formatted})"
-                                    if args_formatted
-                                    else f"{item_name}()"
-                                )
+                            # OpenRouter `/responses` quirk: tool call items may be marked done with
+                            # `arguments: ""` (or arguments only appearing later in `response.completed`).
+                            # Avoid logging a misleading invocation like `tool_name()` in that case.
+                            if isinstance(raw_arguments, str) and not raw_arguments.strip():
+                                title = f"Tool call requested: {item_name} (arguments pending)"
+                                content = ""
                             else:
-                                raw_text = ""
-                                if isinstance(raw_arguments, str):
-                                    raw_text = raw_arguments.strip()
-                                elif raw_arguments is not None:
-                                    with contextlib.suppress(TypeError, ValueError):
-                                        raw_text = json.dumps(raw_arguments, ensure_ascii=False)
-                                    if not raw_text:
-                                        raw_text = str(raw_arguments)
+                                parsed_arguments: dict[str, Any] | None = None
+                                if isinstance(raw_arguments, dict):
+                                    parsed_arguments = raw_arguments
+                                elif isinstance(raw_arguments, str):
+                                    parsed = _safe_json_loads(raw_arguments)
+                                    if isinstance(parsed, dict):
+                                        parsed_arguments = parsed
 
-                                if not raw_text or raw_text == "{}":
-                                    invocation = f"{item_name}()"
-                                else:
-                                    truncated = (
-                                        raw_text
-                                        if len(raw_text) <= 1000
-                                        else (raw_text[:1000] + "…")
+                                if parsed_arguments is not None:
+                                    args_formatted = ", ".join(
+                                        f"{k}={json.dumps(v, ensure_ascii=False)}"
+                                        for k, v in parsed_arguments.items()
                                     )
                                     invocation = (
-                                        "# Unparsed tool arguments "
-                                        "(provider sent invalid/non-object JSON)\n"
-                                        f"{item_name}(raw_arguments={json.dumps(truncated, ensure_ascii=False)})"
+                                        f"{item_name}({args_formatted})"
+                                        if args_formatted
+                                        else f"{item_name}()"
                                     )
+                                else:
+                                    raw_text = ""
+                                    if isinstance(raw_arguments, str):
+                                        raw_text = raw_arguments.strip()
+                                    elif raw_arguments is not None:
+                                        with contextlib.suppress(TypeError, ValueError):
+                                            raw_text = json.dumps(raw_arguments, ensure_ascii=False)
+                                        if not raw_text:
+                                            raw_text = str(raw_arguments)
 
-                            content = wrap_code_block(invocation, "python")
+                                    if not raw_text or raw_text == "{}":
+                                        invocation = f"{item_name}()"
+                                    else:
+                                        truncated = (
+                                            raw_text
+                                            if len(raw_text) <= 1000
+                                            else (raw_text[:1000] + "…")
+                                        )
+                                        invocation = (
+                                            "# Unparsed tool arguments "
+                                            "(provider sent invalid/non-object JSON)\n"
+                                            f"{item_name}(raw_arguments={json.dumps(truncated, ensure_ascii=False)})"
+                                        )
+
+                                content = wrap_code_block(invocation, "python")
 
                         elif item_type == "web_search_call":
                             action = item.get("action", {}) or {}
@@ -11960,16 +12204,17 @@ class Filter:
                 )
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
-                call_items = []
-                for item in final_response.get("output", []):
-                    if item.get("type") == "function_call":
-                        normalized_call = _normalize_persisted_item(item)
-                        if normalized_call:
-                            call_items.append(normalized_call)
-                if call_items:
-                    note_model_activity()  # Cancel thinking tasks when function calls begin
-                    body.input.extend(call_items)
-                    self._sanitize_request_input(body)
+                call_items: list[dict[str, Any]] = []
+                if not owui_tool_passthrough:
+                    for item in final_response.get("output", []):
+                        if item.get("type") == "function_call":
+                            normalized_call = _normalize_persisted_item(item)
+                            if normalized_call:
+                                call_items.append(normalized_call)
+                    if call_items:
+                        note_model_activity()  # Cancel thinking tasks when function calls begin
+                        body.input.extend(call_items)
+                        self._sanitize_request_input(body)
 
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
                 self.logger.debug("📞 Found %d function_call items in response", len(calls))
@@ -11977,8 +12222,139 @@ class Filter:
                 if calls:
                     if loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
                         loop_limit_reached = True
+
+                    if owui_tool_passthrough:
+                        tool_calls_payload: list[dict[str, Any]] = []
+                        try:
+                            for call in calls:
+                                raw_call_id = call.get("call_id") or call.get("id")
+                                call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+                                raw_name = call.get("name")
+                                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                                raw_args = call.get("arguments")
+                                if isinstance(raw_args, str):
+                                    args_text = raw_args.strip() or "{}"
+                                else:
+                                    args_text = json.dumps(raw_args or {}, ensure_ascii=False)
+                                if not call_id or not tool_name:
+                                    continue
+
+                                tool_calls_payload.append(
+                                    {
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {"name": tool_name, "arguments": args_text},
+                                    }
+                                )
+
+                                if body.stream and event_emitter:
+                                    idx = streamed_tool_call_indices.setdefault(
+                                        call_id, len(streamed_tool_call_indices)
+                                    )
+                                    prev_args = streamed_tool_call_args.get(call_id, "")
+                                    suffix = ""
+                                    if not prev_args:
+                                        suffix = args_text
+                                    elif args_text.startswith(prev_args):
+                                        suffix = args_text[len(prev_args) :]
+
+                                    include_name = call_id not in streamed_tool_call_name_sent
+                                    if include_name:
+                                        streamed_tool_call_name_sent.add(call_id)
+
+                                    if suffix or include_name:
+                                        function_obj: dict[str, Any] = {}
+                                        if include_name:
+                                            function_obj["name"] = tool_name
+                                        if suffix:
+                                            function_obj["arguments"] = suffix
+                                        streamed_tool_call_ids.add(call_id)
+                                        if suffix:
+                                            streamed_tool_call_args[call_id] = f"{prev_args}{suffix}"
+                                        await event_emitter(
+                                            {
+                                                "type": "chat:tool_calls",
+                                                "data": {
+                                                    "tool_calls": [
+                                                        {
+                                                            "index": idx,
+                                                            "id": call_id,
+                                                            "type": "function",
+                                                            "function": function_obj,
+                                                        }
+                                                    ]
+                                                },
+                                            }
+                                        )
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Tool pass-through failed while building tool_calls payload: %s",
+                                exc,
+                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                            )
+
+                        if not body.stream:
+                            try:
+                                model_for_response = ""
+                                metadata_model = metadata.get("model") if isinstance(metadata, dict) else None
+                                if isinstance(metadata_model, dict):
+                                    model_for_response = str(metadata_model.get("id") or "")
+                                if not model_for_response:
+                                    model_for_response = str(body.model or "pipe")
+                                response = {
+                                    "id": f"{model_for_response}-{uuid.uuid4()}",
+                                    "object": "chat.completion",
+                                    "created": int(time.time()),
+                                    "model": model_for_response,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "message": {
+                                                "role": "assistant",
+                                                "content": assistant_message or None,
+                                                **({"tool_calls": tool_calls_payload} if tool_calls_payload else {}),
+                                            },
+                                            "finish_reason": "tool_calls",
+                                            "logprobs": None,
+                                        }
+                                    ],
+                                    **({"usage": total_usage} if total_usage else {}),
+                                }
+                                if self.logger.isEnabledFor(logging.DEBUG) and tool_calls_payload:
+                                    summaries: list[dict[str, Any]] = []
+                                    for call in tool_calls_payload:
+                                        if not isinstance(call, dict):
+                                            continue
+                                        fn_raw = call.get("function")
+                                        fn = fn_raw if isinstance(fn_raw, dict) else {}
+                                        args = fn.get("arguments")
+                                        summaries.append(
+                                            {
+                                                "id": call.get("id"),
+                                                "type": call.get("type"),
+                                                "name": fn.get("name"),
+                                                "args_len": len(args) if isinstance(args, str) else None,
+                                                "args_empty": (isinstance(args, str) and not args.strip()),
+                                            }
+                                        )
+                                    self.logger.debug(
+                                        "Returning non-streaming tool_calls response (request_id=%s): %s",
+                                        (SessionLogger.request_id.get() or ""),
+                                        json.dumps(summaries, ensure_ascii=False),
+                                    )
+                                return response
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Failed to build non-streaming tool_calls response: %s",
+                                    exc,
+                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                )
+                                return assistant_message
+
+                        break
+
                     function_outputs = await self._execute_function_calls(calls, tool_registry)
-                    if valves.PERSIST_TOOL_RESULTS:
+                    if persist_tools_enabled:
                         self.logger.debug("💾 Persisting %d tool results", len(function_outputs))
                         persist_payloads: list[dict] = []
                         for idx, output in enumerate(function_outputs):
@@ -11990,21 +12366,49 @@ class Filter:
                             self.logger.debug("🔍 Processing %d persist_payloads", len(persist_payloads))
                             for idx, payload in enumerate(persist_payloads, start=1):
                                 payload_type = payload.get("type")
-                                self.logger.debug("🔍 [%d/%d] Payload type=%s", idx, len(persist_payloads), payload_type)
+                                self.logger.debug(
+                                    "🔍 [%d/%d] Payload type=%s",
+                                    idx,
+                                    len(persist_payloads),
+                                    payload_type,
+                                )
                                 normalized_payload = _normalize_persisted_item(payload)
                                 if not normalized_payload:
-                                    self.logger.warning("❌ [%d/%d] Normalization returned None for type=%s", idx, len(persist_payloads), payload_type)
+                                    self.logger.warning(
+                                        "❌ [%d/%d] Normalization returned None for type=%s",
+                                        idx,
+                                        len(persist_payloads),
+                                        payload_type,
+                                    )
                                     continue
-                                self.logger.debug("✅ [%d/%d] Normalized successfully (type=%s)", idx, len(persist_payloads), payload_type)
+                                self.logger.debug(
+                                    "✅ [%d/%d] Normalized successfully (type=%s)",
+                                    idx,
+                                    len(persist_payloads),
+                                    payload_type,
+                                )
                                 row = self._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_payload
                                 )
                                 if not row:
-                                    self.logger.warning("❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)", idx, len(persist_payloads), chat_id, message_id, payload_type)
+                                    self.logger.warning(
+                                        "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
+                                        idx,
+                                        len(persist_payloads),
+                                        chat_id,
+                                        message_id,
+                                        payload_type,
+                                    )
                                     continue
-                                self.logger.debug("✅ [%d/%d] Row created; enqueueing for persistence", idx, len(persist_payloads))
+                                self.logger.debug(
+                                    "✅ [%d/%d] Row created; enqueueing for persistence",
+                                    idx,
+                                    len(persist_payloads),
+                                )
                                 pending_items.append(row)
-                            self.logger.debug("📦 Total pending_items after loop: %d", len(pending_items))
+                            self.logger.debug(
+                                "📦 Total pending_items after loop: %d", len(pending_items)
+                            )
                             if thinking_tasks:
                                 cancel_thinking()
                             await _flush_pending("function_outputs")
@@ -12113,7 +12517,7 @@ class Filter:
                             "done": True,
                         },
                     }
-                    )
+                )
 
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
@@ -12266,7 +12670,7 @@ class Filter:
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
 
         This delegates to `_run_streaming_loop` with a wrapped emitter so incremental
@@ -12884,11 +13288,34 @@ class Filter:
         force_chat = _parse_model_patterns(getattr(valves, "FORCE_CHAT_COMPLETIONS_MODELS", ""))
         force_responses = _parse_model_patterns(getattr(valves, "FORCE_RESPONSES_MODELS", ""))
         if _matches_any_model_pattern(base_id, force_responses):
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "LLM endpoint selection: model_id=%s base_id=%s -> responses (FORCE_RESPONSES_MODELS=%s)",
+                    model_id,
+                    base_id,
+                    force_responses,
+                )
             return "responses"
         if _matches_any_model_pattern(base_id, force_chat):
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "LLM endpoint selection: model_id=%s base_id=%s -> chat_completions (FORCE_CHAT_COMPLETIONS_MODELS=%s)",
+                    model_id,
+                    base_id,
+                    force_chat,
+                )
             return "chat_completions"
         default_endpoint = getattr(valves, "DEFAULT_LLM_ENDPOINT", "responses")
-        return "chat_completions" if default_endpoint == "chat_completions" else "responses"
+        selected = "chat_completions" if default_endpoint == "chat_completions" else "responses"
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "LLM endpoint selection: model_id=%s base_id=%s default=%s -> %s",
+                model_id,
+                base_id,
+                default_endpoint,
+                selected,
+            )
+        return selected
 
     @staticmethod
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
@@ -14075,8 +14502,24 @@ class Filter:
                 )
                 continue
             try:
-                raw_args = call.get("arguments") or "{}"
-                args = self._parse_tool_arguments(raw_args)
+                raw_args_value = call.get("arguments")
+                if isinstance(raw_args_value, str) and not raw_args_value.strip():
+                    # Avoid silently converting empty-string args to `{}` when the tool declares
+                    # required parameters (common OpenRouter `/responses` streaming quirk).
+                    required: list[str] = []
+                    spec = tool_cfg.get("spec")
+                    if isinstance(spec, dict):
+                        params = spec.get("parameters")
+                        if isinstance(params, dict):
+                            req = params.get("required")
+                            if isinstance(req, list):
+                                required = [r for r in req if isinstance(r, str) and r.strip()]
+                    if required:
+                        raise ValueError("Missing tool arguments (provider sent empty string)")
+                    raw_args_value = "{}"
+                if raw_args_value is None:
+                    raw_args_value = "{}"
+                args = self._parse_tool_arguments(raw_args_value)
             except Exception as exc:
                 breaker_only_skips = False
                 outputs.append(
@@ -14167,7 +14610,21 @@ class Filter:
             if fn is None:
                 tasks.append(asyncio.sleep(0, result=RuntimeError("Tool has no callable configured")))
                 continue
-            raw_args = call.get("arguments") or "{}"
+            raw_args_value = call.get("arguments")
+            if isinstance(raw_args_value, str) and not raw_args_value.strip():
+                required: list[str] = []
+                spec = tool_cfg.get("spec")
+                if isinstance(spec, dict):
+                    params = spec.get("parameters")
+                    if isinstance(params, dict):
+                        req = params.get("required")
+                        if isinstance(req, list):
+                            required = [r for r in req if isinstance(r, str) and r.strip()]
+                if required:
+                    tasks.append(asyncio.sleep(0, result=RuntimeError("Missing tool arguments (empty string)")))
+                    continue
+                raw_args_value = "{}"
+            raw_args = raw_args_value if raw_args_value is not None else "{}"
             try:
                 args = self._parse_tool_arguments(raw_args)
             except Exception as exc:
@@ -14399,7 +14856,46 @@ class Filter:
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,
-                        openai_chat_chunk_message_template(model_id, delta_text)
+                        openai_chat_chunk_message_template(model_id, delta_text),
+                    )
+                return
+
+            if etype == "chat:tool_calls":
+                tool_calls = data.get("tool_calls")
+                if not (isinstance(tool_calls, list) and tool_calls):
+                    return
+                try:
+                    # Debug helper for validating tool-call translation without logging full arguments.
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        summaries: list[dict[str, Any]] = []
+                        for call in tool_calls:
+                            if not isinstance(call, dict):
+                                continue
+                            fn_raw = call.get("function")
+                            fn = fn_raw if isinstance(fn_raw, dict) else {}
+                            args = fn.get("arguments")
+                            summaries.append(
+                                {
+                                    "index": call.get("index"),
+                                    "id": call.get("id"),
+                                    "type": call.get("type"),
+                                    "name": fn.get("name"),
+                                    "args_len": len(args) if isinstance(args, str) else None,
+                                    "args_empty": (isinstance(args, str) and not args.strip()),
+                                }
+                            )
+                        self.logger.debug(
+                            "Emitting OWUI tool_calls chunk (request_id=%s): %s",
+                            job.request_id,
+                            json.dumps(summaries, ensure_ascii=False),
+                        )
+                    chunk = openai_chat_chunk_message_template(model_id, tool_calls=tool_calls)
+                    await self._put_middleware_stream_item(job, stream_queue, chunk)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to emit tool_calls chunk (request_id=%s)",
+                        job.request_id,
+                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
                     )
                 return
 
@@ -15612,8 +16108,10 @@ def build_tools(
     """
     features = features or {}
 
-    # 1) If model can't do function calling, no tools
-    if not ModelFamily.supports("function_calling", responses_body.model):
+    owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
+
+    # 1) If model can't do function calling, no tools (unless Open-WebUI tool pass-through is enabled).
+    if (not owui_tool_passthrough) and (not ModelFamily.supports("function_calling", responses_body.model)):
         return []
 
     tools: List[Dict[str, Any]] = []
@@ -15623,7 +16121,7 @@ def build_tools(
         tools.extend(
             ResponsesBody.transform_owui_tools(
                 __tools__,
-                strict=valves.ENABLE_STRICT_TOOL_CALLING,
+                strict=bool(valves.ENABLE_STRICT_TOOL_CALLING) and (not owui_tool_passthrough),
             )
         )
     elif isinstance(__tools__, list) and __tools__:
