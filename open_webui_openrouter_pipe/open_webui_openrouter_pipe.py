@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.0.20
+version: 1.1.0
 requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -51,6 +51,9 @@ _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 _ORS_FILTER_MARKER = "openrouter_pipe:ors_filter:v1"
 _ORS_FILTER_FEATURE_FLAG = "openrouter_web_search"
 _ORS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_search"
+
+_DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
+_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
 
 
 def _select_openrouter_http_referer(valves: Any | None) -> str:
@@ -383,6 +386,55 @@ DEFAULT_INTERNAL_ERROR_TEMPLATE = (
     "{{/if}}\n"
     "{{#if support_url}}\n"
     "- Support: {support_url}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE = (
+    "### ⚠️ Endpoint Override Conflict\n\n"
+    "This request includes attachments that require a different OpenRouter endpoint than the one enforced for the selected model.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if requested_model}}\n"
+    "**Model:** `{requested_model}`\n"
+    "{{/if}}\n"
+    "{{#if required_endpoint}}\n"
+    "**Required endpoint:** `{required_endpoint}`\n"
+    "{{/if}}\n"
+    "{{#if enforced_endpoint}}\n"
+    "**Enforced endpoint:** `{enforced_endpoint}`\n"
+    "{{/if}}\n"
+    "{{#if reason}}\n"
+    "**Reason:** {reason}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "- Ask an admin to adjust the model endpoint override (or choose a different model)\n"
+    "- Or remove the attachment(s) and retry\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
+DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE = (
+    "### ⚠️ Direct Upload Issue\n\n"
+    "OpenRouter Direct Uploads could not be applied to this request.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if requested_model}}\n"
+    "**Model:** `{requested_model}`\n"
+    "{{/if}}\n"
+    "{{#if reason}}\n"
+    "**Reason:** {reason}\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "- Split your attachments into separate messages (e.g. documents in one message, audio/video in another)\n"
+    "- Temporarily disable one of the Direct Uploads valves (Files / Audio / Video) and retry\n"
+    "- Convert media to a supported format (for example: audio to mp3/wav)\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
     "{{/if}}\n"
 )
 
@@ -3621,6 +3673,20 @@ class Pipe:
                 "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
             ),
         )
+        ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
+            default=DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
+            description=(
+                "Markdown template used when a request requires /chat/completions (e.g. direct video uploads) but the model is "
+                "explicitly forced to /responses by endpoint override valves (or vice versa)."
+            ),
+        )
+        DIRECT_UPLOAD_FAILURE_TEMPLATE: str = Field(
+            default=DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE,
+            description=(
+                "Markdown template used when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations, "
+                "missing storage objects, or other pre-flight validation failures)."
+            ),
+        )
 
         AUTHENTICATION_ERROR_TEMPLATE: str = Field(
             default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
@@ -3928,6 +3994,20 @@ class Pipe:
                 "behavior while still allowing operators/users to turn it off per model or per chat."
             ),
         )
+        AUTO_ATTACH_DIRECT_UPLOADS_FILTER: bool = Field(
+            default=True,
+            description=(
+                "When enabled, automatically attaches the OpenRouter Direct Uploads toggleable filter to models that support "
+                "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work)."
+            ),
+        )
+        AUTO_INSTALL_DIRECT_UPLOADS_FILTER: bool = Field(
+            default=True,
+            description=(
+                "When enabled, automatically installs/updates the companion OpenRouter Direct Uploads filter function in Open WebUI. "
+                "This is required for AUTO_ATTACH_DIRECT_UPLOADS_FILTER when the filter hasn't been installed manually."
+            ),
+        )
 
     class UserValves(BaseModel):
         """Per-user valve overrides."""
@@ -4104,12 +4184,13 @@ class Pipe:
             and aioredis is not None
             and redis_valve_enabled
         )
+
         self._redis_enabled = False
         self._redis_client: Optional[_RedisClient] = None
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
-        self._redis_namespace = (getattr(self, "id", None ) or "openrouter").lower()
+        self._redis_namespace = (getattr(self, "id", None) or "openrouter").lower()
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
@@ -5844,6 +5925,521 @@ class Filter:
 
         return function_id
 
+    @staticmethod
+    def _render_direct_uploads_filter_source() -> str:
+        """Return the canonical OWUI filter source for the OpenRouter Direct Uploads toggle."""
+        # NOTE: This file is inserted into Open WebUI's Functions table as a *filter* function.
+        # It must not depend on this pipe module at runtime.
+        template = '''"""
+title: Direct Uploads
+author: Open-WebUI-OpenRouter-pipe
+author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
+id: __FILTER_ID__
+description: Bypass Open WebUI RAG for chat uploads and forward them to OpenRouter as direct file/audio/video inputs (user-controlled via valves).
+version: 0.1.0
+license: MIT
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import logging
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+from open_webui.env import SRC_LOG_LEVELS
+
+OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
+
+
+class Filter:
+    # Toggleable filter (shows a switch in the Integrations menu).
+    toggle = True
+
+    class Valves(BaseModel):
+        priority: int = Field(
+            default=0,
+            description="Priority level for the filter operations.",
+        )
+        DIRECT_TOTAL_PAYLOAD_MAX_MB: int = Field(
+            default=50,
+            ge=1,
+            le=500,
+            description="Maximum total size (MB) across all diverted direct uploads in a single request.",
+        )
+        DIRECT_FILE_MAX_UPLOAD_SIZE_MB: int = Field(
+            default=50,
+            ge=1,
+            le=500,
+            description="Maximum size (MB) for a single diverted direct file upload.",
+        )
+        DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB: int = Field(
+            default=25,
+            ge=1,
+            le=500,
+            description="Maximum size (MB) for a single diverted direct audio upload.",
+        )
+        DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB: int = Field(
+            default=20,
+            ge=1,
+            le=500,
+            description="Maximum size (MB) for a single diverted direct video upload.",
+        )
+        DIRECT_FILE_MIME_ALLOWLIST: str = Field(
+            default="application/pdf,text/plain,text/markdown,application/json,text/csv",
+            description="Comma-separated MIME allowlist for diverted direct generic files.",
+        )
+        DIRECT_AUDIO_MIME_ALLOWLIST: str = Field(
+            default="audio/*",
+            description="Comma-separated MIME allowlist for diverted direct audio files.",
+        )
+        DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
+            default="video/mp4,video/mpeg,video/quicktime,video/webm",
+            description="Comma-separated MIME allowlist for diverted direct video files.",
+        )
+        DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
+            default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
+            description="Comma-separated audio format allowlist (derived from filename/MIME).",
+        )
+        DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
+            default="wav,mp3",
+            description="Comma-separated audio formats eligible for /responses input_audio.format.",
+        )
+
+    class UserValves(BaseModel):
+        DIRECT_FILES: bool = Field(
+            default=False,
+            description="When enabled, uploads files directly to the model.",
+        )
+        DIRECT_AUDIO: bool = Field(
+            default=False,
+            description="When enabled, uploads audio directly to the model.",
+        )
+        DIRECT_VIDEO: bool = Field(
+            default=False,
+            description="When enabled, uploads video directly to the model.",
+        )
+
+    def __init__(self) -> None:
+        self.log = logging.getLogger("openrouter.direct.uploads")
+        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
+        self.toggle = True
+        self.valves = self.Valves()
+
+    @staticmethod
+    def _to_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                return int(stripped)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _csv_set(value: Any) -> set[str]:
+        if not isinstance(value, str):
+            return set()
+        parts = []
+        for raw in value.split(","):
+            item = (raw or "").strip().lower()
+            if item:
+                parts.append(item)
+        return set(parts)
+
+    @staticmethod
+    def _mime_allowed(mime: str, allowlist_csv: str) -> bool:
+        mime = (mime or "").strip().lower()
+        if not mime:
+            return False
+        allowlist = Filter._csv_set(allowlist_csv)
+        if not allowlist:
+            return False
+        for pattern in allowlist:
+            if fnmatch.fnmatch(mime, pattern):
+                return True
+        return False
+
+    @staticmethod
+    def _infer_audio_format(name: Any, mime: Any) -> str:
+        mime_str = (mime or "").strip().lower() if isinstance(mime, str) else ""
+        if mime_str in {"audio/wav", "audio/wave", "audio/x-wav"}:
+            return "wav"
+        if mime_str in {"audio/mpeg", "audio/mp3"}:
+            return "mp3"
+        filename = (name or "").strip().lower() if isinstance(name, str) else ""
+        if "." in filename:
+            ext = filename.rsplit(".", 1)[-1].strip().lower()
+            if ext:
+                return ext
+        return ""
+
+    @staticmethod
+    def _model_caps(__model__: Any) -> dict[str, bool]:
+        if not isinstance(__model__, dict):
+            return {}
+        meta = __model__.get("info", {}).get("meta", {})
+        if not isinstance(meta, dict):
+            return {}
+        pipe_meta = meta.get("openrouter_pipe", {})
+        if not isinstance(pipe_meta, dict):
+            return {}
+        caps = pipe_meta.get("capabilities", {})
+        return caps if isinstance(caps, dict) else {}
+
+    def inlet(
+        self,
+        body: dict[str, Any],
+        __metadata__: dict[str, Any] | None = None,
+        __user__: dict[str, Any] | None = None,
+        __model__: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            return body
+        if __metadata__ is not None and not isinstance(__metadata__, dict):
+            return body
+        if __user__ is not None and not isinstance(__user__, dict):
+            __user__ = None
+
+        user_valves = None
+        if isinstance(__user__, dict):
+            user_valves = __user__.get("valves")
+        if not isinstance(user_valves, BaseModel):
+            user_valves = self.UserValves()
+
+        enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))
+        enable_audio = bool(getattr(user_valves, "DIRECT_AUDIO", False))
+        enable_video = bool(getattr(user_valves, "DIRECT_VIDEO", False))
+
+        files = body.get("files", None)
+        if not isinstance(files, list) or not files:
+            return body
+
+        caps = self._model_caps(__model__)
+        supports_files = bool(caps.get("file_input", False))
+        supports_audio = bool(caps.get("audio_input", False))
+        supports_video = bool(caps.get("video_input", False))
+
+        diverted: dict[str, list[dict[str, Any]]] = {"files": [], "audio": [], "video": []}
+        retained: list[Any] = []
+        total_bytes = 0
+
+        total_limit = int(self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB) * 1024 * 1024
+        file_limit = int(self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+        audio_limit = int(self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+        video_limit = int(self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+
+        audio_formats_allowed = self._csv_set(self.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST)
+        responses_audio_formats = self._csv_set(self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST)
+
+        for item in files:
+            if not isinstance(item, dict):
+                retained.append(item)
+                continue
+            if bool(item.get("legacy", False)):
+                retained.append(item)
+                continue
+            if (item.get("type", "file") or "file") != "file":
+                retained.append(item)
+                continue
+            file_id = item.get("id")
+            if not isinstance(file_id, str) or not file_id.strip():
+                retained.append(item)
+                continue
+
+            content_type = (
+                item.get("content_type")
+                or item.get("contentType")
+                or item.get("mime_type")
+                or item.get("mimeType")
+                or ""
+            )
+            content_type = content_type.strip().lower() if isinstance(content_type, str) else ""
+            name = item.get("name") or ""
+
+            size_bytes = self._to_int(item.get("size"))
+            if size_bytes is None or size_bytes < 0:
+                raise Exception("Direct uploads: uploaded file missing a valid size.")
+
+            kind = "files"
+            if content_type.startswith("audio/"):
+                kind = "audio"
+            elif content_type.startswith("video/"):
+                kind = "video"
+
+            if kind == "files":
+                if not enable_files:
+                    retained.append(item)
+                    continue
+                if not supports_files:
+                    raise Exception("Native files are enabled, but the selected model does not support file inputs.")
+                if not self._mime_allowed(content_type, self.valves.DIRECT_FILE_MIME_ALLOWLIST):
+                    # Fail-open: leave unsupported types on the normal OWUI path (RAG/Knowledge).
+                    retained.append(item)
+                    continue
+                if size_bytes > file_limit:
+                    raise Exception(
+                        f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB)."
+                    )
+                total_bytes += size_bytes
+                if total_bytes > total_limit:
+                    raise Exception(
+                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
+                    )
+                diverted["files"].append(
+                    {
+                        "id": file_id,
+                        "name": name,
+                        "size": size_bytes,
+                        "content_type": content_type,
+                    }
+                )
+                continue
+
+            if kind == "audio":
+                if not enable_audio:
+                    retained.append(item)
+                    continue
+                if not supports_audio:
+                    raise Exception("Native audio is enabled, but the selected model does not support audio inputs.")
+                if not self._mime_allowed(content_type, self.valves.DIRECT_AUDIO_MIME_ALLOWLIST):
+                    retained.append(item)
+                    continue
+                audio_format = self._infer_audio_format(name, content_type)
+                if not audio_format or (audio_formats_allowed and audio_format not in audio_formats_allowed):
+                    retained.append(item)
+                    continue
+                if size_bytes > audio_limit:
+                    raise Exception(
+                        f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB)."
+                    )
+                total_bytes += size_bytes
+                if total_bytes > total_limit:
+                    raise Exception(
+                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
+                    )
+                diverted["audio"].append(
+                    {
+                        "id": file_id,
+                        "name": name,
+                        "size": size_bytes,
+                        "content_type": content_type,
+                        "format": audio_format,
+                        "responses_eligible": bool(audio_format in responses_audio_formats) if responses_audio_formats else False,
+                    }
+                )
+                continue
+
+            if kind == "video":
+                if not enable_video:
+                    retained.append(item)
+                    continue
+                if not supports_video:
+                    raise Exception("Native video is enabled, but the selected model does not support video inputs.")
+                if not self._mime_allowed(content_type, self.valves.DIRECT_VIDEO_MIME_ALLOWLIST):
+                    retained.append(item)
+                    continue
+                if size_bytes > video_limit:
+                    raise Exception(
+                        f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB)."
+                    )
+                total_bytes += size_bytes
+                if total_bytes > total_limit:
+                    raise Exception(
+                        f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
+                    )
+                diverted["video"].append(
+                    {
+                        "id": file_id,
+                        "name": name,
+                        "size": size_bytes,
+                        "content_type": content_type,
+                    }
+                )
+                continue
+
+            retained.append(item)
+
+        # Only apply changes if we diverted something.
+        if not (diverted["files"] or diverted["audio"] or diverted["video"]):
+            return body
+
+        body["files"] = retained
+        if isinstance(__metadata__, dict):
+            __metadata__["files"] = retained
+            pipe_meta = __metadata__.get("openrouter_pipe")
+            if not isinstance(pipe_meta, dict):
+                pipe_meta = {}
+                __metadata__["openrouter_pipe"] = pipe_meta
+
+            attachments = pipe_meta.get("direct_uploads")
+            if not isinstance(attachments, dict):
+                attachments = {}
+                pipe_meta["direct_uploads"] = attachments
+
+            for key in ("files", "audio", "video"):
+                items = diverted.get(key) or []
+                if items:
+                    existing = attachments.get(key)
+                    merged: list[dict[str, Any]] = []
+                    seen: set[str] = set()
+                    if isinstance(existing, list):
+                        for entry in existing:
+                            if isinstance(entry, dict):
+                                eid = entry.get("id")
+                                if isinstance(eid, str) and eid and eid not in seen:
+                                    seen.add(eid)
+                                    merged.append(entry)
+                    for entry in items:
+                        eid = entry.get("id")
+                        if isinstance(eid, str) and eid and eid not in seen:
+                            seen.add(eid)
+                            merged.append(entry)
+                    attachments[key] = merged
+
+        self.log.debug("Diverted %d byte(s) for direct upload forwarding", total_bytes)
+        return body
+'''
+
+        return (
+            template.replace("__FILTER_ID__", _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID)
+            .replace("__MARKER__", _DIRECT_UPLOADS_FILTER_MARKER)
+        )
+
+    def _ensure_direct_uploads_filter_function_id(self) -> str | None:
+        """Ensure the OpenRouter Direct Uploads companion filter exists (and is up to date), returning its OWUI function id."""
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except Exception:
+            return None
+
+        desired_source = self._render_direct_uploads_filter_source().strip() + "\n"
+        desired_name = "Direct Uploads"
+        desired_meta = {
+            "description": (
+                "Bypass Open WebUI RAG for chat uploads and forward them to OpenRouter as direct file/audio/video inputs. "
+                "Enable files/audio/video via filter user valves."
+            ),
+            "toggle": True,
+            "manifest": {
+                "title": "Direct Uploads",
+                "id": _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+                "version": "0.1.0",
+                "license": "MIT",
+            },
+        }
+
+        def _matches_candidate(content: str) -> bool:
+            if not isinstance(content, str) or not content:
+                return False
+            return _DIRECT_UPLOADS_FILTER_MARKER in content and "class Filter" in content
+
+        try:
+            filters = Functions.get_functions_by_type("filter", active_only=False)
+        except Exception:
+            return None
+
+        candidates = [f for f in filters if _matches_candidate(getattr(f, "content", ""))]
+        chosen = None
+        if candidates:
+            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
+            if len(candidates) > 1:
+                self.logger.warning(
+                    "Multiple OpenRouter Direct Uploads filter candidates found (%d); using '%s'.",
+                    len(candidates),
+                    getattr(chosen, "id", ""),
+                )
+
+        if chosen is None:
+            if not getattr(self.valves, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER", False):
+                return None
+
+            candidate_id = _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID
+            suffix = 0
+            while True:
+                existing = None
+                try:
+                    existing = Functions.get_function_by_id(candidate_id)
+                except Exception:
+                    existing = None
+                if existing is None:
+                    break
+                suffix += 1
+                candidate_id = f"{_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID}_{suffix}"
+                if suffix > 50:
+                    return None
+
+            try:
+                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
+            except Exception:
+                return None
+
+            meta_obj = FunctionMeta(**desired_meta)
+            form = FunctionForm(
+                id=candidate_id,
+                name=desired_name,
+                content=desired_source,
+                meta=meta_obj,
+            )
+            created = Functions.insert_new_function("", "filter", form)
+            if not created:
+                return None
+            Functions.update_function_by_id(
+                candidate_id,
+                {
+                    "is_active": True,
+                    "is_global": False,
+                    "name": desired_name,
+                    "meta": desired_meta,
+                },
+            )
+            self.logger.info("Installed OpenRouter Direct Uploads filter: %s", candidate_id)
+            return candidate_id
+
+        function_id = str(getattr(chosen, "id", "") or "").strip()
+        if not function_id:
+            return None
+
+        if getattr(self.valves, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER", False):
+            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
+            if existing_content != desired_source:
+                self.logger.info("Updating OpenRouter Direct Uploads filter: %s", function_id)
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "content": desired_source,
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+            else:
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+
+        return function_id
+
     def _maybe_schedule_model_metadata_sync(
         self,
         selected_models: list[dict[str, Any]],
@@ -5855,6 +6451,8 @@ class Filter:
             or self.valves.UPDATE_MODEL_IMAGES
             or self.valves.AUTO_ATTACH_ORS_FILTER
             or self.valves.AUTO_INSTALL_ORS_FILTER
+            or self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+            or self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
         ):
             return
         if not selected_models:
@@ -5868,6 +6466,8 @@ class Filter:
             bool(self.valves.UPDATE_MODEL_CAPABILITIES),
             bool(self.valves.AUTO_ATTACH_ORS_FILTER),
             bool(self.valves.AUTO_INSTALL_ORS_FILTER),
+            bool(self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
+            bool(self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
         )
         if sync_key == self._model_metadata_sync_key:
             return
@@ -5986,6 +6586,19 @@ class Filter:
                     self.logger.debug("OpenRouter Search filter ensure failed: %s", exc)
                     ors_filter_function_id = None
 
+            direct_uploads_filter_function_id: str | None = None
+            if (
+                self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+                or self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            ):
+                try:
+                    direct_uploads_filter_function_id = await run_in_threadpool(
+                        self._ensure_direct_uploads_filter_function_id
+                    )
+                except Exception as exc:
+                    self.logger.debug("OpenRouter Direct Uploads filter ensure failed: %s", exc)
+                    direct_uploads_filter_function_id = None
+
             if self.valves.AUTO_ATTACH_ORS_FILTER:
                 if not ors_filter_function_id:
                     self.logger.warning(
@@ -6005,6 +6618,34 @@ class Filter:
                         len(models),
                     )
 
+            if self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER:
+                if not direct_uploads_filter_function_id:
+                    self.logger.warning(
+                        "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is not installed. "
+                        "Enable AUTO_INSTALL_DIRECT_UPLOADS_FILTER (or install the filter manually) to show the toggle in the UI."
+                    )
+                else:
+                    supported_models = 0
+                    for model in models:
+                        model_id = model.get("id")
+                        if isinstance(model_id, str) and model_id:
+                            try:
+                                supported = bool(
+                                    ModelFamily.supports("file_input", model_id)
+                                    or ModelFamily.supports("audio_input", model_id)
+                                    or ModelFamily.supports("video_input", model_id)
+                                )
+                            except Exception:
+                                supported = False
+                            if supported:
+                                supported_models += 1
+                    self.logger.info(
+                        "Auto-attaching OpenRouter Direct Uploads filter '%s' to %d/%d model(s) that support direct uploads.",
+                        direct_uploads_filter_function_id,
+                        supported_models,
+                        len(models),
+                    )
+
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
                 name = model.get("name")
@@ -6014,6 +6655,19 @@ class Filter:
                     name = openrouter_id
 
                 openwebui_model_id = f"{pipe_identifier}.{openrouter_id}"
+
+                def _safe_supports(feature: str) -> bool:
+                    try:
+                        return bool(ModelFamily.supports(feature, openrouter_id))
+                    except Exception:
+                        return False
+
+                pipe_capabilities = {
+                    "file_input": _safe_supports("file_input"),
+                    "audio_input": _safe_supports("audio_input"),
+                    "video_input": _safe_supports("video_input"),
+                    "vision": _safe_supports("vision"),
+                }
 
                 capabilities = None
                 if self.valves.UPDATE_MODEL_CAPABILITIES:
@@ -6046,7 +6700,22 @@ class Filter:
                     if isinstance(original_id, str) and original_id and web_search_mapping.get(original_id):
                         ors_supported = True
 
-                if not capabilities and not profile_image_url and not auto_attach_or_default:
+                native_supported = bool(
+                    pipe_capabilities.get("file_input")
+                    or pipe_capabilities.get("audio_input")
+                    or pipe_capabilities.get("video_input")
+                )
+                auto_attach_direct_uploads = bool(
+                    direct_uploads_filter_function_id and self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+                )
+
+                if (
+                    not capabilities
+                    and not profile_image_url
+                    and not auto_attach_or_default
+                    and not pipe_capabilities
+                    and not auto_attach_direct_uploads
+                ):
                     return
 
                 async with semaphore:
@@ -6063,6 +6732,10 @@ class Filter:
                             filter_supported=ors_supported,
                             auto_attach_filter=auto_attach_or_default,
                             auto_default_filter=self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+                            direct_uploads_filter_function_id=direct_uploads_filter_function_id,
+                            direct_uploads_filter_supported=native_supported,
+                            auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
+                            openrouter_pipe_capabilities=pipe_capabilities,
                         )
                     except Exception as exc:
                         self.logger.debug(
@@ -6089,6 +6762,10 @@ class Filter:
         filter_supported: bool = False,
         auto_attach_filter: bool = False,
         auto_default_filter: bool = False,
+        direct_uploads_filter_function_id: str | None = None,
+        direct_uploads_filter_supported: bool = False,
+        auto_attach_direct_uploads_filter: bool = False,
+        openrouter_pipe_capabilities: dict[str, bool] | None = None,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelMeta, ModelParams
@@ -6155,6 +6832,36 @@ class Filter:
             meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
             return True
 
+        def _apply_direct_uploads_filter_ids(meta_dict: dict) -> bool:
+            if not auto_attach_direct_uploads_filter or not direct_uploads_filter_function_id:
+                return False
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            pipe_meta = meta_dict.get("openrouter_pipe")
+            previous_id = None
+            if isinstance(pipe_meta, dict):
+                prev = pipe_meta.get("direct_uploads_filter_id")
+                if isinstance(prev, str) and prev and prev != direct_uploads_filter_function_id:
+                    previous_id = prev
+            had = set(normalized)
+            wanted = set(had)
+            if direct_uploads_filter_supported:
+                wanted.add(direct_uploads_filter_function_id)
+            else:
+                wanted.discard(direct_uploads_filter_function_id)
+            if previous_id:
+                wanted.discard(previous_id)
+            if wanted == had:
+                return False
+            # Preserve order as much as possible; append new id at the end.
+            if direct_uploads_filter_supported and direct_uploads_filter_function_id not in normalized:
+                normalized.append(direct_uploads_filter_function_id)
+            normalized = [fid for fid in normalized if fid in wanted]
+            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            pipe_meta["direct_uploads_filter_id"] = direct_uploads_filter_function_id
+            meta_dict["openrouter_pipe"] = pipe_meta
+            return True
+
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
             if not auto_default_filter or not filter_function_id or not filter_supported:
                 return False
@@ -6217,6 +6924,16 @@ class Filter:
 
             if _apply_default_filter_ids(meta_dict):
                 meta_updated = True
+
+            if _apply_direct_uploads_filter_ids(meta_dict):
+                meta_updated = True
+
+            if openrouter_pipe_capabilities is not None:
+                pipe_meta = _ensure_pipe_meta(meta_dict)
+                if pipe_meta.get("capabilities") != openrouter_pipe_capabilities:
+                    pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
+                    meta_dict["openrouter_pipe"] = pipe_meta
+                    meta_updated = True
                 
             if not meta_updated:
                 return
@@ -6242,6 +6959,11 @@ class Filter:
                 meta_dict["profile_image_url"] = profile_image_url
             _apply_filter_ids(meta_dict)
             _apply_default_filter_ids(meta_dict)
+            _apply_direct_uploads_filter_ids(meta_dict)
+            if openrouter_pipe_capabilities is not None:
+                pipe_meta = _ensure_pipe_meta(meta_dict)
+                pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
+                meta_dict["openrouter_pipe"] = pipe_meta
             if not meta_dict:
                 # Nothing to insert, skip
                 return
@@ -7442,6 +8164,61 @@ class Filter:
             return None
         return f"data:{mime_type};base64,{b64}"
 
+    async def _inline_internal_responses_input_files_inplace(
+        self,
+        request_body: dict[str, Any],
+        *,
+        chunk_size: int,
+        max_bytes: int,
+    ) -> None:
+        """Inline any Open WebUI internal file URLs referenced by /responses input_file blocks.
+
+        OpenRouter providers cannot fetch Open WebUI internal URLs. This converts internal
+        `file_url` (or internal `file_data` URL) values into `file_data` data URLs.
+        """
+        input_items = request_body.get("input")
+        if not isinstance(input_items, list) or not input_items:
+            return
+
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list) or not content:
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "input_file":
+                    continue
+
+                file_url = block.get("file_url")
+                file_data = block.get("file_data")
+                file_id = block.get("file_id")
+
+                candidate: str | None = None
+                if isinstance(file_data, str) and file_data.strip():
+                    candidate = file_data.strip()
+                elif isinstance(file_url, str) and file_url.strip():
+                    candidate = file_url.strip()
+                elif isinstance(file_id, str) and file_id.strip():
+                    candidate = f"/api/v1/files/{file_id.strip()}/content"
+
+                if not candidate or not _is_internal_file_url(candidate):
+                    continue
+
+                inlined = await self._inline_internal_file_url(
+                    candidate,
+                    chunk_size=chunk_size,
+                    max_bytes=max_bytes,
+                )
+                if not inlined:
+                    raise ValueError(f"Failed to inline Open WebUI file URL for /responses: {candidate}")
+
+                block["file_data"] = inlined
+                if isinstance(file_url, str) and file_url.strip() and _is_internal_file_url(file_url.strip()):
+                    block.pop("file_url", None)
+
     async def _read_file_record_base64(
         self,
         file_obj: Any,
@@ -8405,6 +9182,11 @@ class Filter:
                 await run_in_threadpool(self._ensure_ors_filter_function_id)
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_ORS_FILTER failed: %s", exc)
+        if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
+            try:
+                await run_in_threadpool(self._ensure_direct_uploads_filter_function_id)
+            except Exception as exc:
+                self.logger.debug("AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc)
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
         selected_models = self._apply_model_filters(selected_models, self.valves)
@@ -9032,7 +9814,174 @@ class Filter:
         *,
         user_id: str = "",
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
+        def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+            pipe_meta = metadata.get("openrouter_pipe")
+            if not isinstance(pipe_meta, dict):
+                return {}
+            attachments = pipe_meta.get("direct_uploads")
+            if not isinstance(attachments, dict):
+                return {}
+
+            extracted: dict[str, list[dict[str, Any]]] = {"files": [], "audio": [], "video": []}
+            for key in ("files", "audio", "video"):
+                items = attachments.get(key)
+                if not isinstance(items, list):
+                    continue
+                seen: set[str] = set()
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    file_id = item.get("id")
+                    if not isinstance(file_id, str) or not file_id.strip():
+                        continue
+                    file_id = file_id.strip()
+                    if file_id in seen:
+                        continue
+                    seen.add(file_id)
+                    cleaned = dict(item)
+                    cleaned["id"] = file_id
+                    extracted[key].append(cleaned)
+            extracted = {k: v for k, v in extracted.items() if v}
+            return extracted
+
+        async def _inject_direct_uploads_into_messages(
+            request_body: dict[str, Any],
+            attachments: dict[str, list[dict[str, Any]]],
+        ) -> None:
+            messages = request_body.get("messages")
+            if not isinstance(messages, list) or not messages:
+                raise ValueError("Direct uploads require a chat messages payload.")
+
+            last_user_msg = None
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    last_user_msg = msg
+                    break
+            if not isinstance(last_user_msg, dict):
+                raise ValueError("Direct uploads require at least one user message.")
+
+            content = last_user_msg.get("content")
+            content_blocks: list[dict[str, Any]] = []
+            if isinstance(content, str):
+                if content:
+                    content_blocks.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        content_blocks.append(part)
+            elif content is None:
+                content_blocks = []
+            else:
+                raise ValueError("Direct uploads require a supported message content type.")
+
+            max_bytes = int(valves.BASE64_MAX_SIZE_MB) * 1024 * 1024
+            chunk_size = int(valves.IMAGE_UPLOAD_CHUNK_BYTES)
+
+            def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
+                """Decode a small prefix of base64 to allow MIME/container sniffing."""
+                if not data:
+                    return b""
+                needed = ((max(1, int(byte_count)) + 2) // 3) * 4
+                prefix = data[:needed]
+                if not prefix:
+                    return b""
+                pad = (-len(prefix)) % 4
+                prefix = prefix + ("=" * pad)
+                try:
+                    return base64.b64decode(prefix, validate=False)
+                except Exception:
+                    return b""
+
+            def _sniff_audio_format(prefix: bytes) -> str:
+                """Best-effort audio container sniff for routing (mp3/wav vs other)."""
+                if not prefix:
+                    return ""
+                if prefix.startswith(b"RIFF") and len(prefix) >= 12 and prefix[8:12] == b"WAVE":
+                    return "wav"
+                if prefix.startswith(b"ID3"):
+                    return "mp3"
+                if len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xE0) == 0xE0:
+                    return "mp3"
+                if len(prefix) >= 12 and prefix[4:8] == b"ftyp":
+                    # ISO BMFF container (commonly .m4a for audio uploads).
+                    return "m4a"
+                if prefix.startswith(b"fLaC"):
+                    return "flac"
+                if prefix.startswith(b"OggS"):
+                    return "ogg"
+                if prefix.startswith(b"\x1A\x45\xDF\xA3"):
+                    return "webm"
+                return ""
+
+            for item in attachments.get("files", []):
+                file_id = item.get("id")
+                if not isinstance(file_id, str) or not file_id:
+                    continue
+                name = item.get("name")
+                filename = name if isinstance(name, str) else ""
+                content_blocks.append(
+                    {
+                        "type": "file",
+                        "file": {
+                            "file_url": f"/api/v1/files/{file_id}/content",
+                            "filename": filename,
+                        },
+                    }
+                )
+
+            for item in attachments.get("audio", []):
+                file_id = item.get("id")
+                if not isinstance(file_id, str) or not file_id:
+                    continue
+                file_obj = await self._get_file_by_id(file_id)
+                if not file_obj:
+                    raise ValueError(f"Native audio attachment '{file_id}' could not be loaded.")
+                b64 = await self._read_file_record_base64(file_obj, chunk_size, max_bytes)
+                if not b64:
+                    raise ValueError(f"Native audio attachment '{file_id}' could not be encoded.")
+                declared = item.get("format")
+                declared_format = declared.strip().lower() if isinstance(declared, str) else ""
+                sniffed = _sniff_audio_format(_decode_base64_prefix(b64))
+                audio_format = (sniffed or declared_format).strip().lower()
+                if not audio_format:
+                    raise ValueError("Native audio attachment missing required 'format'.")
+                # /responses currently enforces a strict format enum (mp3|wav); do not trust upstream metadata.
+                item["format"] = audio_format
+                item["responses_eligible"] = bool(audio_format in {"mp3", "wav"})
+                content_blocks.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": b64, "format": audio_format},
+                    }
+                )
+
+            for item in attachments.get("video", []):
+                file_id = item.get("id")
+                if not isinstance(file_id, str) or not file_id:
+                    continue
+                file_obj = await self._get_file_by_id(file_id)
+                if not file_obj:
+                    raise ValueError(f"Native video attachment '{file_id}' could not be loaded.")
+                b64 = await self._read_file_record_base64(file_obj, chunk_size, max_bytes)
+                if not b64:
+                    raise ValueError(f"Native video attachment '{file_id}' could not be encoded.")
+                mime = item.get("content_type")
+                if not isinstance(mime, str) or not mime.strip():
+                    mime = self._infer_file_mime_type(file_obj)
+                data_url = f"data:{mime.strip()};base64,{b64}"
+                content_blocks.append(
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": data_url},
+                    }
+                )
+
+            last_user_msg["content"] = content_blocks
+
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
+        chat_id = (__metadata__ or {}).get("chat_id")
+        chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
+        task_name = self._task_name(__task__) if __task__ else ""
         # Optional: inject CSS tweak for multi-line statuses when enabled.
         if valves.ENABLE_STATUS_CSS_PATCH:
             if __event_call__:
@@ -9072,7 +10021,73 @@ class Filter:
                 except Exception as exc:  # pragma: no cover - UI injection optional
                     self.logger.debug("Status CSS injection failed: %s", exc)
             else:
-                self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
+                    self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
+
+        direct_uploads = _extract_direct_uploads(__metadata__ or {})
+        if __task__ and direct_uploads:
+            # IMPORTANT: Open WebUI task requests (title/tags/follow-ups, web_search query generation, etc.)
+            # inherit the originating request metadata (`request.state.metadata`) and therefore may carry our
+            # `openrouter_pipe.direct_uploads` marker. Do not inject direct uploads into task calls,
+            # but also do not mutate shared metadata (it may be reused by the subsequent main chat request).
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Ignoring direct uploads for task request (task=%s chat_id=%s)",
+                    task_name or "task",
+                    chat_id,
+                )
+            direct_uploads = {}
+        endpoint_override: Literal["responses", "chat_completions"] | None = None
+        if direct_uploads:
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Injecting direct uploads into chat request (chat_id=%s files=%d audio=%d video=%d)",
+                    chat_id,
+                    len(direct_uploads.get("files", []) or []),
+                    len(direct_uploads.get("audio", []) or []),
+                    len(direct_uploads.get("video", []) or []),
+                )
+            try:
+                await _inject_direct_uploads_into_messages(body, direct_uploads)
+            except Exception as exc:
+                await self._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.DIRECT_UPLOAD_FAILURE_TEMPLATE,
+                    variables={
+                        "requested_model": body.get("model") or "",
+                        "reason": str(exc),
+                    },
+                    log_message="Direct uploads injection failed",
+                    log_level=logging.WARNING,
+                )
+                return ""
+
+            requires_chat = bool(direct_uploads.get("video"))
+            if not requires_chat:
+                for audio in direct_uploads.get("audio", []):
+                    if isinstance(audio, dict) and not bool(audio.get("responses_eligible", False)):
+                        requires_chat = True
+                        break
+
+            # Note: /chat/completions supports `type:"file"` blocks (data URLs), so direct files can be carried
+            # alongside chat-only modalities when we route the request to /chat/completions.
+
+            if requires_chat:
+                selected, forced = self._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
+                if forced and selected == "responses":
+                    await self._emit_templated_error(
+                        __event_emitter__,
+                        template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
+                        variables={
+                            "requested_model": body.get("model") or "",
+                            "required_endpoint": "chat_completions",
+                            "enforced_endpoint": "responses",
+                            "reason": "Direct uploads require /chat/completions but the model is forced to /responses.",
+                        },
+                        log_message="Endpoint override conflict for direct uploads",
+                        log_level=logging.WARNING,
+                    )
+                    return ""
+                endpoint_override = "chat_completions"
 
         # STEP 1: Transform request body (Completions API -> Responses API).
         completions_body = CompletionsBody.model_validate(body)
@@ -9084,6 +10099,7 @@ class Filter:
                 user_model = await self._get_user_by_id(user_id)
             except Exception:  # pragma: no cover - defensive guard
                 user_model = None
+
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
@@ -9327,6 +10343,7 @@ class Filter:
                         __tools__,
                         session=session,
                         user_id=user_id,
+                        endpoint_override=endpoint_override,
                         request_context=__request__,
                         user_obj=user_model,
                         pipe_identifier=pipe_identifier,
@@ -9340,6 +10357,7 @@ class Filter:
                     __tools__,
                     session=session,
                     user_id=user_id,
+                    endpoint_override=endpoint_override,
                     request_context=__request__,
                     user_obj=user_model,
                     pipe_identifier=pipe_identifier,
@@ -11099,6 +12117,7 @@ class Filter:
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
+        endpoint_override: Literal["responses", "chat_completions"] | None = None,
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
@@ -11578,6 +12597,7 @@ class Filter:
                         api_key=api_key_value,
                         base_url=valves.BASE_URL,
                         valves=valves,
+                        endpoint_override=endpoint_override,
                         workers=valves.SSE_WORKERS_PER_REQUEST,
                         breaker_key=user_id or None,
                         delta_char_limit=0,
@@ -11593,6 +12613,7 @@ class Filter:
                         api_key=api_key_value,
                         base_url=valves.BASE_URL,
                         valves=valves,
+                        endpoint_override=endpoint_override,
                         breaker_key=user_id or None,
                     )
                 async for event in event_iter:
@@ -12739,6 +13760,7 @@ class Filter:
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
+        endpoint_override: Literal["responses", "chat_completions"] | None = None,
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
@@ -12768,6 +13790,7 @@ class Filter:
             tools or {},
             session=session,
             user_id=user_id,
+            endpoint_override=endpoint_override,
             request_context=request_context,
             user_obj=user_obj,
             pipe_identifier=pipe_identifier,
@@ -13083,6 +14106,13 @@ class Filter:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
         effective_valves = valves or self.valves
+        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self.valves.IMAGE_UPLOAD_CHUNK_BYTES)
+        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        await self._inline_internal_responses_input_files_inplace(
+            request_body,
+            chunk_size=chunk_size,
+            max_bytes=max_bytes,
+        )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -13413,6 +14443,22 @@ class Filter:
                 selected,
             )
         return selected
+
+    def _select_llm_endpoint_with_forced(
+        self,
+        model_id: str,
+        *,
+        valves: "Pipe.Valves",
+    ) -> tuple[Literal["responses", "chat_completions"], bool]:
+        """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
+        base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
+        force_chat = _parse_model_patterns(getattr(valves, "FORCE_CHAT_COMPLETIONS_MODELS", ""))
+        force_responses = _parse_model_patterns(getattr(valves, "FORCE_RESPONSES_MODELS", ""))
+        if _matches_any_model_pattern(base_id, force_responses):
+            return "responses", True
+        if _matches_any_model_pattern(base_id, force_chat):
+            return "chat_completions", True
+        return self._select_llm_endpoint(model_id, valves=valves), False
 
     @staticmethod
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
@@ -14068,12 +15114,13 @@ class Filter:
         base_url: str,
         *,
         valves: "Pipe.Valves | None" = None,
+        endpoint_override: Literal["responses", "chat_completions"] | None = None,
         breaker_key: Optional[str] = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self.valves
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = self._select_llm_endpoint(str(model_id), valves=effective_valves)
+        endpoint = endpoint_override or self._select_llm_endpoint(str(model_id), valves=effective_valves)
 
         def _extract_chat_message_text(message: Any) -> str:
             if not isinstance(message, dict):
@@ -14309,6 +15356,7 @@ class Filter:
         base_url: str,
         *,
         valves: "Pipe.Valves | None" = None,
+        endpoint_override: Literal["responses", "chat_completions"] | None = None,
         workers: int = 4,
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
@@ -14320,7 +15368,7 @@ class Filter:
         """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self.valves
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = self._select_llm_endpoint(str(model_id), valves=effective_valves)
+        endpoint = endpoint_override or self._select_llm_endpoint(str(model_id), valves=effective_valves)
 
         def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
             etype = event.get("type")
@@ -14423,11 +15471,19 @@ class Filter:
         valves: Pipe.Valves | None = None,
     ) -> Dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
+        effective_valves = valves or self.valves
+        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self.valves.IMAGE_UPLOAD_CHUNK_BYTES)
+        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        await self._inline_internal_responses_input_files_inplace(
+            request_params,
+            chunk_size=chunk_size,
+            max_bytes=max_bytes,
+        )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "X-Title": _OPENROUTER_TITLE,
-            "HTTP-Referer": _select_openrouter_http_referer(valves or self.valves),
+            "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
         _debug_print_request(headers, request_params)
         url = base_url.rstrip("/") + "/responses"

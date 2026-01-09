@@ -2,6 +2,9 @@
 
 This document describes how the pipe transforms Open WebUI message content into OpenRouter-compatible multimodal blocks (images, files, audio, and video), including storage behavior, SSRF protections, and size limits.
 
+If you are specifically trying to **bypass Open WebUI RAG for chat uploads** and forward uploads as **native OpenRouter attachments**, see:
+- [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md)
+
 > **Quick navigation:** [Docs Home](README.md) · [Valves](valves_and_configuration_atlas.md) · [Security](security_and_encryption.md) · [History/Replay](history_reconstruction_and_context.md)
 
 ---
@@ -150,4 +153,3 @@ For the complete list, see [Valves & Configuration Atlas](valves_and_configurati
 2. “Download blocked” / “URL blocked”: check SSRF controls (`ENABLE_SSRF_PROTECTION`) and confirm the URL is not internal/private.
 3. Large payload failures: review `REMOTE_FILE_MAX_SIZE_MB`, `BASE64_MAX_SIZE_MB`, and `VIDEO_MAX_SIZE_MB`.
 4. Video inputs do not work: provider/model support varies; the pipe does not re-host video and cannot force upstream providers to accept the URL.
-
