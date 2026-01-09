@@ -2,7 +2,7 @@
 
 This document is the authoritative reference for the pipe’s configuration surface: **Open WebUI valves**.
 
-Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.0.19`) and are intended to match current runtime behavior.
+Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` (manifest version `1.1.0`) and are intended to match current runtime behavior.
 
 > **Quick navigation:** [Docs Home](README.md) · [Security](security_and_encryption.md) · [Multimodal](multimodal_ingestion_pipeline.md) · [Telemetry](openrouter_integrations_and_telemetry.md) · [Errors](error_handling_and_user_experience.md)
 
@@ -150,6 +150,47 @@ See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openroute
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 
+### Direct uploads (bypass OWUI RAG)
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `AUTO_ATTACH_DIRECT_UPLOADS_FILTER` | `bool` | `True` | Auto-enable the Direct Uploads toggleable filter in each compatible model’s Advanced Settings (by updating the model’s `filterIds`), so the switch appears only where it can work. |
+| `AUTO_INSTALL_DIRECT_UPLOADS_FILTER` | `bool` | `True` | Auto-install / auto-update the companion Direct Uploads filter function into Open WebUI’s Functions DB (recommended with `AUTO_ATTACH_DIRECT_UPLOADS_FILTER`). |
+
+Notes:
+- The **per-modality toggles** (files/audio/video) are implemented as **filter user valves** (under the Valves/knobs UI for the filter), not as separate switches in the Tools menu.
+- Size limits and MIME/format allowlists are implemented as **filter valves** (configured on the filter function itself in Open WebUI).
+- When direct uploads force `/chat/completions` (e.g. video, or audio formats not eligible for `/responses`) but an admin enforces `/responses` for the model, the pipe emits an **endpoint override conflict** error.
+- Direct “files” are sent via `/responses` `input_file` when the request uses `/responses`, or via `/chat/completions` `type:"file"` blocks when the request must route to chat.
+
+See: [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md).
+
+#### Companion filter valves (admin)
+
+These are configured on the **Direct Uploads** filter function (Open WebUI → Admin → Functions → filter → Valves).
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `DIRECT_TOTAL_PAYLOAD_MAX_MB` | `int` | `50` | Maximum total size (MB) across all diverted direct uploads in a single request. |
+| `DIRECT_FILE_MAX_UPLOAD_SIZE_MB` | `int` | `50` | Maximum size (MB) for a single diverted direct file upload. |
+| `DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB` | `int` | `25` | Maximum size (MB) for a single diverted direct audio upload. |
+| `DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB` | `int` | `20` | Maximum size (MB) for a single diverted direct video upload. |
+| `DIRECT_FILE_MIME_ALLOWLIST` | `str` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). |
+| `DIRECT_AUDIO_MIME_ALLOWLIST` | `str` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
+| `DIRECT_VIDEO_MIME_ALLOWLIST` | `str` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. |
+| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `str` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME and/or sniffed container). |
+| `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `str` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
+
+#### Companion filter user valves (per-user)
+
+These appear in the filter’s user-facing “knobs” UI and control what gets diverted as direct uploads.
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `DIRECT_FILES` | `bool` | `False` | When enabled, divert eligible chat file uploads and forward them as direct document inputs. |
+| `DIRECT_AUDIO` | `bool` | `False` | When enabled, divert eligible chat audio uploads and forward them as direct audio inputs. |
+| `DIRECT_VIDEO` | `bool` | `False` | When enabled, divert eligible chat video uploads and forward them as direct video inputs (via `/chat/completions`). |
+
 ### Reporting, UI behavior, and request identifiers
 
 | Valve | Type | Default (verified) | Purpose / notes |
@@ -183,6 +224,8 @@ See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openroute
 | `SUPPORT_EMAIL` | `str` | `(empty)` | Optional support email address inserted into user-facing error templates. |
 | `SUPPORT_URL` | `str` | `(empty)` | Optional support URL inserted into user-facing error templates. |
 | `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 400 responses. Supports Handlebars-style `{{#if var}}...{{/if}}` blocks. |
+| `ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when a request requires a different OpenRouter endpoint than the one enforced by endpoint override valves. |
+| `DIRECT_UPLOAD_FAILURE_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations or pre-flight validation failures). |
 | `AUTHENTICATION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter auth failures. |
 | `INSUFFICIENT_CREDITS_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter “insufficient credits” failures. |
 | `RATE_LIMIT_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rate limits. |

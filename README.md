@@ -1,7 +1,7 @@
 # Open WebUI pipe for OpenRouter Responses API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.0.20-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 A production-focused Open WebUI “pipe” that routes chat-completions-style traffic through OpenRouter’s Responses API, with capability-aware routing, multimodal transforms, tool calling, optional persistence, and operator controls via valves.
@@ -57,6 +57,7 @@ Complete documentation list:
 - [Model Catalog & Routing Intelligence](docs/model_catalog_and_routing_intelligence.md)
 - [Multimodal Intake Pipeline](docs/multimodal_ingestion_pipeline.md)
 - [OpenRouter Integrations & Telemetry](docs/openrouter_integrations_and_telemetry.md)
+- [OpenRouter Direct Uploads (bypass OWUI RAG)](docs/openrouter_direct_uploads.md)
 - [Persistence, Encryption & Storage](docs/persistence_encryption_and_storage.md)
 - [Production readiness report (OpenRouter Responses Pipe)](docs/production_readiness_report.md)
 - [Request identifiers and abuse attribution](docs/request_identifiers_and_abuse_attribution.md)
