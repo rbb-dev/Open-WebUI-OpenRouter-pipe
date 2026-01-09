@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
@@ -11,6 +13,7 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
 @pytest.mark.asyncio
 async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
     pipe = Pipe()
+    session = cast(aiohttp.ClientSession, object())
 
     body = {
         "model": "google/gemini-3-flash-preview",
@@ -57,7 +60,7 @@ async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
             __task__="title_generation",
             __task_body__={},
             valves=pipe.valves,
-            session=object(),
+            session=session,
             openwebui_model_id="pipe.model",
             pipe_identifier="open_webui_openrouter_pipe",
             allowlist_norm_ids=set(),
@@ -78,6 +81,7 @@ async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
 @pytest.mark.asyncio
 async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
     pipe = Pipe()
+    session = cast(aiohttp.ClientSession, object())
 
     metadata = {
         "chat_id": "chat_1",
@@ -125,7 +129,7 @@ async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
             __task__="query_generation",
             __task_body__={},
             valves=pipe.valves,
-            session=object(),
+            session=session,
             openwebui_model_id="pipe.model",
             pipe_identifier="open_webui_openrouter_pipe",
             allowlist_norm_ids=set(),
@@ -160,7 +164,7 @@ async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
                 __task__=None,
                 __task_body__=None,
                 valves=pipe.valves,
-                session=object(),
+                session=session,
                 openwebui_model_id="pipe.model",
                 pipe_identifier="open_webui_openrouter_pipe",
                 allowlist_norm_ids=set(),

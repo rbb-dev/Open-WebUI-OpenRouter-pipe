@@ -355,6 +355,8 @@ class Filter:
             if not isinstance(attachments, dict):
                 attachments = {}
                 pipe_meta["direct_uploads"] = attachments
+            # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
+            attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
 
             for key in ("files", "audio", "video"):
                 items = diverted.get(key) or []

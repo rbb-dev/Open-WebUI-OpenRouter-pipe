@@ -6287,6 +6287,8 @@ class Filter:
             if not isinstance(attachments, dict):
                 attachments = {}
                 pipe_meta["direct_uploads"] = attachments
+            # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
+            attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
 
             for key in ("files", "audio", "video"):
                 items = diverted.get(key) or []
@@ -9814,7 +9816,7 @@ class Filter:
         *,
         user_id: str = "",
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
-        def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get("openrouter_pipe")
             if not isinstance(pipe_meta, dict):
                 return {}
@@ -9822,7 +9824,10 @@ class Filter:
             if not isinstance(attachments, dict):
                 return {}
 
-            extracted: dict[str, list[dict[str, Any]]] = {"files": [], "audio": [], "video": []}
+            extracted: dict[str, Any] = {"files": [], "audio": [], "video": []}
+            allowlist_csv = attachments.get("responses_audio_format_allowlist")
+            if isinstance(allowlist_csv, str):
+                extracted["responses_audio_format_allowlist"] = allowlist_csv
             for key in ("files", "audio", "video"):
                 items = attachments.get(key)
                 if not isinstance(items, list):
@@ -9846,7 +9851,7 @@ class Filter:
 
         async def _inject_direct_uploads_into_messages(
             request_body: dict[str, Any],
-            attachments: dict[str, list[dict[str, Any]]],
+            attachments: dict[str, Any],
         ) -> None:
             messages = request_body.get("messages")
             if not isinstance(messages, list) or not messages:
@@ -9929,6 +9934,21 @@ class Filter:
                     }
                 )
 
+            def _csv_set(value: Any) -> set[str]:
+                if not isinstance(value, str):
+                    return set()
+                items = []
+                for raw in value.split(","):
+                    item = (raw or "").strip().lower()
+                    if item:
+                        items.append(item)
+                return set(items)
+
+            allowlist_key = "responses_audio_format_allowlist"
+            allowlist_seen = allowlist_key in attachments
+            allowlist_csv = attachments.get(allowlist_key, "") if allowlist_seen else ""
+            allowed_for_responses = _csv_set(allowlist_csv) if allowlist_seen else {"mp3", "wav"}
+
             for item in attachments.get("audio", []):
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
@@ -9945,9 +9965,9 @@ class Filter:
                 audio_format = (sniffed or declared_format).strip().lower()
                 if not audio_format:
                     raise ValueError("Native audio attachment missing required 'format'.")
-                # /responses currently enforces a strict format enum (mp3|wav); do not trust upstream metadata.
+                # Do not trust upstream metadata; re-sniff and apply the configured /responses eligibility allowlist.
                 item["format"] = audio_format
-                item["responses_eligible"] = bool(audio_format in {"mp3", "wav"})
+                item["responses_eligible"] = bool(audio_format in allowed_for_responses)
                 content_blocks.append(
                     {
                         "type": "input_audio",

@@ -52,7 +52,7 @@ Admins configure size limits and allowlists via the filter’s **admin valves** 
 
 When the filter is enabled and a user turns on one or more modality valves:
 
-- **Diverted** (native path):
+- **Diverted** (direct upload path):
   - Uploads that match the relevant **MIME allowlist** and **size limits**
   - Audio/video uploads only when their MIME/format matches the filter’s allowlists
 
@@ -120,9 +120,11 @@ OpenRouter exposes multiple OpenAI-compatible endpoints. For direct uploads, the
 
 - **Direct video** → requires **`/chat/completions`** (current implementation)
 
-- **Native audio**
-- Eligible for **`/responses`** when the audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `mp3,wav`)
+- **Direct audio**
+  - Eligible for **`/responses`** when the (sniffed) audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `mp3,wav`)
   - Otherwise routes to **`/chat/completions`**
+
+The pipe does not trust upstream file metadata: it re-sniffs audio containers (for example `.m4a`) and then applies `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` for routing.
 
 ### Conflict behavior (no silent degradation)
 
@@ -136,7 +138,7 @@ The only hard stop is when an **admin forces `/responses`** for a model but the 
 
 ## Limits and allowlists (admin configuration)
 
-Native attachments are intentionally gated. There are **two kinds** of limits:
+Direct uploads are intentionally gated. There are **two kinds** of limits:
 
 1) **Filter valves (admin)**
    - Per-modality max size
@@ -195,7 +197,7 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 
 ## Troubleshooting
 
-### “Native Attachment Issue” error
+### “Direct Upload Issue” error
 
 This is emitted by the pipe (not OpenRouter) when direct uploads can’t be applied safely.
 
@@ -217,7 +219,7 @@ Best practice:
 
 If you enable direct uploads and your upload disappears from the RAG/Knowledge path, that is expected:
 - The filter removes diverted items from `files[]` so Open WebUI doesn’t treat them as knowledge inputs.
-- The pipe injects the upload into the model request as a native multimodal block.
+- The pipe injects the upload into the model request as a direct multimodal block.
 
 If you don’t see it reaching the model:
 - Confirm the filter toggle is enabled in the Integrations menu for that chat.
