@@ -236,7 +236,7 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
     )
 
     assert result.startswith("All set.")
-    assert any(event["type"] == "citation" for event in emitted), "Expected citation event"
+    assert any(event["type"] == "source" for event in emitted), "Expected source event"
     status_texts = [event["data"]["description"] for event in emitted if event["type"] == "status"]
     assert any("Plan" in text for text in status_texts), "Reasoning status update missing"
     completion_events = [event for event in emitted if event["type"] == "chat:completion"]
