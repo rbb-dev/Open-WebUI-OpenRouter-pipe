@@ -2213,7 +2213,6 @@ class ResponsesBody(BaseModel):
             "reasoning_effort", "max_tokens",
 
             # Fields that are dropped and manually handled later in the pipe()
-            "tools",
             "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
 
             # Fields not documented in OpenRouter's Responses API reference
@@ -2306,6 +2305,13 @@ class ResponsesBody(BaseModel):
                         name = fn.get("name")
                 if isinstance(name, str) and name.strip():
                     merged_params["tool_choice"] = {"type": "function", "name": name.strip()}
+
+        # Normalize OpenAI chat tools schema → OpenRouter /responses tools schema.
+        # OWUI sends: [{"type":"function","function":{...}}].
+        # OpenRouter /responses expects: [{"type":"function","name":"...","parameters":{...}}].
+        tools_value = merged_params.get("tools")
+        if isinstance(tools_value, list):
+            merged_params["tools"] = _chat_tools_to_responses_tools(tools_value)
 
         _normalise_openrouter_responses_text_format(merged_params)
 
@@ -2462,6 +2468,45 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
         if isinstance(tool.get("parameters"), dict):
             function["parameters"] = tool["parameters"]
         out.append({"type": "function", "function": function})
+    return out
+
+
+def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
+    """Convert Chat Completions `tools` schema → Responses API tools schema."""
+    if not isinstance(tools, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+
+        fn = tool.get("function")
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            if isinstance(fn, dict):
+                name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+
+        description = tool.get("description")
+        parameters = tool.get("parameters")
+        if isinstance(fn, dict):
+            if not isinstance(description, str):
+                description = fn.get("description")
+            if not isinstance(parameters, dict):
+                parameters = fn.get("parameters")
+
+        spec: dict[str, Any] = {"type": "function", "name": name}
+        if isinstance(description, str) and description.strip():
+            spec["description"] = description.strip()
+        if isinstance(parameters, dict):
+            spec["parameters"] = parameters
+
+        out.append(spec)
+
     return out
 
 
@@ -6928,10 +6973,16 @@ class Filter:
                 meta_dict.update(existing.meta.model_dump())
             
             meta_updated = False
-            
+
             if update_capabilities and capabilities is not None:
-                if meta_dict.get("capabilities") != capabilities:
-                    meta_dict["capabilities"] = capabilities
+                existing_caps = meta_dict.get("capabilities")
+                merged_caps: dict[str, Any] = (
+                    dict(existing_caps) if isinstance(existing_caps, dict) else {}
+                )
+                for key, value in capabilities.items():
+                    merged_caps[key] = value
+                if merged_caps != existing_caps:
+                    meta_dict["capabilities"] = merged_caps
                     meta_updated = True
                 
             if update_images and profile_image_url:
@@ -8424,7 +8475,12 @@ class Filter:
             except Exception:
                 pass
 
-            internal_url = request.app.url_path_for("get_file_content_by_id", id=file_id)
+            # OWUI v0.7.x has multiple routes named `get_file_content_by_id`, making url_path_for(...)
+            # fragile. Prefer `get_file_by_id` (unique) and fall back to the stable mounted prefix.
+            try:
+                internal_url = request.app.url_path_for("get_file_by_id", id=file_id)
+            except Exception:
+                internal_url = f"/api/v1/files/{file_id}"
             self.logger.info(
                 f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: {internal_url}"
             )
@@ -9673,7 +9729,8 @@ class Filter:
 
         Open WebUI direct tool servers are executed client-side via Socket.IO.
         The model-visible tool names are plain OpenAPI ``operationId`` values
-        (no namespacing). Collisions overwrite ("last wins"), matching OWUI.
+        (no namespacing). Collisions are preserved here and resolved later by
+        the pipe's collision-safe tool registry builder.
         """
 
         direct_registry: dict[str, dict[str, Any]] = {}
@@ -9689,7 +9746,7 @@ class Filter:
                 # No Socket.IO bridge means direct tools cannot run; don't advertise them.
                 return {}, []
 
-            for server in tool_servers:
+            for server_idx, server in enumerate(tool_servers):
                 try:
                     if not isinstance(server, dict):
                         continue
@@ -9714,7 +9771,7 @@ class Filter:
                     with contextlib.suppress(Exception):
                         server_payload.pop("specs", None)
 
-                    for spec in specs:
+                    for spec_idx, spec in enumerate(specs):
                         try:
                             if not isinstance(spec, dict):
                                 continue
@@ -9782,11 +9839,13 @@ class Filter:
                                         )
                                     return [{"error": str(exc)}, None]
 
-                            direct_registry[name] = {
+                            registry_key = f"{name}::{server_idx}::{spec_idx}"
+                            direct_registry[registry_key] = {
                                 "spec": spec_payload,
                                 "direct": True,
                                 "server": server_payload,
                                 "callable": _direct_tool_callable,
+                                "origin_key": registry_key,
                             }
                         except Exception:
                             # Skip malformed tool specs safely.
@@ -10310,16 +10369,6 @@ class Filter:
             )
         except Exception:
             direct_registry, direct_tool_specs = {}, []
-        if direct_registry:
-            try:
-                if isinstance(__tools__, dict):
-                    __tools__.update(direct_registry)
-                elif isinstance(__tools__, list):
-                    __tools__.extend(direct_registry.values())
-                elif __tools__ is None:
-                    __tools__ = dict(direct_registry)
-            except Exception:
-                self.logger.debug("Failed to merge direct tool servers into registry", exc_info=True)
 
         merged_extra_tools: list[dict[str, Any]] = []
         try:
@@ -10328,56 +10377,101 @@ class Filter:
                 merged_extra_tools.extend([t for t in upstream_extra if isinstance(t, dict)])
         except Exception:
             merged_extra_tools = []
-        if direct_tool_specs:
-            merged_extra_tools.extend(direct_tool_specs)
         if not merged_extra_tools:
             merged_extra_tools = []
 
-        tools = build_tools(
-            responses_body,
-            valves,
-            __tools__=__tools__,
-            features=features,
-            extra_tools=merged_extra_tools or None,
-        )
-
-        # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
         owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
-        if (not owui_tool_passthrough) and tools and ModelFamily.supports("function_calling", openwebui_model_id):
+        incoming_tools_raw = body.get("tools")
+        incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
+        strictify = bool(valves.ENABLE_STRICT_TOOL_CALLING) and (not owui_tool_passthrough)
+
+        # Normalize OWUI tool registry (__tools__) into a dict form when possible.
+        owui_registry: dict[str, dict[str, Any]] = {}
+        if isinstance(__tools__, dict):
+            owui_registry = {k: v for k, v in __tools__.items() if isinstance(v, dict)}
+        elif isinstance(__tools__, list):
+            for entry in __tools__:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name and isinstance(entry.get("spec"), dict):
+                    name = entry["spec"].get("name")
+                if isinstance(name, str) and name.strip():
+                    owui_registry[name.strip()] = entry
+
+        builtin_registry: dict[str, dict[str, Any]] = {}
+        if (not owui_tool_passthrough) and incoming_tools and __request__ is not None and isinstance(__metadata__, dict):
             try:
-                model = await run_in_threadpool(Models.get_model_by_id, openwebui_model_id)
-            except Exception as exc:
-                self.logger.warning("Failed to inspect model '%s' for function calling: %s", openwebui_model_id, exc)
-                await self._emit_notification(
-                    __event_emitter__,
-                    f"Unable to verify function calling for {openwebui_model_id}. Please ensure it is set to native.",
-                    level="warning",
-                )
-                model = None
-            if model:
-                params = dict(model.params or {})
-                if params.get("function_calling") != "native":
-                    await self._emit_notification(
-                        __event_emitter__,
-                        content=f"Enabling native function calling for model: {openwebui_model_id}. Please re-run your query.",
-                        level="info"
+                from open_webui.utils.tools import get_builtin_tools as owui_get_builtin_tools  # type: ignore
+            except Exception:
+                owui_get_builtin_tools = None
+            if owui_get_builtin_tools is not None:
+                features_for_tools = __metadata__.get("features")
+                if not isinstance(features_for_tools, dict):
+                    features_for_tools = {}
+                model_for_tools = __metadata__.get("model")
+                if not isinstance(model_for_tools, dict):
+                    model_for_tools = {}
+                user_dict: dict[str, Any] = {}
+                if user_model is not None:
+                    with contextlib.suppress(Exception):
+                        user_dict = user_model.model_dump()
+                extra_params_for_tools = {
+                    "__request__": __request__,
+                    "__user__": user_dict,
+                    "__event_emitter__": __event_emitter__,
+                    "__event_call__": __event_call__,
+                    "__chat_id__": __metadata__.get("chat_id"),
+                    "__message_id__": __metadata__.get("message_id"),
+                    "__model__": model_for_tools,
+                    "__messages__": body.get("messages", []),
+                    "__files__": __metadata__.get("files", []) or [],
+                }
+                with contextlib.suppress(Exception):
+                    builtins = owui_get_builtin_tools(
+                        __request__,
+                        extra_params_for_tools,
+                        features_for_tools,
+                        model_for_tools,
                     )
-                    params["function_calling"] = "native"
-                    form_data = model.model_dump()
-                    form_data["params"] = params
-                    try:
-                        await run_in_threadpool(
-                            Models.update_model_by_id,
-                            openwebui_model_id,
-                            ModelForm(**form_data),
-                        )
-                    except Exception as exc:
-                        self.logger.warning("Failed to update model '%s' function calling setting: %s", openwebui_model_id, exc)
-                        await self._emit_notification(
-                            __event_emitter__,
-                            f"Unable to persist function calling setting for {openwebui_model_id}. Please update it manually.",
-                            level="warning",
-                        )
+                    if isinstance(builtins, dict):
+                        builtin_registry = {k: v for k, v in builtins.items() if isinstance(v, dict)}
+
+        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
+            request_tool_specs=incoming_tools if incoming_tools else None,
+            owui_registry=owui_registry or None,
+            direct_registry=direct_registry or None,
+            builtin_registry=builtin_registry or None,
+            extra_tools=merged_extra_tools or None,
+            strictify=strictify,
+            owui_tool_passthrough=owui_tool_passthrough,
+            logger=self.logger,
+        )
+        if self.logger.isEnabledFor(logging.DEBUG):
+            renames = [
+                (exposed, origin)
+                for exposed, origin in (exposed_to_origin or {}).items()
+                if isinstance(exposed, str)
+                and isinstance(origin, str)
+                and exposed
+                and origin
+                and exposed != origin
+            ]
+            self.logger.debug(
+                "Tool ingest: request_tools=%d registry_tools=%d direct_tools=%d extra_tools=%d advertised=%d exec_registry=%d renamed=%d",
+                len(incoming_tools) if isinstance(incoming_tools, list) else 0,
+                len(owui_registry) if isinstance(owui_registry, dict) else 0,
+                len(direct_registry) if isinstance(direct_registry, dict) else 0,
+                len(merged_extra_tools) if isinstance(merged_extra_tools, list) else 0,
+                len(tools) if isinstance(tools, list) else 0,
+                len(exec_registry) if isinstance(exec_registry, dict) else 0,
+                len(renames),
+            )
+            if renames:
+                self.logger.debug("Tool renames (exposed->origin): %s", json.dumps(renames, ensure_ascii=False))
+        __tools__ = exec_registry
+        if isinstance(__metadata__, dict) and exposed_to_origin:
+            __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
 
         # STEP 5: Add tools to responses body, if supported
         if tools:
@@ -10653,14 +10747,73 @@ class Filter:
         if not isinstance(items, list):
             return
         sanitized = _filter_replayable_input_items(items, logger=self.logger)
-        if sanitized is items:
-            return
         removed = len(items) - len(sanitized)
-        self.logger.debug(
-            "Sanitized provider input: removed %d non-replayable artifact(s).",
-            removed,
-        )
-        body.input = sanitized
+
+        def _strip_tool_item_extras(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+            """Return a minimal, portable /responses input shape for tool items."""
+            changed = False
+            item_type = item.get("type")
+            if item_type == "function_call":
+                call_id = item.get("call_id")
+                if not (isinstance(call_id, str) and call_id.strip()):
+                    candidate = item.get("id")
+                    if isinstance(candidate, str) and candidate.strip():
+                        call_id = candidate.strip()
+                        changed = True
+                name = item.get("name")
+                if not (isinstance(name, str) and name.strip()):
+                    return item, False
+                args = item.get("arguments")
+                if not isinstance(args, str):
+                    args = json.dumps(args or {}, ensure_ascii=False)
+                    changed = True
+                minimal = {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name.strip(),
+                    "arguments": args,
+                }
+                if set(item.keys()) != set(minimal.keys()):
+                    changed = True
+                return minimal, changed
+            if item_type == "function_call_output":
+                call_id = item.get("call_id")
+                if not (isinstance(call_id, str) and call_id.strip()):
+                    return item, False
+                output = item.get("output")
+                if not isinstance(output, str):
+                    output = json.dumps(output, ensure_ascii=False)
+                    changed = True
+                minimal = {
+                    "type": "function_call_output",
+                    "call_id": call_id.strip(),
+                    "output": output,
+                }
+                if set(item.keys()) != set(minimal.keys()):
+                    changed = True
+                return minimal, changed
+            return item, False
+
+        stripped_any = False
+        normalized: list[dict[str, Any]] = []
+        for entry in sanitized:
+            if not isinstance(entry, dict):
+                normalized.append(entry)
+                continue
+            stripped, changed = _strip_tool_item_extras(entry)
+            if changed:
+                stripped_any = True
+            normalized.append(stripped)
+
+        if removed or stripped_any or (sanitized is not items):
+            if removed:
+                self.logger.debug(
+                    "Sanitized provider input: removed %d non-replayable artifact(s).",
+                    removed,
+                )
+            if stripped_any:
+                self.logger.debug("Sanitized provider input: stripped extra tool item fields.")
+            body.input = normalized
 
     async def transform_messages_to_input(
         self: "Pipe",
@@ -13401,12 +13554,18 @@ class Filter:
 
                     if owui_tool_passthrough:
                         tool_calls_payload: list[dict[str, Any]] = []
+                        exposed_to_origin: dict[str, str] = {}
+                        if isinstance(metadata, dict):
+                            raw_map = metadata.get("_pipe_exposed_to_origin")
+                            if isinstance(raw_map, dict):
+                                exposed_to_origin = {str(k): str(v) for k, v in raw_map.items() if k and v}
                         try:
                             for call in calls:
                                 raw_call_id = call.get("call_id") or call.get("id")
                                 call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
                                 raw_name = call.get("name")
-                                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                                exposed_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                                tool_name = exposed_to_origin.get(exposed_name, exposed_name)
                                 raw_args = call.get("arguments")
                                 if isinstance(raw_args, str):
                                     args_text = raw_args.strip() or "{}"
@@ -15777,7 +15936,18 @@ class Filter:
                 allow_batch=allow_batch,
             )
             await context.queue.put(queued)
-            self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
+            origin_source = tool_cfg.get("origin_source")
+            origin_name = tool_cfg.get("origin_name")
+            if isinstance(origin_source, str) and isinstance(origin_name, str):
+                self.logger.debug(
+                    "Enqueued tool %s (origin=%s source=%s batch=%s)",
+                    call.get("name"),
+                    origin_name,
+                    origin_source,
+                    allow_batch,
+                )
+            else:
+                self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
             pending.append((call, future))
             enqueued_any = True
             breaker_only_skips = False
@@ -16562,7 +16732,7 @@ class Filter:
         event_emitter: EventEmitter | None,
         citation: Dict[str, Any],
     ) -> None:
-        """Send a normalized citation block to the UI if an emitter is available."""
+        """Send a normalized source block to the UI if an emitter is available."""
         if event_emitter is None or not isinstance(citation, dict):
             return
 
@@ -16602,7 +16772,7 @@ class Filter:
 
         await event_emitter(
             {
-                "type": "citation",
+                "type": "source",
                 "data": {
                     "document": documents,
                     "metadata": metadata,
@@ -17676,3 +17846,262 @@ def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
         if key[0]:
             canonical[key] = t
     return list(canonical.values())
+
+
+def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Optional[dict[str, Any]]:
+    """Return a normalized Responses-style function tool spec, or None when invalid."""
+    if not isinstance(tool, dict):
+        return None
+    if tool.get("type") != "function":
+        return None
+    name = tool.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    spec: dict[str, Any] = {"type": "function", "name": name.strip()}
+    description = tool.get("description")
+    if isinstance(description, str) and description.strip():
+        spec["description"] = description.strip()
+    parameters = tool.get("parameters")
+    if isinstance(parameters, dict):
+        spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
+    return spec
+
+
+def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: bool) -> Optional[dict[str, Any]]:
+    """Return a Responses-style function tool spec from an OWUI tool registry entry."""
+    if not isinstance(tool_cfg, dict):
+        return None
+    spec = tool_cfg.get("spec")
+    if not isinstance(spec, dict):
+        return None
+    name = spec.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    params = spec.get("parameters") or {"type": "object", "properties": {}}
+    if not isinstance(params, dict):
+        params = {"type": "object", "properties": {}}
+    out: dict[str, Any] = {
+        "type": "function",
+        "name": name.strip(),
+        "description": spec.get("description") or name.strip(),
+        "parameters": _strictify_schema(params) if strictify else params,
+    }
+    return out
+
+
+def _tool_prefix_for_collision(source: str, tool_cfg: dict[str, Any] | None) -> str:
+    """Return the prefix to apply when collision renaming is required."""
+    if source == "owui_request_tools":
+        return "owui__"
+    if source == "direct_tool_server":
+        return "direct__"
+    if source == "extra_tools":
+        return "extra__"
+    # Registry tools (tool_ids / extensions).
+    if tool_cfg and bool(tool_cfg.get("direct")):
+        return "direct__"
+    return "tool__"
+
+
+def _build_collision_safe_tool_specs_and_registry(
+    *,
+    request_tool_specs: list[dict[str, Any]] | None,
+    owui_registry: dict[str, dict[str, Any]] | None,
+    direct_registry: dict[str, dict[str, Any]] | None,
+    builtin_registry: dict[str, dict[str, Any]] | None,
+    extra_tools: list[dict[str, Any]] | None,
+    strictify: bool,
+    owui_tool_passthrough: bool,
+    logger: logging.Logger | None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
+    """Build collision-safe tool specs and an execution registry.
+
+    Returns:
+      - tools: Responses-style tool specs with collision-safe names.
+      - exec_registry: mapping exposed_name -> OWUI tool cfg dict (callable/spec/etc).
+      - exposed_to_origin: mapping exposed_name -> origin tool name (for passthrough execution).
+    """
+    log = logger or LOGGER
+    request_tool_specs = request_tool_specs or []
+    extra_tools = extra_tools or []
+    owui_registry = owui_registry or {}
+    direct_registry = direct_registry or {}
+    builtin_registry = builtin_registry or {}
+
+    # Normalize all registries into lists so we can preserve collisions.
+    owui_entries: list[dict[str, Any]] = [
+        entry for entry in owui_registry.values() if isinstance(entry, dict)
+    ]
+    direct_entries: list[dict[str, Any]] = [
+        entry for entry in direct_registry.values() if isinstance(entry, dict)
+    ]
+    builtin_entries: list[dict[str, Any]] = [
+        entry for entry in builtin_registry.values() if isinstance(entry, dict)
+    ]
+
+    def _pick_executor(name: str, *, prefer: str | None = None) -> dict[str, Any] | None:
+        if prefer == "builtin":
+            for e in builtin_entries:
+                spec = e.get("spec")
+                if isinstance(spec, dict) and spec.get("name") == name:
+                    return e
+        if prefer == "owui":
+            for e in owui_entries:
+                spec = e.get("spec")
+                if isinstance(spec, dict) and spec.get("name") == name:
+                    return e
+        if prefer == "direct":
+            for e in direct_entries:
+                spec = e.get("spec")
+                if isinstance(spec, dict) and spec.get("name") == name:
+                    return e
+        # Default preference order for request/extra tools.
+        for e in builtin_entries:
+            spec = e.get("spec")
+            if isinstance(spec, dict) and spec.get("name") == name:
+                return e
+        for e in owui_entries:
+            spec = e.get("spec")
+            if isinstance(spec, dict) and spec.get("name") == name:
+                return e
+        for e in direct_entries:
+            spec = e.get("spec")
+            if isinstance(spec, dict) and spec.get("name") == name:
+                return e
+        return None
+
+    request_names: set[str] = set()
+    for tool in request_tool_specs:
+        if isinstance(tool, dict) and tool.get("type") == "function":
+            name = tool.get("name")
+            if isinstance(name, str) and name.strip():
+                request_names.add(name.strip())
+
+    candidates: list[dict[str, Any]] = []
+
+    # 1) Request-provided tool specs (OWUI-native `tools`).
+    for raw_tool in request_tool_specs:
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
+        if not spec:
+            continue
+        origin_name = spec["name"]
+        tool_cfg = _pick_executor(origin_name)
+        if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
+            log.debug("Skipping unexecutable request tool %s (no callable).", origin_name)
+            continue
+        candidates.append(
+            {
+                "origin_source": "owui_request_tools",
+                "origin_name": origin_name,
+                "spec": spec,
+                "tool_cfg": tool_cfg,
+                "origin_key": f"owui_request::{origin_name}",
+            }
+        )
+
+    # 2) Direct tool servers (always include; collisions handled later).
+    for tool_cfg in direct_entries:
+        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=strictify)
+        if not spec:
+            continue
+        origin_name = spec["name"]
+        if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
+            continue
+        candidates.append(
+            {
+                "origin_source": "direct_tool_server",
+                "origin_name": origin_name,
+                "spec": spec,
+                "tool_cfg": tool_cfg,
+                "origin_key": str(tool_cfg.get("origin_key") or f"direct::{origin_name}::{id(tool_cfg)}"),
+            }
+        )
+
+    # 3) Registry tools (__tools__), excluding those already present in request tools (to avoid duplication).
+    for tool_cfg in owui_entries:
+        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=strictify)
+        if not spec:
+            continue
+        origin_name = spec["name"]
+        if origin_name in request_names:
+            continue
+        if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
+            continue
+        candidates.append(
+            {
+                "origin_source": "owui_registry_tools",
+                "origin_name": origin_name,
+                "spec": spec,
+                "tool_cfg": tool_cfg,
+                "origin_key": str(tool_cfg.get("origin_key") or f"owui_registry::{origin_name}"),
+            }
+        )
+
+    # 4) Extra tools (schema-only). Include only when executable (pipeline) or passthrough is enabled.
+    for raw_tool in extra_tools:
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
+        if not spec:
+            continue
+        origin_name = spec["name"]
+        tool_cfg = _pick_executor(origin_name)
+        if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
+            log.debug("Skipping unexecutable extra tool %s (no callable).", origin_name)
+            continue
+        candidates.append(
+            {
+                "origin_source": "extra_tools",
+                "origin_name": origin_name,
+                "spec": spec,
+                "tool_cfg": tool_cfg,
+                "origin_key": f"extra::{origin_name}",
+            }
+        )
+
+    # Collision-safe rename: only rename when multiple origins share the same name.
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for c in candidates:
+        by_name.setdefault(c["origin_name"], []).append(c)
+
+    used_names: set[str] = set()
+    exec_registry: dict[str, dict[str, Any]] = {}
+    exposed_to_origin: dict[str, str] = {}
+    tools_out: list[dict[str, Any]] = []
+
+    for c in candidates:
+        origin_name = c["origin_name"]
+        group = by_name.get(origin_name) or [c]
+        needs_rename = len(group) > 1
+
+        prefix = _tool_prefix_for_collision(c["origin_source"], c.get("tool_cfg"))
+        exposed_name = origin_name if not needs_rename else f"{prefix}{origin_name}"
+        if exposed_name in used_names:
+            digest = hashlib.sha1(
+                f"{c['origin_source']}::{c.get('origin_key')}::{origin_name}".encode("utf-8")
+            ).hexdigest()[:8]
+            exposed_name = f"{exposed_name}__{digest}"
+        used_names.add(exposed_name)
+
+        spec = dict(c["spec"])
+        spec["name"] = exposed_name
+        tools_out.append(spec)
+        exposed_to_origin[exposed_name] = origin_name
+
+        tool_cfg = c.get("tool_cfg")
+        if owui_tool_passthrough:
+            continue
+        if not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
+            continue
+        cfg = dict(tool_cfg)
+        cfg["origin_source"] = c["origin_source"]
+        cfg["origin_name"] = origin_name
+        cfg["exposed_name"] = exposed_name
+        cfg_spec = cfg.get("spec")
+        if isinstance(cfg_spec, dict):
+            updated_spec = dict(cfg_spec)
+            updated_spec["name"] = origin_name
+            if isinstance(spec.get("parameters"), dict):
+                updated_spec["parameters"] = spec["parameters"]
+            cfg["spec"] = updated_spec
+        exec_registry[exposed_name] = cfg
+
+    return _dedupe_tools(tools_out), exec_registry, exposed_to_origin
