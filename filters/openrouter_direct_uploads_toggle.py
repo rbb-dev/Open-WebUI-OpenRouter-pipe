@@ -201,6 +201,7 @@ class Filter:
 
         diverted: dict[str, list[dict[str, Any]]] = {"files": [], "audio": [], "video": []}
         retained: list[Any] = []
+        warnings: list[str] = []
         total_bytes = 0
 
         total_limit = int(self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB) * 1024 * 1024
@@ -209,8 +210,6 @@ class Filter:
         video_limit = int(self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
 
         audio_formats_allowed = self._csv_set(self.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST)
-        responses_audio_formats = self._csv_set(self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST)
-
         for item in files:
             if not isinstance(item, dict):
                 retained.append(item)
@@ -218,7 +217,7 @@ class Filter:
             if bool(item.get("legacy", False)):
                 retained.append(item)
                 continue
-            if (item.get("type", "file") or "file") != "file":
+            if (item.get("type") or "file") != "file":
                 retained.append(item)
                 continue
             file_id = item.get("id")
@@ -251,7 +250,9 @@ class Filter:
                     retained.append(item)
                     continue
                 if not supports_files:
-                    raise Exception("Direct file uploads are enabled, but the selected model does not support file inputs.")
+                    warnings.append("Direct file uploads not supported by the selected model; falling back to Open WebUI.")
+                    retained.append(item)
+                    continue
                 if not self._mime_allowed(content_type, self.valves.DIRECT_FILE_MIME_ALLOWLIST):
                     # Fail-open: leave unsupported types on the normal OWUI path (RAG/Knowledge).
                     retained.append(item)
@@ -280,7 +281,9 @@ class Filter:
                     retained.append(item)
                     continue
                 if not supports_audio:
-                    raise Exception("Direct audio uploads are enabled, but the selected model does not support audio inputs.")
+                    warnings.append("Direct audio uploads not supported by the selected model; falling back to Open WebUI.")
+                    retained.append(item)
+                    continue
                 if not self._mime_allowed(content_type, self.valves.DIRECT_AUDIO_MIME_ALLOWLIST):
                     retained.append(item)
                     continue
@@ -304,7 +307,6 @@ class Filter:
                         "size": size_bytes,
                         "content_type": content_type,
                         "format": audio_format,
-                        "responses_eligible": bool(audio_format in responses_audio_formats) if responses_audio_formats else False,
                     }
                 )
                 continue
@@ -314,7 +316,9 @@ class Filter:
                     retained.append(item)
                     continue
                 if not supports_video:
-                    raise Exception("Direct video uploads are enabled, but the selected model does not support video inputs.")
+                    warnings.append("Direct video uploads not supported by the selected model; falling back to Open WebUI.")
+                    retained.append(item)
+                    continue
                 if not self._mime_allowed(content_type, self.valves.DIRECT_VIDEO_MIME_ALLOWLIST):
                     retained.append(item)
                     continue
@@ -339,44 +343,57 @@ class Filter:
 
             retained.append(item)
 
-        # Only apply changes if we diverted something.
-        if not (diverted["files"] or diverted["audio"] or diverted["video"]):
-            return body
+        diverted_any = bool(diverted["files"] or diverted["audio"] or diverted["video"])
+        if diverted_any:
+            body["files"] = retained
 
-        body["files"] = retained
-        if isinstance(__metadata__, dict):
-            __metadata__["files"] = retained
-            pipe_meta = __metadata__.get("openrouter_pipe")
-            if not isinstance(pipe_meta, dict):
-                pipe_meta = {}
-                __metadata__["openrouter_pipe"] = pipe_meta
+        if isinstance(__metadata__, dict) and (diverted_any or warnings):
+            prev_pipe_meta = __metadata__.get("openrouter_pipe")
+            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
+            __metadata__["openrouter_pipe"] = pipe_meta
 
-            attachments = pipe_meta.get("direct_uploads")
-            if not isinstance(attachments, dict):
-                attachments = {}
+            if warnings:
+                prev_warnings = pipe_meta.get("direct_uploads_warnings")
+                merged_warnings: list[str] = []
+                seen: set[str] = set()
+                if isinstance(prev_warnings, list):
+                    for warning in prev_warnings:
+                        if isinstance(warning, str) and warning and warning not in seen:
+                            seen.add(warning)
+                            merged_warnings.append(warning)
+                for warning in warnings:
+                    if warning and warning not in seen:
+                        seen.add(warning)
+                        merged_warnings.append(warning)
+                pipe_meta["direct_uploads_warnings"] = merged_warnings
+
+            if diverted_any:
+                prev_attachments = pipe_meta.get("direct_uploads")
+                attachments = dict(prev_attachments) if isinstance(prev_attachments, dict) else {}
                 pipe_meta["direct_uploads"] = attachments
-            # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
-            attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
+                # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
+                attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
 
-            for key in ("files", "audio", "video"):
-                items = diverted.get(key) or []
-                if items:
-                    existing = attachments.get(key)
-                    merged: list[dict[str, Any]] = []
-                    seen: set[str] = set()
-                    if isinstance(existing, list):
-                        for entry in existing:
-                            if isinstance(entry, dict):
-                                eid = entry.get("id")
-                                if isinstance(eid, str) and eid and eid not in seen:
-                                    seen.add(eid)
-                                    merged.append(entry)
-                    for entry in items:
-                        eid = entry.get("id")
-                        if isinstance(eid, str) and eid and eid not in seen:
-                            seen.add(eid)
-                            merged.append(entry)
-                    attachments[key] = merged
+                for key in ("files", "audio", "video"):
+                    items = diverted.get(key) or []
+                    if items:
+                        existing = attachments.get(key)
+                        merged: list[dict[str, Any]] = []
+                        seen: set[str] = set()
+                        if isinstance(existing, list):
+                            for entry in existing:
+                                if isinstance(entry, dict):
+                                    eid = entry.get("id")
+                                    if isinstance(eid, str) and eid and eid not in seen:
+                                        seen.add(eid)
+                                        merged.append(entry)
+                        for entry in items:
+                            eid = entry.get("id")
+                            if isinstance(eid, str) and eid and eid not in seen:
+                                seen.add(eid)
+                                merged.append(entry)
+                        attachments[key] = merged
 
-        self.log.debug("Diverted %d byte(s) for direct upload forwarding", total_bytes)
+        if diverted_any:
+            self.log.debug("Diverted %d byte(s) for direct upload forwarding", total_bytes)
         return body

@@ -226,6 +226,10 @@ If you don’t see it reaching the model:
 - Confirm the relevant user valve is enabled (Files/Audio/Video).
 - Confirm the MIME type is allowlisted and the file is within size limits.
 
+If direct uploads are enabled but the selected model does not support a required modality (file/audio/video), the filter will **fail open**:
+- The upload stays on the normal Open WebUI path (RAG/Knowledge), and
+- The pipe emits a warning notification that direct uploads were not applied for those attachments.
+
 ### Debug logging (useful strings)
 
 When `OPENAI` log level is set to debug in Open WebUI, the pipe logs:
