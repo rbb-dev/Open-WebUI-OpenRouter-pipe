@@ -142,7 +142,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Boolean, Column, DateTime, JSON, String, inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 try:
     import lz4.frame as lz4frame
@@ -7197,6 +7197,82 @@ class Filter:
             table_fragment=table_fragment,
         )
 
+    @staticmethod
+    def _discover_owui_engine_and_schema(
+        owui_db: Any,
+    ) -> tuple[Any | None, str | None, dict[str, str]]:
+        """Best-effort discovery of OWUI SQLAlchemy engine + schema without relying on symbol names."""
+        engine: Any | None = None
+        schema: str | None = None
+        details: dict[str, str] = {}
+
+        try:
+            base = getattr(owui_db, "Base", None)
+            metadata = getattr(base, "metadata", None) if base is not None else None
+            candidate = getattr(metadata, "schema", None) if metadata is not None else None
+            if isinstance(candidate, str) and candidate.strip():
+                schema = candidate.strip()
+                details["schema_source"] = "owui_db.Base.metadata.schema"
+        except Exception:
+            schema = None
+
+        if schema is None:
+            try:
+                metadata_obj = getattr(owui_db, "metadata_obj", None)
+                candidate = (
+                    getattr(metadata_obj, "schema", None) if metadata_obj is not None else None
+                )
+                if isinstance(candidate, str) and candidate.strip():
+                    schema = candidate.strip()
+                    details["schema_source"] = "owui_db.metadata_obj.schema"
+            except Exception:
+                schema = None
+
+        if schema is None:
+            try:
+                import importlib
+
+                owui_env = importlib.import_module("open_webui.env")  # type: ignore
+
+                candidate = getattr(owui_env, "DATABASE_SCHEMA", None)
+                if isinstance(candidate, str) and candidate.strip():
+                    schema = candidate.strip()
+                    details["schema_source"] = "open_webui.env.DATABASE_SCHEMA"
+            except Exception:
+                schema = None
+
+        db_context = getattr(owui_db, "get_db_context", None) or getattr(owui_db, "get_db", None)
+        if db_context is not None:
+            try:
+                cm = db_context() if callable(db_context) else db_context
+                if hasattr(cm, "__enter__"):
+                    with cast(contextlib.AbstractContextManager[Any], cm) as session:
+                        if session is not None:
+                            try:
+                                engine = session.get_bind()
+                                details["engine_source"] = "get_db_context.get_bind"
+                            except Exception:
+                                engine = getattr(session, "bind", None) or getattr(session, "engine", None)
+                                if engine is not None:
+                                    details["engine_source"] = "get_db_context.bind"
+            except Exception:
+                engine = None
+
+        if engine is None:
+            for attr in ("engine", "ENGINE", "bind", "BIND"):
+                candidate = getattr(owui_db, attr, None)
+                if candidate:
+                    engine = candidate
+                    details["engine_source"] = f"owui_db.{attr}"
+                    break
+
+        if schema is None:
+            details.setdefault("schema_source", "unavailable")
+        if engine is None:
+            details.setdefault("engine_source", "unavailable")
+
+        return engine, schema, details
+
     def _init_artifact_store(
         self,
         pipe_identifier: Optional[str] = None,
@@ -7204,9 +7280,8 @@ class Filter:
         table_fragment: Optional[str] = None,
     ) -> None:
         """Initialize the per-pipe SQLAlchemy model + executor for artifact storage."""
-        engine: Engine | None = None
-        session_factory: sessionmaker | None = None
-        base: Any | None = None
+        engine: Any | None = None
+        schema: str | None = None
 
         try:
             from open_webui.internal import db as owui_db  # type: ignore
@@ -7214,18 +7289,42 @@ class Filter:
             owui_db = None
 
         if owui_db is not None:
-            engine = getattr(owui_db, "engine", None)
-            session_factory = getattr(owui_db, "SessionLocal", None)
-            base = getattr(owui_db, "Base", None)
+            engine, schema, details = self._discover_owui_engine_and_schema(owui_db)
+            try:
+                dialect = getattr(getattr(engine, "dialect", None), "name", None)
+                driver = getattr(getattr(engine, "dialect", None), "driver", None)
+                self.logger.debug(
+                    "OWUI DB autodiscovery: engine_source=%s schema_source=%s dialect=%s driver=%s schema=%s",
+                    details.get("engine_source", "unknown"),
+                    details.get("schema_source", "unknown"),
+                    dialect or "unknown",
+                    driver or "unknown",
+                    schema or "",
+                )
+            except Exception:
+                self.logger.debug(
+                    "OWUI DB autodiscovery: engine_source=%s schema_source=%s schema=%s",
+                    details.get("engine_source", "unknown"),
+                    details.get("schema_source", "unknown"),
+                    schema or "",
+                )
 
-        if not (engine and session_factory and base):
-            self.logger.warning("Artifact persistence disabled: Open WebUI database helpers are unavailable.")
+        if not engine:
+            self.logger.warning("Artifact persistence disabled: Open WebUI database engine is unavailable.")
             self._engine = None
             self._session_factory = None
             self._item_model = None
             self._artifact_table_name = None
             self._artifact_store_signature = None
             return
+
+        session_factory = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=engine,
+            expire_on_commit=False,
+        )
+        base = declarative_base()
 
         pipe_identifier = pipe_identifier or getattr(self, "id", None)
         if not pipe_identifier:
@@ -7241,9 +7340,22 @@ class Filter:
         if existing_table is not None:
             base.metadata.remove(existing_table)
 
+        normalized_schema: str | None = None
+        if isinstance(schema, str):
+            candidate = schema.strip()
+            if candidate:
+                normalized_schema = candidate
+
+        table_args: dict[str, Any] = {
+            "extend_existing": True,
+            "sqlite_autoincrement": False,
+        }
+        if normalized_schema:
+            table_args["schema"] = normalized_schema
+
         attrs: dict[str, Any] = {
             "__tablename__": table_name,
-            "__table_args__": {"extend_existing": True, "sqlite_autoincrement": False},
+            "__table_args__": table_args,
             "id": Column(String(ULID_LENGTH), primary_key=True),
             "chat_id": Column(String(64), index=True, nullable=False),
             "message_id": Column(String(64), index=True, nullable=False),
