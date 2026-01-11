@@ -1461,73 +1461,128 @@ Add dedicated suites for helper utilities, module helpers, and registry plumbing
 - Commit: `8d16ba512edeedcdab9bbf83fd780e6725138c68`
 - Author: rbb-dev
 
-### Details
-- Added `_qualify_model_for_pipe` to consistently generate `pipe.model` ids and switched both streaming and task flows to use it before writing Redis cost snapshots.
-- Extended `_run_task_model_request` to accept user/pipe context, capture non-streaming usage payloads, and attempt `_maybe_dump_costs_snapshot` behind a guarded try/except so housekeeping runs never crash the pipe.
-- Covered the new flow with tests and updated the telemetry doc to note that task models now appear in the Redis cost export.
+_No additional details provided._
 
-### Details
-- Migrated `_apply_reasoning_preferences` and `_apply_task_reasoning_preferences` to send OpenRouter's unified `reasoning` payload whenever a model advertises native support, falling back to the legacy `include_reasoning` flag only when necessary. This fixes Gemini image edits that previously failed because we requested `include_thoughts` without enabling `thinking`.
-- Enhanced `_should_retry_without_reasoning` and the reasoning-effort fallback so they mutate the new payload structure, ensuring we can still recover from provider validation errors after the migration.
-- Added regression tests covering reasoning-preferring flows, legacy-only models, the new "none/xhigh" effort options, and the retry logic for both legacy and modern payloads.
-- Added explicit `thinking_config` translation plus Gemini-specific valves so Gemini 2.5/3.x requests send the required `thinking_level`/`thinking_budget` knobs, preventing Vertex from rejecting `includeThoughts`. Updated docs and guard tests to cover the new behavior.
-- Updated `docs/valves_and_configuration_atlas.md`, `docs/task_models_and_housekeeping.md`, and `docs/error_handling_and_user_experience.md` to document the expanded effort levels, automatic downgrades, and the fact that we now prioritize the `reasoning` object.
-
-## 2025-12-13 - fix: prevent streaming deadlock with unbounded queues and monitoring
-- Commit: `d03b68b2ea9fd52ae7bf9f1e98c4e46adf5f5cc8`
+## 2025-12-13 - Document recent changelog entries
+- Commit: `5b3e35bb5df2c45047b9e9ccbdf4c16a64a5037f`
 - Author: rbb-dev
 
-Changes streaming queue configuration to eliminate deadlock risk in tool-heavy or high-backpressure scenarios:
+_No additional details provided._
+
+## 2025-12-13 - Clarify ENCRYPT_ALL defaults in security guide
+- Commit: `9520684e346561baf71e52bbc4e47bc637571efc`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - refactor: move message transformer to pipe
+- Commit: `2985b7832880de03d905155867dad843b53c173a`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - fix: reject headerless artifact payloads
+- Commit: `e3d998a7dc4ddd389c2b61448a06f1bed83892c6`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - fix: enforce valve default types
+- Commit: `564e4f4b95646ac81b48367e2290303511c7985a`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-14 - Support optional emitters
+- Commit: `0a39e1d8386f872ee5558a9a1b96fe636cd933ba`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - fix: harden pipe runtime for pylance stability
+- Commit: `c9632b3eb646df63fbefdd9531bdc03ce1b2a118`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-13 - Fix Pyright warnings with stricter schemas/tests
+- Commit: `261bfb225ac7ef99b871e469ccdb3e9306afb50f`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-14 - fix: prevent streaming deadlock with unbounded queues and monitoring
+- Commit: `d03b68b22ac78bd17c5346980f8fba23387bf881`
+- Author: rbb-dev
+
+Changes streaming queue configuration to eliminate deadlock risk in
+tool-heavy or high-backpressure scenarios:
 
 - Change STREAMING_CHUNK_QUEUE_MAXSIZE default: 100→0 (unbounded)
 - Change STREAMING_EVENT_QUEUE_MAXSIZE default: 100→0 (unbounded)
-- Add STREAMING_EVENT_QUEUE_WARN_SIZE valve (default 1000) for non-spammy queue backlog monitoring with 30s cooldown
-- Improve producer error handling: log exceptions with context instead of silently storing in nonlocal variable
-- Enhance cleanup: gather() now logs non-CancelledError exceptions from producer/worker tasks
+- Add STREAMING_EVENT_QUEUE_WARN_SIZE valve (default 1000) for
+  non-spammy queue backlog monitoring with 30s cooldown
+- Improve producer error handling: log exceptions with context instead
+  of silently storing in nonlocal variable
+- Enhance cleanup: gather() now logs non-CancelledError exceptions
+  from producer/worker tasks
 
-Deadlock chain with small bounded queues (<500): drain loop blocks (slow DB/emit) → event_queue fills → workers block on put() → chunk_queue fills → producer blocks → sentinels never propagate
+Deadlock chain with small bounded queues (<500):
+  drain loop blocks (slow DB/emit) → event_queue fills →
+  workers block on put() → chunk_queue fills →
+  producer blocks → sentinels never propagate
 
-Unbounded queues eliminate the chain while new monitoring detects sustained backlog without log spam.
+Unbounded queues eliminate the chain while new monitoring detects
+sustained backlog without log spam.
 
 Documentation updates:
 - streaming_pipeline_and_emitters.md: explain deadlock mechanism
 - valves_and_configuration_atlas.md: update queue valve descriptions
 
-## 2025-12-13 - feat: add gemini thinking config and reasoning docs
-- Commit: `21aa1139b34f9f0ad51f2b7aee1cef1f2be88a9b`
+Test coverage (27 tests, 0 Pyright errors):
+- test_streaming_queues.py: validate unbounded defaults, warning
+  logic, cooldown behavior, valve constraints, and edge cases
+
+Add Copilot architecture instructions.
+
+## 2025-12-15 - feat: add gemini thinking config and reasoning docs
+- Commit: `21aa113503c40928973b4255a1ee91d49188c3d0`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-13 - Stop replaying non-replayable artifacts
-- Commit: `c9899d18fed51e3adcac1088867a77ae47a99d40`
+## 2025-12-15 - Stop replaying non-replayable artifacts
+- Commit: `c9899d1e3fe43985c467fa2378c5741ba0147992`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-13 - fix: ensure byte type consistency in SSE event parsing
-- Commit: `c5ee8cc43ecb49ba77b3c9e7fc5ad57b5f81eb34`
+## 2025-12-16 - fix: ensure byte type consistency in SSE event parsing
+- Commit: `c5ee8ccf8ae6b66d952c5ac3be348827b011a0da`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-13 - feat: encrypt redis artifacts
-- Commit: `929c3ae54e69c967b0f54c94723ee6e5e54abb4c`
+## 2025-12-17 - feat: encrypt redis artifacts
+- Commit: `929c3ae80921be3c87e530c43bd2e29409c1848f`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-14 - fix: add defensive type inference to strict schema transformation
-- Commit: `40d4ba81add55aef0dd5bdf04870cf15d8f58ad0`
+## 2025-12-18 - fix: add defensive type inference to strict schema transformation
+- Commit: `40d4ba8f253ab8068016f5e2d5c3a6de2390a1ec`
 - Author: rbb-dev
 
 Fixes OpenAI strict mode validation error for tools with incomplete schemas.
 
 ## Problem
-OpenAI strict mode rejects function schemas when properties lack required 'type' keys, causing errors like:
-  "Invalid schema for function '_auth_headers': In context=('properties', 'session'), schema must have a 'type' key."
+OpenAI strict mode rejects function schemas when properties lack required
+'type' keys, causing errors like:
+  "Invalid schema for function '_auth_headers':
+   In context=('properties', 'session'), schema must have a 'type' key."
 
-This occurred when Open WebUI tool registry contained properties with empty schemas ({}) or schemas missing explicit types.
+This occurred when Open WebUI tool registry contained properties with empty
+schemas ({}) or schemas missing explicit types.
 
 ## Solution
 Enhanced _strictify_schema_impl() with intelligent type inference:
@@ -1581,16 +1636,19 @@ Defaulting to "object" type is:
 - Conservative choice for unknown properties
 - Closest to JSON Schema "any" semantics in strict mode
 
-## 2025-12-14 - Docs: enhance navigation with persona-based paths and cross-references
-- Commit: `60ef0bb81cb84ef42e6e75f26a6b52f13b8fb68b`
+## 2025-12-18 - Docs: enhance navigation with persona-based paths and cross-references
+- Commit: `60ef0bbaa0ca34fea78c5fad66d107fa4e46a5bc`
 - Author: rbb-dev
 
-Comprehensive documentation refinement, adding five layers of navigation improvements while preserving the excellent multi-perspective coverage:
+Comprehensive documentation refinement, adding five layers of navigation
+Improvements while preserving the excellent multi-perspective coverage:
 
 1. Index Reorganisation
-   - Move history_reconstruction_and_context.md to "Modality & Interface Layers" section (better logical fit for data transformation)
+   - Move history_reconstruction_and_context.md to "Modality & Interface
+     Layers" section (better logical fit for data transformation)
    - Add clarifying scope description for the interface layers section
-   - Add visual relationship map with persona flows (Developer, Operator, Security, Auditor)
+   - Add visual relationship map with persona flows (Developer, Operator,
+     Security, Auditor)
    - Add persona-to-document quick reference guides
    - Add task-based navigation table mapping 10 common tasks to the docs
 
@@ -1602,7 +1660,8 @@ Comprehensive documentation refinement, adding five layers of navigation improve
    - Verified existing bidirectional SSRF references in the security doc
 
 3. Quick Navigation Callouts (15 files)
-   - Add a consistent navigation bar to all primary docs: [📑 Index | 🏗️ Architecture | ⚙️ Configuration | 🔒 Security]
+   - Add a consistent navigation bar to all primary docs:
+     [📑 Index | 🏗️ Architecture | ⚙️ Configuration | 🔒 Security]
    - Positioned before the first separator for consistency
    - Enables quick pivoting between related documentation
 
@@ -1618,11 +1677,12 @@ Comprehensive documentation refinement, adding five layers of navigation improve
    - Add missing task_models_and_housekeeping.md entry
    - Highlight persona-based navigation and relationship map
 
-## 2025-12-14 - docs: convert file references to clickable links in documentation index
-- Commit: `32d209b95f35f92f0e29b9e2a71e8e97b8e60bc2`
+## 2025-12-18 - docs: convert file references to clickable links in documentation index
+- Commit: `32d209bf637e6a60370ed7546f37b6b58eae97de`
 - Author: rbb-dev
 
-Transform all backtick-wrapped file references to proper markdown links throughout documentation_index.md for improved navigation:
+Transform all backtick-wrapped file references to proper markdown links
+throughout documentation_index.md for improved navigation:
 
 Changes:
 - Section headers: `docs/filename.md` → [filename.md](filename.md)
@@ -1636,8 +1696,8 @@ Impact:
 - Maintains consistency with other cross-references in docs
 - All 15 documentation files now accessible via one-click navigation
 
-## 2025-12-15 - feat: add stream emitter and thinking output valve
-- Commit: `7062998da94b9a02ccb2be01a74f6f99a88c7d5a`
+## 2025-12-20 - feat: add stream emitter and thinking output valve
+- Commit: `70629988a62438305582eeb29900fee51ef14470`
 - Author: rbb-dev
 
 Adds THINKING_OUTPUT_MODE (system + user) to control whether in-progress reasoning is surfaced via the Open WebUI reasoning box, status events, or both.
@@ -1646,80 +1706,573 @@ Implements a stream-mode adapter that converts internal events into OpenAI-style
 
 Adds tests for streaming chunk output and thinking-mode routing; updates the valve atlas.
 
-## 2025-12-15 - fix: prevent duplicate reasoning blocks in OWUI
-- Commit: `07e3119fb14c2da4ae02e2ff18f90fd4c8d28e77`
+## 2025-12-21 - fix: prevent duplicate reasoning blocks in OWUI
+- Commit: `07e3119e367b5143be0d6e92288d6c56249f77fc`
 - Author: rbb-dev
 
 When streaming through Open WebUI middleware, reasoning deltas (delta.reasoning_content) are rendered into embedded <details> blocks. Late reasoning arriving after assistant text starts could create a second block with near-zero duration.
 
 Gate reasoning_content emission to the pre-answer phase; reroute post-answer reasoning deltas into status events instead. Adds a regression test.
 
-## 2025-12-15 - docs: fix README screenshot
-- Commit: `a719407d6b5e6eb07e48f6a84b57869d1c23f1cb`
+## 2025-12-21 - docs: fix README screenshot
+- Commit: `a719407542b03107b319a13221125d17a42d0671`
 - Author: rbb-dev
 
 Update the README hero image to the correct GitHub attachment.
 
-## 2025-12-15 - Update issue templates
-- Commit: `98f02882859d5e3c0bda77ae5b83e40d10e66b76`
+## 2025-12-22 - Update issue templates
+- Commit: `98f0288b8641b8fc5d34db5bfeb3537c6d0f85f3`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-16 - fix: avoid None.get crashes
-- Commit: `a8153cc9f3b02fe92d48b1fdeb5e02a2384e5a86`
+## 2025-12-23 - fix: avoid None.get crashes
+- Commit: `a8153cc55dea67224a9f96e637b9a67590905e3d`
 - Author: rbb-dev
 
 _No additional details provided._
 
-## 2025-12-17 - fix: preserve system/developer messages verbatim
-- Commit: `242a00771f37ce4e85db37de43ad6ab40dc1e5c6`
+## 2025-12-23 - fix: preserve system/developer messages verbatim
+- Commit: `242a00773bc4ffd797fedd6a56d08059363fa903`
 - Author: rbb-dev
 
 - Preserve system/developer content in Responses input (no strip/join; remove synthetic instruction-prefix injection)
+
 - Allow explicit "instructions" field to pass through to OpenRouter
+
 - Fix Pylance: remove undefined _extract_plain_text usage; narrow middleware event data type
+
 - Bump manifest/README version to 1.0.11
+
 - Add regression tests for message preservation
 
-## 2025-12-18 - feat: add valve-gated request identifiers (user/session/metadata)
-- Commit: `a001935c16e3abb46bb32a36a8f20af2df57be7b`
+## 2025-12-23 - feat: add valve-gated request identifiers (user/session/metadata)
+- Commit: `a00193519ac36fbf0e25330d587ad68729c1c38e`
 - Author: rbb-dev
 
 Adds optional (default-off) valves to send OpenRouter user, session_id, and a sanitised metadata map for abuse attribution/observability in multi-user Open WebUI deployments. Full rationale, privacy notes, and JSON examples are in docs/request_identifiers_and_abuse_attribution.md.
 
-## 2025-12-18 - feat: add encrypted session log archives for abuse investigations
-- Commit: `2d6c0f1d1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+## 2025-12-24 - feat: add encrypted session log archives for abuse investigations
+- Commit: `2d6c0f1f08a27588a23bed38794516862f9073d9`
 - Author: rbb-dev
 
 Archives are valve-gated, encrypted zip files stored as <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip and intended to pair with request identifiers for multi-user abuse attribution. They always capture DEBUG lines while LOG_LEVEL only controls stdout/backend output. See docs/request_identifiers_and_abuse_attribution.md and docs/session_log_storage.md.
 
-## 2025-12-19 - fix: harden session log capture against exceptions
-- Commit: `d711f0a0e5ac9db2c5c4c8a9c1d1e8e7b1a5c3c9`
+## 2025-12-24 - fix: harden session log capture against exceptions
+- Commit: `d711f0a51ce62710543aa5d775a35aff67b166fb`
 - Author: rbb-dev
 
 Wrap SessionLogger filter/process_record with broad try/except so logging failures (formatting/stdout/buffer) cannot crash request handling or background workers.
 
-## 2025-12-20 - feat: support model fallbacks via models[]
-- Commit: `2b0171e8f0c1e8e9f3c4c8a9c1d1e8e7b1a5c3c9`
+## 2025-12-24 - feat: support model fallbacks via models[]
+- Commit: `2b0171ed18d305f57263a666ef22f914f7daaa75`
 - Author: rbb-dev
 
 Map OWUI per-model custom param 'model_fallback' (comma-separated model IDs) to OpenRouter Responses 'models' (fallback list). Primary selection stays in 'model'; the pipe trims/dedupes entries and never forwards 'model_fallback' to OpenRouter. Docs: docs/openrouter_integrations_and_telemetry.md.
 
-## 2025-12-20 - feat: pass through top_k when provided
-- Commit: `4c41fbb7f8c1e8e9f3c4c8a9c1d1e8e7b1a5c3c9`
+## 2025-12-24 - feat: pass through top_k when provided
+- Commit: `4c41fbb1b71d8b6a1dcd36e2acd3baac6f11e5be`
 - Author: rbb-dev
 
 Allowlist OpenRouter Responses 'top_k' and forward it when present (numeric or numeric string). Invalid/non-numeric values are dropped. Docs: docs/openrouter_integrations_and_telemetry.md. Tests: tests/test_top_k_passthrough.py.
 
-## 2025-12-21 - docs: fix documentation index section placement
-- Commit: `f9583a9e1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+## 2025-12-24 - docs: fix documentation index section placement
+- Commit: `f9583a95b2f26a783f689905efa64c293a1db2cc`
 - Author: rbb-dev
 
 Move request identifier + session log docs into the 'reference materials' section and remove the duplicated misnumbered block at the end.
 
-## 2025-12-22 - docs: link session log storage deep-dive
-- Commit: `0fb4877e1c3c0f1f4a68d1b8aaf3e5e9c1e8c1e3`
+## 2025-12-24 - docs: link session log storage deep-dive
+- Commit: `0fb487769e71bbabae97b2d5b1542d2913e3f5d3`
 - Author: rbb-dev
 
 _No additional details provided._
+
+## 2025-12-24 - Update openrouter_integrations_and_telemetry.md
+- Commit: `987d68d0814a77d4104e891fd11c21a204fbdcde`
+- Author: rbb-dev
+
+Added an image to the documentation for openrouter integrations.
+
+## 2025-12-24 - docs: update changelog
+- Commit: `2ad4f81b4512b48b16b1da0b28dda598a29a6a7f`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-24 - Revise documentation relationship map format
+- Commit: `f92f186cdef672af851d25f7a12a804b9815512e`
+- Author: rbb-dev
+
+Updated the documentation relationship map to use Mermaid syntax and removed the old diagram.
+
+## 2025-12-24 - Refactor documentation for clarity and conciseness
+- Commit: `dc63732ccaf18c23e4c5c6b34f4a3967ba365c91`
+- Author: rbb-dev
+
+Removed redundant details from the documentation section and streamlined the content for clarity.
+
+## 2025-12-25 - docs: refresh docs and bump version to 1.0.12
+- Commit: `2560850e0962252a34255e8379ccbae26c851841`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-25 - feat: support OWUI Direct Tool Servers (execute:tool)
+- Commit: `55326038aca1b1c2abaf8a9197298e50ff6b8831`
+- Author: rbb-dev
+
+Adds OWUI Direct Tool Servers support (advertise + run via Socket.IO execute:tool) with try/except isolation.
+
+Removes experimental REMOTE_MCP_SERVERS_JSON MCP injection (bypassed OWUI RBAC); docs now point to MCPO/MetaMCP via OWUI Tool Servers.
+
+Bump version to 1.0.13.
+
+Tests: PYTHONPATH=. .venv/bin/python -m pytest tests/test_helper_utilities.py tests/test_direct_tool_servers.py -q
+
+## 2025-12-25 - chore: remove duplicate ResponsesBody debug log
+- Commit: `051a804e320f97480607766919f68f5c46d6ee3b`
+- Author: rbb-dev
+
+Remove duplicate 'Transformed ResponsesBody' debug entry.
+
+## 2025-12-25 - chore: dead-code cleanup and pipe id simplification
+- Commit: `22ed68d07ea35a168ee78aa909b1959a0566736c`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: trust validated valves
+- Commit: `4cb875e16178e81ab6639f99b0bed6c20df7feb0`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: enable interleaved thinking streaming
+- Commit: `463bce18d3e36b785345a1e4b7ff0e24042f6fd1`
+- Author: rbb-dev
+
+- Stream all reasoning deltas as delta.reasoning_content even after assistant output begins so OWUI can render multiple thinking blocks.\n- Add ENABLE_ANTHROPIC_INTERLEAVED_THINKING (default true) to request Claude interleaved thinking via x-anthropic-beta header for anthropic/... models.\n- Update streaming tests and add header injection test.
+
+## 2025-12-26 - docs: document interleaved thinking valve
+- Commit: `b91de850ec72febc340bd3ee0c71afd8281f5d37`
+- Author: rbb-dev
+
+- Document ENABLE_ANTHROPIC_INTERLEAVED_THINKING in valve atlas and OpenRouter headers notes.\n- Bump version to 1.0.14 in README badge, pipe manifest, and pyproject.
+
+## 2025-12-26 - fix: clamp tool output status for OpenRouter
+- Commit: `947666c6f0e1fb9573b07b045a75155986848135`
+- Author: rbb-dev
+
+OpenRouter rejects function_call_output items with status=failed in request input; clamp to an accepted status and keep failure details in output text.
+
+## 2025-12-26 - feat: add HTTP_REFERER_OVERRIDE for OpenRouter headers
+- Commit: `bae7f222e89e87bb1bcaf7f37e0314b329388c31`
+- Author: rbb-dev
+
+Adds a new valve for overriding the OpenRouter HTTP-Referer header used for app attribution. Invalid overrides are ignored and surfaced to users via an OWUI notification toast, with a fallback to the default project referer.
+
+Bumps version to 1.0.15 and documents the valve.
+
+## 2025-12-26 - feat: warn when tool loop limit reached
+- Commit: `b54c215259f405d84df0702a07d5087afc60d77c`
+- Author: rbb-dev
+
+- Raise MAX_FUNCTION_CALL_LOOPS default to 25
+- Emit OWUI toast + templated markdown when loop limit is hit
+- Add MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE valve and default template (with {{#if}} example)
+- Add regression test for loop-limit behaviour
+
+## 2025-12-26 - fix: dedupe reasoning snapshots and tolerate invalid tool args
+- Commit: `3034eff9de5abc1b2117be56d367e26cbeb33a9f`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: make SessionLogger thread-safe
+- Commit: `309df2fd9acd5c1df7ac26972df16fb5bd502280`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: validate redis flush lock release
+- Commit: `4264d2b52993a36330e238d232acfa03ca41426b`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: bound middleware stream queue
+- Commit: `b4ae59446191e3724faf3f71683fca9b3485f861`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: log tool exceptions with tracebacks
+- Commit: `58f81d3dd3847f4628f56bea8d32eab7f27cd4cd`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: surface remote file download failures
+- Commit: `68c7036a5a00cc06608c383eb93c5d89af2fd985`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: avoid hanging DB executor shutdown
+- Commit: `654cf87452bbcc80aa6d4e8e049fcf8d99ff88d9`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: log redis close failures
+- Commit: `3ae9b47be3fb798521a788d71e2d46ba03d4f247`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-26 - fix: bound tool shutdown
+- Commit: `662e5c26355d1ac1b15357392fc1e29d445a5cc6`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-27 - chore: remove redundant valve casts
+- Commit: `29317d828eb0e0e7451e7b21effeb41b3e465eb8`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-27 - feat: enable Claude prompt caching
+- Commit: `3f741bd23bace1b1c56920ef487899baef9b1e68`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-27 - fix: apply Claude prompt caching to normalized ids
+- Commit: `095a65685589f8e79a91500460ded763c6fe6102`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-27 - fix: make FORCE_CHAT_COMPLETIONS_MODELS accept slash globs (anthropic/*)
+- Commit: `325922d1575d6ed69a966951be089d0748e6a131`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-27 - test: set stream=true in streaming loop tests
+- Commit: `3e925c324ddb26799a11a141698f79966bc4ee9c`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2025-12-30 - feat: sync OpenRouter model metadata into OWUI
+- Commit: `19d75af96e41e1ce6050d5861f280aeef7afdf40`
+- Author: rbb-dev
+
+- Add background sync for model icons (profile_image_url) and capabilities
+
+- Rasterize SVG icons to PNG and store as data URLs
+
+- Augment web_search capability using OpenRouter frontend catalog signals
+
+- Document UPDATE_MODEL_IMAGES/UPDATE_MODEL_CAPABILITIES and bump version to 1.0.17
+
+## 2025-12-31 - fix: translate structured outputs for /responses
+- Commit: `8d56ad2a87e91e814d2d19dcf1a8a97eeade01a2`
+- Author: rbb-dev
+
+- Translate Chat `response_format` to `text.format` for OpenRouter /responses and strip `response_format`
+
+- Add `text` to allowlist + ResponsesBody; drop invalid `text.format`; prefer endpoint-native field on conflicts
+
+- Map `text.format` back to `response_format` for /chat/completions fallback; pass `text.verbosity` as `verbosity`
+
+- Update Responses allowlist docs to reflect `text`
+
+## 2026-01-01 - fix: harden shutdown/cleanup and bump v1.0.18
+- Commit: `fd8841eacffa41a110882af1521b5f935e67ec84`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2026-01-01 - test: strengthen coverage and reduce drift
+- Commit: `e369df556db4d4ba2f97b3eb981534c12f27524c`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2026-01-02 - feat: add disable_native_websearch custom param
+- Commit: `f7ff2c40424f103d3b9402470a6486e794888171`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2026-01-02 - feat: preserve chat-completions params for endpoint fallback
+- Commit: `c60a09dba8ba9cc80b5d781cb484128604a4a1fa`
+- Author: rbb-dev
+
+Extend ResponsesBody schema to preserve chat-only parameters (stop, seed,
+logprobs, penalties) that must survive endpoint fallback when routing to
+/chat/completions. This enables the dual-endpoint architecture where the
+pipe constructs Responses-style requests first, then converts only when needed.
+
+Key changes:
+- Add field validators for robust float/int coercion and CSV model parsing
+- Round numeric params (top_k, seed, top_logprobs) during chat conversion
+- Strip blank strings to None across sampling and token limit fields
+- Preserve OpenRouter-specific fields (models, metadata, provider, route)
+
+The pipe now correctly passes chat-specific parameters through both endpoints
+without loss, while maintaining strict validation at request entry points.
+
+Tests: test_responses_payload_to_chat_rounds_top_k_for_chat_completions,
+       test_from_completions_preserves_chat_completion_only_params
+
+## 2026-01-02 - feat: extend artifact retention on DB access
+- Commit: `396efbc509947fb96ef19fd85037519559ebb8dd`
+- Author: rbb-dev
+
+_No additional details provided._
+
+## 2026-01-02 - chore: exclude backups from pytest discovery
+- Commit: `cfafdcfa66a3c567d52abb1b424885e19c2a3c72`
+- Author: rbb-dev
+
+Limit default testpaths to tests and ignore backups snapshots.
+
+## 2026-01-03 - fix: send identifier valves for task model requests
+- Commit: `c52d72ce196dc96914169394c84b3bd9f1fc41f8`
+- Author: rbb-dev
+
+Apply identifier valve injection to task model payloads
+
+Pass OWUI metadata into task requests for session/chat/message IDs
+
+Add regression test covering all identifier valves
+
+## 2026-01-03 - feat: add jsonl session log archives
+- Commit: `37e1e7d571d985e57ce1a5bb00ba6f38d873fe7a`
+- Author: rbb-dev
+
+Add SESSION_LOG_FORMAT (default jsonl)
+
+Store structured session log records and write logs.jsonl
+
+Document JSONL schema and update tests
+
+## 2026-01-03 - chore: add dev env repro + usage ingest helper
+- Commit: `9b29d073f4e643d503bd6189f82799c6a18e3069`
+- Author: rbb-dev
+
+Add scripts/repro_venv.sh to recreate a clean dev venv (long pip timeouts, installs open-webui, editable -e ., and test/lint tools)
+
+Add scripts/update_usage_db.py example script to drain OpenRouter cost snapshots from Redis into OpenWebUI-Monitor Postgres tables
+
+Document one-command recreation in docs/testing_bootstrap_and_operations.md
+
+## 2026-01-04 - fix: drop uninlineable OWUI image URLs
+- Commit: `30bdcd02bbc59c093452e29ea7e8da99a01eeb04`
+- Author: rbb-dev
+
+Fail-closed on /api/v1/files/... image refs by stripping the offending image block when inlining fails, preventing Google/OpenRouter URL-format 400s.
+
+Process both image_url and input_image blocks and add regression coverage for assistant-image rehydration with missing files.
+
+## 2026-01-05 - fix: honour OWUI flat metadata.features flags
+- Commit: `0c20d9e3f87d9512613247ff271e6ccc9aeba171`
+- Author: rbb-dev
+
+- Fixes pipe reading `__metadata__["features"]` as nested-by-pipe-id; OWUI sends a flat dict.
+- Adds `_extract_feature_flags` helper and regression tests to lock in OWUI-compatible behaviour.
+
+## 2026-01-06 - feat: major web search rework + OpenRouter Search defaults
+- Commit: `c650f2177cfd7b260c9a7fb3bfe0fe3ba72ff52e`
+- Author: rbb-dev
+
+Make Open WebUI’s native Web Search and OpenRouter’s provider-native web plugin coexist
+cleanly, with predictable behavior and per-model/per-chat control.
+
+- Add a toggleable “OpenRouter Search” filter that:
+  - enables OpenRouter’s provider-native web plugin for the request, and
+  - disables Open WebUI Web Search for that request to avoid double-search and mixed citations
+- Auto-install/auto-update the companion filter in Open WebUI’s Functions DB (marker:
+  `openrouter_pipe:ors_filter:v1`), and store `meta.toggle=true` so the Model Editor exposes
+  “Default Filters”
+- Note: when `AUTO_INSTALL_ORS_FILTER=true`, any manual edits to the installed OpenRouter
+  Search filter in Open WebUI will be overwritten on the next auto-update (disable
+  `AUTO_INSTALL_ORS_FILTER` if you want to maintain a customized fork)
+- Auto-attach the filter to compatible models during model refresh, so the OpenRouter Search
+  switch appears only where it can work.
+- Enable OpenRouter Search by default on compatible models via the model’s Default Filters,
+  and respect admin changes (if you uncheck it, it won’t be re-enabled on the next refresh).
+- Remove the global “force web search” valve and gate the OpenRouter web plugin strictly on
+  the OpenRouter Search request flag (not OWUI’s `features.web_search`)
+- This replaces the old “force it for every compatible model” behavior with a one-time default:
+  compatible models start with OpenRouter Search enabled, but admins can turn it off per model
+  (Default Filters), and users can toggle it per chat in the Integrations menu.
+- Update docs/valve atlas and bump version to 1.0.19
+
+## 2026-01-06 - fix: always enable file uploads for pipe models
+- Commit: `a14275bc098661bc18ba1307e936a6ba42905dd5`
+- Author: rbb-dev
+
+Open WebUI blocks all attachments (documents for RAG, PDFs, text files, images, etc.) when a model’s capabilities.file_upload is false. Since this pipe supports Open WebUI’s attachment pipeline regardless of the provider’s declared file modality, always advertise file_upload=true so uploads are not disabled in the UI.
+
+- Force capabilities.file_upload = true for all OpenRouter-pipe models during capability derivation
+
+- Update registry capability test expectation
+
+## 2026-01-06 - feat: add Open WebUI stub loader pipe
+- Commit: `0d8f688669c8d5968976b3080ee6bbbee55be62f`
+- Author: rbb-dev
+
+Adds a lightweight Open WebUI Pipe stub that installs the full implementation from GitHub via frontmatter requirements.
+
+Wraps the installed Pipe so its .id matches the Open WebUI function id, allowing users to choose a custom id without breaking model prefixing/artifact keys.
+
+Adds project URLs (docs + issues) to pyproject metadata.
+
+## 2026-01-06 - fix: allow install on Python 3.11
+- Commit: `ccf85971ad4877eebe03670399cfe257ffcd6bff`
+- Author: rbb-dev
+
+Lower requires-python to >=3.11 so Open WebUI deployments on Python 3.11 can install this pipe via frontmatter requirements.
+
+## 2026-01-06 - docs: align Python version with Open WebUI
+- Commit: `9e776ef2b2e5affb7a25e06135f673b29c511568`
+- Author: rbb-dev
+
+Update README and dev docs to reflect Python 3.11+ support, matching official Open WebUI Docker images.
+
+## 2026-01-06 - feat: support Open WebUI v0.6.42+ chat_file tracking
+- Commit: `b120ebebcaadcffcd8055eb4f4c5c79cabf58ae0`
+- Author: rbb-dev
+
+Align OWUI storage uploads with the chat_file association added in Open WebUI v0.6.42.
+
+Propagate chat_id/message_id into upload metadata and best-effort call Chats.insert_chat_files when available (no-op on older OWUI).
+
+Add tests covering both tracked and legacy OWUI paths.
+
+## 2026-01-07 - feat: add model filters for free pricing and tool calling
+- Commit: `2fac134ab9408b7305d6d6924344b38fa011369a`
+- Author: rbb-dev
+
+Adds FREE_MODEL_FILTER and TOOL_CALLING_FILTER (all|only|exclude) valves and enforces them for normal chat requests with a templated “model restricted” error.
+
+Defines “free” as summed numeric pricing == 0 with at least one numeric pricing value; supports tool calling via supported_parameters.
+
+Documents task allowlist bypass and updates tests.
+
+## 2026-01-08 - feat: add Open WebUI tool execution backend
+- Commit: `fcf2599130be3bd7eda6fe2155b80c82419ab233`
+- Author: rbb-dev
+
+Add a second tool execution pipeline: either the pipe executes tools (existing behavior) or Open WebUI executes tools (pass-through), with OpenAI-style tool_calls and role:"tool" replay.
+
+Implement tool-call translation for /responses and /chat/completions, including streaming quirks like early empty arguments, with OWUI-safe emission (stable ids/indices, never emit empty args).
+
+Add debug logs for endpoint selection and tool_calls emission without logging full arguments.
+
+Add regression tests for pass-through tool mapping and required-argument safety.
+
+Document backend tradeoffs in docs/tooling_and_integrations.md and add the new valve to docs/valves_and_configuration_atlas.md; bump version to 1.0.20.
+
+## 2026-01-08 - fix: fail fast on undecryptable OpenRouter API key
+- Commit: `17a5167969decfb352af1884f8dbce8111ad4cc0`
+- Author: rbb-dev
+
+Stop sending Bearer encrypted:... when WEBUI_SECRET_KEY changed; return a clear auth/config error instead.
+
+Treat __task__ as str|dict safely (prevents 'str' object has no attribute 'get') and short-circuit task calls with safe stubs during auth failure to avoid log spam.
+
+Reduce streaming producer traceback noise for expected 401/403 auth failures; add regression tests (tests/test_auth_failfast.py).
+
+## 2026-01-09 - feat: add Direct Uploads (multimodal chat uploads)
+- Commit: `d7d002ca7ba18b00d35c33a7781345e7c6e921ca`
+- Author: rbb-dev
+
+- Add a toggleable Direct Uploads filter to send eligible chat uploads directly to the model (files/audio/video)
+- Gate uploads with size limits and MIME/format allowlists; unsupported types stay on the normal OWUI path
+- Inline OWUI file storage URLs safely, route to /responses vs /chat/completions as required
+- Add dedicated documentation and regression tests
+- Docs: see docs/openrouter_direct_uploads.md
+
+## 2026-01-09 - fix: honor Direct Uploads /responses audio allowlist
+- Commit: `d102d888ca6f8b26a14b59acb5054f5b91d8d5ab`
+- Author: rbb-dev
+
+- Use DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST when deciding /responses vs /chat/completions for direct-audio uploads (based on sniffed container)
+- Update Direct Uploads docs to match routing behavior
+- Add/adjust tests for allowlist-driven routing and typing correctness
+
+## 2026-01-10 - fix: harden Direct Uploads metadata safety and improve fail-open UX
+- Commit: `58e64a5bfee90ac950650d00abd92f4afc8f0c7c`
+- Author: rbb-dev
+
+Changes:
+- Remove metadata["files"] mutation to prevent shared dict issues
+- Use copy-on-write pattern for metadata["openrouter_pipe"] updates
+- Convert capability mismatch exceptions to fail-open + warnings
+- Emit user notifications for fallback cases via _emit_notification
+- Harden _decode_base64_prefix() with strict base64 validation
+- Remove redundant responses_eligible field (pipe computes it)
+- Fix type check expression: (item.get("type") or "file")
+- Add test coverage for fail-open behavior
+- Fix embedded filter template indentation (tabs → spaces)
+
+## 2026-01-11 - feat: support OWUI 0.7.x native tools + builtin tools
+- Commit: `c2ec716900022a106ef0413ac65ec8553b7efbb6`
+- Author: rbb-dev
+
+Stop dropping OWUI native tools and normalize to /responses.
+
+Proxy OWUI builtin tools via in-process callables when needed.
+
+Add collision-safe tool registry/renames and passthrough origin mapping.
+
+Harden /responses replay tool items by stripping extra fields.
+
+Emit OWUI source events for citations and add coverage tests.
+
+## 2026-01-11 - feat: auto-discover OWUI DB engine (OWUI 0.7.x DB refactor)
+- Commit: `515d264377b63fd96c57d7ae7e0e7e1558448e76`
+- Author: rbb-dev
+
+Work around OWUI 0.7.x DB helper renames/session-sharing refactor by discovering the engine via get_db_context/get_db.
+
+Fall back to open_webui.internal.db.engine when no context manager is available.
+
+Emit debug logs for discovery (source + dialect/driver + schema).
+
+Add tests for discovery paths.
+
+## 2026-01-11 - fix: use OWUI metadata tool registry for native tools
+- Commit: `b29c8bf7770839c8e470423853a052419b321dd4`
+- Author: rbb-dev
+
+Prefer __metadata__["tools"] executors (OWUI middleware-built) over re-synthesizing builtin tools inside the pipe.
+
+Keeps the pipe as a conduit and avoids divergent/duplicate builtin tool construction.
+
+Add regression test ensuring native tools execute in Pipeline mode via __metadata__["tools"].
+
+## 2026-01-11 - refactor: make OWUI file handling file_id-first
+- Commit: `534b36b4500ca1ccc58ad9cbc159c31c31c9e97e`
+- Author: rbb-dev
+
+Return OWUI file ids from uploads; inline provider-bound files by id
+
+Stop constructing internal /api/v1/files/... URLs for request plumbing
+
+Keep /api/v1/files/{id}/content only for OWUI-rendered markdown
+
+Update multimodal + rehydration tests for id-first flow
+
+## 2026-01-11 - chore: redact data-url base64 blobs in debug logs
+- Commit: `a5f712088fe394576d8f326e83ce6da3cb707751`
+- Author: rbb-dev
+
+Truncate data:...;base64,... strings in request + SSE payload dumps to keep logs readable

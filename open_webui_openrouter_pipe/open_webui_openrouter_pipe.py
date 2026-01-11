@@ -6,7 +6,7 @@ git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API pipe for Open WebUI
 required_open_webui_version: 0.6.28
-version: 1.1.0
+version: 1.1.1
 requirements: aiohttp, cairosvg, cryptography, fastapi, httpx, lz4, Pillow, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper
 license: MIT
 
@@ -4175,7 +4175,7 @@ class Pipe:
         )
 
     # Core Structure — shared concurrency primitives
-    _QUEUE_MAXSIZE = 500
+    _QUEUE_MAXSIZE = 1000
     _AUTH_FAILURE_TTL_SECONDS = 60
     _AUTH_FAILURE_UNTIL: dict[str, float] = {}
     _AUTH_FAILURE_LOCK = threading.Lock()
