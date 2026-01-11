@@ -10511,49 +10511,24 @@ class Filter:
                 if isinstance(name, str) and name.strip():
                     owui_registry[name.strip()] = entry
 
-        builtin_registry: dict[str, dict[str, Any]] = {}
-        if (not owui_tool_passthrough) and incoming_tools and __request__ is not None and isinstance(__metadata__, dict):
-            try:
-                from open_webui.utils.tools import get_builtin_tools as owui_get_builtin_tools  # type: ignore
-            except Exception:
-                owui_get_builtin_tools = None
-            if owui_get_builtin_tools is not None:
-                features_for_tools = __metadata__.get("features")
-                if not isinstance(features_for_tools, dict):
-                    features_for_tools = {}
-                model_for_tools = __metadata__.get("model")
-                if not isinstance(model_for_tools, dict):
-                    model_for_tools = {}
-                user_dict: dict[str, Any] = {}
-                if user_model is not None:
-                    with contextlib.suppress(Exception):
-                        user_dict = user_model.model_dump()
-                extra_params_for_tools = {
-                    "__request__": __request__,
-                    "__user__": user_dict,
-                    "__event_emitter__": __event_emitter__,
-                    "__event_call__": __event_call__,
-                    "__chat_id__": __metadata__.get("chat_id"),
-                    "__message_id__": __metadata__.get("message_id"),
-                    "__model__": model_for_tools,
-                    "__messages__": body.get("messages", []),
-                    "__files__": __metadata__.get("files", []) or [],
+        # OWUI-native tools are already computed by OWUI middleware and attached to metadata["tools"].
+        # Prefer using that executor registry instead of re-synthesizing builtins inside the pipe.
+        if isinstance(__metadata__, dict):
+            metadata_tools_raw = __metadata__.get("tools")
+            if isinstance(metadata_tools_raw, dict):
+                metadata_tools = {
+                    k: v for k, v in metadata_tools_raw.items() if isinstance(k, str) and isinstance(v, dict)
                 }
-                with contextlib.suppress(Exception):
-                    builtins = owui_get_builtin_tools(
-                        __request__,
-                        extra_params_for_tools,
-                        features_for_tools,
-                        model_for_tools,
-                    )
-                    if isinstance(builtins, dict):
-                        builtin_registry = {k: v for k, v in builtins.items() if isinstance(v, dict)}
+                if metadata_tools:
+                    for name, tool_cfg in metadata_tools.items():
+                        if name not in owui_registry:
+                            owui_registry[name] = tool_cfg
 
         tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
             request_tool_specs=incoming_tools if incoming_tools else None,
             owui_registry=owui_registry or None,
             direct_registry=direct_registry or None,
-            builtin_registry=builtin_registry or None,
+            builtin_registry=None,
             extra_tools=merged_extra_tools or None,
             strictify=strictify,
             owui_tool_passthrough=owui_tool_passthrough,
