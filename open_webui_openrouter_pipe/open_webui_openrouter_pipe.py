@@ -1535,6 +1535,43 @@ class OpenRouterModelRegistry:
         return cls._specs.get(norm) or {}
 
 # Temporary debug helpers shared by registry + pipe (safe to remove later)
+_REDACTED_DATA_URL_MARKER = "<snip data-url base64>"
+
+
+def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
+    """Return a copy of ``value`` with large data:...;base64,... blobs truncated.
+
+    This keeps DEBUG logs readable and prevents multi-megabyte payloads from being emitted
+    when images/files are inlined for providers.
+    """
+
+    def _redact_data_url(text: str) -> str:
+        candidate = text.strip()
+        if not candidate.startswith("data:") or ";base64," not in candidate:
+            return text
+        header, b64 = candidate.split(",", 1)
+        if len(candidate) <= max_chars:
+            return candidate
+        keep = max(8, min(64, max_chars // 4))
+        return f"{header},{b64[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(b64)} chars)…"
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_walk(v) for v in obj)
+        if isinstance(obj, str):
+            return _redact_data_url(obj)
+        return obj
+
+    safe_max = int(max_chars) if isinstance(max_chars, int) else 256
+    safe_max = max(64, min(safe_max, 8192))
+    max_chars = safe_max
+    return _walk(value)
+
+
 def _debug_print_request(headers: Dict[str, str], payload: Optional[Dict[str, Any]]) -> None:
     """Log sanitized request metadata when DEBUG logging is enabled."""
     redacted_headers = dict(headers or {})
@@ -1543,7 +1580,8 @@ def _debug_print_request(headers: Dict[str, str], payload: Optional[Dict[str, An
         redacted_headers["Authorization"] = f"{token[:10]}..." if len(token) > 10 else "***"
     LOGGER.debug("OpenRouter request headers: %s", json.dumps(redacted_headers, indent=2))
     if payload is not None:
-        LOGGER.debug("OpenRouter request payload: %s", json.dumps(payload, indent=2))
+        redacted_payload = _redact_payload_blobs(payload)
+        LOGGER.debug("OpenRouter request payload: %s", json.dumps(redacted_payload, indent=2))
 
 
 async def _debug_print_error_response(resp: aiohttp.ClientResponse) -> str:
@@ -12983,9 +13021,10 @@ class Filter:
                     # Emit OpenRouter SSE frames at DEBUG (non-delta) only; skip delta spam entirely.
                     is_delta_event = bool(etype and etype.endswith(".delta"))
                     if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
+                        redacted_event = _redact_payload_blobs(event)
                         self.logger.debug(
                             "OpenRouter payload: %s",
-                            json.dumps(event, indent=2, ensure_ascii=False),
+                            json.dumps(redacted_event, indent=2, ensure_ascii=False),
                         )
 
                     if etype:
