@@ -147,9 +147,9 @@ class TestImageTransformations:
             }
         )
         pipe_instance._upload_to_owui_storage = AsyncMock(
-            return_value="/files/internal/cat123"
+            return_value="cat123"
         )
-        pipe_instance._inline_internal_file_url = AsyncMock(
+        pipe_instance._inline_owui_file_id = AsyncMock(
             return_value="data:image/png;base64,INLINED=="
         )
 
@@ -170,10 +170,10 @@ class TestImageTransformations:
         assert transformed["image_url"] == "data:image/png;base64,INLINED=="
         pipe_instance._download_remote_url.assert_awaited_once()
         pipe_instance._upload_to_owui_storage.assert_awaited_once()
-        pipe_instance._inline_internal_file_url.assert_awaited_once()
-        inline_args = pipe_instance._inline_internal_file_url.await_args
+        pipe_instance._inline_owui_file_id.assert_awaited_once()
+        inline_args = pipe_instance._inline_owui_file_id.await_args
         assert inline_args is not None
-        assert inline_args.args[0] == "/files/internal/cat123"
+        assert inline_args.args[0] == "cat123"
 
 
 class TestFileEncoding:
@@ -566,12 +566,12 @@ class TestImageTransformer:
         monkeypatch,
     ):
         """Base64 images should be re-hosted and emit status updates."""
-        stored_url = "/api/v1/files/img123"
-        upload_mock = AsyncMock(return_value=stored_url)
+        stored_id = "img123"
+        upload_mock = AsyncMock(return_value=stored_id)
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
         monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
 
         block = {
@@ -600,16 +600,16 @@ class TestImageTransformer:
     ):
         """Remote URLs are downloaded, uploaded, and statuses emitted."""
         remote_url = "https://example.com/photo.png"
-        stored_url = "/api/v1/files/remote-img"
+        stored_id = "remote-img"
         download_mock = AsyncMock(
             return_value={"data": b"img", "mime_type": "image/png", "url": remote_url}
         )
-        upload_mock = AsyncMock(return_value=stored_url)
+        upload_mock = AsyncMock(return_value=stored_id)
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
         monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
 
         block = {"type": "image_url", "image_url": {"url": remote_url, "detail": "auto"}}
@@ -635,11 +635,11 @@ class TestImageTransformer:
         monkeypatch,
     ):
         """Explicit detail selection should survive transformation."""
-        async def fake_inline(url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
-            assert url == "/api/v1/files/abc"
+        async def fake_inline(file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+            assert file_id == "abc"
             return "data:image/png;base64,abc"
 
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", fake_inline)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is not None
@@ -682,10 +682,10 @@ class TestImageTransformer:
     ):
         """Missing OWUI file ids should not be sent upstream as internal URLs."""
 
-        async def fake_inline(_url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+        async def fake_inline(_file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
             return None
 
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", fake_inline)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/missing/content"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is None
@@ -726,7 +726,7 @@ class TestFileTransformer:
     ):
         """Remote file_url inputs should be downloaded and re-hosted in OWUI."""
         remote_url = "https://example.com/manual.pdf"
-        stored_url = "/api/v1/files/remote123"
+        stored_id = "remote123"
         pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
 
         download_mock = AsyncMock(
@@ -736,7 +736,7 @@ class TestFileTransformer:
                 "url": remote_url,
             }
         )
-        upload_mock = AsyncMock(return_value=stored_url)
+        upload_mock = AsyncMock(return_value=stored_id)
         status_mock = AsyncMock()
 
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
@@ -773,7 +773,8 @@ class TestFileTransformer:
         assert user_message["role"] == "user"
         file_block = user_message["content"][0]
         assert file_block["type"] == "input_file"
-        assert file_block["file_url"] == stored_url
+        assert file_block["file_id"] == stored_id
+        assert "file_url" not in file_block
 
         download_mock.assert_awaited_once_with(remote_url)
         upload_mock.assert_awaited_once()
@@ -1244,11 +1245,11 @@ class TestMultimodalIntegration:
         download_mock = AsyncMock(
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
-        upload_mock = AsyncMock(side_effect=["/api/v1/files/img123", "/api/v1/files/file123"])
+        upload_mock = AsyncMock(side_effect=["img123", "file123"])
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -1276,7 +1277,8 @@ class TestMultimodalIntegration:
         assert blocks[0]["text"] == "hello"
         assert blocks[1]["image_url"] == "data:image/png;base64,INLINE"
         assert blocks[1]["detail"] == "low"
-        assert blocks[2]["file_url"] == "/api/v1/files/file123"
+        assert blocks[2]["file_id"] == "file123"
+        assert "file_url" not in blocks[2]
 
         download_mock.assert_awaited_once_with(remote_file_url)
         assert upload_mock.await_count == 2
@@ -1292,10 +1294,10 @@ class TestMultimodalIntegration:
         monkeypatch,
     ) -> None:
         """Should handle message with text, audio, and image."""
-        upload_mock = AsyncMock(return_value="/api/v1/files/img999")
+        upload_mock = AsyncMock(return_value="img999")
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -1332,10 +1334,10 @@ class TestMultimodalIntegration:
         monkeypatch,
     ) -> None:
         """Should handle multiple images in single message."""
-        upload_mock = AsyncMock(side_effect=["/api/v1/files/img1", "/api/v1/files/img2"])
+        upload_mock = AsyncMock(side_effect=["img1", "img2"])
         inline_mock = AsyncMock(side_effect=["data:image/png;base64,img1", "data:image/png;base64,img2"])
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_internal_file_url", inline_mock)
+        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -1378,7 +1380,7 @@ class TestMultimodalIntegration:
         download_mock = AsyncMock(
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
-        upload_mock = AsyncMock(side_effect=[RuntimeError("boom"), "/api/v1/files/file-ok"])
+        upload_mock = AsyncMock(side_effect=[RuntimeError("boom"), "file-ok"])
         monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
 
@@ -1403,7 +1405,8 @@ class TestMultimodalIntegration:
         # Image failure should fall back to original data URL.
         assert blocks[0]["image_url"] == "data:image/png;base64,AAAA"
         # File should still be processed.
-        assert blocks[1]["file_url"] == "/api/v1/files/file-ok"
+        assert blocks[1]["file_id"] == "file-ok"
+        assert "file_url" not in blocks[1]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

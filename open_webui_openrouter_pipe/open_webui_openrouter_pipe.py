@@ -8323,6 +8323,30 @@ class Filter:
                 return normalized
         return "application/octet-stream"
 
+    async def _inline_owui_file_id(
+        self,
+        file_id: str,
+        *,
+        chunk_size: int,
+        max_bytes: int,
+    ) -> Optional[str]:
+        """Convert an Open WebUI file id into a data URL for providers."""
+        normalized = (file_id or "").strip()
+        if not normalized:
+            return None
+        file_obj = await self._get_file_by_id(normalized)
+        if not file_obj:
+            return None
+        mime_type = self._infer_file_mime_type(file_obj)
+        try:
+            b64 = await self._read_file_record_base64(file_obj, chunk_size, max_bytes)
+        except ValueError as exc:
+            self.logger.warning("Failed to inline file %s: %s", normalized, exc)
+            return None
+        if not b64:
+            return None
+        return f"data:{mime_type};base64,{b64}"
+
     async def _inline_internal_file_url(
         self,
         url: str,
@@ -8334,18 +8358,7 @@ class Filter:
         file_id = _extract_internal_file_id(url)
         if not file_id:
             return None
-        file_obj = await self._get_file_by_id(file_id)
-        if not file_obj:
-            return None
-        mime_type = self._infer_file_mime_type(file_obj)
-        try:
-            b64 = await self._read_file_record_base64(file_obj, chunk_size, max_bytes)
-        except ValueError as exc:
-            self.logger.warning("Failed to inline file %s: %s", file_id, exc)
-            return None
-        if not b64:
-            return None
-        return f"data:{mime_type};base64,{b64}"
+        return await self._inline_owui_file_id(file_id, chunk_size=chunk_size, max_bytes=max_bytes)
 
     async def _inline_internal_responses_input_files_inplace(
         self,
@@ -8379,26 +8392,34 @@ class Filter:
                 file_data = block.get("file_data")
                 file_id = block.get("file_id")
 
-                candidate: str | None = None
-                if isinstance(file_data, str) and file_data.strip():
-                    candidate = file_data.strip()
-                elif isinstance(file_url, str) and file_url.strip():
-                    candidate = file_url.strip()
-                elif isinstance(file_id, str) and file_id.strip():
-                    candidate = f"/api/v1/files/{file_id.strip()}/content"
+                internal_file_id: str | None = None
 
-                if not candidate or not _is_internal_file_url(candidate):
+                if isinstance(file_id, str) and file_id.strip():
+                    candidate_id = file_id.strip()
+                    # Avoid clobbering legitimate OpenAI/OpenRouter file ids (commonly `file-...`).
+                    if candidate_id.startswith("file-"):
+                        continue
+                    internal_file_id = candidate_id
+                elif isinstance(file_data, str) and file_data.strip() and _is_internal_file_url(file_data.strip()):
+                    internal_file_id = _extract_internal_file_id(file_data.strip())
+                elif isinstance(file_url, str) and file_url.strip() and _is_internal_file_url(file_url.strip()):
+                    internal_file_id = _extract_internal_file_id(file_url.strip())
+
+                if not internal_file_id:
                     continue
 
-                inlined = await self._inline_internal_file_url(
-                    candidate,
+                inlined = await self._inline_owui_file_id(
+                    internal_file_id,
                     chunk_size=chunk_size,
                     max_bytes=max_bytes,
                 )
                 if not inlined:
-                    raise ValueError(f"Failed to inline Open WebUI file URL for /responses: {candidate}")
+                    raise ValueError(
+                        f"Failed to inline Open WebUI file id for /responses: {internal_file_id}"
+                    )
 
                 block["file_data"] = inlined
+                block.pop("file_id", None)
                 if isinstance(file_url, str) and file_url.strip() and _is_internal_file_url(file_url.strip()):
                     block.pop("file_url", None)
 
@@ -8499,7 +8520,7 @@ class Filter:
         message_id: Optional[str] = None,
         owui_user_id: Optional[str] = None,
     ) -> Optional[str]:
-        """Upload file or image to Open WebUI storage and return internal URL.
+        """Upload file or image to Open WebUI storage and return the OWUI file id.
 
         This method ensures that files and images are persistently stored in Open WebUI's
         file system, preventing data loss from:
@@ -8515,8 +8536,7 @@ class Filter:
             mime_type: MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
 
         Returns:
-            Internal URL path to the uploaded file (e.g., '/api/v1/files/{id}'),
-            or None if upload fails
+            Open WebUI file id (UUID string), or None if upload fails.
 
         Note:
             - File processing is disabled (process=False) to avoid unnecessary overhead
@@ -8524,10 +8544,10 @@ class Filter:
             - Failures are logged but return None rather than raising exceptions
 
         Example:
-            >>> url = await self._upload_to_owui_storage(
+            >>> file_id = await self._upload_to_owui_storage(
             ...     request, user, image_bytes, "photo.jpg", "image/jpeg"
             ... )
-            >>> # url = '/api/v1/files/abc123...'
+            >>> # file_id = 'abc123...'
         """
         try:
             upload_metadata: dict[str, Any] = {"mime_type": mime_type}
@@ -8587,16 +8607,10 @@ class Filter:
             except Exception:
                 pass
 
-            # OWUI v0.7.x has multiple routes named `get_file_content_by_id`, making url_path_for(...)
-            # fragile. Prefer `get_file_by_id` (unique) and fall back to the stable mounted prefix.
-            try:
-                internal_url = request.app.url_path_for("get_file_by_id", id=file_id)
-            except Exception:
-                internal_url = f"/api/v1/files/{file_id}"
             self.logger.info(
-                f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: {internal_url}"
+                f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: /api/v1/files/{file_id}"
             )
-            return internal_url
+            return file_id
         except Exception as exc:
             self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
             return None
@@ -10133,7 +10147,7 @@ class Filter:
                     {
                         "type": "file",
                         "file": {
-                            "file_url": f"/api/v1/files/{file_id}/content",
+                            "file_id": file_id,
                             "filename": filename,
                         },
                     }
@@ -11209,6 +11223,7 @@ class Filter:
                         image_payload = block.get("image_url")
                         detail: Optional[str] = None
                         url: str = ""
+                        owui_file_id: Optional[str] = None
 
                         if isinstance(image_payload, dict):
                             url = image_payload.get("url", "")
@@ -11241,7 +11256,7 @@ class Filter:
                             upload_request, upload_user = await _get_storage_context()
                             if not (upload_request and upload_user):
                                 return None
-                            internal_url = await self._upload_to_owui_storage(
+                            stored_id = await self._upload_to_owui_storage(
                                 request=upload_request,
                                 user=upload_user,
                                 file_data=payload,
@@ -11251,9 +11266,9 @@ class Filter:
                                 message_id=msg_id,
                                 owui_user_id=getattr(user_obj, "id", None),
                             )
-                            if internal_url:
+                            if stored_id:
                                 await self._emit_status(event_emitter, status_message, done=False)
-                            return internal_url
+                            return stored_id
 
                         # Handle data URLs (base64)
                         if url.startswith("data:"):
@@ -11261,14 +11276,14 @@ class Filter:
                                 parsed = self._parse_data_url(url)
                                 if parsed:
                                     ext = parsed["mime_type"].split("/")[-1]
-                                    internal_url = await _save_image_bytes(
+                                    stored_id = await _save_image_bytes(
                                         parsed["data"],
                                         parsed["mime_type"],
                                         f"image-{uuid.uuid4().hex}.{ext}",
                                         StatusMessages.IMAGE_BASE64_SAVED,
                                     )
-                                    if internal_url:
-                                        url = internal_url
+                                    if stored_id:
+                                        owui_file_id = stored_id
                             except Exception as exc:
                                 self.logger.error(f"Failed to process base64 image: {exc}")
                                 await self._emit_error(
@@ -11287,14 +11302,14 @@ class Filter:
                                         ext = downloaded["mime_type"].split("/")[-1]
                                         filename = f"{filename}.{ext}"
 
-                                    internal_url = await _save_image_bytes(
+                                    stored_id = await _save_image_bytes(
                                         downloaded["data"],
                                         downloaded["mime_type"],
                                         filename,
                                         StatusMessages.IMAGE_REMOTE_SAVED,
                                     )
-                                    if internal_url:
-                                        url = internal_url
+                                    if stored_id:
+                                        owui_file_id = stored_id
                             except Exception as exc:
                                 self.logger.error(f"Failed to download remote image {url}: {exc}")
                                 await self._emit_error(
@@ -11302,17 +11317,19 @@ class Filter:
                                     f"Failed to download image: {exc}",
                                     show_error_message=False
                                 )
-                        if _is_internal_file_url(url):
-                            inlined = await self._inline_internal_file_url(
-                                url,
+                        if owui_file_id is None and _is_internal_file_url(url):
+                            owui_file_id = _extract_internal_file_id(url)
+
+                        if owui_file_id:
+                            inlined = await self._inline_owui_file_id(
+                                owui_file_id,
                                 chunk_size=chunk_size,
                                 max_bytes=max_inline_bytes,
                             )
                             if not inlined:
-                                file_id = _extract_internal_file_id(url) or "unknown"
                                 await self._emit_status(
                                     event_emitter,
-                                    f"Skipping image {file_id}: Open WebUI file unavailable.",
+                                    f"Skipping image {owui_file_id}: Open WebUI file unavailable.",
                                     done=False,
                                 )
                                 return None
@@ -11414,7 +11431,7 @@ class Filter:
                                 ext = safe_mime.split("/")[-1]
                                 fname = f"{fname}.{ext}"
 
-                            internal_url = await self._upload_to_owui_storage(
+                            stored_id = await self._upload_to_owui_storage(
                                 request=upload_request,
                                 user=upload_user,
                                 file_data=payload,
@@ -11424,13 +11441,13 @@ class Filter:
                                 message_id=msg_id,
                                 owui_user_id=getattr(user_obj, "id", None),
                             )
-                            if internal_url:
+                            if stored_id:
                                 await self._emit_status(
                                     event_emitter,
                                     status_message,
                                     done=False,
                                 )
-                            return internal_url
+                            return stored_id
 
                         async def _download_and_store(
                             remote_url: str,
@@ -11453,6 +11470,18 @@ class Filter:
                                 status_message=StatusMessages.FILE_REMOTE_SAVED,
                             )
 
+                        # Normalize internal OWUI URLs into a file_id (preferred).
+                        if isinstance(file_url, str) and file_url.strip() and _is_internal_file_url(file_url.strip()):
+                            extracted = _extract_internal_file_id(file_url.strip())
+                            if extracted:
+                                file_id = extracted
+                                file_url = None
+                        if isinstance(file_data, str) and file_data.strip() and _is_internal_file_url(file_data.strip()):
+                            extracted = _extract_internal_file_id(file_data.strip())
+                            if extracted:
+                                file_id = extracted
+                                file_data = None
+
                         # Process file_data if it's a data URL or remote URL
                         if (
                             file_data
@@ -11465,15 +11494,16 @@ class Filter:
                                     parsed = self._parse_data_url(file_data)
                                     if parsed:
                                         fname = filename or f"file-{uuid.uuid4().hex}"
-                                        internal_url = await _save_bytes_to_storage(
+                                        stored_id = await _save_bytes_to_storage(
                                             parsed["data"],
                                             parsed["mime_type"],
                                             preferred_name=fname,
                                             status_message=StatusMessages.FILE_BASE64_SAVED,
                                         )
-                                        if internal_url:
-                                            file_url = internal_url
-                                            file_data = None  # Clear base64, use URL instead
+                                        if stored_id:
+                                            file_id = stored_id
+                                            file_url = None
+                                            file_data = None  # Clear base64; store via OWUI id instead.
                                 except Exception as exc:
                                     self.logger.error(f"Failed to process base64 file: {exc}")
                                     await self._emit_error(
@@ -11487,9 +11517,10 @@ class Filter:
                                 try:
                                     remote_url = file_data
                                     fname = filename or remote_url.split("/")[-1].split("?")[0]
-                                    internal_url = await _download_and_store(remote_url, name_hint=fname)
-                                    if internal_url:
-                                        file_url = internal_url
+                                    stored_id = await _download_and_store(remote_url, name_hint=fname)
+                                    if stored_id:
+                                        file_id = stored_id
+                                        file_url = None
                                         file_url_set_from_file_data = True
                                     else:
                                         if not file_url:
@@ -11528,14 +11559,15 @@ class Filter:
                                     parsed = self._parse_data_url(file_url)
                                     if parsed:
                                         fname = filename or f"file-{uuid.uuid4().hex}"
-                                        internal_url = await _save_bytes_to_storage(
+                                        stored_id = await _save_bytes_to_storage(
                                             parsed["data"],
                                             parsed["mime_type"],
                                             preferred_name=fname,
                                             status_message=StatusMessages.FILE_BASE64_SAVED,
                                         )
-                                        if internal_url:
-                                            file_url = internal_url
+                                        if stored_id:
+                                            file_id = stored_id
+                                            file_url = None
                                 except Exception as exc:
                                     self.logger.error(f"Failed to process base64 file_url: {exc}")
                                     await self._emit_error(
@@ -11546,9 +11578,10 @@ class Filter:
                             elif file_url.startswith(("http://", "https://")) and not _is_internal_storage(file_url):
                                 try:
                                     name_hint = filename or file_url.split("/")[-1].split("?")[0]
-                                    internal_url = await _download_and_store(file_url, name_hint=name_hint)
-                                    if internal_url:
-                                        file_url = internal_url
+                                    stored_id = await _download_and_store(file_url, name_hint=name_hint)
+                                    if stored_id:
+                                        file_id = stored_id
+                                        file_url = None
                                     else:
                                         if event_emitter:
                                             label = name_hint or "remote file"
@@ -12595,7 +12628,7 @@ class Filter:
                     stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
                     if stored:
                         await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
-                        return stored
+                        return f"/api/v1/files/{stored}/content"
                     return text
                 return None
             if text.startswith(("http://", "https://", "/")):
@@ -12616,7 +12649,7 @@ class Filter:
             stored = await _persist_generated_image(decoded, mime_type)
             if stored:
                 await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
-                return stored
+                return f"/api/v1/files/{stored}/content"
             return f"data:{mime_type};base64,{cleaned}"
 
         async def _materialize_image_entry(entry: Any) -> Optional[str]:
@@ -12653,7 +12686,7 @@ class Filter:
                         stored = await _persist_generated_image(decoded, mime_type)
                         if stored:
                             await self._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
-                            return stored
+                            return f"/api/v1/files/{stored}/content"
                         return f"data:{mime_type};base64,{cleaned}"
                 nested_result = entry.get("result")
                 if nested_result is not None:

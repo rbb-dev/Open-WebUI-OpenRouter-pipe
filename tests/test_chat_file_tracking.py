@@ -25,7 +25,7 @@ async def test_upload_to_owui_storage_links_chat_file(pipe_instance, mock_reques
     monkeypatch.setattr(ow_mod, "upload_file_handler", upload_stub)
     monkeypatch.setattr(ow_mod, "run_in_threadpool", run_in_threadpool_stub)
 
-    url = await pipe_instance._upload_to_owui_storage(
+    file_id = await pipe_instance._upload_to_owui_storage(
         request=mock_request,
         user=mock_user,
         file_data=b"data",
@@ -36,7 +36,7 @@ async def test_upload_to_owui_storage_links_chat_file(pipe_instance, mock_reques
         owui_user_id="user123",
     )
 
-    assert url == "/api/v1/files/test123"
+    assert file_id == "file123"
     metadata = captured.get("metadata")
     assert isinstance(metadata, dict)
     assert metadata.get("chat_id") == "chat123"
@@ -60,7 +60,7 @@ async def test_upload_to_owui_storage_ignores_missing_insert_api(pipe_instance, 
     monkeypatch.setattr(ow_mod, "upload_file_handler", upload_stub)
     monkeypatch.setattr(ow_mod, "run_in_threadpool", run_in_threadpool_stub)
 
-    url = await pipe_instance._upload_to_owui_storage(
+    file_id = await pipe_instance._upload_to_owui_storage(
         request=mock_request,
         user=mock_user,
         file_data=b"data",
@@ -71,5 +71,4 @@ async def test_upload_to_owui_storage_ignores_missing_insert_api(pipe_instance, 
         owui_user_id="user123",
     )
 
-    assert url == "/api/v1/files/test123"
-
+    assert file_id == "file123"

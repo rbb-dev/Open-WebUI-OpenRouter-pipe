@@ -144,11 +144,10 @@ async def test_transform_limits_user_images(monkeypatch):
         if event.get("type") == "status":
             captured_status.append(event["data"]["description"])
 
-    async def fake_inline(url, chunk_size, max_bytes):
-        file_id = url.split("/")[-2]
+    async def fake_inline(file_id, chunk_size, max_bytes):
         return f"data:image/png;base64,{file_id}"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     valves = pipe.valves.model_copy(update={"MAX_INPUT_IMAGES_PER_REQUEST": 1})
     messages = [
@@ -175,10 +174,9 @@ async def test_transform_limits_user_images(monkeypatch):
 @pytest.mark.asyncio
 async def test_transform_falls_back_to_assistant_images(monkeypatch):
     pipe = Pipe()
-    async def fake_inline(url, chunk_size, max_bytes):
-        file_id = url.split("/")[-2]
+    async def fake_inline(file_id, chunk_size, max_bytes):
         return f"data:image/png;base64,{file_id}"
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     messages = [
         {
@@ -207,13 +205,12 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
 async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeypatch):
     pipe = Pipe()
 
-    async def fake_inline(url, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
-        if url.endswith("/files/missing-img/content"):
+    async def fake_inline(file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
+        if file_id == "missing-img":
             return None
-        file_id = url.split("/")[-2]
         return f"data:image/png;base64,{file_id}"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     messages = [
         {
@@ -246,11 +243,10 @@ async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeyp
 async def test_transform_respects_user_turn_only_selection(monkeypatch):
     pipe = Pipe()
 
-    async def fake_inline(url, chunk_size, max_bytes):
-        file_id = url.split("/")[-2]
+    async def fake_inline(file_id, chunk_size, max_bytes):
         return f"data:image/png;base64,{file_id}"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     valves = pipe.valves.model_copy(update={"IMAGE_INPUT_SELECTION": "user_turn_only"})
     messages = [
@@ -281,10 +277,10 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
         if event.get("type") == "status":
             captured_status.append(event["data"]["description"])
 
-    async def fake_inline(url, chunk_size, max_bytes):
+    async def fake_inline(_file_id, chunk_size, max_bytes):
         return "data:image/png;base64,test"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"text-only": {"features": set()}})
     messages = [
         {

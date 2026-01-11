@@ -152,11 +152,12 @@ async def test_inline_internal_responses_input_files_inplace_rewrites_internal_u
         ],
     }
 
-    pipe._inline_internal_file_url = AsyncMock(  # type: ignore[method-assign]
+    pipe._inline_owui_file_id = AsyncMock(  # type: ignore[method-assign]
         return_value="data:application/pdf;base64,SGVsbG8="
     )
 
     await pipe._inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)
+    pipe._inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024)
 
     block = cast(dict, payload["input"][0]["content"][0])
     assert block.get("file_data", "").startswith("data:application/pdf;base64,")

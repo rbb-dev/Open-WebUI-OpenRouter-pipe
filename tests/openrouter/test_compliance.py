@@ -51,11 +51,11 @@ async def test_supported_image_formats_are_inlined(
     monkeypatch.setattr(
         pipe_instance,
         "_upload_to_owui_storage",
-        AsyncMock(return_value="/api/v1/files/mock-image"),
+        AsyncMock(return_value="mock-image"),
     )
     monkeypatch.setattr(
         pipe_instance,
-        "_inline_internal_file_url",
+        "_inline_owui_file_id",
         AsyncMock(return_value=inline_value),
     )
 
@@ -65,7 +65,7 @@ async def test_supported_image_formats_are_inlined(
 
     assert result["type"] == "input_image"
     assert result["image_url"] == inline_value
-    pipe_instance._inline_internal_file_url.assert_awaited_once()
+    pipe_instance._inline_owui_file_id.assert_awaited_once()
 
 
 @pytest.mark.asyncio
