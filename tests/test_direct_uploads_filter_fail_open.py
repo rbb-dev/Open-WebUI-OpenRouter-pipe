@@ -38,3 +38,58 @@ def test_direct_uploads_filter_fails_open_when_model_lacks_file_capability():
     assert isinstance(warnings, list)
     assert any("Direct file uploads not supported" in str(msg) for msg in warnings)
 
+
+def test_direct_uploads_filter_bypasses_owui_file_context_via_metadata_files():
+    filt = Filter()
+
+    diverted = {
+        "id": "file_1",
+        "type": "file",
+        "name": "example.pdf",
+        "size": 123,
+        "content_type": "application/pdf",
+    }
+    retained = {
+        "id": "file_2",
+        "type": "file",
+        "name": "example.docx",
+        "size": 456,
+        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+
+    # Mimic OWUI behavior: metadata["files"] initially references the same list object as body["files"].
+    files = [diverted, retained]
+    metadata: dict = {"files": files}
+    body = {"files": files}
+
+    user = {"valves": filt.UserValves(DIRECT_FILES=True, DIRECT_AUDIO=False, DIRECT_VIDEO=False)}
+    model = {
+        "info": {
+            "meta": {
+                "openrouter_pipe": {
+                    "capabilities": {"file_input": True, "audio_input": False, "video_input": False}
+                }
+            }
+        }
+    }
+
+    result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
+
+    # Diverted items are removed from body.files so OWUI won't rebuild metadata.files with them.
+    assert result["files"] == [retained]
+
+    # OWUI "File Context" reads metadata.files, so diverted items must be removed from there.
+    assert metadata.get("files") == [retained]
+
+    pipe_meta = metadata.get("openrouter_pipe")
+    assert isinstance(pipe_meta, dict)
+    direct_uploads = pipe_meta.get("direct_uploads")
+    assert isinstance(direct_uploads, dict)
+    assert direct_uploads.get("files") == [
+        {
+            "id": "file_1",
+            "name": "example.pdf",
+            "size": 123,
+            "content_type": "application/pdf",
+        }
+    ]
