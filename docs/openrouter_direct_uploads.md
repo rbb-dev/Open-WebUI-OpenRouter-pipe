@@ -86,9 +86,39 @@ These are derived from the OpenRouter model catalog and are used for:
 ### 1) Filter diversion (inlet)
 
 When the filter diverts an upload, it:
-- Removes the diverted items from the request `files[]` list (and mirrors the same change into `metadata.files`), so Open WebUI won’t treat them as knowledge inputs.
+- Removes the diverted items from the request `files[]` list **and** from `metadata.files`, so Open WebUI won’t treat them as knowledge inputs.
 - Records lightweight references (file IDs + hints) under:
   - `__metadata__["openrouter_pipe"]["direct_uploads"]`
+
+### Interaction with Open WebUI “File Context” (OWUI 0.7.x+)
+
+Open WebUI has a per-model capability toggle called **File Context** (Models → Advanced Settings → Capabilities). When enabled, Open WebUI will:
+- Extract content from uploaded files / knowledge items
+- Run retrieval as needed
+- Inject the resulting context into the conversation (prompt) before the request reaches the model provider
+
+This is great for classic OWUI RAG flows, but it is the opposite of what “Direct Uploads” is for: Direct Uploads is meant to forward the original file bytes to OpenRouter as **real multimodal inputs** (documents/audio/video), without OWUI pre-extracting and injecting text.
+
+#### The important implementation detail (why we touch both `files[]` and `metadata.files`)
+
+In OWUI, the File Context handler reads **`metadata.files`** (not `files[]`) when deciding what to process for injection. However, OWUI also rebuilds `metadata.files` from the request `files[]` after inlet filters have run.
+
+That means: if a diversion filter only edits `metadata.files`, OWUI can later overwrite it from the unmodified `files[]`, and the File Context injector may still run on the diverted uploads.
+
+To make Direct Uploads behave consistently, the companion filter therefore:
+- Removes diverted items from **both** `files[]` and `metadata.files`
+- Leaves **retained** (non-diverted) items in place so OWUI can still handle them normally
+
+#### What you should expect (behavior matrix)
+
+- **Direct Uploads OFF**
+  - **File Context ON** → OWUI may extract/retrieve and inject file context into messages (classic OWUI RAG behavior).
+  - **File Context OFF** → OWUI skips automatic file extraction/injection; only raw attachment metadata remains.
+
+- **Direct Uploads ON**
+  - Diverted uploads are removed from `files[]`/`metadata.files`, so OWUI File Context will not inject their extracted content (even if File Context is enabled for the model).
+  - Diverted uploads are forwarded to OpenRouter as direct inputs by the pipe (see next sections).
+  - Any non-diverted uploads (unsupported type, allowlist mismatch, user valve off, etc.) remain on the normal OWUI path and may still be processed by File Context when enabled.
 
 ### 2) Pipe injection (main chat request only)
 
