@@ -344,8 +344,13 @@ class Filter:
             retained.append(item)
 
         diverted_any = bool(diverted["files"] or diverted["audio"] or diverted["video"])
+        # OWUI "File Context" extraction/injection reads `body["metadata"]["files"]`, but OWUI also
+        # rebuilds metadata.files from `body["files"]` after inlet filters. To reliably bypass OWUI
+        # RAG for diverted uploads, update both.
         if diverted_any:
             body["files"] = retained
+            if isinstance(__metadata__, dict):
+                __metadata__["files"] = retained
 
         if isinstance(__metadata__, dict) and (diverted_any or warnings):
             prev_pipe_meta = __metadata__.get("openrouter_pipe")
