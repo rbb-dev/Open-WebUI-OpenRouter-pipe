@@ -49,7 +49,31 @@ Operational note:
 - The pipe always constructs a canonical “Responses-style” request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
 - Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `top_logprobs`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
 
-### 2.2 `model_fallback` → OpenRouter `models`
+### 2.2 Advanced Model Parameters (per-model overrides)
+Open WebUI allows per-model “Advanced Model Parameters” (stored on the model in `model.params`, typically under `model.params.custom_params`). This pipe supports a small set of per-model parameters that:
+
+- affect **how requests are shaped** before they are sent to OpenRouter, and/or
+- affect what the pipe will **auto-sync into Open WebUI model metadata** (icons, capability checkboxes, integrations toggles, descriptions).
+
+The pipe accepts the following Advanced Model Parameters:
+
+| Advanced param | Type | Applies to | What it does |
+| --- | --- | --- | --- |
+| `model_fallback` | `str` (CSV) | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list into the OpenRouter `models` array (order-preserving, de-duplicated). |
+| `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping the OpenRouter web-search plugin and related request fields. |
+| `disable_model_metadata_sync` | `bool-ish` | Model metadata sync | Master switch: the pipe will not “manage” this model’s settings at all (capabilities, icon, description, auto-attached integrations, default-on integrations). |
+| `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
+| `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
+| `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
+| `disable_openrouter_search_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OpenRouter Search** integration toggle (filter id) for this model. |
+| `disable_openrouter_search_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OpenRouter Search** by default for this model (prevents seeding `meta.defaultFilterIds`). |
+| `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
+
+Notes:
+- “bool-ish” accepts JSON booleans (`true/false`) and common string/int forms (`"true"`, `"1"`, `"on"`, etc.).
+- `disable_native_websearch` has an alias key: `disable_native_web_search`.
+
+### 2.3 `model_fallback` → OpenRouter `models`
 OpenRouter supports a primary `model` plus a fallback list `models` (array). Open WebUI does not expose a first-class UI for OpenRouter’s `models` field, so this pipe supports a convenience parameter:
 
 - Custom param: `model_fallback` (CSV string)
@@ -65,7 +89,7 @@ Example Open WebUI custom parameter value:
 openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
 ```
 
-### 2.3 `disable_native_websearch` → disable OpenRouter web search plugin
+### 2.4 `disable_native_websearch` → disable OpenRouter web search plugin
 Open WebUI can attach per-model custom parameters (model settings → `custom_params`). This pipe supports a boolean custom parameter to **disable OpenRouter’s built-in web search** for specific models.
 
 - Custom param: `disable_native_websearch` (bool-ish; accepts `true/false`, `1/0`, etc.)
@@ -78,6 +102,46 @@ This is useful when OpenRouter Search is enabled by default (via the model’s D
 
 Note: Open WebUI’s built-in **Web Search** is separate (OWUI-native) and is not controlled by this parameter.
 See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+
+### 2.5 `disable_model_metadata_sync` → opt out of all model metadata sync for a model
+This is a per-model “master kill switch” for the pipe’s Open WebUI model metadata sync behavior.
+
+- Custom param: `disable_model_metadata_sync` (bool-ish)
+- Pipe behavior (when truthy):
+  - Skips all metadata writes for that model, even if sync valves are enabled (`UPDATE_MODEL_*`, `AUTO_ATTACH_*`, `AUTO_DEFAULT_*`).
+  - This preserves operator-edited settings (icons, descriptions, capabilities, and integration toggle defaults).
+
+### 2.6 `disable_capability_updates` → preserve capability checkboxes
+- Custom param: `disable_capability_updates` (bool-ish)
+- Pipe behavior (when truthy):
+  - Leaves `meta.capabilities` as-is for that model (no checkbox overwrites), even when `UPDATE_MODEL_CAPABILITIES=True`.
+
+### 2.7 `disable_image_updates` → preserve the model icon
+- Custom param: `disable_image_updates` (bool-ish)
+- Pipe behavior (when truthy):
+  - Leaves `meta.profile_image_url` as-is for that model, even when `UPDATE_MODEL_IMAGES=True`.
+
+### 2.8 `disable_description_updates` → preserve the model description
+- Custom param: `disable_description_updates` (bool-ish)
+- Pipe behavior (when truthy):
+  - Leaves `meta.description` as-is for that model, even when `UPDATE_MODEL_DESCRIPTIONS=True`.
+
+### 2.9 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Search toggle wiring
+- Custom param: `disable_openrouter_search_auto_attach` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not add/remove the OpenRouter Search filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_ORS_FILTER=True`.
+  - As a consequence, default-on seeding is also avoided (the pipe will not mark a filter as default unless it is attached).
+
+### 2.10 `disable_openrouter_search_default_on` → preserve default-on behavior
+- Custom param: `disable_openrouter_search_default_on` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not seed OpenRouter Search into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=True`.
+  - The OpenRouter Search toggle may still be auto-attached if `AUTO_ATTACH_ORS_FILTER=True` and the model supports it.
+
+### 2.11 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
+- Custom param: `disable_direct_uploads_auto_attach` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.
 
 ---
 
@@ -98,6 +162,7 @@ What it syncs (best-effort):
 - `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here).
   - SVG icons are rasterized to PNG (requires `cairosvg`).
   - Other images are converted to PNG (requires `Pillow`).
+- `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
 - `meta.capabilities`: writes the Open WebUI capability checkboxes (for example `vision`, `file_upload`, `web_search`, `image_generation`).
   - Web search is **augmented** using OpenRouter’s public frontend catalog signals (in addition to `/models` pricing), so models like `x-ai/grok-4` and `openai/gpt-4o` can correctly show `web_search` even when `pricing.web_search` is `0`.
 
@@ -107,7 +172,11 @@ Data sources / egress:
 
 Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
+- `UPDATE_MODEL_DESCRIPTIONS` (default `True`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
+Per-model opt-outs:
+- `disable_model_metadata_sync`: disables all metadata sync for the model.
+- `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.
 
 Operational note:
 - This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Disable the valves if you want to manage model icons/capabilities manually.

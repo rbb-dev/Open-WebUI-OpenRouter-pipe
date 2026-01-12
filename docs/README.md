@@ -41,6 +41,7 @@ After enabling the function, Open WebUI will expose OpenRouter models (imported 
 ### Optional: model metadata sync (icons + capabilities)
 This pipe can automatically sync Open WebUI model metadata for the OpenRouter models it exposes:
 - `UPDATE_MODEL_IMAGES` controls whether model profile images are downloaded and stored in Open WebUI.
+- `UPDATE_MODEL_DESCRIPTIONS` controls whether model descriptions are synced from the OpenRouter catalog.
 - `UPDATE_MODEL_CAPABILITIES` controls whether model capability checkboxes are synced.
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).

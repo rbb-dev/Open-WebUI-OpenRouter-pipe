@@ -90,7 +90,7 @@ Operator guidance:
 - Keep SSRF protection enabled.
 - Enforce egress restrictions in your network (proxy allowlists, firewall rules).
 - If you require HTTPS-only remote retrieval, enforce it via egress policy (do not rely on the pipe alone).
-- If you enable model icon sync (`UPDATE_MODEL_IMAGES=True`), also allow outbound access to OpenRouter’s public frontend catalog and icon hosts. Disable it in locked-down environments.
+- If you enable model metadata sync (`UPDATE_MODEL_IMAGES=True` and/or `UPDATE_MODEL_CAPABILITIES=True` and/or `UPDATE_MODEL_DESCRIPTIONS=True`), allow outbound access to OpenRouter’s public catalogs and any icon hosts. Disable these valves in locked-down environments.
 
 Related docs: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md), [Security & Encryption](security_and_encryption.md).
 
@@ -117,6 +117,7 @@ Related docs: [Request identifiers and abuse attribution](request_identifiers_an
 In addition to artifact persistence, the pipe can optionally update Open WebUI’s Models table to keep OpenRouter model **icons** and **capability checkboxes** up to date:
 
 - `UPDATE_MODEL_IMAGES` syncs `meta.profile_image_url` (PNG data URLs).
+- `UPDATE_MODEL_DESCRIPTIONS` syncs `meta.description` (model description text).
 - `UPDATE_MODEL_CAPABILITIES` syncs `meta.capabilities` (Open WebUI capability toggles).
 
 These updates are performed via Open WebUI helper APIs (not raw SQL), but they are still database writes. Disable both valves if you need a “no model-metadata writes” posture.

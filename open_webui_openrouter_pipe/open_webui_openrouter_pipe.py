@@ -3123,6 +3123,71 @@ def _apply_disable_native_websearch_to_payload(
             payload.get("model"),
         )
 
+
+def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
+    """Remove OWUI-local per-model control flags from the outbound provider payload."""
+    if not isinstance(payload, dict):
+        return
+    for key in (
+        "disable_model_metadata_sync",
+        "disable_capability_updates",
+        "disable_image_updates",
+        "disable_openrouter_search_auto_attach",
+        "disable_openrouter_search_default_on",
+        "disable_direct_uploads_auto_attach",
+        "disable_description_updates",
+        "disable_native_websearch",
+        "disable_native_web_search",
+    ):
+        payload.pop(key, None)
+
+
+def _model_params_to_dict(params: Any) -> dict[str, Any]:
+    """Best-effort conversion of OWUI ModelParams-like objects to a plain dict."""
+    if params is None:
+        return {}
+    if isinstance(params, dict):
+        return dict(params)
+    model_dump = getattr(params, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+            return dict(dumped) if isinstance(dumped, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _get_disable_param(params: Any, key: str) -> bool:
+    """Return True when params[key] is truthy as a bool-ish flag."""
+    params_dict = _model_params_to_dict(params)
+    sentinel = object()
+    raw: Any = params_dict.get(key, sentinel)
+
+    if raw is sentinel:
+        custom_params = params_dict.get("custom_params")
+        if isinstance(custom_params, dict) and key in custom_params:
+            raw = custom_params.get(key, None)
+
+    if raw is sentinel:
+        # Some operators may choose to namespace pipe settings inside params JSON.
+        for container_key in ("openrouter_pipe", "openrouter", "pipe"):
+            container = params_dict.get(container_key)
+            if isinstance(container, dict) and key in container:
+                raw = container.get(key, None)
+                break
+
+            custom_params = params_dict.get("custom_params")
+            if isinstance(custom_params, dict):
+                container = custom_params.get(container_key)
+                if isinstance(container, dict) and key in container:
+                    raw = container.get(key, None)
+                    break
+    if raw is sentinel:
+        raw = None
+    coerced = _coerce_bool(raw)
+    return bool(coerced) if coerced is not None else False
+
 def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
     """Return a validated OpenRouter `metadata` dict or None.
 
@@ -4054,6 +4119,13 @@ class Pipe:
         UPDATE_MODEL_CAPABILITIES: bool = Field(
             default=True,
             description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. Disable to manage capabilities manually.",
+        )
+        UPDATE_MODEL_DESCRIPTIONS: bool = Field(
+            default=False,
+            description=(
+                "When enabled, automatically sync model descriptions from OpenRouter's API catalog to Open WebUI model metadata. "
+                "Disable to manage model descriptions manually (or set per-model disable_description_updates)."
+            ),
         )
         AUTO_ATTACH_ORS_FILTER: bool = Field(
             default=True,
@@ -6557,8 +6629,10 @@ class Filter:
         if not (
             self.valves.UPDATE_MODEL_CAPABILITIES
             or self.valves.UPDATE_MODEL_IMAGES
+            or self.valves.UPDATE_MODEL_DESCRIPTIONS
             or self.valves.AUTO_ATTACH_ORS_FILTER
             or self.valves.AUTO_INSTALL_ORS_FILTER
+            or self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
             or self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
         ):
@@ -6572,8 +6646,10 @@ class Filter:
             str(self.valves.MODEL_ID or ""),
             bool(self.valves.UPDATE_MODEL_IMAGES),
             bool(self.valves.UPDATE_MODEL_CAPABILITIES),
+            bool(self.valves.UPDATE_MODEL_DESCRIPTIONS),
             bool(self.valves.AUTO_ATTACH_ORS_FILTER),
             bool(self.valves.AUTO_INSTALL_ORS_FILTER),
+            bool(self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER),
             bool(self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
             bool(self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
         )
@@ -6597,12 +6673,16 @@ class Filter:
         *,
         pipe_identifier: str,
     ) -> None:
-        """Sync model metadata (capabilities, profile images) into OWUI's Models table."""
+        """Sync model metadata (capabilities, profile images, descriptions) into OWUI's Models table."""
         if not (
             self.valves.UPDATE_MODEL_CAPABILITIES
             or self.valves.UPDATE_MODEL_IMAGES
+            or self.valves.UPDATE_MODEL_DESCRIPTIONS
             or self.valves.AUTO_ATTACH_ORS_FILTER
             or self.valves.AUTO_INSTALL_ORS_FILTER
+            or self.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
+            or self.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+            or self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
         ):
             return
         if not models:
@@ -6786,6 +6866,16 @@ class Filter:
                         # Integrations "Web Search" toggle available for all OpenRouter-pipe models.
                         capabilities["web_search"] = True
 
+                description = None
+                if self.valves.UPDATE_MODEL_DESCRIPTIONS:
+                    norm_id = model.get("norm_id")
+                    spec = ModelFamily._lookup_spec(str(norm_id or ""))
+                    raw_desc = spec.get("description")
+                    if isinstance(raw_desc, str):
+                        cleaned = raw_desc.strip()
+                        if cleaned:
+                            description = cleaned
+
                 profile_image_url = None
                 if self.valves.UPDATE_MODEL_IMAGES:
                     original_id = model.get("original_id")
@@ -6819,6 +6909,7 @@ class Filter:
 
                 if (
                     not capabilities
+                    and not description
                     and not profile_image_url
                     and not auto_attach_or_default
                     and not pipe_capabilities
@@ -6844,6 +6935,8 @@ class Filter:
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
                             openrouter_pipe_capabilities=pipe_capabilities,
+                            description=description,
+                            update_descriptions=self.valves.UPDATE_MODEL_DESCRIPTIONS,
                         )
                     except Exception as exc:
                         self.logger.debug(
@@ -6874,6 +6967,8 @@ class Filter:
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
+        description: str | None = None,
+        update_descriptions: bool = False,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelMeta, ModelParams
@@ -6884,6 +6979,42 @@ class Filter:
         name = (name or "").strip() or openwebui_model_id
 
         existing = Models.get_model_by_id(openwebui_model_id)
+
+        # Per-model advanced params: allow operators to prevent the pipe from overwriting manually-edited
+        # model settings (capability checkboxes, icons, filter attachments/defaults, etc).
+        disable_model_metadata_sync = False
+        disable_capability_updates = False
+        disable_image_updates = False
+        disable_openrouter_search_auto_attach = False
+        disable_openrouter_search_default_on = False
+        disable_direct_uploads_auto_attach = False
+        disable_description_updates = False
+
+        if existing is not None:
+            params = getattr(existing, "params", None)
+            disable_model_metadata_sync = _get_disable_param(params, "disable_model_metadata_sync")
+            disable_capability_updates = _get_disable_param(params, "disable_capability_updates")
+            disable_image_updates = _get_disable_param(params, "disable_image_updates")
+            disable_openrouter_search_auto_attach = _get_disable_param(params, "disable_openrouter_search_auto_attach")
+            disable_openrouter_search_default_on = _get_disable_param(params, "disable_openrouter_search_default_on")
+            disable_direct_uploads_auto_attach = _get_disable_param(params, "disable_direct_uploads_auto_attach")
+            disable_description_updates = _get_disable_param(params, "disable_description_updates")
+
+        if disable_model_metadata_sync:
+            return
+
+        if disable_capability_updates:
+            update_capabilities = False
+        if disable_image_updates:
+            update_images = False
+        if disable_openrouter_search_auto_attach:
+            auto_attach_filter = False
+        if disable_openrouter_search_default_on:
+            auto_default_filter = False
+        if disable_direct_uploads_auto_attach:
+            auto_attach_direct_uploads_filter = False
+        if disable_description_updates:
+            update_descriptions = False
 
         def _ensure_pipe_meta(meta_dict: dict) -> dict:
             pipe_meta = meta_dict.get("openrouter_pipe")
@@ -6974,6 +7105,13 @@ class Filter:
             if not auto_default_filter or not filter_function_id or not filter_supported:
                 return False
 
+            # Never set a default filter unless the filter is actually attached. This matters when
+            # operators disable auto-attach (or when the filter is removed/unsupported) so we don't
+            # leave the model in a "default on" state for a filter that isn't present.
+            filter_ids = _normalize_id_list(meta_dict, "filterIds")
+            if filter_function_id not in filter_ids:
+                return False
+
             pipe_meta = _ensure_pipe_meta(meta_dict)
             seeded_key = "openrouter_search_default_seeded"
             previous_id = pipe_meta.get("openrouter_search_filter_id")
@@ -7008,29 +7146,32 @@ class Filter:
             meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
             meta_dict["openrouter_pipe"] = pipe_meta
             return True
-        
+
         if existing:
             # Update existing model - preserve ALL existing fields including owner
             meta_dict = {}
             if existing.meta:
                 meta_dict.update(existing.meta.model_dump())
-            
+
             meta_updated = False
 
             if update_capabilities and capabilities is not None:
                 existing_caps = meta_dict.get("capabilities")
-                merged_caps: dict[str, Any] = (
-                    dict(existing_caps) if isinstance(existing_caps, dict) else {}
-                )
+                merged_caps: dict[str, Any] = dict(existing_caps) if isinstance(existing_caps, dict) else {}
                 for key, value in capabilities.items():
                     merged_caps[key] = value
                 if merged_caps != existing_caps:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
-                
+
             if update_images and profile_image_url:
                 if meta_dict.get("profile_image_url") != profile_image_url:
                     meta_dict["profile_image_url"] = profile_image_url
+                    meta_updated = True
+
+            if update_descriptions and description:
+                if meta_dict.get("description") != description:
+                    meta_dict["description"] = description
                     meta_updated = True
 
             if _apply_filter_ids(meta_dict):
@@ -7048,7 +7189,7 @@ class Filter:
                     pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
                     meta_dict["openrouter_pipe"] = pipe_meta
                     meta_updated = True
-                
+
             if not meta_updated:
                 return
 
@@ -7063,7 +7204,7 @@ class Filter:
                 is_active=existing.is_active,
             )
             Models.update_model_by_id(openwebui_model_id, model_form)
-                
+
         else:
             # Insert new overlay model - do NOT set user_id/owner
             meta_dict = {}
@@ -7071,21 +7212,26 @@ class Filter:
                 meta_dict["capabilities"] = capabilities
             if update_images and profile_image_url:
                 meta_dict["profile_image_url"] = profile_image_url
+            if update_descriptions and description:
+                meta_dict["description"] = description
+
             _apply_filter_ids(meta_dict)
             _apply_default_filter_ids(meta_dict)
             _apply_direct_uploads_filter_ids(meta_dict)
+
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)
                 pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
                 meta_dict["openrouter_pipe"] = pipe_meta
+
             if not meta_dict:
                 # Nothing to insert, skip
                 return
-                
+
             # Create proper ModelMeta and ModelParams objects
             meta_obj = ModelMeta(**meta_dict)
             params_obj = ModelParams()
-            
+
             model_form = ModelForm(
                 id=openwebui_model_id,
                 base_model_id=None,
@@ -12986,6 +13132,7 @@ class Filter:
                 )
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
                 _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
+                _strip_disable_model_settings_params(request_payload)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                 is_streaming = bool(request_payload.get("stream"))
