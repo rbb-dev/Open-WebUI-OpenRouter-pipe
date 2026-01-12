@@ -308,3 +308,85 @@ async def test_sync_model_metadata_falls_back_to_maker_image_mapping():
     assert args[0] == "open_webui_openrouter_pipe.openai.gpt-4o"
     assert args[2] is None
     assert args[3].startswith("data:image/")
+
+
+@pytest.mark.asyncio
+async def test_sync_model_metadata_includes_description_when_enabled():
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(
+        UPDATE_MODEL_IMAGES=False,
+        UPDATE_MODEL_CAPABILITIES=False,
+        UPDATE_MODEL_DESCRIPTIONS=True,
+        AUTO_ATTACH_ORS_FILTER=False,
+        AUTO_INSTALL_ORS_FILTER=False,
+        AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=False,
+        AUTO_ATTACH_DIRECT_UPLOADS_FILTER=False,
+        AUTO_INSTALL_DIRECT_UPLOADS_FILTER=False,
+    )
+
+    models = [
+        {
+            "id": "openai.gpt-4o",
+            "norm_id": "openai.gpt-4o",
+            "name": "GPT-4o",
+            "original_id": "openai/gpt-4o",
+        }
+    ]
+
+    pipe._update_or_insert_model_with_metadata = Mock()
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool",
+        new=fake_run_in_threadpool,
+    ):
+        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+
+    pipe._update_or_insert_model_with_metadata.assert_called_once()
+    kwargs = pipe._update_or_insert_model_with_metadata.call_args.kwargs
+    assert kwargs["update_descriptions"] is True
+    assert kwargs["description"] == "Catalog description"
+
+
+@pytest.mark.asyncio
+async def test_sync_model_metadata_skips_description_when_disabled():
+    pipe = Pipe()
+    pipe.valves = pipe.Valves(
+        UPDATE_MODEL_IMAGES=False,
+        UPDATE_MODEL_CAPABILITIES=True,
+        UPDATE_MODEL_DESCRIPTIONS=False,
+        AUTO_ATTACH_ORS_FILTER=False,
+        AUTO_INSTALL_ORS_FILTER=False,
+        AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=False,
+        AUTO_ATTACH_DIRECT_UPLOADS_FILTER=False,
+        AUTO_INSTALL_DIRECT_UPLOADS_FILTER=False,
+    )
+
+    models = [
+        {
+            "id": "openai.gpt-4o",
+            "norm_id": "openai.gpt-4o",
+            "name": "GPT-4o",
+            "original_id": "openai/gpt-4o",
+            "capabilities": {"vision": True},
+        }
+    ]
+
+    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
+    pipe._update_or_insert_model_with_metadata = Mock()
+
+    async def fake_run_in_threadpool(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
+        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool",
+        new=fake_run_in_threadpool,
+    ):
+        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+
+    pipe._update_or_insert_model_with_metadata.assert_called_once()
+    kwargs = pipe._update_or_insert_model_with_metadata.call_args.kwargs
+    assert kwargs["update_descriptions"] is False
+    assert kwargs["description"] is None

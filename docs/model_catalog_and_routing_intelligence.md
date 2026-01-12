@@ -64,8 +64,9 @@ Behavior:
 - The pipe returns a minimal `{"id","name"}` list for the model selector.
 - Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
   - `meta.capabilities` (capability checkboxes), and
-  - `meta.profile_image_url` (model icon as a PNG data URL).
-  This behavior is controlled by `UPDATE_MODEL_CAPABILITIES` and `UPDATE_MODEL_IMAGES`. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
+  - `meta.profile_image_url` (model icon as a PNG data URL), and
+  - `meta.description` (model description text).
+  This behavior is controlled by `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES`, and `UPDATE_MODEL_DESCRIPTIONS`. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 
 ---
 
