@@ -11,14 +11,32 @@ requirements: git+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe.git@auto
 license: MIT
 
 This is a lightweight stub for Open WebUI.
-Open WebUI installs the full implementation from GitHub (via the `requirements` line above), then this file imports `Pipe` from the installed package.
+
+===============================================================================
+███████╗████████╗ ██████╗ ██████╗
+██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗
+███████╗   ██║   ██║   ██║██████╔╝
+╚════██║   ██║   ██║   ██║██╔═══╝
+███████║   ██║   ╚██████╔╝██║
+╚══════╝   ╚═╝    ╚═════╝ ╚═╝
+===============================================================================
+
+WARNING: This file is intentionally a *stub loader* and is configured to auto-update.
+
+- This stub tracks the moving `auto-update` branch (not a fixed version).
+- This means Open WebUI can pull a newer version of the real pipe implementation over time
+  (for example when dependencies are reinstalled / the function environment is refreshed).
+
+If you need a fixed, reproducible deployment:
+- Change `requirements:` to pin to a tag (e.g. `@v1.2.3`) or an exact commit SHA (e.g. `@abc123...`).
+
+If you fork this repo:
+- Update the `requirements:` URL to point to *your fork*, otherwise Open WebUI will keep installing *this* upstream repo.
+
+If you do not want auto-updates:
+- Install the full pipe directly instead of this stub (upload `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` into Open WebUI).
 """
 
-# Open WebUI installs the dependency (via frontmatter) then imports `Pipe` from it.
-#
-# Important: users may set a different function id in the Open WebUI UI. When this stub is
-# executed, Open WebUI loads it as a module named "function_<id>", so we can derive the
-# runtime id from `__name__` and expose a wrapper `Pipe` with a matching `.id`.
 from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe as BasePipe
 
 _MODULE_PREFIX = "function_"
