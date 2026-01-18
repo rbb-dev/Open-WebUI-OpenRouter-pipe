@@ -13,7 +13,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from open_webui.env import SRC_LOG_LEVELS
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except ImportError:
+    SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:ors_filter:v1"
 _FEATURE_FLAG = "openrouter_web_search"

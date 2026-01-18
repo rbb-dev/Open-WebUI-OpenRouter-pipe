@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-webui-openrouter-pipe"
-version = "1.1.1"
+version = "2.0.1"
 description = "OpenRouter Responses API pipe for Open WebUI"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   {name = "rbb-dev"}
 ]
@@ -17,15 +18,22 @@ maintainers = [
 ]
 dependencies = [
   "aiohttp",
+  "cairosvg",
   "cryptography",
   "fastapi",
   "httpx",
   "lz4",
+  "Pillow",
   "pydantic",
   "pydantic-core",
   "pyzipper",
   "sqlalchemy",
   "tenacity"
+]
+
+[project.optional-dependencies]
+dev = [
+  "aioresponses"
 ]
 
 [project.urls]
@@ -35,4 +43,10 @@ Documentation = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/blob/main
 "Bug Tracker" = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues"
 
 [tool.setuptools.packages.find]
-include = ["open_webui_openrouter_pipe"]
+include = ["open_webui_openrouter_pipe*"]
+
+[tool.setuptools.package-data]
+open_webui_openrouter_pipe = ["py.typed"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["pytest_bootstrap.py"]

@@ -1,6 +1,6 @@
 import json
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     ModelFamily,
     OpenRouterAPIError,
     Pipe,
@@ -182,8 +182,8 @@ def test_streaming_fields_render_in_templates():
     assert "meta" in rendered
 
 
-def test_pipe_builds_streaming_error_from_event():
-    pipe = Pipe()
+def test_pipe_builds_streaming_error_from_event(pipe_instance):
+    pipe = pipe_instance
     event = {
         "type": "response.failed",
         "id": "chunk_999",
@@ -200,8 +200,8 @@ def test_pipe_builds_streaming_error_from_event():
     assert err.provider == "OpenRouter"
 
 
-def test_select_openrouter_template_by_status():
-    pipe = Pipe()
+def test_select_openrouter_template_by_status(pipe_instance):
+    pipe = pipe_instance
     assert pipe._select_openrouter_template(401) == pipe.valves.AUTHENTICATION_ERROR_TEMPLATE
     assert pipe._select_openrouter_template(402) == pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE
     assert pipe._select_openrouter_template(408) == pipe.valves.SERVER_TIMEOUT_TEMPLATE

@@ -21,6 +21,7 @@ When enabled, the pipe writes **one encrypted zip file per completed request** c
   - `log_format` (`jsonl`, `text`, or `both`)
 - `logs.jsonl` — newline-delimited JSON (one JSON object per log record).
 - `logs.txt` — plain text log output (optional; only when `SESSION_LOG_FORMAT=text|both`).
+- `timing.jsonl` — function timing events (written separately to `TIMING_LOG_FILE`, not in session archives).
 
 Notes:
 
@@ -135,6 +136,88 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
 | `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory log records retained per request before older entries are dropped. |
 | `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
+| `ENABLE_TIMING_LOG` | bool | `false` | Capture function entrance/exit timing data. |
+| `TIMING_LOG_FILE` | str | `logs/timing.jsonl` | File path for timing log output. |
+
+---
+
+## Timing instrumentation
+
+When `ENABLE_TIMING_LOG=True`, timing events are written directly to `TIMING_LOG_FILE` (default: `logs/timing.jsonl`) with high-precision function entrance/exit data.
+
+### JSONL schema (`timing.jsonl`)
+
+Each line is a single JSON object:
+
+- `ts` (string): UTC ISO 8601 timestamp (milliseconds), for example `2026-01-18T12:34:56.789Z`.
+- `perf_ts` (float): High-resolution monotonic counter (`time.perf_counter()`) for precise elapsed-time calculations.
+- `event` (string): One of `enter`, `exit`, or `mark`.
+- `label` (string): Function or scope name (for example `streaming.streaming_core.StreamingHandler._run_streaming_loop`).
+- `elapsed_ms` (float, optional): Elapsed time in milliseconds (only present on `exit` events).
+
+Example output:
+
+```jsonl
+{"ts":"2026-01-18T12:34:56.001Z","perf_ts":0.001234,"event":"enter","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop"}
+{"ts":"2026-01-18T12:34:56.002Z","perf_ts":0.002345,"event":"mark","label":"event_iteration_start"}
+{"ts":"2026-01-18T12:34:56.050Z","perf_ts":0.050678,"event":"mark","label":"first_event_received"}
+{"ts":"2026-01-18T12:34:58.123Z","perf_ts":2.123456,"event":"exit","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop","elapsed_ms":2122.22}
+```
+
+### When to use timing
+
+Enable timing when diagnosing performance issues:
+
+- **Slow response times**: Identify which functions take the most time.
+- **Unexpected delays**: Find gaps between function exits and entries.
+- **Optimization verification**: Measure before/after improvements.
+
+### Adding timing to new functions (for developers)
+
+The timing system provides three mechanisms:
+
+**1. `@timed` decorator** — automatic function entrance/exit timing:
+
+```python
+from open_webui_openrouter_pipe.core.timing_logger import timed
+
+@timed
+async def my_function():
+    # Function calls are automatically timed
+    ...
+```
+
+**2. `timing_scope()` context manager** — time specific code blocks:
+
+```python
+from open_webui_openrouter_pipe.core.timing_logger import timing_scope
+
+async def process_request():
+    with timing_scope("http_post"):
+        async with session.post(...) as resp:
+            ...
+```
+
+**3. `timing_mark()` function** — record point-in-time events:
+
+```python
+from open_webui_openrouter_pipe.core.timing_logger import timing_mark
+
+async def stream_events():
+    timing_mark("stream_start")
+    async for event in event_iter:
+        if first_event:
+            timing_mark("first_event_received")
+        ...
+```
+
+**Notes:**
+
+- Timing only records when `ENABLE_TIMING_LOG=True` and a request context is active.
+- Zero overhead when disabled (context variable check short-circuits).
+- Events are written immediately to `TIMING_LOG_FILE` (not session archives).
+- Each event includes a `request_id` field for correlation with session logs.
+- Maximum 10,000 events per request in memory (oldest dropped if exceeded).
 
 ---
 

@@ -1,11 +1,11 @@
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
-def test_build_icon_mapping_success():
-    pipe = Pipe()
+def test_build_icon_mapping_success(pipe_instance):
+    pipe = pipe_instance
 
     frontend_data = {
         "data": [
@@ -48,8 +48,8 @@ def test_build_icon_mapping_success():
     assert icon_mapping["mistral/mistral-small"] == "https://openrouter.ai/images/icons/Mistral.png"
 
 
-def test_build_icon_mapping_empty():
-    pipe = Pipe()
+def test_build_icon_mapping_empty(pipe_instance):
+    pipe = pipe_instance
 
     assert pipe._build_icon_mapping(None) == {}
     assert pipe._build_icon_mapping({"data": []}) == {}
@@ -94,8 +94,8 @@ def test_guess_image_mime_type_svg_and_png():
     )
 
 
-def test_build_icon_mapping_uses_first_provider_icon():
-    pipe = Pipe()
+def test_build_icon_mapping_uses_first_provider_icon(pipe_instance):
+    pipe = pipe_instance
 
     frontend_data = {
         "data": [
@@ -114,8 +114,8 @@ def test_build_icon_mapping_uses_first_provider_icon():
     assert icon_mapping["dup/model"] == "https://example.com/first.png"
 
 
-def test_build_web_search_support_mapping_detects_multiple_signals():
-    pipe = Pipe()
+def test_build_web_search_support_mapping_detects_multiple_signals(pipe_instance):
+    pipe = pipe_instance
 
     frontend_data = {
         "data": [
@@ -158,8 +158,8 @@ def test_build_web_search_support_mapping_detects_multiple_signals():
     }
 
 
-def test_build_web_search_support_mapping_unions_duplicates():
-    pipe = Pipe()
+def test_build_web_search_support_mapping_unions_duplicates(pipe_instance):
+    pipe = pipe_instance
 
     frontend_data = {
         "data": [
@@ -183,8 +183,8 @@ def test_build_web_search_support_mapping_unions_duplicates():
 
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping():
-    pipe = Pipe()
+async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.valves.UPDATE_MODEL_IMAGES = True
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
@@ -215,24 +215,26 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping():
 
     pipe._build_maker_profile_image_mapping = AsyncMock(return_value={})
     pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
-    pipe._update_or_insert_model_with_metadata = Mock()
+    pipe._ensure_catalog_manager()
+
+    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool", new=fake_run_in_threadpool):
+    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
         await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
-    pipe._update_or_insert_model_with_metadata.assert_called_once()
-    args = pipe._update_or_insert_model_with_metadata.call_args[0]
+    pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
+    args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.openai.gpt-4o"
     assert args[1] == "GPT-4o"
     assert args[2] == {"vision": True, "web_search": True}
     assert args[3].startswith("data:image/")
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_sets_web_search_from_frontend():
-    pipe = Pipe()
+async def test_sync_model_metadata_sets_web_search_from_frontend(pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.valves.UPDATE_MODEL_IMAGES = False
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
@@ -260,16 +262,19 @@ async def test_sync_model_metadata_sets_web_search_from_frontend():
         }
     )
 
-    pipe._update_or_insert_model_with_metadata = Mock()
+    pipe._ensure_catalog_manager()
+
+
+    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool", new=fake_run_in_threadpool):
+    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
         await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
-    pipe._update_or_insert_model_with_metadata.assert_called_once()
-    args = pipe._update_or_insert_model_with_metadata.call_args[0]
+    pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
+    args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.x-ai.grok-4"
     assert args[2] == {"web_search": True}
     assert args[3] is None
@@ -278,8 +283,8 @@ async def test_sync_model_metadata_sets_web_search_from_frontend():
 
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_falls_back_to_maker_image_mapping():
-    pipe = Pipe()
+async def test_sync_model_metadata_falls_back_to_maker_image_mapping(pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.valves.UPDATE_MODEL_IMAGES = True
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
 
@@ -295,24 +300,26 @@ async def test_sync_model_metadata_falls_back_to_maker_image_mapping():
     pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": [{"slug": "openai/gpt-4o"}]})
     pipe._build_maker_profile_image_mapping = AsyncMock(return_value={"openai": "https://example.com/openai.png"})
     pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
-    pipe._update_or_insert_model_with_metadata = Mock()
+    pipe._ensure_catalog_manager()
+
+    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool", new=fake_run_in_threadpool):
+    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
         await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
-    pipe._update_or_insert_model_with_metadata.assert_called_once()
-    args = pipe._update_or_insert_model_with_metadata.call_args[0]
+    pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
+    args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.openai.gpt-4o"
     assert args[2] is None
     assert args[3].startswith("data:image/")
 
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_includes_description_when_enabled():
-    pipe = Pipe()
+async def test_sync_model_metadata_includes_description_when_enabled(pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.valves = pipe.Valves(
         UPDATE_MODEL_IMAGES=False,
         UPDATE_MODEL_CAPABILITIES=False,
@@ -333,26 +340,29 @@ async def test_sync_model_metadata_includes_description_when_enabled():
         }
     ]
 
-    pipe._update_or_insert_model_with_metadata = Mock()
+    pipe._ensure_catalog_manager()
+
+
+    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool",
+    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
+        "open_webui_openrouter_pipe.pipe.run_in_threadpool",
         new=fake_run_in_threadpool,
     ):
         await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
-    pipe._update_or_insert_model_with_metadata.assert_called_once()
-    kwargs = pipe._update_or_insert_model_with_metadata.call_args.kwargs
+    pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
+    kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
     assert kwargs["update_descriptions"] is True
     assert kwargs["description"] == "Catalog description"
 
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_skips_description_when_disabled():
-    pipe = Pipe()
+async def test_sync_model_metadata_skips_description_when_disabled(pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.valves = pipe.Valves(
         UPDATE_MODEL_IMAGES=False,
         UPDATE_MODEL_CAPABILITIES=True,
@@ -375,18 +385,20 @@ async def test_sync_model_metadata_skips_description_when_disabled():
     ]
 
     pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
-    pipe._update_or_insert_model_with_metadata = Mock()
+    pipe._ensure_catalog_manager()
+
+    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.run_in_threadpool",
+    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
+        "open_webui_openrouter_pipe.pipe.run_in_threadpool",
         new=fake_run_in_threadpool,
     ):
         await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
-    pipe._update_or_insert_model_with_metadata.assert_called_once()
-    kwargs = pipe._update_or_insert_model_with_metadata.call_args.kwargs
+    pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
+    kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
     assert kwargs["update_descriptions"] is False
     assert kwargs["description"] is None

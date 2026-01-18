@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import aiohttp
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
@@ -24,8 +24,8 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
     )
 
 
-def test_auto_attach_direct_uploads_filter_and_persist_capabilities():
-    pipe = Pipe()
+def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instance):
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={})
@@ -34,13 +34,13 @@ def test_auto_attach_direct_uploads_filter_and_persist_capabilities():
     pipe_caps = {"file_input": True, "audio_input": False, "video_input": False, "vision": True}
 
     with patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id",
+        "open_webui_openrouter_pipe.pipe.Models.get_model_by_id",
         return_value=existing,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id",
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id",
         new=update_mock,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelForm",
+        "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
         pipe._update_or_insert_model_with_metadata(
@@ -64,8 +64,8 @@ def test_auto_attach_direct_uploads_filter_and_persist_capabilities():
     assert meta["openrouter_pipe"]["capabilities"] == pipe_caps
 
 
-def test_auto_attach_removes_direct_uploads_filter_when_unsupported():
-    pipe = Pipe()
+def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_instance):
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -78,13 +78,13 @@ def test_auto_attach_removes_direct_uploads_filter_when_unsupported():
     update_mock = Mock()
 
     with patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id",
+        "open_webui_openrouter_pipe.pipe.Models.get_model_by_id",
         return_value=existing,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id",
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id",
         new=update_mock,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelForm",
+        "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
         pipe._update_or_insert_model_with_metadata(
@@ -107,8 +107,8 @@ def test_auto_attach_removes_direct_uploads_filter_when_unsupported():
 
 
 @pytest.mark.asyncio
-async def test_send_openrouter_streaming_request_respects_endpoint_override():
-    pipe = Pipe()
+async def test_send_openrouter_streaming_request_respects_endpoint_override(pipe_instance_async):
+    pipe = pipe_instance_async
 
     async def _chat_stream(*_args, **_kwargs):
         yield {"type": "chat"}
@@ -133,8 +133,8 @@ async def test_send_openrouter_streaming_request_respects_endpoint_override():
 
 
 @pytest.mark.asyncio
-async def test_inline_internal_responses_input_files_inplace_rewrites_internal_urls():
-    pipe = Pipe()
+async def test_inline_internal_responses_input_files_inplace_rewrites_internal_urls(pipe_instance_async):
+    pipe = pipe_instance_async
     payload = {
         "model": "google/gemini-3-flash-preview",
         "input": [
@@ -152,12 +152,12 @@ async def test_inline_internal_responses_input_files_inplace_rewrites_internal_u
         ],
     }
 
-    pipe._inline_owui_file_id = AsyncMock(  # type: ignore[method-assign]
+    pipe._multimodal_handler._inline_owui_file_id = AsyncMock(  # type: ignore[method-assign]
         return_value="data:application/pdf;base64,SGVsbG8="
     )
 
     await pipe._inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)
-    pipe._inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024)
+    pipe._multimodal_handler._inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024)
 
     block = cast(dict, payload["input"][0]["content"][0])
     assert block.get("file_data", "").startswith("data:application/pdf;base64,")

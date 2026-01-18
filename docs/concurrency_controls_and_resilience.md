@@ -56,6 +56,10 @@ The pipe uses background tasks/threads to keep request handling responsive:
 - **Artifact cleanup worker:** periodically deletes persisted artifacts older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on DB reads) on an interval controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS`.
 - **Session log storage threads (optional):** when session log storage is enabled, the pipe uses background threads to write and clean up encrypted zip archives.
 
+**State ownership:**
+- **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance.
+- **Class-level**: rate-limiting semaphores are shared across all instances in the same process (per-process concurrency control).
+
 ---
 
 ## Operational tuning (practical guidance)

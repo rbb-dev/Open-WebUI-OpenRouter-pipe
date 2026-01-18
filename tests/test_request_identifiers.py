@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     Pipe,
     _apply_identifier_valves_to_payload,
     _filter_openrouter_request,

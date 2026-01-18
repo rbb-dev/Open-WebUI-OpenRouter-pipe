@@ -3,12 +3,12 @@ import logging
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe, _QueuedToolCall, _ToolExecutionContext
+from open_webui_openrouter_pipe import Pipe, _QueuedToolCall, _ToolExecutionContext
 
 
 @pytest.mark.asyncio
-async def test_tool_exception_logs_stack_trace(caplog):
-    pipe = Pipe()
+async def test_tool_exception_logs_stack_trace(caplog, pipe_instance_async):
+    pipe = pipe_instance_async
     pipe.logger = logging.getLogger("tests.tool_exception_logging")
 
     def _boom() -> str:

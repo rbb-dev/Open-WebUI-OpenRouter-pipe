@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
 )

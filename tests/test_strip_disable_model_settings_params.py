@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import _strip_disable_model_settings_params
+from open_webui_openrouter_pipe import _strip_disable_model_settings_params
 
 
 def test_strip_disable_model_settings_params_removes_pipe_control_flags() -> None:

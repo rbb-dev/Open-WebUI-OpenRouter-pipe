@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     _filter_openrouter_request,
     _responses_payload_to_chat_completions_payload,
 )

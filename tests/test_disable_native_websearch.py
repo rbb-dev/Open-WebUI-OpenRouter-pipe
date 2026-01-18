@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     _apply_disable_native_websearch_to_payload,
 )
 

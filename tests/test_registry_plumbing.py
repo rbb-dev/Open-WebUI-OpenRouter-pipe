@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from open_webui_openrouter_pipe import open_webui_openrouter_pipe as ow
+import open_webui_openrouter_pipe as ow
 
 
 class DummyResponse:
@@ -98,40 +98,90 @@ async def test_registry_refresh_populates_models_and_specs():
 
 
 @pytest.mark.asyncio
-async def test_registry_cache_prevents_refresh(monkeypatch):
+async def test_registry_cache_prevents_refresh():
+    """Test that registry cache prevents unnecessary HTTP refresh.
+
+    Real infrastructure exercised:
+    - Real cache expiry logic
+    - Real timestamp checking
+    - Real ensure_loaded flow
+    - Would make HTTP call if cache expired (but doesn't because cache is fresh)
+    """
+    from aioresponses import aioresponses
+    import aiohttp
+
     reg = ow.OpenRouterModelRegistry
-    reg._specs = {"demo": {}}
+    reg._specs = {"demo": {"features": []}}
     reg._models = [{"id": "demo", "norm_id": "demo", "name": "Demo"}]
     now = time.time()
     reg._last_fetch = now
-    reg._next_refresh_after = now + 999
+    reg._next_refresh_after = now + 999  # Cache valid for 999 more seconds
     reg._lock = asyncio.Lock()
-    called = False
 
-    async def fake_refresh(*args, **kwargs):
-        nonlocal called
-        called = True
+    # Mock HTTP endpoint - if called, test should fail because cache should prevent it
+    with aioresponses() as mock_http:
+        # Set up mock that would be called if cache was ignored
+        mock_http.get(
+            "https://api/models",
+            payload={"data": [{"id": "should/not/be/called"}]},
+        )
 
-    monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", fake_refresh)
-    session = cast(Any, DummySession(DummyResponse({"data": []})))
-    await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=60, logger=logging.getLogger("test"))
-    assert called is False
+        async with aiohttp.ClientSession() as session:
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="key",
+                cache_seconds=60,
+                logger=logging.getLogger("test")
+            )
+
+        # Verify cache was used (models didn't change)
+        assert reg._models == [{"id": "demo", "norm_id": "demo", "name": "Demo"}]
+        # Verify HTTP was not called (aioresponses would show it in history if it was)
+        assert len(mock_http.requests) == 0, "HTTP should not be called when cache is fresh"
 
 
 @pytest.mark.asyncio
-async def test_registry_refresh_failure_uses_cache(monkeypatch):
+async def test_registry_refresh_failure_uses_cache():
+    """Test that registry falls back to cache when HTTP refresh fails.
+
+    Real infrastructure exercised:
+    - Real HTTP request attempt
+    - Real error handling in _refresh
+    - Real cache fallback logic
+    - Real ensure_loaded error recovery
+    """
+    from aioresponses import aioresponses
+    import aiohttp
+
     reg = ow.OpenRouterModelRegistry
-    reg._specs = {"demo": {}}
+    reg._specs = {"demo": {"features": []}}
     reg._models = [{"id": "demo", "norm_id": "demo", "name": "Demo"}]
     reg._lock = asyncio.Lock()
+    reg._last_fetch = 0  # Force refresh attempt
+    reg._next_refresh_after = 0
 
-    async def boom(*args, **kwargs):
-        raise RuntimeError("boom")
+    # Mock HTTP endpoint to fail with network error
+    with aioresponses() as mock_http:
+        mock_http.get(
+            "https://api/models",
+            exception=RuntimeError("Network failure during refresh"),
+        )
 
-    monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", boom)
-    session = cast(Any, DummySession(DummyResponse({"data": []})))
-    await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=1, logger=logging.getLogger("test"))
-    assert reg._models
+        async with aiohttp.ClientSession() as session:
+            # Should not raise - should use cached models instead
+            await reg.ensure_loaded(
+                session,
+                base_url="https://api",
+                api_key="key",
+                cache_seconds=1,
+                logger=logging.getLogger("test")
+            )
+
+        # Verify cached models are still available
+        assert reg._models == [{"id": "demo", "norm_id": "demo", "name": "Demo"}]
+        # Verify HTTP was attempted
+        assert len(mock_http.requests) == 1, "HTTP refresh should have been attempted"
 
 
 @pytest.mark.asyncio
@@ -142,16 +192,40 @@ async def test_registry_raises_when_key_missing():
 
 
 @pytest.mark.asyncio
-async def test_registry_refresh_error_no_cache(monkeypatch):
+async def test_registry_refresh_error_no_cache():
+    """Test that registry refresh failure without cache raises error.
+
+    Real infrastructure exercised:
+    - Real HTTP request attempt
+    - Real _refresh method execution
+    - Real error propagation when no cache available
+    """
+    from aioresponses import aioresponses
+    import aiohttp
+
     reg = ow.OpenRouterModelRegistry
+    # Ensure no cache is available
+    reg._models = []
+    reg._specs = {}
+    reg._last_fetch = 0
+    reg._next_refresh_after = 0
 
-    async def boom(*args, **kwargs):
-        raise RuntimeError("boom")
+    # Mock HTTP to fail
+    with aioresponses() as mock_http:
+        mock_http.get(
+            "https://api/models",
+            exception=RuntimeError("boom"),
+        )
 
-    monkeypatch.setattr(ow.OpenRouterModelRegistry, "_refresh", boom)
-    session = cast(Any, DummySession(DummyResponse({"data": []})))
-    with pytest.raises(RuntimeError):
-        await reg.ensure_loaded(session, base_url="https://api", api_key="key", cache_seconds=1, logger=logging.getLogger("test"))
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(RuntimeError, match="boom"):
+                await reg.ensure_loaded(
+                    session,
+                    base_url="https://api",
+                    api_key="key",
+                    cache_seconds=1,
+                    logger=logging.getLogger("test")
+                )
 
 
 def test_registry_record_refresh_bookkeeping():

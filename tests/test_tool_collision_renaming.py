@@ -6,8 +6,8 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_collision_safe_tool_renaming_executes_both(pipe_instance):
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     async def builtin_search_web(**_kwargs: Any) -> str:
         return "builtin"
@@ -63,7 +63,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance):
     assert exposed_to_origin["direct__search_web"] == "search_web"
     assert {t["name"] for t in tools} == {"owui__search_web", "direct__search_web"}
 
-    out1 = await pipe_instance._execute_function_calls(
+    out1 = await pipe_instance_async._execute_function_calls(
         [
             {
                 "type": "function_call",
@@ -74,7 +74,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance):
         ],
         exec_registry,
     )
-    out2 = await pipe_instance._execute_function_calls(
+    out2 = await pipe_instance_async._execute_function_calls(
         [
             {
                 "type": "function_call",
@@ -90,7 +90,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance):
 
 
 def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     request_tools = [
         {
@@ -132,8 +132,8 @@ def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
 
 
 @pytest.mark.asyncio
-async def test_registry_tool_ids_tool_still_executes(pipe_instance):
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     async def kb_tool(**_kwargs: Any) -> str:
         return "ok"
@@ -161,7 +161,7 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance):
     )
 
     assert {t["name"] for t in tools} == {"kb_query"}
-    result = await pipe_instance._execute_function_calls(
+    result = await pipe_instance_async._execute_function_calls(
         [{"type": "function_call", "call_id": "c1", "name": "kb_query", "arguments": '{"q":"x"}'}],
         exec_registry,
     )

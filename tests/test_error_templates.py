@@ -1,22 +1,29 @@
 """Tests for the error template system."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+import pytest_asyncio
+from unittest.mock import MagicMock, patch
 import httpx
+import aiohttp
 from typing import Any, List
+from aioresponses import aioresponses
+from open_webui_openrouter_pipe import EncryptedStr
 
 
-@pytest.fixture
-def mock_pipe():
+@pytest_asyncio.fixture
+async def mock_pipe():
     """Create a mock Pipe instance with valves configured."""
-    from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe import Pipe
 
     pipe = Pipe()
     pipe.valves.SUPPORT_EMAIL = "support@example.com"
     pipe.valves.SUPPORT_URL = "https://support.example.com"
     pipe.logger = MagicMock()
 
-    return pipe
+    yield pipe
+
+    # Cleanup: close the pipe to stop worker tasks
+    await pipe.close()
 
 
 class _Emitter:
@@ -124,28 +131,40 @@ class TestNetworkTimeoutError:
     @pytest.mark.asyncio
     async def test_timeout_exception_caught(self, mock_pipe, mock_event_emitter):
         """Test that TimeoutException is caught and formatted."""
-        # Mock registry and process to raise TimeoutException
-        with patch('open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry') as mock_registry:
-            mock_registry.ensure_loaded = AsyncMock()
-            mock_registry.list_models.return_value = [{"norm_id": "test-model"}]
+        # Mock HTTP boundary - let real Registry handle the model lookup
+        with aioresponses() as mock_http:
+            # Mock the /models endpoint that Registry fetches from
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "test-model",
+                            "name": "Test Model",
+                            "pricing": {"prompt": "0", "completion": "0"},
+                        }
+                    ]
+                },
+            )
 
             with patch.object(mock_pipe, '_process_transformed_request', side_effect=httpx.TimeoutException("timeout")):
                 mock_pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-                mock_pipe.valves.API_KEY = "test-key"
+                mock_pipe.valves.API_KEY = EncryptedStr("test-key")
                 mock_pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
-                mock_session = MagicMock()
 
-                result = await mock_pipe._handle_pipe_call(
-                    body={"model": "test-model"},
-                    __user__={"id": "test-user"},
-                    __request__=MagicMock(),
-                    __event_emitter__=mock_event_emitter,
-                    __event_call__=None,
-                    __metadata__={"model": {"id": "test-model"}},
-                    __tools__=None,
-                    valves=mock_pipe.valves,
-                    session=mock_session,
-                )
+                # Use real aiohttp.ClientSession so aioresponses can mock it
+                async with aiohttp.ClientSession() as session:
+                    result = await mock_pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=mock_event_emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=mock_pipe.valves,
+                        session=session,
+                    )
 
         assert result == ""
         assert len(mock_event_emitter.events) == 2
@@ -160,27 +179,40 @@ class TestConnectionError:
     @pytest.mark.asyncio
     async def test_connect_error_caught(self, mock_pipe, mock_event_emitter):
         """Test that ConnectError is caught and formatted."""
-        with patch('open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry') as mock_registry:
-            mock_registry.ensure_loaded = AsyncMock()
-            mock_registry.list_models.return_value = [{"norm_id": "test-model"}]
+        # Mock HTTP boundary - let real Registry handle the model lookup
+        with aioresponses() as mock_http:
+            # Mock the /models endpoint that Registry fetches from
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "test-model",
+                            "name": "Test Model",
+                            "pricing": {"prompt": "0", "completion": "0"},
+                        }
+                    ]
+                },
+            )
 
             with patch.object(mock_pipe, '_process_transformed_request', side_effect=httpx.ConnectError("connection failed")):
                 mock_pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-                mock_pipe.valves.API_KEY = "test-key"
+                mock_pipe.valves.API_KEY = EncryptedStr("test-key")
                 mock_pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
-                mock_session = MagicMock()
 
-                result = await mock_pipe._handle_pipe_call(
-                    body={"model": "test-model"},
-                    __user__={"id": "test-user"},
-                    __request__=MagicMock(),
-                    __event_emitter__=mock_event_emitter,
-                    __event_call__=None,
-                    __metadata__={"model": {"id": "test-model"}},
-                    __tools__=None,
-                    valves=mock_pipe.valves,
-                    session=mock_session,
-                )
+                # Use real aiohttp.ClientSession so aioresponses can mock it
+                async with aiohttp.ClientSession() as session:
+                    result = await mock_pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=mock_event_emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=mock_pipe.valves,
+                        session=session,
+                    )
 
         assert result == ""
         assert len(mock_event_emitter.events) == 2
@@ -201,27 +233,40 @@ class TestServiceError:
 
         error = httpx.HTTPStatusError("502", request=MagicMock(), response=mock_response)
 
-        with patch('open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry') as mock_registry:
-            mock_registry.ensure_loaded = AsyncMock()
-            mock_registry.list_models.return_value = [{"norm_id": "test-model"}]
+        # Mock HTTP boundary - let real Registry handle the model lookup
+        with aioresponses() as mock_http:
+            # Mock the /models endpoint that Registry fetches from
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "test-model",
+                            "name": "Test Model",
+                            "pricing": {"prompt": "0", "completion": "0"},
+                        }
+                    ]
+                },
+            )
 
             with patch.object(mock_pipe, '_process_transformed_request', side_effect=error):
                 mock_pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-                mock_pipe.valves.API_KEY = "test-key"
+                mock_pipe.valves.API_KEY = EncryptedStr("test-key")
                 mock_pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
-                mock_session = MagicMock()
 
-                result = await mock_pipe._handle_pipe_call(
-                    body={"model": "test-model"},
-                    __user__={"id": "test-user"},
-                    __request__=MagicMock(),
-                    __event_emitter__=mock_event_emitter,
-                    __event_call__=None,
-                    __metadata__={"model": {"id": "test-model"}},
-                    __tools__=None,
-                    valves=mock_pipe.valves,
-                    session=mock_session,
-                )
+                # Use real aiohttp.ClientSession so aioresponses can mock it
+                async with aiohttp.ClientSession() as session:
+                    result = await mock_pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=mock_event_emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=mock_pipe.valves,
+                        session=session,
+                    )
 
         assert result == ""
         assert len(mock_event_emitter.events) == 2
@@ -236,27 +281,40 @@ class TestInternalError:
     @pytest.mark.asyncio
     async def test_generic_exception_caught(self, mock_pipe, mock_event_emitter):
         """Test that any exception is caught and formatted."""
-        with patch('open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry') as mock_registry:
-            mock_registry.ensure_loaded = AsyncMock()
-            mock_registry.list_models.return_value = [{"norm_id": "test-model"}]
+        # Mock HTTP boundary - let real Registry handle the model lookup
+        with aioresponses() as mock_http:
+            # Mock the /models endpoint that Registry fetches from
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "test-model",
+                            "name": "Test Model",
+                            "pricing": {"prompt": "0", "completion": "0"},
+                        }
+                    ]
+                },
+            )
 
             with patch.object(mock_pipe, '_process_transformed_request', side_effect=ValueError("unexpected error")):
                 mock_pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-                mock_pipe.valves.API_KEY = "test-key"
+                mock_pipe.valves.API_KEY = EncryptedStr("test-key")
                 mock_pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
-                mock_session = MagicMock()
 
-                result = await mock_pipe._handle_pipe_call(
-                    body={"model": "test-model"},
-                    __user__={"id": "test-user"},
-                    __request__=MagicMock(),
-                    __event_emitter__=mock_event_emitter,
-                    __event_call__=None,
-                    __metadata__={"model": {"id": "test-model"}},
-                    __tools__=None,
-                    valves=mock_pipe.valves,
-                    session=mock_session,
-                )
+                # Use real aiohttp.ClientSession so aioresponses can mock it
+                async with aiohttp.ClientSession() as session:
+                    result = await mock_pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=mock_event_emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=mock_pipe.valves,
+                        session=session,
+                    )
 
         assert result == ""
         assert len(mock_event_emitter.events) == 2
@@ -274,27 +332,40 @@ class TestTemplateCustomization:
         """Test that custom templates from valves are used."""
         mock_pipe.valves.INTERNAL_ERROR_TEMPLATE = "Custom error: {error_type}"
 
-        with patch('open_webui_openrouter_pipe.open_webui_openrouter_pipe.OpenRouterModelRegistry') as mock_registry:
-            mock_registry.ensure_loaded = AsyncMock()
-            mock_registry.list_models.return_value = [{"norm_id": "test-model"}]
+        # Mock HTTP boundary - let real Registry handle the model lookup
+        with aioresponses() as mock_http:
+            # Mock the /models endpoint that Registry fetches from
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={
+                    "data": [
+                        {
+                            "id": "test-model",
+                            "name": "Test Model",
+                            "pricing": {"prompt": "0", "completion": "0"},
+                        }
+                    ]
+                },
+            )
 
             with patch.object(mock_pipe, '_process_transformed_request', side_effect=RuntimeError("test")):
                 mock_pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-                mock_pipe.valves.API_KEY = "test-key"
+                mock_pipe.valves.API_KEY = EncryptedStr("test-key")
                 mock_pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
-                mock_session = MagicMock()
 
-                result = await mock_pipe._handle_pipe_call(
-                    body={"model": "test-model"},
-                    __user__={"id": "test-user"},
-                    __request__=MagicMock(),
-                    __event_emitter__=mock_event_emitter,
-                    __event_call__=None,
-                    __metadata__={"model": {"id": "test-model"}},
-                    __tools__=None,
-                    valves=mock_pipe.valves,
-                    session=mock_session,
-                )
+                # Use real aiohttp.ClientSession so aioresponses can mock it
+                async with aiohttp.ClientSession() as session:
+                    result = await mock_pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=mock_event_emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=mock_pipe.valves,
+                        session=session,
+                    )
 
         content = mock_event_emitter.events[0]["data"]["content"]
         assert "Custom error" in content

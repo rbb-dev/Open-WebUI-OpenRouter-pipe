@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = None):
@@ -20,8 +20,8 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
     )
 
 
-def test_disable_model_metadata_sync_skips_all_updates() -> None:
-    pipe = Pipe()
+def test_disable_model_metadata_sync_skips_all_updates(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -31,8 +31,8 @@ def test_disable_model_metadata_sync_skips_all_updates() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,
@@ -53,8 +53,8 @@ def test_disable_model_metadata_sync_skips_all_updates() -> None:
     assert update_mock.call_count == 0
 
 
-def test_disable_capability_updates_preserves_existing_caps() -> None:
-    pipe = Pipe()
+def test_disable_capability_updates_preserves_existing_caps(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -64,9 +64,9 @@ def test_disable_capability_updates_preserves_existing_caps() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
-    ), patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
+    ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
         pipe._update_or_insert_model_with_metadata(
             model_id,
             "Example",
@@ -87,8 +87,8 @@ def test_disable_capability_updates_preserves_existing_caps() -> None:
     assert meta["filterIds"] == ["openrouter_search"]
 
 
-def test_disable_image_updates_skips_profile_image_changes() -> None:
-    pipe = Pipe()
+def test_disable_image_updates_skips_profile_image_changes(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -98,8 +98,8 @@ def test_disable_image_updates_skips_profile_image_changes() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,
@@ -113,8 +113,8 @@ def test_disable_image_updates_skips_profile_image_changes() -> None:
     assert update_mock.call_count == 0
 
 
-def test_disable_direct_uploads_auto_attach_skips_filter_ids() -> None:
-    pipe = Pipe()
+def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -124,8 +124,8 @@ def test_disable_direct_uploads_auto_attach_skips_filter_ids() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,
@@ -142,16 +142,16 @@ def test_disable_direct_uploads_auto_attach_skips_filter_ids() -> None:
     assert update_mock.call_count == 0
 
 
-def test_description_updates_when_enabled() -> None:
-    pipe = Pipe()
+def test_description_updates_when_enabled(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={}, params={})
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
-    ), patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
+    ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
         pipe._update_or_insert_model_with_metadata(
             model_id,
             "Example",
@@ -169,8 +169,8 @@ def test_description_updates_when_enabled() -> None:
     assert meta["description"] == "Example description"
 
 
-def test_disable_description_updates_prevents_overwrites() -> None:
-    pipe = Pipe()
+def test_disable_description_updates_prevents_overwrites(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -180,8 +180,8 @@ def test_disable_description_updates_prevents_overwrites() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,
@@ -197,8 +197,8 @@ def test_disable_description_updates_prevents_overwrites() -> None:
     assert update_mock.call_count == 0
 
 
-def test_disable_description_updates_namespaced_in_openrouter_pipe_params() -> None:
-    pipe = Pipe()
+def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -208,8 +208,8 @@ def test_disable_description_updates_namespaced_in_openrouter_pipe_params() -> N
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,
@@ -225,8 +225,8 @@ def test_disable_description_updates_namespaced_in_openrouter_pipe_params() -> N
     assert update_mock.call_count == 0
 
 
-def test_disable_description_updates_in_custom_params() -> None:
-    pipe = Pipe()
+def test_disable_description_updates_in_custom_params(pipe_instance) -> None:
+    pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -236,8 +236,8 @@ def test_disable_description_updates_in_custom_params() -> None:
     )
     update_mock = Mock()
 
-    with patch("open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.get_model_by_id", return_value=existing), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Models.update_model_by_id", new=update_mock
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+        "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
         pipe._update_or_insert_model_with_metadata(
             model_id,

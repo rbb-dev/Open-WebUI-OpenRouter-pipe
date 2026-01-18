@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 def _m4a_like_base64() -> str:
@@ -18,8 +18,8 @@ def _m4a_like_base64() -> str:
 
 
 @pytest.mark.asyncio
-async def test_direct_uploads_audio_allowlist_makes_format_responses_eligible():
-    pipe = Pipe()
+async def test_direct_uploads_audio_allowlist_makes_format_responses_eligible(pipe_instance_async):
+    pipe = pipe_instance_async
     session = cast(aiohttp.ClientSession, object())
     body = {
         "model": "google/gemini-3-flash-preview",
@@ -48,10 +48,10 @@ async def test_direct_uploads_audio_allowlist_makes_format_responses_eligible():
         raise AssertionError(f"Direct uploads injection failed unexpectedly: {reason}")
 
     with patch.object(pipe, "_select_llm_endpoint_with_forced", new=_unexpected_endpoint_selection), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Pipe._emit_templated_error",
+        "open_webui_openrouter_pipe.pipe.Pipe._emit_templated_error",
         new=_fail_fast_on_templated_error,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ResponsesBody.from_completions",
+        "open_webui_openrouter_pipe.transforms.ResponsesBody.from_completions",
         new=AsyncMock(side_effect=RuntimeError("stop_after_injection")),
     ):
         with pytest.raises(RuntimeError, match="stop_after_injection"):
@@ -78,8 +78,8 @@ async def test_direct_uploads_audio_allowlist_makes_format_responses_eligible():
 
 
 @pytest.mark.asyncio
-async def test_direct_uploads_audio_default_allowlist_routes_to_chat_when_format_not_eligible():
-    pipe = Pipe()
+async def test_direct_uploads_audio_default_allowlist_routes_to_chat_when_format_not_eligible(pipe_instance_async):
+    pipe = pipe_instance_async
     session = cast(aiohttp.ClientSession, object())
     body = {
         "model": "google/gemini-3-flash-preview",
@@ -111,10 +111,10 @@ async def test_direct_uploads_audio_default_allowlist_routes_to_chat_when_format
         raise AssertionError(f"Direct uploads injection failed unexpectedly: {reason}")
 
     with patch.object(pipe, "_select_llm_endpoint_with_forced", new=_endpoint_selection), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.Pipe._emit_templated_error",
+        "open_webui_openrouter_pipe.pipe.Pipe._emit_templated_error",
         new=_fail_fast_on_templated_error,
     ), patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ResponsesBody.from_completions",
+        "open_webui_openrouter_pipe.transforms.ResponsesBody.from_completions",
         new=AsyncMock(side_effect=RuntimeError("stop_after_injection")),
     ):
         with pytest.raises(RuntimeError, match="stop_after_injection"):

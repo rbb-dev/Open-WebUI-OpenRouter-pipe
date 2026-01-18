@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 async def _transform_single_block(

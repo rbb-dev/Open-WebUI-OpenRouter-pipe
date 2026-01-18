@@ -1,4 +1,4 @@
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import _extract_feature_flags
+from open_webui_openrouter_pipe import _extract_feature_flags
 
 
 def test_extract_feature_flags_uses_flat_metadata_shape():

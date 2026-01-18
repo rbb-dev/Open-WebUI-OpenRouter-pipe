@@ -1,20 +1,20 @@
 """Tests for SSE streaming queue valves and deadlock prevention."""
 
 import pytest
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
-def test_queue_valves_unbounded_defaults():
+def test_queue_valves_unbounded_defaults(pipe_instance):
     """Verify unbounded (0) defaults prevent deadlock."""
-    pipe = Pipe()
+    pipe = pipe_instance
     assert pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE == 0, "Chunk queue should default to unbounded"
     assert pipe.valves.STREAMING_EVENT_QUEUE_MAXSIZE == 0, "Event queue should default to unbounded"
     assert pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE == 1000, "Warning threshold should be 1000"
 
 
-def test_valve_descriptions_warn_deadlock():
+def test_valve_descriptions_warn_deadlock(pipe_instance):
     """Verify valve descriptions document deadlock risks for small bounded queues."""
-    pipe = Pipe()
+    pipe = pipe_instance
     # Access model_fields from class, not instance (avoid Pydantic 2.11+ deprecation)
     chunk_desc = Pipe.Valves.model_fields['STREAMING_CHUNK_QUEUE_MAXSIZE'].description
     event_desc = Pipe.Valves.model_fields['STREAMING_EVENT_QUEUE_MAXSIZE'].description
@@ -98,9 +98,9 @@ def test_queue_valve_constraints():
     (50, 50),     # Small bounded (documented risk)
     (100, 200),   # Asymmetric
 ])
-def test_valve_accepts_various_queue_sizes(chunk_size, event_size):
+def test_valve_accepts_various_queue_sizes(chunk_size, event_size, pipe_instance):
     """Verify valves accept various queue size configurations."""
-    pipe = Pipe()
+    pipe = pipe_instance
 
     # These should all be valid configurations (though some are risky)
     pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE = chunk_size
@@ -144,9 +144,9 @@ def test_unbounded_queue_semantics():
 
 
 @pytest.mark.parametrize('warn_size', [100, 500, 1000, 5000])
-def test_warning_size_minimum(warn_size):
+def test_warning_size_minimum(warn_size, pipe_instance):
     """Verify warning size minimum prevents spam on normal loads."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE = warn_size
 
     # Should accept any value >= 100

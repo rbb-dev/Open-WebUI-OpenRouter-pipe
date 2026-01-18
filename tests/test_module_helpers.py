@@ -11,7 +11,8 @@ from typing import Any, Dict, TYPE_CHECKING, cast
 import httpx
 import pytest
 
-from open_webui_openrouter_pipe import open_webui_openrouter_pipe as ow
+import open_webui_openrouter_pipe as ow
+from open_webui_openrouter_pipe.core import config as ow_config
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -25,17 +26,25 @@ def _install_logger(monkeypatch):
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler)
+    # Patch at config and registry level (all import LOGGER from config)
     monkeypatch.setattr(ow, "LOGGER", logger, raising=False)
+    monkeypatch.setattr(ow_config, "LOGGER", logger, raising=False)
+    # Also patch registry since test_debug_print_error_response uses it
+    try:
+        from open_webui_openrouter_pipe.models import registry as ow_registry
+        monkeypatch.setattr(ow_registry, "LOGGER", logger, raising=False)
+    except:
+        pass
     return stream
 
 
 def test_detect_runtime_pipe_id_from_module_prefix(monkeypatch):
-    monkeypatch.setitem(ow.__dict__, "__name__", "function_demo.plugin")
+    monkeypatch.setitem(ow_config.__dict__, "__name__", "function_demo.plugin")
     assert ow._detect_runtime_pipe_id("fallback") == "demo.plugin"
 
 
 def test_detect_runtime_pipe_id_default(monkeypatch):
-    monkeypatch.setitem(ow.__dict__, "__name__", "open_webui_openrouter_pipe.open_webui_openrouter_pipe")
+    monkeypatch.setitem(ow.__dict__, "__name__", "open_webui_openrouter_pipe.pipe")
     assert ow._detect_runtime_pipe_id("fallback") == "fallback"
 
 
@@ -87,7 +96,9 @@ def test_build_error_template_values_includes_context():
 
 def test_get_open_webui_config_module(monkeypatch):
     sentinel = object()
-    monkeypatch.setattr(ow, "_OPEN_WEBUI_CONFIG_MODULE", sentinel, raising=False)
+    # _OPEN_WEBUI_CONFIG_MODULE moved to core.utils, patch it there
+    from open_webui_openrouter_pipe.core import utils as core_utils
+    monkeypatch.setattr(core_utils, "_OPEN_WEBUI_CONFIG_MODULE", sentinel, raising=False)
     assert ow._get_open_webui_config_module() is sentinel
 
 
@@ -122,7 +133,9 @@ def test_read_rag_file_constraints(monkeypatch):
         BYPASS_EMBEDDING_AND_RETRIEVAL=types.SimpleNamespace(value=False),
         RAG_FILE_MAX_SIZE=types.SimpleNamespace(value=70),
     )
-    monkeypatch.setattr(ow, "_get_open_webui_config_module", lambda: cfg)
+    # Patch in core.errors where _read_rag_file_constraints imports it from core.utils
+    from open_webui_openrouter_pipe.core import errors as ow_errors
+    monkeypatch.setattr(ow_errors, "_get_open_webui_config_module", lambda: cfg)
     rag_enabled, limit = ow._read_rag_file_constraints()
     assert rag_enabled is True
     assert limit == 70
@@ -217,7 +230,7 @@ def test_internal_file_helpers():
 
 
 @pytest.mark.asyncio
-async def test_wrap_event_emitter_controls_events():
+async def test_wrap_event_emitter_controls_events(pipe_instance_async):
     calls = []
 
     async def emitter(event):
@@ -262,7 +275,9 @@ def test_classify_function_call_artifacts():
 
 
 def test_crockford_and_markers():
-    encoded = ow._encode_crockford(31, 2)
+    # ULID functions moved to storage.persistence
+    from open_webui_openrouter_pipe.storage.persistence import _encode_crockford
+    encoded = _encode_crockford(31, 2)
     assert encoded == "0Z"
     item_id = ow.generate_item_id()
     assert len(item_id) == ow.ULID_LENGTH
@@ -281,15 +296,34 @@ def test_sanitize_table_fragment():
     assert ow._sanitize_table_fragment("Model-Name!@#") == "model_name"
 
 
-def test_build_tools_and_dedupe(monkeypatch):
-    monkeypatch.setattr(ow.ModelFamily, "supports", classmethod(lambda cls, feature, model_id=None: feature == "function_calling"))
-    body = ow.ResponsesBody(model="demo", input="hi")
-    valves = ow.Pipe.Valves()
-    registry = {
-        "tool": {"spec": {"name": "search", "parameters": {"type": "object", "properties": {}}}}
-    }
-    tools = ow.build_tools(body, valves, __tools__=registry, extra_tools=[{"type": "function", "name": "search"}])
-    assert len(tools) == 1
+def test_build_tools_and_dedupe():
+    """Test tool building and deduplication logic.
+
+    Real infrastructure exercised:
+    - Real ModelFamily.supports checking from registry
+    - Real tool building and merging
+    - Real deduplication logic
+    """
+    # Set up model with function_calling support
+    ow.ModelFamily.set_dynamic_specs({
+        "demo": {
+            "features": ["function_calling"],
+            "context_length": 8192,
+            "full_model": {"name": "Demo"},
+        }
+    })
+
+    try:
+        body = ow.ResponsesBody(model="demo", input="hi")
+        valves = ow.Pipe.Valves()
+        registry = {
+            "tool": {"spec": {"name": "search", "parameters": {"type": "object", "properties": {}}}}
+        }
+        tools = ow.build_tools(body, valves, __tools__=registry, extra_tools=[{"type": "function", "name": "search"}])
+        assert len(tools) == 1
+    finally:
+        # Clean up
+        ow.ModelFamily.set_dynamic_specs(None)
 
 
 def test_strictify_schema_helpers():
@@ -310,23 +344,22 @@ def test_strictify_schema_helpers():
     assert deduped == [{"type": "function", "name": "a", "data": 2}]
 
 
-def test_decode_payload_bytes_rejects_headerless_ciphertext():
-    pipe = ow.Pipe()
+def test_decode_payload_bytes_rejects_headerless_ciphertext(pipe_instance):
+    pipe = pipe_instance
     legacy_bytes = b'{"type":"reasoning"}'
     with pytest.raises(ValueError, match="Invalid artifact payload flag"):
         pipe._decode_payload_bytes(legacy_bytes)
 
 
-def _build_encryption_ready_pipe() -> ow.Pipe:
-    pipe = ow.Pipe()
+def _build_encryption_ready_pipe(pipe: ow.Pipe) -> ow.Pipe:
     pipe._encryption_key = "a" * 32  # type: ignore[attr-defined]
     pipe._encrypt_all = True  # type: ignore[attr-defined]
     pipe._fernet = None  # type: ignore[attr-defined]
     return pipe
 
 
-def test_prepare_rows_for_storage_encrypts_payloads():
-    pipe = _build_encryption_ready_pipe()
+def test_prepare_rows_for_storage_encrypts_payloads(pipe_instance):
+    pipe = _build_encryption_ready_pipe(pipe_instance)
     rows = [
         {
             "chat_id": "chat",
@@ -345,8 +378,8 @@ def test_prepare_rows_for_storage_encrypts_payloads():
     assert decrypted["content"] == "secret"
 
 
-def test_prepare_rows_for_storage_idempotent():
-    pipe = _build_encryption_ready_pipe()
+def test_prepare_rows_for_storage_idempotent(pipe_instance):
+    pipe = _build_encryption_ready_pipe(pipe_instance)
     rows = [
         {
             "chat_id": "chat",
@@ -363,8 +396,8 @@ def test_prepare_rows_for_storage_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_redis_fetch_rows_decrypts_cached_payloads():
-    pipe = _build_encryption_ready_pipe()
+async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
+    pipe = _build_encryption_ready_pipe(pipe_instance_async)
     row = {
         "id": "01TEST",
         "chat_id": "chat",
@@ -386,8 +419,8 @@ async def test_redis_fetch_rows_decrypts_cached_payloads():
 
 
 @pytest.mark.asyncio
-async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog):
-    pipe = ow.Pipe()
+async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog, pipe_instance_async):
+    pipe = pipe_instance_async
     pipe._redis_enabled = True  # type: ignore[attr-defined]
 
     class FakeRedis:

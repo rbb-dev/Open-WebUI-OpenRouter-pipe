@@ -10,8 +10,8 @@ import asyncio
 
 import pytest
 
-import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_module
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+import open_webui_openrouter_pipe.pipe as pipe_module
+from open_webui_openrouter_pipe import (
     Pipe,
     SessionLogger,
     _ToolExecutionContext,
@@ -21,9 +21,9 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
 class TestRequestBreaker:
     """Tests for the per-user request circuit breaker."""
 
-    def test_request_breaker_trips_after_threshold(self, monkeypatch) -> None:
+    def test_request_breaker_trips_after_threshold(self, monkeypatch, pipe_instance) -> None:
         """N failures in window => breaker blocks."""
-        pipe = Pipe()
+        pipe = pipe_instance
         pipe._breaker_threshold = 3
         pipe._breaker_window_seconds = 60
 
@@ -35,9 +35,9 @@ class TestRequestBreaker:
 
         assert pipe._breaker_allows(user_id) is False
 
-    def test_request_breaker_resets_on_success(self, monkeypatch) -> None:
+    def test_request_breaker_resets_on_success(self, monkeypatch, pipe_instance) -> None:
         """Reset clears failures so breaker allows again."""
-        pipe = Pipe()
+        pipe = pipe_instance
         pipe._breaker_threshold = 2
         pipe._breaker_window_seconds = 60
 
@@ -51,9 +51,9 @@ class TestRequestBreaker:
         pipe._reset_failure_counter(user_id)
         assert pipe._breaker_allows(user_id) is True
 
-    def test_breaker_window_sliding(self, monkeypatch) -> None:
+    def test_breaker_window_sliding(self, monkeypatch, pipe_instance) -> None:
         """Failures outside the window are evicted and do not count."""
-        pipe = Pipe()
+        pipe = pipe_instance
         pipe._breaker_threshold = 2
         pipe._breaker_window_seconds = 10
 
@@ -71,9 +71,9 @@ class TestRequestBreaker:
 class TestToolBreaker:
     """Tests for the tool-specific circuit breaker."""
 
-    def test_tool_breaker_tracks_failures_by_type(self, monkeypatch) -> None:
+    def test_tool_breaker_tracks_failures_by_type(self, monkeypatch, pipe_instance) -> None:
         """Failures are tracked per tool type and threshold blocks that type only."""
-        pipe = Pipe()
+        pipe = pipe_instance
         pipe._breaker_threshold = 2
         pipe._breaker_window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
@@ -88,9 +88,9 @@ class TestToolBreaker:
         assert pipe._tool_type_allows(user_id, "other_type") is True
 
     @pytest.mark.asyncio
-    async def test_tool_breaker_skips_failing_tool_type(self) -> None:
+    async def test_tool_breaker_skips_failing_tool_type(self, pipe_instance_async) -> None:
         """Blocked tool types emit a status notification via _notify_tool_breaker."""
-        pipe = Pipe()
+        pipe = pipe_instance_async
         events: list[dict] = []
 
         async def emitter(event: dict) -> None:
@@ -117,9 +117,9 @@ class TestToolBreaker:
 class TestDatabaseBreaker:
     """Tests for the database circuit breaker."""
 
-    def test_db_breaker_tracks_failures(self, monkeypatch) -> None:
+    def test_db_breaker_tracks_failures(self, monkeypatch, pipe_instance) -> None:
         """DB failures are tracked and eventually block DB ops."""
-        pipe = Pipe()
+        pipe = pipe_instance
         pipe._breaker_threshold = 2
         pipe._breaker_window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
@@ -131,9 +131,9 @@ class TestDatabaseBreaker:
         assert pipe._db_breaker_allows(user_id) is False
 
     @pytest.mark.asyncio
-    async def test_db_breaker_suppresses_persistence_on_failure(self, monkeypatch) -> None:
+    async def test_db_breaker_suppresses_persistence_on_failure(self, monkeypatch, pipe_instance_async) -> None:
         """When DB breaker is tripped, _db_persist returns [] and emits a warning notification."""
-        pipe = Pipe()
+        pipe = pipe_instance_async
         pipe._breaker_threshold = 1
         pipe._breaker_window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)

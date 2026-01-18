@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_module
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+import open_webui_openrouter_pipe.pipe as pipe_module
+from open_webui_openrouter_pipe import (
     ModelFamily,
     Pipe,
     StatusMessages,
@@ -203,9 +203,9 @@ class TestRemoteURLDownloading:
     """Tests for _download_remote_url helper method."""
 
     @pytest.mark.asyncio
-    async def test_download_successful(self, pipe_instance):
+    async def test_download_successful(self, pipe_instance_async):
         """Should download remote file successfully."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
         test_content = b"fake image data"
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -216,7 +216,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance._download_remote_url(
+            result = await pipe_instance_async._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -226,9 +226,9 @@ class TestRemoteURLDownloading:
             assert result["url"] == "https://example.com/image.jpg"
 
     @pytest.mark.asyncio
-    async def test_download_normalizes_mime_type(self, pipe_instance):
+    async def test_download_normalizes_mime_type(self, pipe_instance_async):
         """Should normalize image/jpg to image/jpeg."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.headers = {"content-type": "image/jpg; charset=utf-8"}
@@ -237,18 +237,18 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance._download_remote_url(
+            result = await pipe_instance_async._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
             assert result["mime_type"] == "image/jpeg"
 
     @pytest.mark.asyncio
-    async def test_download_rejects_files_over_default_limit(self, pipe_instance):
+    async def test_download_rejects_files_over_default_limit(self, pipe_instance_async):
         """Should reject files larger than the configured limit (default 50MB)."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 1
-        limit_bytes = pipe_instance._get_effective_remote_file_limit_mb() * 1024 * 1024
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
+        limit_bytes = pipe_instance_async._get_effective_remote_file_limit_mb() * 1024 * 1024
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -261,31 +261,31 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance._download_remote_url(
+            result = await pipe_instance_async._download_remote_url(
                 "https://example.com/huge.jpg"
             )
 
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_download_invalid_url_returns_none(self, pipe_instance):
+    async def test_download_invalid_url_returns_none(self, pipe_instance_async):
         """Should return None for non-HTTP URLs."""
-        assert await pipe_instance._download_remote_url("file:///local/path") is None
-        assert await pipe_instance._download_remote_url("ftp://example.com/file") is None
-        assert await pipe_instance._download_remote_url("") is None
+        assert await pipe_instance_async._download_remote_url("file:///local/path") is None
+        assert await pipe_instance_async._download_remote_url("ftp://example.com/file") is None
+        assert await pipe_instance_async._download_remote_url("") is None
 
     @pytest.mark.asyncio
-    async def test_download_network_error_returns_none(self, pipe_instance):
+    async def test_download_network_error_returns_none(self, pipe_instance_async):
         """Should retry on network errors and return None when exhausted."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
-        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
-        pipe_instance.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
-        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
         with patch("httpx.AsyncClient") as mock_client:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(side_effect=httpx.NetworkError("Network error"))
 
-            result = await pipe_instance._download_remote_url(
+            result = await pipe_instance_async._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -293,9 +293,9 @@ class TestRemoteURLDownloading:
             assert client_ctx.stream.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_download_does_not_retry_on_client_errors(self, pipe_instance):
+    async def test_download_does_not_retry_on_client_errors(self, pipe_instance_async):
         """Should not retry on non-429 HTTP 4xx errors."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
         url = "https://example.com/forbidden.png"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=403, request=request)
@@ -309,28 +309,28 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance._download_remote_url(url)
+            result = await pipe_instance_async._download_remote_url(url)
 
             assert result is None
             assert client_ctx.stream.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_download_blocks_unsafe_url(self, pipe_instance):
+    async def test_download_blocks_unsafe_url(self, pipe_instance_async):
         """SSRF guard should abort before making any HTTP request."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=False)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient") as mock_client:
-            result = await pipe_instance._download_remote_url("https://example.com/image.jpg")
+            result = await pipe_instance_async._download_remote_url("https://example.com/image.jpg")
             assert result is None
             mock_client.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_download_retries_on_429_then_succeeds(self, pipe_instance):
+    async def test_download_retries_on_429_then_succeeds(self, pipe_instance_async):
         """HTTP 429 should trigger a retry and succeed on a later attempt."""
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
-        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
-        pipe_instance.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
-        pipe_instance.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
+        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
 
         url = "https://example.com/limited.png"
         request = httpx.Request("GET", url)
@@ -356,7 +356,7 @@ class TestRemoteURLDownloading:
                 ]
             )
 
-            result = await pipe_instance._download_remote_url(url)
+            result = await pipe_instance_async._download_remote_url(url)
 
             assert result is not None
             assert result["data"] == b"ok"
@@ -369,15 +369,15 @@ class TestSSRFIPv6Validation:
 
     pytestmark = pytest.mark.asyncio
 
-    async def test_blocks_private_ipv6_literal(self, pipe_instance):
+    async def test_blocks_private_ipv6_literal(self, pipe_instance_async):
         """IPv6 literals in unique-local ranges should be rejected."""
-        assert await pipe_instance._is_safe_url("http://[fd00::1]/") is False
+        assert await pipe_instance_async._is_safe_url("http://[fd00::1]/") is False
 
-    async def test_allows_global_ipv6_literal(self, pipe_instance):
+    async def test_allows_global_ipv6_literal(self, pipe_instance_async):
         """Public IPv6 literals should be considered safe."""
-        assert await pipe_instance._is_safe_url("https://[2001:4860:4860::8888]/foo")
+        assert await pipe_instance_async._is_safe_url("https://[2001:4860:4860::8888]/foo")
 
-    async def test_blocks_domain_with_private_ipv6_record(self, pipe_instance, monkeypatch):
+    async def test_blocks_domain_with_private_ipv6_record(self, pipe_instance_async, monkeypatch):
         """Hosts resolving to any private IPv6 addresses are rejected."""
 
         def fake_getaddrinfo(host, *args, **kwargs):
@@ -387,9 +387,9 @@ class TestSSRFIPv6Validation:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert await pipe_instance._is_safe_url("https://example.com/resource") is False
+        assert await pipe_instance_async._is_safe_url("https://example.com/resource") is False
 
-    async def test_allows_domain_with_public_ips_only(self, pipe_instance, monkeypatch):
+    async def test_allows_domain_with_public_ips_only(self, pipe_instance_async, monkeypatch):
         """Hosts resolving exclusively to public IPv4/IPv6 addresses pass the guard."""
 
         def fake_getaddrinfo(host, *args, **kwargs):
@@ -399,7 +399,7 @@ class TestSSRFIPv6Validation:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert await pipe_instance._is_safe_url("https://example.com/resource")
+        assert await pipe_instance_async._is_safe_url("https://example.com/resource")
 
 
 class TestRemoteFileLimitResolution:
@@ -529,12 +529,13 @@ class TestStorageContext:
     ):
         fallback_user = Mock()
         fallback_user.email = "fallback@example.com"
-        pipe_instance._ensure_storage_user = AsyncMock(return_value=fallback_user)
+        # Mock the handler's method directly (not the pipe's delegation method)
+        pipe_instance._multimodal_handler._ensure_storage_user = AsyncMock(return_value=fallback_user)
 
         request, user = await pipe_instance._resolve_storage_context(mock_request, None)
         assert request is mock_request
         assert user is fallback_user
-        pipe_instance._ensure_storage_user.assert_awaited_once()
+        pipe_instance._multimodal_handler._ensure_storage_user.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_resolve_storage_context_without_request(
@@ -666,7 +667,8 @@ class TestImageTransformer:
         async def fake_get_file(_file_id):
             return _FileRecord()
 
-        monkeypatch.setattr(pipe_instance, "_get_file_by_id", fake_get_file)
+        # Mock the handler's method directly (not the pipe's delegation method)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_get_file_by_id", fake_get_file)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/inline/content"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is not None
@@ -1184,14 +1186,14 @@ class TestConversationRebuild:
                 },
             }
 
-        original_supports = ModelFamily.supports.__func__
-
-        def fake_supports(cls, feature, model_id):
-            if feature == "vision":
-                return True
-            return original_supports(cls, feature, model_id)
-
-        monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
+        # Use real ModelFamily.supports with dynamic specs for vision support
+        ModelFamily.set_dynamic_specs({
+            "demo-model": {
+                "id": "demo-model",
+                "architecture": {"modality": "text+vision"},
+                "features": {"vision": True}
+            }
+        })
 
         transformed = await pipe_instance.transform_messages_to_input(
             messages,

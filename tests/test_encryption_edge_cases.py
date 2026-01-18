@@ -6,16 +6,16 @@ import json
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     Pipe,
     _PAYLOAD_FLAG_LZ4,
     _PAYLOAD_FLAG_PLAIN,
 )
 
 
-def test_maybe_compress_payload_respects_min_bytes_threshold() -> None:
+def test_maybe_compress_payload_respects_min_bytes_threshold(pipe_instance) -> None:
     """When MIN_COMPRESS_BYTES is set, small payloads are not compressed."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._compression_enabled = True
     pipe._compression_min_bytes = 10_000
 
@@ -25,9 +25,9 @@ def test_maybe_compress_payload_respects_min_bytes_threshold() -> None:
     assert compressed is False
 
 
-def test_encode_payload_bytes_sets_plain_flag_when_not_compressed() -> None:
+def test_encode_payload_bytes_sets_plain_flag_when_not_compressed(pipe_instance) -> None:
     """_encode_payload_bytes uses the plain flag when compression is skipped."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._compression_enabled = True
     pipe._compression_min_bytes = 10_000
 
@@ -37,9 +37,9 @@ def test_encode_payload_bytes_sets_plain_flag_when_not_compressed() -> None:
     assert pipe._decode_payload_bytes(encoded) == payload
 
 
-def test_encode_payload_bytes_uses_lz4_flag_when_compression_is_effective() -> None:
+def test_encode_payload_bytes_uses_lz4_flag_when_compression_is_effective(pipe_instance) -> None:
     """When LZ4 yields a smaller buffer, _encode_payload_bytes marks it as compressed."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._compression_enabled = True
     pipe._compression_min_bytes = 0
 
@@ -49,18 +49,18 @@ def test_encode_payload_bytes_uses_lz4_flag_when_compression_is_effective() -> N
     assert encoded[:1] in {bytes([_PAYLOAD_FLAG_PLAIN]), bytes([_PAYLOAD_FLAG_LZ4])}
 
 
-def test_encrypt_payload_requires_encryption_key() -> None:
+def test_encrypt_payload_requires_encryption_key(pipe_instance) -> None:
     """_encrypt_payload raises when ARTIFACT_ENCRYPTION_KEY is not configured."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._encryption_key = ""
     pipe._fernet = None
     with pytest.raises(RuntimeError):
         pipe._encrypt_payload({"k": "v"})
 
 
-def test_encrypt_decrypt_payload_roundtrip_with_key() -> None:
+def test_encrypt_decrypt_payload_roundtrip_with_key(pipe_instance) -> None:
     """_encrypt_payload and _decrypt_payload roundtrip when a key is configured."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._encryption_key = "unit-test-artifact-key"
     pipe._fernet = None
 
@@ -70,9 +70,9 @@ def test_encrypt_decrypt_payload_roundtrip_with_key() -> None:
     assert pipe._decrypt_payload(ciphertext) == payload
 
 
-def test_encrypt_if_needed_encrypts_reasoning_only_when_encrypt_all_false() -> None:
+def test_encrypt_if_needed_encrypts_reasoning_only_when_encrypt_all_false(pipe_instance) -> None:
     """When ENCRYPT_ALL is False, only reasoning items are encrypted."""
-    pipe = Pipe()
+    pipe = pipe_instance
     pipe._encryption_key = "unit-test-artifact-key"
     pipe._fernet = None
     pipe._encrypt_all = False

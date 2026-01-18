@@ -217,6 +217,8 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. |
 | `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger records retained per request (older entries are dropped). |
 | `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
+| `ENABLE_TIMING_LOG` | `bool` | `False` | When True, capture function entrance/exit timing data. Writes to `TIMING_LOG_FILE` directly (not session archives). See [Session Log Storage](session_log_storage.md#timing-instrumentation). |
+| `TIMING_LOG_FILE` | `str` | `logs/timing.jsonl` | File path for timing log output when `ENABLE_TIMING_LOG` is True. Parent directories are created automatically. |
 
 ### Support contact and error templates
 

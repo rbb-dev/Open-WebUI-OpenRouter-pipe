@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 @pytest.mark.asyncio
-async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
-    pipe = Pipe()
+async def test_task_requests_ignore_direct_uploads_and_do_not_inject(pipe_instance_async):
+    pipe = pipe_instance_async
     session = cast(aiohttp.ClientSession, object())
 
     body = {
@@ -38,7 +38,7 @@ async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
         )
 
     with patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ResponsesBody.from_completions",
+        "open_webui_openrouter_pipe.transforms.ResponsesBody.from_completions",
         new=AsyncMock(side_effect=_fake_from_completions),
     ), patch.object(pipe, "_sanitize_request_input", new=lambda *_a, **_k: None), patch.object(
         pipe, "_apply_reasoning_preferences", new=lambda *_a, **_k: None
@@ -79,8 +79,8 @@ async def test_task_requests_ignore_direct_uploads_and_do_not_inject():
 
 
 @pytest.mark.asyncio
-async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
-    pipe = Pipe()
+async def test_task_first_does_not_consume_direct_uploads_for_following_chat(pipe_instance_async):
+    pipe = pipe_instance_async
     session = cast(aiohttp.ClientSession, object())
 
     metadata = {
@@ -107,7 +107,7 @@ async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
     }
 
     with patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ResponsesBody.from_completions",
+        "open_webui_openrouter_pipe.transforms.ResponsesBody.from_completions",
         new=AsyncMock(side_effect=_fake_from_completions),
     ), patch.object(pipe, "_sanitize_request_input", new=lambda *_a, **_k: None), patch.object(
         pipe, "_apply_reasoning_preferences", new=lambda *_a, **_k: None
@@ -149,7 +149,7 @@ async def test_task_first_does_not_consume_direct_uploads_for_following_chat():
     }
 
     with patch(
-        "open_webui_openrouter_pipe.open_webui_openrouter_pipe.ResponsesBody.from_completions",
+        "open_webui_openrouter_pipe.transforms.ResponsesBody.from_completions",
         new=AsyncMock(side_effect=RuntimeError("stop after injection")),
     ):
         with pytest.raises(RuntimeError, match="stop after injection"):

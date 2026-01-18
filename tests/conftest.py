@@ -10,8 +10,7 @@ from unittest.mock import Mock
 
 import pydantic
 import pytest
-
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+import pytest_asyncio
 
 
 def _ensure_pydantic_backports() -> None:
@@ -119,6 +118,19 @@ def _install_open_webui_stubs() -> None:
     open_webui.models = models_pkg
     open_webui.routers = routers_pkg
 
+    # Create open_webui.storage package
+    storage_pkg = cast(Any, _ensure_module("open_webui.storage"))
+    storage_pkg.__path__ = []  # mark as package
+    storage_main_mod = cast(Any, _ensure_module("open_webui.storage.main"))
+
+    async def _upload_file_stub(*args, **kwargs):
+        """Stub for Open WebUI's upload_file handler."""
+        return None
+
+    storage_main_mod.upload_file = _upload_file_stub
+    storage_pkg.main = storage_main_mod
+    open_webui.storage = storage_pkg
+
     utils_pkg = cast(Any, _ensure_module("open_webui.utils"))
     utils_pkg.__path__ = []  # mark as package
     misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))
@@ -156,6 +168,14 @@ def _install_open_webui_stubs() -> None:
             template["usage"] = usage
         return template
 
+    async def _run_in_threadpool(func, *args, **kwargs):
+        """Stub for Open WebUI's run_in_threadpool."""
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        return func(*args, **kwargs)
+
+    misc_mod.run_in_threadpool = _run_in_threadpool
     misc_mod.openai_chat_chunk_message_template = _openai_chat_chunk_message_template
     utils_pkg.misc = misc_mod
     open_webui.utils = utils_pkg
@@ -230,6 +250,8 @@ def _install_sqlalchemy_stub() -> None:
     sa_pkg.exc = exc_mod
     sa_pkg.engine = engine_mod
     sa_pkg.orm = orm_mod
+    # Re-export Engine at top level (as SQLAlchemy 2.0+ does)
+    sa_pkg.Engine = _Engine
 
 
 def _install_tenacity_stub() -> None:
@@ -280,6 +302,14 @@ def _install_tenacity_stub() -> None:
 def pipe_instance():
     """Return a fresh Pipe instance for tests."""
     return Pipe()
+
+
+@pytest_asyncio.fixture
+async def pipe_instance_async():
+    """Return a fresh Pipe instance for async tests with proper cleanup."""
+    pipe = Pipe()
+    yield pipe
+    await pipe.close()
 
 
 @pytest.fixture
@@ -353,10 +383,15 @@ def _install_fastapi_stub() -> None:
 
     # Create UploadFile stub
     class _UploadFile:
-        def __init__(self, file=None, filename="", headers=None):
+        def __init__(self, file=None, filename="", headers=None, content_type=None):
             self.file = file
             self.filename = filename
             self.headers = headers or {}
+            # Derive content_type from headers if not explicitly provided (like real FastAPI UploadFile)
+            if content_type is not None:
+                self.content_type = content_type
+            elif self.headers:
+                self.content_type = self.headers.get("content-type")
 
     # Create Headers stub
     class _Headers(dict):
@@ -396,14 +431,35 @@ def _install_fastapi_stub() -> None:
     starlette_datastructures_mod.Headers = _Headers
     starlette_pkg.datastructures = starlette_datastructures_mod
 
+    # Starlette requests stub
+    starlette_requests_mod = cast(Any, _ensure_module("starlette.requests"))
+    class _StarletteRequest:
+        """Stub for starlette Request."""
+        ...
+    starlette_requests_mod.Request = _StarletteRequest
+    starlette_pkg.requests = starlette_requests_mod
+
     fastapi_pkg.datastructures = datastructures_mod
     fastapi_pkg.responses = responses_mod
     fastapi_pkg.concurrency = concurrency_mod
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Install Stubs (MUST RUN BEFORE IMPORTING PIPE)
+# ─────────────────────────────────────────────────────────────────────────────
+# CRITICAL: These MUST be called before "from open_webui_openrouter_pipe import Pipe"
+# otherwise pipe.py will execute its try/except blocks and set Models=None, Chats=None, etc.
 
 _ensure_pydantic_backports()
 _install_pydantic_core_stub()
 _install_open_webui_stubs()
 _install_sqlalchemy_stub()
 _install_tenacity_stub()
-_install_fastapi_stub()  # Add FastAPI stub to fix import errors
+_install_fastapi_stub()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Import Pipe (AFTER stubs are installed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from open_webui_openrouter_pipe import Pipe

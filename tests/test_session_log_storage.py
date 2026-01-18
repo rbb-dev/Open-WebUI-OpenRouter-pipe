@@ -7,8 +7,8 @@ import pytest
 
 pyzipper = pytest.importorskip("pyzipper")
 
-import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_module
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+import open_webui_openrouter_pipe.pipe as pipe_module
+from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
     SessionLogger,
@@ -23,8 +23,8 @@ def test_sanitize_path_component_blocks_traversal() -> None:
     assert _sanitize_path_component("", fallback="x") == "x"
 
 
-def test_write_session_log_archive_creates_encrypted_zip(tmp_path) -> None:
-    pipe = Pipe()
+def test_write_session_log_archive_creates_encrypted_zip(tmp_path, pipe_instance) -> None:
+    pipe = pipe_instance
     password = b"correct horse battery staple"
     job = _SessionLogArchiveJob(
         base_dir=str(tmp_path),
@@ -94,8 +94,8 @@ def test_write_session_log_archive_creates_encrypted_zip(tmp_path) -> None:
         assert any(rec.get("message") == "world" for rec in records)
 
 
-def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatch) -> None:
-    pipe = Pipe()
+def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatch, pipe_instance) -> None:
+    pipe = pipe_instance
 
     valves = pipe.Valves(
         SESSION_LOG_STORE_ENABLED=True,
@@ -156,9 +156,9 @@ def test_session_log_buffer_captures_debug_even_when_console_level_warning(capsy
 class TestSessionLogArchiveEdgeCases:
     """Additional edge case tests for session log archiving."""
 
-    def test_archive_with_missing_ids_skipped(self, tmp_path) -> None:
+    def test_archive_with_missing_ids_skipped(self, tmp_path, pipe_instance) -> None:
         """Archive not written when user_id/session_id/chat_id/message_id missing."""
-        pipe = Pipe()
+        pipe = pipe_instance
         password = b"correct horse battery staple"
 
         # Test with missing user_id
@@ -184,9 +184,9 @@ class TestSessionLogArchiveEdgeCases:
         out_path = tmp_path / job_missing_user.user_id / job_missing_user.chat_id / f"{job_missing_user.message_id}.zip"
         assert not out_path.exists()
 
-    def test_archive_password_encryption(self, tmp_path) -> None:
+    def test_archive_password_encryption(self, tmp_path, pipe_instance) -> None:
         """Zip archive encrypted with AES and correct password."""
-        pipe = Pipe()
+        pipe = pipe_instance
         password = b"correct horse battery staple"
 
         job = _SessionLogArchiveJob(
@@ -227,9 +227,9 @@ class TestSessionLogArchiveEdgeCases:
             meta = json.loads(zf.read("meta.json").decode("utf-8"))
             assert meta["ids"]["user_id"] == job.user_id
 
-    def test_archive_compression_options(self, tmp_path) -> None:
+    def test_archive_compression_options(self, tmp_path, pipe_instance) -> None:
         """Different compression algorithms (stored, deflated, bzip2, lzma)."""
-        pipe = Pipe()
+        pipe = pipe_instance
         password = b"correct horse battery staple"
 
         compression_methods = ["stored", "deflated", "bzip2", "lzma"]
@@ -266,9 +266,9 @@ class TestSessionLogArchiveEdgeCases:
                 meta = json.loads(zf.read("meta.json").decode("utf-8"))
                 assert meta["ids"]["user_id"] == job.user_id
 
-    def test_cleanup_deletes_old_archives(self, tmp_path, monkeypatch) -> None:
+    def test_cleanup_deletes_old_archives(self, tmp_path, monkeypatch, pipe_instance) -> None:
         """Archives older than retention window deleted."""
-        pipe = Pipe()
+        pipe = pipe_instance
 
         # Set retention to 1 day for testing
         valves = pipe.Valves(SESSION_LOG_RETENTION_DAYS=1)
@@ -332,9 +332,9 @@ class TestSessionLogArchiveEdgeCases:
         # Old directories should be pruned if emptied.
         assert not (tmp_path / "user_old").exists()
 
-    def test_cleanup_prunes_empty_directories(self, tmp_path, monkeypatch) -> None:
+    def test_cleanup_prunes_empty_directories(self, tmp_path, monkeypatch, pipe_instance) -> None:
         """Empty user/chat directories removed after archive deletion."""
-        pipe = Pipe()
+        pipe = pipe_instance
 
         # Create archive
         job = _SessionLogArchiveJob(

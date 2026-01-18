@@ -17,7 +17,7 @@ class _ContextManager:
 
 
 def test_discover_engine_prefers_db_context_over_symbol_names() -> None:
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     engine = object()
 
@@ -35,7 +35,7 @@ def test_discover_engine_prefers_db_context_over_symbol_names() -> None:
 
 
 def test_discover_schema_prefers_base_metadata_schema() -> None:
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     engine = object()
 
@@ -56,7 +56,7 @@ def test_discover_schema_prefers_base_metadata_schema() -> None:
 
 
 def test_discover_schema_falls_back_to_open_webui_env() -> None:
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     engine = object()
 

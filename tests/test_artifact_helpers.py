@@ -1,6 +1,6 @@
 import json
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     _classify_function_call_artifacts,
     _dedupe_tools,
     _normalize_persisted_item,

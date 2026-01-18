@@ -1,10 +1,11 @@
 import asyncio
 import pytest
 from typing import Any, AsyncGenerator, cast
+from unittest.mock import AsyncMock, Mock
 
 from fastapi.responses import JSONResponse
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     ModelFamily,
     OpenRouterAPIError,
     Pipe,
@@ -13,8 +14,8 @@ from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
 
 
 @pytest.mark.asyncio
-async def test_completion_events_preserve_streamed_text(monkeypatch):
-    pipe = Pipe()
+async def test_completion_events_preserve_streamed_text(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(model="openrouter/test", input=[], stream=True)
     valves = pipe.valves
 
@@ -64,8 +65,13 @@ async def test_completion_events_preserve_streamed_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
-    pipe = Pipe()
+async def test_streaming_loop_handles_openrouter_errors(monkeypatch, pipe_instance_async):
+    """Test that OpenRouter errors are reported via real _report_openrouter_error method.
+
+    FIX: Removed inappropriate spy mock on _report_openrouter_error.
+    Now exercises the real error reporting method which emits status events.
+    """
+    pipe = pipe_instance_async
     body = ResponsesBody(model="openrouter/test", input=[], stream=True)
     valves = pipe.valves
 
@@ -79,16 +85,6 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
     monkeypatch.setattr(
         Pipe, "send_openai_responses_streaming_request", fake_stream
     )
-
-    reported: list[tuple[OpenRouterAPIError, dict]] = []
-
-    original_report = Pipe._report_openrouter_error
-
-    async def spy_report(self, exc, **kwargs):
-        reported.append((exc, kwargs))
-        await original_report(self, exc, **kwargs)
-
-    monkeypatch.setattr(Pipe, "_report_openrouter_error", spy_report)
 
     emitted: list[dict] = []
 
@@ -106,10 +102,8 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
     )
 
     assert result == ""
-    assert reported and reported[0][0] is error
-    report_kwargs = reported[0][1]
-    assert report_kwargs["normalized_model_id"] == body.model
-    assert report_kwargs["api_model_id"] == getattr(body, "api_model", None)
+
+    # Verify that error reporting happened by checking status events
     status_events = [event for event in emitted if event.get("type") == "status"]
     assert status_events, "Expected provider error status event"
     assert status_events[-1]["data"]["done"] is True
@@ -117,8 +111,13 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
-    pipe = Pipe()
+async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_instance_async):
+    """Test reasoning status updates and tool execution.
+
+    FIX: Removed inappropriate mocks on _db_persist, _execute_function_calls, and _make_db_row.
+    Now exercises real methods with proper mocking of the ArtifactStore boundary.
+    """
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test-rich",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -126,14 +125,18 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
     )
     valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-    def fake_supports(cls, feature, _model_id):
-        return feature == "function_calling"
+    # Set real model capabilities using ModelFamily.set_dynamic_specs
+    ModelFamily.set_dynamic_specs({
+        "openrouter.test-rich": {
+            "features": {"function_calling": True}
+        }
+    })
 
-    monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
-
+    # Mock ArtifactStore boundary methods instead of Pipe internal methods
     persisted_rows: list[dict] = []
 
-    async def fake_db_persist(self, rows):
+    async def mock_artifact_persist(rows):
+        """Mock the ArtifactStore._db_persist boundary."""
         persisted_rows.extend(rows)
         ulids: list[str] = []
         for idx, row in enumerate(rows):
@@ -143,20 +146,8 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
             ulids.append(row_id)
         return ulids
 
-    async def fake_execute(self, calls, _tools):
-        outputs = []
-        for call in calls:
-            outputs.append(
-                {
-                    "type": "function_call_output",
-                    "status": "completed",
-                    "call_id": call.get("call_id"),
-                    "output": f"ran {call.get('name')}",
-                }
-            )
-        return outputs
-
-    def fake_make_db_row(self, chat_id, message_id, model_id, payload):
+    def mock_artifact_make_db_row(chat_id, message_id, model_id, payload):
+        """Mock the ArtifactStore._make_db_row boundary."""
         return {
             "id": payload.get("id") or f"row-{payload.get('type')}",
             "chat_id": chat_id,
@@ -166,9 +157,13 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
             "payload": payload,
         }
 
-    monkeypatch.setattr(Pipe, "_db_persist", fake_db_persist)
-    monkeypatch.setattr(Pipe, "_execute_function_calls", fake_execute)
-    monkeypatch.setattr(Pipe, "_make_db_row", fake_make_db_row)
+    # Mock at the ArtifactStore boundary, not Pipe internal methods
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_artifact_persist)
+    monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_artifact_make_db_row)
+
+    # Mock the tool callable to return a simple result
+    async def mock_tool_callable(**kwargs):
+        return "ok"
 
     events = [
         {"type": "response.reasoning.delta", "delta": "Analyzing context."},
@@ -230,7 +225,7 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
         valves,
         emitter,
         metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
-        tools={},
+        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_tool_callable}},
         session=cast(Any, object()),
         user_id="user-123",
     )
@@ -245,82 +240,104 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch):
-    pipe = Pipe()
+async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pipe_instance_async):
+    """Test that reasoning events are emitted in open_webui mode.
 
-    def fake_enqueue(self, job):
-        async def producer() -> None:
-            assert job.stream_queue is not None
-            emitter = pipe._make_middleware_stream_emitter(job, job.stream_queue)
-            await emitter({"type": "status", "data": {"description": "Thinking…", "done": False}})
-            await emitter({"type": "reasoning:delta", "data": {"delta": "Analysing…"}})
-            await emitter({"type": "reasoning:completed", "data": {"content": "Analysing…"}})
-            await emitter({"type": "chat:message", "data": {"content": "Hello", "delta": "Hello"}})
-            await emitter({"type": "reasoning:delta", "data": {"delta": "Late reasoning."}})
-            await emitter({"type": "chat:completion", "data": {"usage": {"input_tokens": 1}}})
-            await job.stream_queue.put(None)
-            if not job.future.done():
-                job.future.set_result("Hello")
+    When THINKING_OUTPUT_MODE is "open_webui" (default), reasoning events
+    are emitted as reasoning:delta and reasoning:completed events for the
+    Open WebUI thinking box feature.
+    """
+    pipe = pipe_instance_async
+    body = ResponsesBody(
+        model="openrouter/test",
+        input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        stream=True,
+    )
+    valves = pipe.valves  # Use default valves (open_webui mode)
 
-        asyncio.create_task(producer())
-        return True
-
-    monkeypatch.setattr(Pipe, "_enqueue_job", fake_enqueue)
-
-    try:
-        result = await pipe.pipe(
-            body={"stream": True, "model": "openrouter/test"},
-            __user__={"valves": {}},
-            __request__=None,
-            __event_emitter__=None,
-            __event_call__=None,
-            __metadata__={"model": {"id": "sandbox"}},
-            __tools__=None,
-        )
-        assert not isinstance(result, (str, type(None), JSONResponse))
-        stream = cast(AsyncGenerator[dict[str, Any] | str, None], result)
-        items = [item async for item in stream]
-    finally:
-        await pipe.close()
-
-    reasoning_chunks = [
-        item
-        for item in items
-        if isinstance(item, dict)
-        and item.get("choices")
-        and item["choices"][0].get("delta", {}).get("reasoning_content")
+    # Prepare SSE events with reasoning to return
+    events = [
+        {"type": "response.output_item.added", "output_index": 0, "item": {"type": "reasoning", "id": "rs-1"}},
+        {"type": "response.reasoning_text.delta", "delta": "Analysing..."},
+        {"type": "response.output_text.delta", "delta": "Hello"},
+        {"type": "response.reasoning_text.delta", "delta": "Late reasoning."},
+        {"type": "response.completed", "response": {"output": [], "usage": {"input_tokens": 1}}},
     ]
-    assert reasoning_chunks
-    assert reasoning_chunks[0]["choices"][0]["delta"]["reasoning_content"] == "Analysing…"
+
+    # Mock the SSE streaming method to return our events
+    async def fake_stream(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    # Collect emitted items
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    # Call _run_streaming_loop to test event emission
+    output = await pipe._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert output == "Hello"
+
+    # In open_webui mode, reasoning events should be emitted as reasoning:delta
+    reasoning_deltas = [
+        item
+        for item in emitted
+        if isinstance(item, dict) and item.get("type") == "reasoning:delta"
+    ]
+    assert reasoning_deltas, "Expected reasoning:delta events in open_webui mode"
+
+    # Verify reasoning content contains expected text
+    reasoning_text = "".join(
+        item.get("data", {}).get("delta", "")
+        for item in reasoning_deltas
+    )
+    assert "Analysing" in reasoning_text, f"Expected 'Analysing' in reasoning deltas, got: {reasoning_text}"
+    assert "Late reasoning" in reasoning_text, f"Expected 'Late reasoning' in reasoning deltas, got: {reasoning_text}"
+
+    # Verify regular content message exists
+    chat_messages = [
+        item
+        for item in emitted
+        if isinstance(item, dict) and item.get("type") == "chat:message"
+    ]
     assert any(
-        chunk["choices"][0]["delta"].get("reasoning_content") == "Late reasoning."
-        for chunk in reasoning_chunks
-    )
+        item.get("data", {}).get("content") == "Hello"
+        for item in chat_messages
+    ), "Expected chat:message with 'Hello'"
 
+    # Verify reasoning:completed event is emitted at the end
     assert any(
-        isinstance(item, dict)
-        and item.get("choices")
-        and item["choices"][0].get("delta", {}).get("content") == "Hello"
-        for item in items
-    )
+        isinstance(item, dict) and item.get("type") == "reasoning:completed"
+        for item in emitted
+    ), "Expected reasoning:completed event"
 
+    # Verify reasoning is NOT in status messages (that's "status" mode behavior)
+    status_msgs = [
+        item.get("data", {}).get("description", "")
+        for item in emitted
+        if isinstance(item, dict) and item.get("type") == "status"
+    ]
     assert not any(
-        isinstance(item, dict)
-        and item.get("event", {}).get("type") in {"reasoning:completed", "chat:message"}
-        for item in items
-    )
-
-    assert not any(
-        isinstance(item, dict)
-        and item.get("event", {}).get("type") == "status"
-        and "Late reasoning." in (item.get("event", {}).get("data", {}) or {}).get("description", "")
-        for item in items
-    )
+        "Analysing" in msg or "Late reasoning" in msg
+        for msg in status_msgs
+    ), "Reasoning text should not appear in status messages in open_webui mode"
 
 
 @pytest.mark.asyncio
-async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkeypatch):
-    pipe = Pipe()
+async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -362,8 +379,8 @@ async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkey
 
 
 @pytest.mark.asyncio
-async def test_thinking_output_mode_status_suppresses_reasoning_events(monkeypatch):
-    pipe = Pipe()
+async def test_thinking_output_mode_status_suppresses_reasoning_events(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -404,8 +421,8 @@ async def test_thinking_output_mode_status_suppresses_reasoning_events(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mode(monkeypatch):
-    pipe = Pipe()
+async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mode(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -447,8 +464,8 @@ async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mod
 
 
 @pytest.mark.asyncio
-async def test_reasoning_summary_part_done_does_not_replay_after_incremental(monkeypatch):
-    pipe = Pipe()
+async def test_reasoning_summary_part_done_does_not_replay_after_incremental(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -513,8 +530,8 @@ async def test_reasoning_summary_part_done_does_not_replay_after_incremental(mon
 
 
 @pytest.mark.asyncio
-async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch):
-    pipe = Pipe()
+async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -583,8 +600,8 @@ async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_function_call_status_invalid_json_arguments_does_not_crash(monkeypatch):
-    pipe = Pipe()
+async def test_function_call_status_invalid_json_arguments_does_not_crash(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -634,8 +651,8 @@ async def test_function_call_status_invalid_json_arguments_does_not_crash(monkey
 
 
 @pytest.mark.asyncio
-async def test_legacy_tool_execution_invalid_arguments_returns_failed_output():
-    pipe = Pipe()
+async def test_legacy_tool_execution_invalid_arguments_returns_failed_output(pipe_instance_async):
+    pipe = pipe_instance_async
     calls = [{"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{"}]
     tools = {"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}}
 
@@ -645,8 +662,8 @@ async def test_legacy_tool_execution_invalid_arguments_returns_failed_output():
     assert "Invalid arguments" in outputs[0]["output"]
 
 
-def test_anthropic_interleaved_thinking_header_applied():
-    pipe = Pipe()
+def test_anthropic_interleaved_thinking_header_applied(pipe_instance):
+    pipe = pipe_instance
     valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True})
 
     headers: dict[str, str] = {}
@@ -666,8 +683,13 @@ def test_anthropic_interleaved_thinking_header_applied():
 
 
 @pytest.mark.asyncio
-async def test_function_call_loop_limit_emits_warning(monkeypatch):
-    pipe = Pipe()
+async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance_async):
+    """Test function call loop limit warning.
+
+    FIX: Removed inappropriate mock on _execute_function_calls.
+    Now exercises real tool execution path with proper tool callable.
+    """
+    pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test-loops",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
@@ -675,10 +697,12 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch):
     )
     valves = pipe.valves.model_copy(update={"MAX_FUNCTION_CALL_LOOPS": 1})
 
-    def fake_supports(cls, feature, _model_id):
-        return feature == "function_calling"
-
-    monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
+    # Set real model capabilities using ModelFamily.set_dynamic_specs
+    ModelFamily.set_dynamic_specs({
+        "openrouter.test-loops": {
+            "features": {"function_calling": True}
+        }
+    })
 
     events = [
         {
@@ -703,18 +727,11 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch):
         for event in events:
             yield event
 
-    async def fake_execute(self, calls, _tools):
-        return [
-            {
-                "type": "function_call_output",
-                "status": "completed",
-                "call_id": calls[0].get("call_id"),
-                "output": "ok",
-            }
-        ]
-
     monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
-    monkeypatch.setattr(Pipe, "_execute_function_calls", fake_execute)
+
+    # Provide a real tool callable instead of mocking _execute_function_calls
+    async def mock_lookup_tool(**kwargs):
+        return "ok"
 
     emitted: list[dict] = []
 
@@ -726,7 +743,7 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch):
         valves,
         emitter,
         metadata={"model": {"id": "sandbox"}},
-        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}},
+        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_lookup_tool}},
         session=cast(Any, object()),
         user_id="user-123",
     )

@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from open_webui.env import SRC_LOG_LEVELS
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except ImportError:
+    SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 

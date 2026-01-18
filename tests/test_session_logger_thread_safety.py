@@ -3,7 +3,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import SessionLogger
+from open_webui_openrouter_pipe import SessionLogger
 
 
 def test_session_logger_thread_safety_filter_and_cleanup() -> None:

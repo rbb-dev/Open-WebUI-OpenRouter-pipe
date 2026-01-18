@@ -2,8 +2,8 @@ import pytest
 
 from typing import Any, cast
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import ResponsesBody
+from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import ResponsesBody
 
 
 def _last_input_text_cache_control(message: dict) -> dict | None:
@@ -20,8 +20,8 @@ def _last_input_text_cache_control(message: dict) -> dict | None:
 
 
 @pytest.mark.asyncio
-async def test_anthropic_prompt_caching_inserts_breakpoints():
-    pipe = Pipe()
+async def test_anthropic_prompt_caching_inserts_breakpoints(pipe_instance_async):
+    pipe = pipe_instance_async
     valves = pipe.valves.model_copy(
         update={
             "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
@@ -67,8 +67,8 @@ async def test_anthropic_prompt_caching_inserts_breakpoints():
 
 
 @pytest.mark.asyncio
-async def test_non_anthropic_models_do_not_insert_cache_control():
-    pipe = Pipe()
+async def test_non_anthropic_models_do_not_insert_cache_control(pipe_instance_async):
+    pipe = pipe_instance_async
     messages = [
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": "user-1"},
@@ -105,8 +105,8 @@ def test_strip_cache_control_from_input_removes_markers():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch):
-    pipe = Pipe()
+async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     valves = pipe.valves.model_copy(
         update={
             "ENABLE_ANTHROPIC_PROMPT_CACHING": True,

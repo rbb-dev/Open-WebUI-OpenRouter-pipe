@@ -3,12 +3,12 @@ import logging
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe, _ToolExecutionContext
+from open_webui_openrouter_pipe import Pipe, _ToolExecutionContext
 
 
 @pytest.mark.asyncio
-async def test_shutdown_tool_context_times_out_and_cancels(caplog) -> None:
-    pipe = Pipe()
+async def test_shutdown_tool_context_times_out_and_cancels(caplog, pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     pipe.logger = logging.getLogger("tests.tool_shutdown")
     pipe.valves.TOOL_SHUTDOWN_TIMEOUT_SECONDS = 0.01
 

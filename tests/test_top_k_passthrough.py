@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import _filter_openrouter_request
+from open_webui_openrouter_pipe import _filter_openrouter_request
 
 
 def test_filter_openrouter_request_forwards_numeric_top_k() -> None:

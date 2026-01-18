@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 @pytest.mark.asyncio

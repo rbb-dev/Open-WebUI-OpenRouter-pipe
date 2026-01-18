@@ -4,7 +4,7 @@ import pytest
 
 
 def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_instance):
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     body = pipe_mod.ResponsesBody.model_validate(
         {
@@ -48,7 +48,7 @@ def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_inst
 
 
 def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     body = pipe_mod.ResponsesBody.model_validate(
         {

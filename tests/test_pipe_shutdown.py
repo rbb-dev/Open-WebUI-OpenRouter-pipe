@@ -1,6 +1,6 @@
 import logging
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 def test_shutdown_db_executor_non_blocking_by_default() -> None:

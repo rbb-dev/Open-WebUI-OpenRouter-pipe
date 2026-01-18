@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     OpenRouterAPIError,
     _build_error_template_values,
     _render_error_template,

@@ -1,4 +1,4 @@
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     ModelFamily,
     OpenRouterModelRegistry,
 )

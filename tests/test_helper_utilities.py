@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     EncryptedStr,
     ModelFamily,
     OpenRouterAPIError,
@@ -114,14 +114,20 @@ def test_strictify_schema_enforces_required_and_nullability():
     assert strict["properties"]["child"]["additionalProperties"] is False
 
 
-def test_build_tools_combines_registry_and_extras(monkeypatch):
-    responses_body = ResponsesBody(model="demo/tool", input=[])
+def test_build_tools_combines_registry_and_extras():
+    # Use a real model with function calling support
+    # Set up ModelFamily with proper features derived from supported_parameters
+    # Note: base_model() normalizes "openai/gpt-4" to "openai.gpt-4" (dot, not slash)
+    ModelFamily.set_dynamic_specs({
+        "openai.gpt-4": {  # Use dot notation as returned by base_model()
+            "id": "openai/gpt-4",
+            "features": {"function_calling"},  # Derived from tools+tool_choice support
+            "supported_parameters": frozenset(["tools", "tool_choice"]),
+        }
+    })
+
+    responses_body = ResponsesBody(model="openai/gpt-4", input=[])
     valves = Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=True)
-
-    def fake_supports(cls, feature, _model_id):
-        return feature == "function_calling"
-
-    monkeypatch.setattr(ModelFamily, "supports", classmethod(fake_supports))
 
     registry = {
         "alpha": {
@@ -146,8 +152,8 @@ def test_build_tools_combines_registry_and_extras(monkeypatch):
     assert alpha_tool["parameters"]["properties"] == {}
 
 
-def test_tool_output_clamps_failed_status():
-    pipe = Pipe()
+def test_tool_output_clamps_failed_status(pipe_instance):
+    pipe = pipe_instance
     output = pipe._build_tool_output(
         {"call_id": "call-1"},
         "Tool not found",

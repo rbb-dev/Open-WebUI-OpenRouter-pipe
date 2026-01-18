@@ -17,6 +17,7 @@
   ],
   "extraPaths": [
     ".",
-    ".external/open-webui/backend"
+    ".external/open-webui/backend",
+    ".venv/lib/python3.12/site-packages"
   ]
 }

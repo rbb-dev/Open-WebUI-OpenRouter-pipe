@@ -3,12 +3,12 @@ import logging
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe import Pipe
 
 
 @pytest.mark.asyncio
-async def test_stop_redis_cancels_tasks_and_closes_client() -> None:
-    pipe = Pipe()
+async def test_stop_redis_cancels_tasks_and_closes_client(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     pipe.logger = logging.getLogger("tests.redis_shutdown")
 
     class FakeRedis:
@@ -42,8 +42,8 @@ async def test_stop_redis_cancels_tasks_and_closes_client() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_redis_logs_close_failure(caplog) -> None:
-    pipe = Pipe()
+async def test_stop_redis_logs_close_failure(caplog, pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     pipe.logger = logging.getLogger("tests.redis_shutdown")
 
     class FakeRedis:

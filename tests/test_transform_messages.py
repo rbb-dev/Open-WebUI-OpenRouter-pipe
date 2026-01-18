@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import (
+from open_webui_openrouter_pipe import (
     ModelFamily,
     Pipe,
     _classify_function_call_artifacts,
@@ -25,15 +25,19 @@ def _run_transform(messages, artifacts):
     async def loader(chat_id, message_id, ulids):
         return {ulid: artifacts.get(ulid) for ulid in ulids if ulid in artifacts}
 
-    return asyncio.run(
-        pipe.transform_messages_to_input(
-            messages,
-            chat_id="chat-1",
-            openwebui_model_id="model-1",
-            artifact_loader=loader,
-            valves=pipe.valves,
-        )
-    )
+    async def _transform_and_close():
+        try:
+            return await pipe.transform_messages_to_input(
+                messages,
+                chat_id="chat-1",
+                openwebui_model_id="model-1",
+                artifact_loader=loader,
+                valves=pipe.valves,
+            )
+        finally:
+            await pipe.close()
+
+    return asyncio.run(_transform_and_close())
 
 
 def test_transform_messages_skips_orphaned_function_calls():
@@ -136,8 +140,8 @@ def _reset_model_specs():
 
 
 @pytest.mark.asyncio
-async def test_transform_limits_user_images(monkeypatch):
-    pipe = Pipe()
+async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     captured_status: list[str] = []
 
     async def fake_emitter(event):
@@ -172,8 +176,8 @@ async def test_transform_limits_user_images(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transform_falls_back_to_assistant_images(monkeypatch):
-    pipe = Pipe()
+async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     async def fake_inline(file_id, chunk_size, max_bytes):
         return f"data:image/png;base64,{file_id}"
     monkeypatch.setattr(pipe, "_inline_owui_file_id", fake_inline)
@@ -202,8 +206,8 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeypatch):
-    pipe = Pipe()
+async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
 
     async def fake_inline(file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
         if file_id == "missing-img":
@@ -240,8 +244,8 @@ async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_transform_respects_user_turn_only_selection(monkeypatch):
-    pipe = Pipe()
+async def test_transform_respects_user_turn_only_selection(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
 
     async def fake_inline(file_id, chunk_size, max_bytes):
         return f"data:image/png;base64,{file_id}"
@@ -269,8 +273,8 @@ async def test_transform_respects_user_turn_only_selection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
-    pipe = Pipe()
+async def test_transform_skips_images_when_model_lacks_vision(monkeypatch, pipe_instance_async):
+    pipe = pipe_instance_async
     captured_status: list[str] = []
 
     async def fake_emitter(event):
@@ -300,8 +304,8 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transform_preserves_system_and_developer_message_text_exactly():
-    pipe = Pipe()
+async def test_transform_preserves_system_and_developer_message_text_exactly(pipe_instance_async):
+    pipe = pipe_instance_async
     messages = [
         {"role": "system", "content": "  keep leading\nand trailing  \n"},
         {

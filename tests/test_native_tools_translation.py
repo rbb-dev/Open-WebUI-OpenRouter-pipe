@@ -2,7 +2,7 @@ import pytest
 
 
 def test_chat_tools_to_responses_tools_converts_function_shape():
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     converted = pipe_mod._chat_tools_to_responses_tools(
         [
@@ -37,7 +37,7 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
 
 @pytest.mark.asyncio
 async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
-    import open_webui_openrouter_pipe.open_webui_openrouter_pipe as pipe_mod
+    import open_webui_openrouter_pipe.pipe as pipe_mod
 
     class DummyTransformer:
         async def transform_messages_to_input(self, messages, **kwargs):  # noqa: ANN001

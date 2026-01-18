@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from open_webui_openrouter_pipe.open_webui_openrouter_pipe import _apply_model_fallback_to_payload
+from open_webui_openrouter_pipe import _apply_model_fallback_to_payload
 
 
 def test_model_fallback_csv_to_models_array() -> None:
