@@ -65,19 +65,41 @@ Fail-open is intentional: unsupported types should continue to behave like “no
 
 ---
 
-## Model compatibility (how we detect “supports files/audio/video”)
+## Model compatibility (how we detect "supports files/audio/video")
 
-This integration does **not** rely on Open WebUI’s `file_upload` capability flag (deployments often enable `file_upload` broadly for UI reasons).
+This integration does **not** rely on Open WebUI's `file_upload` capability flag (deployments often enable `file_upload` broadly for UI reasons).
 
-Instead, the pipe maintains an internal capability map in each model’s metadata:
+Instead, the pipe maintains an internal capability map in each model's metadata:
 
 - `model.info.meta.openrouter_pipe.capabilities.file_input`
 - `model.info.meta.openrouter_pipe.capabilities.audio_input`
 - `model.info.meta.openrouter_pipe.capabilities.video_input`
 
-These are derived from the OpenRouter model catalog and are used for:
+These are used for:
 - Deciding whether to auto-attach the filter (`AUTO_ATTACH_DIRECT_UPLOADS_FILTER`)
 - Validating user toggles at runtime
+
+### File input: enabled by default (blocklist approach)
+
+**Extensive testing revealed that most models support direct file uploads**, even though OpenRouter's model catalog (`architecture.input_modalities`) only declares ~53 models as supporting "file" input.
+
+| Metric | Value |
+|--------|-------|
+| Models tested | 287 |
+| Successful file processing | 239 (83.3%) |
+| Models needing blocklist | 24 |
+
+Rather than gating on incomplete upstream metadata, **`file_input` is now enabled by default** for all models except those in a known-incompatible blocklist.
+
+The blocklist (`open_webui_openrouter_pipe/models/blocklists.py`) includes:
+- Models that explicitly reject file input (HTTP 400)
+- Guard/classifier models not designed for chat
+- Models that claim they cannot process files
+- Models with broken/empty responses when given files
+
+### Audio and video input
+
+For `audio_input` and `video_input`, the pipe still relies on OpenRouter's declared `architecture.input_modalities`, as these modalities are less commonly supported and require explicit provider enablement
 
 ---
 

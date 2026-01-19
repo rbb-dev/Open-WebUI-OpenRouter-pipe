@@ -35,5 +35,3 @@ fi
 "$VENV_DIR/bin/python" -m pip install --upgrade ruff pyright vulture pyflakes
 "$VENV_DIR/bin/python" -m pip install --upgrade git-filter-repo
 "$VENV_DIR/bin/python" -m pip install --upgrade cairosvg
-"$VENV_DIR/bin/python" -m pip install --upgrade python-docx-valutico
-"$VENV_DIR/bin/python" -m pip install --upgrade latex2mathml mathml2omml

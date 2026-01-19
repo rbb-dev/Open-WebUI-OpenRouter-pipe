@@ -28,6 +28,7 @@ import aiohttp
 
 # Import shared logger from config (for test compatibility)
 from ..core.config import LOGGER
+from .blocklists import is_direct_upload_blocklisted
 from ..core.timing_logger import timed
 
 # Lazy imports to avoid circular dependencies (see requests/__init__.py chain).
@@ -283,6 +284,17 @@ class OpenRouterModelRegistry:
                 architecture,
                 pricing,
             )
+
+            # Apply direct upload blocklist: enable file_input by default,
+            # except for models known to have issues with file uploads.
+            # This overrides OpenRouter's incomplete input_modalities metadata.
+            original_id = full_model.get("id") or norm_id
+            if is_direct_upload_blocklisted(original_id):
+                features.discard("file_input")
+            else:
+                # Default to enabled - most models support direct uploads
+                features.add("file_input")
+
             capabilities = cls._derive_capabilities(
                 architecture,
                 pricing,
