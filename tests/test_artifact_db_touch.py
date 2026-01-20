@@ -35,8 +35,8 @@ def test_db_fetch_sync_touches_created_at_best_effort(pipe_instance) -> None:
     mock_query.update.return_value = 2
 
     # Set up pipe instance with mocked session factory
-    pipe_instance._item_model = mock_model
-    pipe_instance._session_factory = lambda: mock_session
+    pipe_instance._artifact_store._item_model = mock_model
+    pipe_instance._artifact_store._session_factory = lambda: mock_session
 
     # Execute the fetch
     results = pipe_instance._db_fetch_sync("chat123", None, ["a1", "b2"])
@@ -85,8 +85,8 @@ def test_db_fetch_sync_touch_failure_never_breaks_read(pipe_instance) -> None:
 
     # Session factory returns different sessions
     sessions = [read_session, touch_session]
-    pipe_instance._item_model = mock_model
-    pipe_instance._session_factory = lambda: sessions.pop(0)
+    pipe_instance._artifact_store._item_model = mock_model
+    pipe_instance._artifact_store._session_factory = lambda: sessions.pop(0)
 
     # Execute the fetch - should succeed despite touch failure
     results = pipe_instance._db_fetch_sync("chat123", None, ["a1"])

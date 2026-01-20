@@ -30,8 +30,9 @@ Blocklists are derived from empirical testing against the OpenRouter API.
 #   - Empty/broken responses: Models that fail to produce meaningful output with files
 #
 # Last updated: 2026-01-19
-# Test coverage: 287 models tested with PDF file upload
-# Success rate: 239/287 (83.3%)
+# Test coverage: 287 models tested with PDF file upload (via /chat/completions)
+# Note: Some models behave differently on /responses API - more testing needed
+# Success rate: 239/287 (83.3%) on /chat/completions
 #
 
 DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset({
@@ -68,6 +69,13 @@ DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset({
     "mancer/weaver",
     "undi95/remm-slerp-l2-13b",
     "gryphe/mythomax-l2-13b",
+    "eleutherai/llemma_7b",
+    "ai21/jamba-mini-1.7",           # Hallucinated lists/styling not in PDF
+    "cohere/command-r7b-12-2024",    # Hallucinated formatting rules
+    "neversleep/noromaid-20b",       # Hallucinated poetry/lists not in PDF
+
+    # --- Disclaims ability but describes content (confusing UX on /responses) ---
+    "allenai/olmo-3-32b-think"      # Says "cannot access files" then describes them
 })
 
 

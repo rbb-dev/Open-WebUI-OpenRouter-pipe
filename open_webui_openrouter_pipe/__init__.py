@@ -12,7 +12,7 @@ This prevents triggering Open WebUI's heavy initialization (Alembic, embeddings,
 during simple imports like `from open_webui_openrouter_pipe import Pipe`.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 try:
     from importlib.metadata import version as _get_version
@@ -121,6 +121,11 @@ if TYPE_CHECKING:
     from .streaming.event_emitter import EventEmitterHandler
     from .requests import NonStreamingAdapter, TaskModelAdapter
     from .core.logging_system import SessionLogger, _SessionLogArchiveJob, write_session_log_archive
+
+    # Open WebUI / FastAPI re-exports are resolved lazily at runtime via __getattr__.
+    # Define them for type checkers so __all__ is consistent without importing heavy deps.
+    upload_file_handler: Any
+    run_in_threadpool: Any
 
 
 # -----------------------------------------------------------------------------
@@ -393,6 +398,7 @@ def __getattr__(name: str):
         try:
             from open_webui.routers.files import upload_file_handler as _handler
             _cache[name] = _handler
+            globals()[name] = _handler  # cache for faster subsequent access
             return _handler
         except ImportError:
             _cache[name] = None
@@ -402,6 +408,7 @@ def __getattr__(name: str):
         try:
             from fastapi.concurrency import run_in_threadpool as _run
             _cache[name] = _run
+            globals()[name] = _run  # cache for faster subsequent access
             return _run
         except ImportError:
             _cache[name] = None

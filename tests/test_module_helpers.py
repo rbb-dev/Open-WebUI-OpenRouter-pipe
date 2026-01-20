@@ -149,7 +149,7 @@ def test_sanitize_model_id():
 def test_debug_print_request_redacts(monkeypatch):
     stream = _install_logger(monkeypatch)
     headers = {"Authorization": "abcdefghijk"}
-    ow._debug_print_request(headers, {"a": 1})
+    ow._debug_print_request(headers, {"a": 1}, logger=ow.LOGGER)
     assert "abcdefghij..." in stream.getvalue()
 
 
@@ -165,7 +165,7 @@ async def test_debug_print_error_response(monkeypatch):
             return "body"
 
     resp = cast("ClientResponse", FakeResponse())
-    body = await ow._debug_print_error_response(resp)
+    body = await ow._debug_print_error_response(resp, logger=ow.LOGGER)
     assert body == "body"
     assert "OpenRouter error response" in stream.getvalue()
 
@@ -352,9 +352,9 @@ def test_decode_payload_bytes_rejects_headerless_ciphertext(pipe_instance):
 
 
 def _build_encryption_ready_pipe(pipe: ow.Pipe) -> ow.Pipe:
-    pipe._encryption_key = "a" * 32  # type: ignore[attr-defined]
-    pipe._encrypt_all = True  # type: ignore[attr-defined]
-    pipe._fernet = None  # type: ignore[attr-defined]
+    pipe._artifact_store._encryption_key = "a" * 32  # type: ignore[attr-defined]
+    pipe._artifact_store._encrypt_all = True  # type: ignore[attr-defined]
+    pipe._artifact_store._fernet = None  # type: ignore[attr-defined]
     return pipe
 
 
@@ -412,8 +412,8 @@ async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
         async def mget(self, keys):
             return [cached_json]
 
-    pipe._redis_client = FakeRedis()  # type: ignore[attr-defined]
-    pipe._redis_enabled = True  # type: ignore[attr-defined]
+    pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[attr-defined]
+    pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
     fetched = await pipe._redis_fetch_rows("chat", ["01TEST"])
     assert fetched["01TEST"]["content"] == "secret"
 
@@ -421,7 +421,7 @@ async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
 @pytest.mark.asyncio
 async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog, pipe_instance_async):
     pipe = pipe_instance_async
-    pipe._redis_enabled = True  # type: ignore[attr-defined]
+    pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
 
     class FakeRedis:
         async def set(self, key, value, *, nx=False, ex=None):
@@ -433,7 +433,7 @@ async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog, pi
         async def eval(self, script, numkeys, key, token):
             return 0
 
-    pipe._redis_client = FakeRedis()  # type: ignore[attr-defined]
+    pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[attr-defined]
 
     caplog.set_level(logging.WARNING)
     await pipe._flush_redis_queue()

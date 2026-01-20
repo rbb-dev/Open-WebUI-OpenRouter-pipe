@@ -18,6 +18,7 @@ from ...core.timing_logger import timed, timing_scope, timing_mark
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
+    _debug_print_response,
 )
 # Imports from core.errors
 from ...core.errors import (
@@ -84,7 +85,7 @@ class ChatCompletionsAdapter:
             chat_payload.get("model"),
             valves=effective_valves,
         )
-        _debug_print_request(headers, chat_payload)
+        _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
@@ -215,7 +216,7 @@ class ChatCompletionsAdapter:
                 async with session.post(url, json=chat_payload, headers=headers) as resp:
                     timing_mark("chat_http_headers_received")
                     if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp)
+                        error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._record_failure(breaker_key)
                         special_statuses = {400, 401, 402, 403, 408, 429}
@@ -538,7 +539,7 @@ class ChatCompletionsAdapter:
             chat_payload.get("model"),
             valves=effective_valves,
         )
-        _debug_print_request(headers, chat_payload)
+        _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
         @timed
@@ -597,7 +598,7 @@ class ChatCompletionsAdapter:
                 async with session.post(url, json=chat_payload, headers=headers) as resp:
                     timing_mark("chat_nonstream_http_response")
                     if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp)
+                        error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._record_failure(breaker_key)
                         special_statuses = {400, 401, 402, 403, 408, 429}
@@ -631,7 +632,11 @@ class ChatCompletionsAdapter:
                             data = json.loads(text)
                         except Exception as exc:
                             raise RuntimeError("Invalid JSON response from /chat/completions") from exc
-                    return data if isinstance(data, dict) else {}
+                    if isinstance(data, dict):
+                        _debug_print_response(data, logger=self.logger)
+                        return data
+                    _debug_print_response(data, logger=self.logger)
+                    return {}
 
         return {}
 
