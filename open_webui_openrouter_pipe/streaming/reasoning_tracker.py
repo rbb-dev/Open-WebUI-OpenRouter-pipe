@@ -9,7 +9,6 @@ This module handles reasoning-specific streaming features:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import datetime
@@ -18,17 +17,17 @@ import uuid
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Optional, Callable, Awaitable
 from ..core.timing_logger import timed
+from .constants import (
+    REASONING_STATUS_TRACKER_PUNCTUATION as _REASONING_STATUS_PUNCTUATION,
+    REASONING_STATUS_TRACKER_MAX_CHARS as _REASONING_STATUS_MAX_CHARS,
+    REASONING_STATUS_TRACKER_MIN_CHARS as _REASONING_STATUS_MIN_CHARS,
+    REASONING_STATUS_TRACKER_IDLE_SECONDS as _REASONING_STATUS_IDLE_SECONDS,
+)
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
 LOGGER = logging.getLogger(__name__)
-
-# Reasoning status emission constants
-_REASONING_STATUS_PUNCTUATION = (".", "!", "?", ":", ";", ",")
-_REASONING_STATUS_MAX_CHARS = 200
-_REASONING_STATUS_MIN_CHARS = 40
-_REASONING_STATUS_IDLE_SECONDS = 0.5
 
 
 class ReasoningTracker:

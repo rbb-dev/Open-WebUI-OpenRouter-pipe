@@ -148,10 +148,6 @@ from .requests.debug import (
     _debug_print_request,
     _debug_print_error_response,
 )
-# Imports from models.registry (additional)
-from .models.registry import (
-    _select_best_effort_fallback,
-)
 # Imports from storage.persistence (additional)
 from .storage.persistence import (
     normalize_persisted_item as _normalize_persisted_item,
@@ -179,6 +175,7 @@ from .core.utils import (
     _extract_plain_text_content,
     _extract_feature_flags,
     _retry_after_seconds,
+    _select_best_effort_fallback,
 )
 # Imports from core.errors
 from .core.errors import (

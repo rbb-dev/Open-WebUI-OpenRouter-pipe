@@ -51,14 +51,20 @@ except ImportError:
     upload_file_handler = None  # type: ignore
 
 # Internal imports
-from ..core.utils import _retry_after_seconds, _coerce_bool, _coerce_positive_int
+from ..core.config import (
+    _INTERNAL_FILE_ID_PATTERN,
+    _OPENROUTER_SITE_URL,
+    _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
+)
+from ..core.errors import (
+    _RetryableHTTPStatusError,
+    _RetryWait,
+    _classify_retryable_http_error,
+    _read_rag_file_constraints,
+)
 
 # Constants
-_OPENROUTER_SITE_URL = "https://openrouter.ai"
 _MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
-_REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
-_REMOTE_FILE_MAX_SIZE_MAX_MB = 500
-_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
 
 LOGGER = logging.getLogger(__name__)
 
@@ -161,135 +167,6 @@ def _extract_internal_file_id(url: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
-
-
-@timed
-def _classify_retryable_http_error(
-    exc: httpx.HTTPStatusError,
-) -> tuple[bool, Optional[float]]:
-    """Return (is_retryable, retry_after_seconds) for an HTTPStatusError.
-
-    Args:
-        exc: HTTP status error to classify
-
-    Returns:
-        Tuple of (is_retryable, retry_after_seconds)
-    """
-    response = exc.response
-    if response is None:
-        return False, None
-    status_code = response.status_code
-    if status_code >= 500 or status_code in {408, 425, 429}:
-        return True, _retry_after_seconds(response.headers.get("retry-after"))
-    return False, None
-
-
-@timed
-def _read_rag_file_constraints() -> tuple[bool, Optional[int]]:
-    """Return (rag_enabled, rag_file_size_mb) gleaned from Open WebUI config.
-
-    Returns:
-        Tuple of (RAG enabled, max file size in MB)
-    """
-    module = _get_open_webui_config_module()
-    if module is None:
-        return False, None
-
-    bypass_raw = _unwrap_config_value(getattr(module, "BYPASS_EMBEDDING_AND_RETRIEVAL", None))
-    bypass_bool = _coerce_bool(bypass_raw)
-    rag_enabled = True if bypass_bool is None else not bypass_bool
-
-    limit_mb: Optional[int] = None
-    for attr_name in ("RAG_FILE_MAX_SIZE", "FILE_MAX_SIZE"):
-        attr_value = _unwrap_config_value(getattr(module, attr_name, None))
-        limit_mb = _coerce_positive_int(attr_value)
-        if limit_mb is not None:
-            break
-
-    if limit_mb is not None:
-        limit_mb = min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
-
-    return rag_enabled, limit_mb
-
-
-_OPEN_WEBUI_CONFIG_MODULE: Any | None = None
-
-
-@timed
-def _get_open_webui_config_module() -> Any | None:
-    """Return the cached open_webui.config module if available."""
-    global _OPEN_WEBUI_CONFIG_MODULE
-    if _OPEN_WEBUI_CONFIG_MODULE is not None:
-        return _OPEN_WEBUI_CONFIG_MODULE
-    try:
-        import open_webui.config  # type: ignore[import-not-found]
-        _OPEN_WEBUI_CONFIG_MODULE = open_webui.config
-        return _OPEN_WEBUI_CONFIG_MODULE
-    except ImportError:
-        return None
-
-
-@timed
-def _unwrap_config_value(value: Any) -> Any:
-    """Unwrap ConfigVar wrapper from Open WebUI config values."""
-    if value is None:
-        return None
-    if hasattr(value, "value"):
-        return getattr(value, "value", None)
-    return value
-
-
-class _RetryableHTTPStatusError(Exception):
-    """Wrapper that marks an HTTPStatusError as retryable."""
-
-    @timed
-    def __init__(self, original: httpx.HTTPStatusError, retry_after: Optional[float] = None):
-        """Capture the original HTTP error plus optional Retry-After hint.
-
-        Args:
-            original: The original HTTPStatusError
-            retry_after: Optional retry delay in seconds from Retry-After header
-        """
-        self.original = original
-        self.retry_after = retry_after
-        status_code = getattr(original.response, "status_code", "unknown")
-        super().__init__(f"Retryable HTTP error ({status_code})")
-
-
-class _RetryWait:
-    """Custom Tenacity wait strategy honoring Retry-After headers."""
-
-    @timed
-    def __init__(self, base_wait):
-        """Store the wrapped Tenacity wait callable used as a baseline.
-
-        Args:
-            base_wait: Base wait strategy from tenacity
-        """
-        self._base_wait = base_wait
-
-    @timed
-    def __call__(self, retry_state):
-        """Return the greater of base delay or Retry-After header guidance.
-
-        Args:
-            retry_state: Tenacity retry state
-
-        Returns:
-            Delay in seconds
-        """
-        base_delay = self._base_wait(retry_state) if self._base_wait else 0
-        exc = None
-        if retry_state.outcome is not None:
-            try:
-                exc = retry_state.outcome.exception()
-            except Exception:
-                exc = None
-        if isinstance(exc, _RetryableHTTPStatusError):
-            retry_after = exc.retry_after
-            if isinstance(retry_after, (int, float)) and retry_after > 0:
-                return max(base_delay, retry_after)
-        return base_delay
 
 
 # -----------------------------------------------------------------------------

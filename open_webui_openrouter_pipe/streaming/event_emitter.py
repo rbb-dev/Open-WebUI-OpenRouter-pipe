@@ -14,6 +14,12 @@ import time
 from time import perf_counter
 from typing import Any, Optional, Awaitable, Callable, Dict, Literal, Protocol, TYPE_CHECKING
 from ..core.timing_logger import timed
+from .constants import (
+    REASONING_STATUS_PUNCTUATION,
+    REASONING_STATUS_MAX_CHARS,
+    REASONING_STATUS_MIN_CHARS,
+    REASONING_STATUS_IDLE_SECONDS,
+)
 
 # Type hints for Open WebUI components
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -115,10 +121,10 @@ class EventEmitterHandler:
     """
 
     # Constants for reasoning status emission
-    _REASONING_STATUS_PUNCTUATION = (".", "!", "?", ":", "\n")
-    _REASONING_STATUS_MAX_CHARS = 160
-    _REASONING_STATUS_MIN_CHARS = 12
-    _REASONING_STATUS_IDLE_SECONDS = 0.75
+    _REASONING_STATUS_PUNCTUATION = REASONING_STATUS_PUNCTUATION
+    _REASONING_STATUS_MAX_CHARS = REASONING_STATUS_MAX_CHARS
+    _REASONING_STATUS_MIN_CHARS = REASONING_STATUS_MIN_CHARS
+    _REASONING_STATUS_IDLE_SECONDS = REASONING_STATUS_IDLE_SECONDS
 
     @timed
     def __init__(

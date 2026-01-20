@@ -202,6 +202,72 @@ def _normalize_string_list(value: Any) -> list[str]:
     return items
 
 
+# -----------------------------------------------------------------------------
+# Model Fallback Helpers
+# -----------------------------------------------------------------------------
+
+
+def _parse_model_fallback_csv(value: Any) -> list[str]:
+    """Parse a comma-separated model list into a normalized array (order-preserving)."""
+    if not isinstance(value, str):
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    models: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        candidate = part.strip()
+        if not candidate:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        models.append(candidate)
+    return models
+
+
+def _select_best_effort_fallback(requested: str, supported: list[str]) -> Optional[str]:
+    """Choose the closest supported effort to retry with."""
+    ordering = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    if not supported:
+        return None
+    requested_lower = (requested or "").strip().lower()
+    supported_lower = [value.strip().lower() for value in supported if value]
+    if requested_lower in supported_lower:
+        return requested_lower
+    try:
+        requested_idx = ordering.index(requested_lower)
+    except ValueError:
+        return supported_lower[0] if supported_lower else None
+    indexed: list[tuple[int, str]] = []
+    for value in supported_lower:
+        try:
+            indexed.append((ordering.index(value), value))
+        except ValueError:
+            continue
+    if not indexed:
+        return supported_lower[0] if supported_lower else None
+    indexed.sort()
+    min_idx, min_value = indexed[0]
+    max_idx, max_value = indexed[-1]
+    if requested_idx <= min_idx:
+        return min_value
+    if requested_idx >= max_idx:
+        return max_value
+    for idx, value in indexed:
+        if idx > requested_idx:
+            return value
+    closest = None
+    distance = float("inf")
+    for idx, value in indexed:
+        delta = abs(idx - requested_idx)
+        if delta < distance:
+            closest = value
+            distance = delta
+    return closest
+
+
 
 # -----------------------------------------------------------------------------
 # ULID Generation and Marker System

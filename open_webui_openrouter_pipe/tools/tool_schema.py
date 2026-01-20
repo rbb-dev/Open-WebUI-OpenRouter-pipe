@@ -186,41 +186,6 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @timed
-def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Optional[Dict[str, Any]]:
-    """Return a normalized Responses-style function tool spec, or None when invalid."""
-    if not isinstance(tool, dict):
-        return None
-    if tool.get("type") != "function":
-        return None
-    name = tool.get("name")
-    if not isinstance(name, str) or not name.strip():
-        return None
-    spec: dict[str, Any] = {"type": "function", "name": name.strip()}
-    description = tool.get("description")
-    if isinstance(description, str) and description.strip():
-        spec["description"] = description.strip()
-    parameters = tool.get("parameters")
-    if isinstance(parameters, dict):
-        spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
-    return spec
-
-
-@timed
-def _tool_prefix_for_collision(source: str, tool_cfg: dict[str, Any] | None) -> str:
-    """Return the prefix to apply when collision renaming is required."""
-    if source == "owui_request_tools":
-        return "owui__"
-    if source == "direct_tool_server":
-        return "direct__"
-    if source == "extra_tools":
-        return "extra__"
-    # Registry tools (tool_ids / extensions).
-    if tool_cfg and bool(tool_cfg.get("direct")):
-        return "direct__"
-    return "tool__"
-
-
-@timed
 def _classify_function_call_artifacts(
     artifacts: Dict[str, Dict[str, Any]]
 ) -> tuple[set[str], set[str], set[str]]:

@@ -16,9 +16,7 @@ import datetime
 import base64
 import binascii
 import contextlib
-import secrets
 import random
-import fnmatch
 import aiohttp
 from time import perf_counter
 from typing import Any, Optional, Dict, Literal, no_type_check, TYPE_CHECKING
@@ -41,6 +39,12 @@ from ..core.logging_system import SessionLogger
 
 # Import timing instrumentation
 from ..core.timing_logger import timed, timing_scope, timing_mark
+from .constants import (
+    REASONING_STATUS_PUNCTUATION as _REASONING_STATUS_PUNCTUATION,
+    REASONING_STATUS_MAX_CHARS as _REASONING_STATUS_MAX_CHARS,
+    REASONING_STATUS_MIN_CHARS as _REASONING_STATUS_MIN_CHARS,
+    REASONING_STATUS_IDLE_SECONDS as _REASONING_STATUS_IDLE_SECONDS,
+)
 
 # Imports from storage.persistence
 from ..storage.persistence import (
@@ -83,12 +87,6 @@ except ImportError:
 EventEmitter = Any  # Callable[[dict[str, Any]], Awaitable[None]]
 
 LOGGER = logging.getLogger(__name__)
-
-# Constants for reasoning status emission
-_REASONING_STATUS_PUNCTUATION = (".", "!", "?", ":", "\n")
-_REASONING_STATUS_MAX_CHARS = 160
-_REASONING_STATUS_MIN_CHARS = 12
-_REASONING_STATUS_IDLE_SECONDS = 0.75
 
 
 class StreamingHandler:

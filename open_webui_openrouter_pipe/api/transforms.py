@@ -33,7 +33,7 @@ from ..core.config import (
 from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
-from ..core.utils import _coerce_bool
+from ..core.utils import _coerce_bool, _parse_model_fallback_csv
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1071,28 +1071,6 @@ def _responses_payload_to_chat_completions_payload(
 # -----------------------------------------------------------------------------
 # Model Fallback
 # -----------------------------------------------------------------------------
-
-@timed
-def _parse_model_fallback_csv(value: Any) -> list[str]:
-    """Parse a comma-separated model list into a normalized array (order-preserving)."""
-    if not isinstance(value, str):
-        return []
-    raw = value.strip()
-    if not raw:
-        return []
-    models: list[str] = []
-    seen: set[str] = set()
-    for part in raw.split(","):
-        candidate = part.strip()
-        if not candidate:
-            continue
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        models.append(candidate)
-    return models
-
-
 
 @timed
 def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging.Logger = LOGGER) -> None:

@@ -48,6 +48,7 @@ from .utils import (
     _get_open_webui_config_module,
     _unwrap_config_value,
     _retry_after_seconds,
+    _select_best_effort_fallback,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ LOGGER = logging.getLogger(__name__)
 class _RetryableHTTPStatusError(Exception):
     """Wrapper that marks an HTTPStatusError as retryable."""
 
+    @timed
     def __init__(self, original: httpx.HTTPStatusError, retry_after: Optional[float] = None):
         """Capture the original HTTP error plus optional Retry-After hint."""
         self.original = original
@@ -70,10 +72,12 @@ class _RetryableHTTPStatusError(Exception):
 class _RetryWait:
     """Custom Tenacity wait strategy honoring Retry-After headers."""
 
+    @timed
     def __init__(self, base_wait):
         """Store the wrapped Tenacity wait callable used as a baseline."""
         self._base_wait = base_wait
 
+    @timed
     def __call__(self, retry_state):
         """Return the greater of base delay or Retry-After header guidance."""
         base_delay = self._base_wait(retry_state) if self._base_wait else 0
@@ -340,47 +344,6 @@ def _parse_supported_effort_values(error_message: str) -> list[str]:
     return re.findall(r"'([^']+)'", values_str)
 
 
-def _select_best_effort_fallback(requested: str, supported: list[str]) -> Optional[str]:
-    """Choose the closest supported effort to retry with."""
-    ordering = ["none", "minimal", "low", "medium", "high", "xhigh"]
-    if not supported:
-        return None
-    requested_lower = (requested or "").strip().lower()
-    supported_lower = [value.strip().lower() for value in supported if value]
-    if requested_lower in supported_lower:
-        return requested_lower
-    try:
-        requested_idx = ordering.index(requested_lower)
-    except ValueError:
-        return supported_lower[0] if supported_lower else None
-    indexed: list[tuple[int, str]] = []
-    for value in supported_lower:
-        try:
-            indexed.append((ordering.index(value), value))
-        except ValueError:
-            continue
-    if not indexed:
-        return supported_lower[0] if supported_lower else None
-    indexed.sort()
-    min_idx, min_value = indexed[0]
-    max_idx, max_value = indexed[-1]
-    if requested_idx <= min_idx:
-        return min_value
-    if requested_idx >= max_idx:
-        return max_value
-    for idx, value in indexed:
-        if idx > requested_idx:
-            return value
-    closest = None
-    distance = float("inf")
-    for idx, value in indexed:
-        delta = abs(idx - requested_idx)
-        if delta < distance:
-            closest = value
-            distance = delta
-    return closest
-
-
 def _build_error_template_values(
     error: "OpenRouterAPIError",
     *,
@@ -575,4 +538,3 @@ async def _wait_for(
             return cast(_TWait, await coroutine)
         return cast(_TWait, await asyncio.wait_for(coroutine, timeout=timeout))
     return cast(_TWait, value)
-

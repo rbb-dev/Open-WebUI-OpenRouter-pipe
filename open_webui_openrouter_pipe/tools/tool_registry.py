@@ -90,9 +90,6 @@ def build_tools(
     return _dedupe_tools(tools)
 
 
-_STRICT_SCHEMA_CACHE_SIZE = 128
-
-
 @timed
 def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """(Internal) Deduplicate a tool list with simple, stable identity keys.
