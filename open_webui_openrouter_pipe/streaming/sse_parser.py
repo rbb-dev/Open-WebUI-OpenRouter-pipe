@@ -323,8 +323,13 @@ class SSEParser:
         finally:
             # Send sentinel to workers
             for _ in range(self.workers):
-                with contextlib.suppress(asyncio.CancelledError):
-                    await chunk_queue.put((None, None))
+                try:
+                    chunk_queue.put_nowait((None, None))
+                except asyncio.QueueFull:
+                    self.logger.debug(
+                        "Chunk queue full while sending sentinel; workers will be cancelled during cleanup."
+                    )
+                    break
 
     async def _worker(
         self,

@@ -4100,6 +4100,13 @@ class Filter:
                 job.future.set_exception(exc)
         finally:
             if stream_queue is not None:
+                if stream_emitter is not None:
+                    flush_reasoning_status = getattr(stream_emitter, "flush_reasoning_status", None)
+                    if callable(flush_reasoning_status):
+                        with contextlib.suppress(Exception):
+                            maybe_awaitable = flush_reasoning_status()
+                            if inspect.isawaitable(maybe_awaitable):
+                                await maybe_awaitable
                 self._try_put_middleware_stream_nowait(stream_queue, None)
             if tool_context:
                 await self._shutdown_tool_context(tool_context)

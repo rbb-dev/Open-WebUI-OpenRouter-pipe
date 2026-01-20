@@ -972,14 +972,15 @@ class MultimodalHandler:
                             async for chunk in response.aiter_bytes():
                                 if not chunk:
                                     continue
-                                payload.extend(chunk)
-                                if len(payload) > max_size_bytes:
-                                    size_mb = len(payload) / (1024 * 1024)
+                                projected_size = len(payload) + len(chunk)
+                                if projected_size > max_size_bytes:
+                                    size_mb = projected_size / (1024 * 1024)
                                     self.logger.warning(
                                         f"Remote file {url} exceeds configured limit "
                                         f"({size_mb:.1f}MB > {effective_limit_mb}MB), aborting download."
                                     )
                                     return None
+                                payload.extend(chunk)
 
                     # Success
                     if attempt > 1:

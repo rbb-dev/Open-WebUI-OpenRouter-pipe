@@ -587,7 +587,11 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     t = value.get("type")
-    name = value.get("name") or (value.get("function") or {}).get("name")
+    name = value.get("name")
+    if not (isinstance(name, str) and name.strip()):
+        function_block = value.get("function")
+        if isinstance(function_block, dict):
+            name = function_block.get("name")
     if t == "function" and isinstance(name, str) and name.strip():
         return {"type": "function", "function": {"name": name.strip()}}
     return value

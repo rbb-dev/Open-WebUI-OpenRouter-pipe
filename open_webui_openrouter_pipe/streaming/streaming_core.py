@@ -1020,14 +1020,14 @@ class StreamingHandler:
                         item_type = item.get("type", "")
                         item_name = item.get("name", "unnamed_tool")
 
-                        if item_type in ("message"):
+                        if item_type == "message":
                             continue
 
                         should_persist = False
                         if item_type == "reasoning":
                             should_persist = valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
 
-                        elif item_type in ("message", "web_search_call"):
+                        elif item_type == "web_search_call":
                             # Never persist assistant/user messages or ephemeral search calls
                             should_persist = False
 

@@ -69,7 +69,24 @@ class CircuitBreaker:
     @timed
     def threshold(self, value: int) -> None:
         """Set the failure threshold."""
-        self._threshold = max(1, int(value))
+        new_threshold = max(1, int(value))
+        self._threshold = new_threshold
+
+        breaker_records: dict[str, deque[float]] = {}
+        for user_id, window in self._breaker_records.items():
+            breaker_records[user_id] = deque(window, maxlen=new_threshold)
+        self._breaker_records = defaultdict(lambda: deque(maxlen=new_threshold), breaker_records)
+
+        tool_breakers: dict[str, dict[str, deque[float]]] = {}
+        for user_id, tool_windows in self._tool_breakers.items():
+            tool_breakers[user_id] = {
+                tool_type: deque(window, maxlen=new_threshold)
+                for tool_type, window in tool_windows.items()
+            }
+        self._tool_breakers = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=new_threshold)),
+            tool_breakers,
+        )
 
     @property
     @timed
