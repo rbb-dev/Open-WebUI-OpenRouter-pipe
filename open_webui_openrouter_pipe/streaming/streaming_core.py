@@ -169,6 +169,7 @@ class StreamingHandler:
         tool_call_names: dict[str, str] = {}
         streamed_tool_call_args: dict[str, str] = {}
         streamed_tool_call_name_sent: set[str] = set()
+        session_log_reason: str = ""
 
         raw_tools = tools or {}
         tool_registry: dict[str, dict[str, Any]] = {}
@@ -1594,9 +1595,11 @@ class StreamingHandler:
         # Catch any exceptions during the streaming loop and emit an error
         except asyncio.CancelledError:
             was_cancelled = True
+            session_log_reason = "cancelled"
             raise
         except OpenRouterAPIError as exc:
             error_occurred = True
+            session_log_reason = str(exc)
             assistant_message = ""
             cancel_thinking()
             await self._pipe._report_openrouter_error(
@@ -1608,6 +1611,7 @@ class StreamingHandler:
             )
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
+            session_log_reason = str(e)
             await self._pipe._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)
 
         finally:
@@ -1668,15 +1672,52 @@ class StreamingHandler:
                 resolved_session_id = str(metadata.get("session_id") or "")
                 resolved_chat_id = str(metadata.get("chat_id") or "")
                 resolved_message_id = str(metadata.get("message_id") or "")
-                with contextlib.suppress(Exception):
-                    self._pipe._enqueue_session_log_archive(
-                        valves,
-                        user_id=resolved_user_id,
-                        session_id=resolved_session_id,
-                        chat_id=resolved_chat_id,
-                        message_id=resolved_message_id,
-                        request_id=request_id,
-                        log_events=log_events,
+                has_function_calls = False
+                if owui_tool_passthrough and final_response and isinstance(final_response.get("output"), list):
+                    with contextlib.suppress(Exception):
+                        has_function_calls = any(
+                            isinstance(item, dict) and item.get("type") == "function_call"
+                            for item in final_response.get("output", [])
+                        )
+                terminal = bool(
+                    was_cancelled
+                    or error_occurred
+                    or (not owui_tool_passthrough)
+                    or (owui_tool_passthrough and (not has_function_calls))
+                )
+                segment_status = "complete"
+                if was_cancelled:
+                    segment_status = "cancelled"
+                elif error_occurred:
+                    segment_status = "error"
+                elif owui_tool_passthrough and has_function_calls:
+                    segment_status = "needs_tool"
+                try:
+                    # Persist synchronously (shielded) so session logs aren't dropped on
+                    # cancellation, generator close, or event loop timing quirks.
+                    await asyncio.shield(
+                        self._pipe._persist_session_log_segment_to_db(
+                            valves,
+                            user_id=resolved_user_id,
+                            session_id=resolved_session_id,
+                            chat_id=resolved_chat_id,
+                            message_id=resolved_message_id,
+                            request_id=request_id,
+                            log_events=log_events,
+                            terminal=terminal,
+                            status=segment_status,
+                            reason=session_log_reason,
+                            pipe_identifier=pipe_identifier,
+                        )
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
+                        resolved_chat_id,
+                        resolved_message_id,
+                        request_id,
+                        terminal,
+                        exc_info=True,
                     )
 
             if (not error_occurred) and (not was_cancelled):

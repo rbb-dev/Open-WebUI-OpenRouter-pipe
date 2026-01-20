@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import hashlib
 import time
 from typing import Any, Iterator, Literal, Optional, cast
 
@@ -34,6 +35,39 @@ from .config import (
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 _MARKER_SUFFIX = "]: #"  # Suffix for artifact markers in text
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
+
+# -----------------------------------------------------------------------------
+# Stable IDs (for cross-worker locks)
+# -----------------------------------------------------------------------------
+
+def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
+    """Return a deterministic Crockford-base32 id of `length` characters.
+
+    This is used for cross-process coordination (e.g. DB lock rows) where we
+    need a repeatable identifier derived from stable keys like (chat_id, message_id).
+
+    The output is NOT a ULID (it does not encode time); it merely matches the
+    same alphabet and length constraints as stored artifact ids.
+    """
+    length_int = int(length)
+    if length_int <= 0:
+        raise ValueError("length must be positive")
+
+    digest = hashlib.sha256((seed or "").encode("utf-8", "ignore")).digest()
+    bits_needed = length_int * 5
+    total_bits = len(digest) * 8
+    if bits_needed > total_bits:
+        raise ValueError("seed hash too short for requested id length")
+
+    value = int.from_bytes(digest, byteorder="big", signed=False)
+    shift = total_bits - bits_needed
+    value = value >> shift
+
+    out: list[str] = []
+    for i in range(length_int):
+        idx = (value >> ((length_int - 1 - i) * 5)) & 0x1F
+        out.append(CROCKFORD_ALPHABET[idx])
+    return "".join(out)
 
 # -----------------------------------------------------------------------------
 # Template Rendering

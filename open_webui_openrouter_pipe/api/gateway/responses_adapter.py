@@ -21,6 +21,7 @@ from ...core.timing_logger import timed, timing_scope, timing_mark
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
+    _debug_print_response,
 )
 from ...core.logging_system import SessionLogger
 
@@ -81,7 +82,7 @@ class ResponsesAdapter:
             request_body.get("model"),
             valves=effective_valves,
         )
-        _debug_print_request(headers, request_body)
+        _debug_print_request(headers, request_body, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
 
         workers = max(1, min(int(workers or 1), 8))
@@ -118,7 +119,7 @@ class ResponsesAdapter:
                             async with session.post(url, json=request_body, headers=headers) as resp:
                                 timing_mark("responses_http_headers_received")
                                 if resp.status >= 400:
-                                    error_body = await _debug_print_error_response(resp)
+                                    error_body = await _debug_print_error_response(resp, logger=self.logger)
                                     if breaker_key:
                                         self._pipe._record_failure(breaker_key)
                                     special_statuses = {400, 401, 402, 403, 408, 429}
@@ -432,7 +433,7 @@ class ResponsesAdapter:
             "X-Title": _OPENROUTER_TITLE,
             "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
-        _debug_print_request(headers, request_params)
+        _debug_print_request(headers, request_params, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
 
         retryer = AsyncRetrying(
@@ -449,7 +450,7 @@ class ResponsesAdapter:
 
                 async with session.post(url, json=request_params, headers=headers) as resp:
                     if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp)
+                        error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._record_failure(breaker_key)
                         if resp.status < 500:
@@ -478,7 +479,9 @@ class ResponsesAdapter:
                                 f"OpenRouter request failed ({resp.status}): {resp.reason}"
                             )
                     resp.raise_for_status()
-                    return await resp.json()
+                    payload = await resp.json()
+                    _debug_print_response(payload, logger=self.logger)
+                    return payload
         self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")
         return {}
 

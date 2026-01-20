@@ -208,7 +208,7 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `SESSION_LOG_STORE_ENABLED` | `bool` | `False` | When True, persist per-request SessionLogger output to encrypted zip files on disk. Persistence is skipped when required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`). |
+| `SESSION_LOG_STORE_ENABLED` | `bool` | `False` | When True, persist SessionLogger output to encrypted zip files on disk, assembled per message turn (`chat_id`, `message_id`). Persistence is skipped when required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`). |
 | `SESSION_LOG_DIR` | `str` | `session_logs` | Base directory for encrypted session log archives. |
 | `SESSION_LOG_ZIP_PASSWORD` | `EncryptedStr` | `(empty)` | Password used to encrypt session log zip files (pyzipper AES). |
 | `SESSION_LOG_RETENTION_DAYS` | `int` | `90` | Retention window (days) for stored session log archives. |
@@ -217,6 +217,11 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. |
 | `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger records retained per request (older entries are dropped). |
 | `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
+| `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | `int` | `15` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
+| `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | `int` | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
+| `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | `int` | `25` | Max turns processed per assembler tick. |
+| `SESSION_LOG_STALE_FINALIZE_SECONDS` | `int` | `21600` | If no terminal segment arrives for a turn, assemble an incomplete archive after this timeout. |
+| `SESSION_LOG_LOCK_STALE_SECONDS` | `int` | `1800` | DB lock row stale timeout (multi-worker safety). |
 | `ENABLE_TIMING_LOG` | `bool` | `False` | When True, capture function entrance/exit timing data. Writes to `TIMING_LOG_FILE` directly (not session archives). See [Session Log Storage](session_log_storage.md#timing-instrumentation). |
 | `TIMING_LOG_FILE` | `str` | `logs/timing.jsonl` | File path for timing log output when `ENABLE_TIMING_LOG` is True. Parent directories are created automatically. |
 

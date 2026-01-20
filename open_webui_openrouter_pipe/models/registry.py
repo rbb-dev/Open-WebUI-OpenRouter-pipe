@@ -231,11 +231,11 @@ class OpenRouterModelRegistry:
             "X-Title": _OPENROUTER_TITLE,
             "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
-        _debug_print_request(headers, {"method": "GET", "url": url})
+        _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
         try:
             async with session.get(url, headers=headers) as resp:
                 if resp.status >= 400:
-                    await _debug_print_error_response(resp)
+                    await _debug_print_error_response(resp, logger=logger)
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:

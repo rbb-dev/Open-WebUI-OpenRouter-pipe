@@ -88,10 +88,44 @@ def test_write_session_log_archive_creates_encrypted_zip(tmp_path, pipe_instance
         assert meta["ids"]["chat_id"] == job.chat_id
         assert meta["ids"]["message_id"] == job.message_id
         assert meta["request_id"] == job.request_id
+        assert meta["request_ids"] == [job.request_id]
         logs = zf.read("logs.jsonl").decode("utf-8").splitlines()
         records = [json.loads(line) for line in logs if line.strip()]
         assert any(rec.get("message") == "hello" for rec in records)
         assert any(rec.get("message") == "world" for rec in records)
+
+
+def test_write_session_log_archive_preserves_per_event_request_id(tmp_path, pipe_instance) -> None:
+    pipe = pipe_instance
+    password = b"correct horse battery staple"
+    job = _SessionLogArchiveJob(
+        base_dir=str(tmp_path),
+        zip_password=password,
+        zip_compression="lzma",
+        zip_compresslevel=None,
+        user_id="user",
+        session_id="sid",
+        chat_id="chat",
+        message_id="message",
+        request_id="bundle",
+        created_at=1_700_000_000.0,
+        log_format="jsonl",
+        log_events=[
+            {"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "request_id": "r1", "message": "one"},
+            {"created": 1_700_000_000.1, "level": "INFO", "logger": "t", "request_id": "r2", "message": "two"},
+        ],
+    )
+
+    pipe._write_session_log_archive(job)
+
+    out_path = tmp_path / job.user_id / job.chat_id / f"{job.message_id}.zip"
+    with pyzipper.AESZipFile(out_path) as zf:
+        zf.setpassword(password)
+        meta = json.loads(zf.read("meta.json").decode("utf-8"))
+        assert meta["request_id"] == "bundle"
+        assert meta["request_ids"] == ["r1", "r2"]
+        records = [json.loads(line) for line in zf.read("logs.jsonl").decode("utf-8").splitlines() if line.strip()]
+        assert [rec.get("request_id") for rec in records] == ["r1", "r2"]
 
 
 def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatch, pipe_instance) -> None:

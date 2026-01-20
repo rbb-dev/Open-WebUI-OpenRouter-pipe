@@ -379,6 +379,19 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     }
     compression = compression_map.get((job.zip_compression or "lzma").lower(), pyzipper.ZIP_LZMA)
 
+    request_ids: list[str] = []
+    try:
+        ids: set[str] = set()
+        for evt in (job.log_events or []):
+            if not isinstance(evt, dict):
+                continue
+            rid = evt.get("request_id")
+            if isinstance(rid, str) and rid.strip():
+                ids.add(rid.strip())
+        request_ids = sorted(ids)
+    except Exception:
+        request_ids = []
+
     meta = {
         "created_at": datetime.datetime.fromtimestamp(job.created_at, tz=datetime.timezone.utc).isoformat(),
         "ids": {
@@ -388,6 +401,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             "message_id": str(job.message_id or ""),
         },
         "request_id": str(job.request_id or ""),
+        **({"request_ids": request_ids} if request_ids else {}),
         "log_format": str(job.log_format or ""),
     }
     meta_json = json.dumps(meta, ensure_ascii=False, indent=2)
@@ -465,11 +479,13 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         exception_block = event.get("exception")
         exception_out = exception_block if isinstance(exception_block, dict) else None
 
+        event_request_id = event.get("request_id")
+        request_id_out = str(event_request_id) if event_request_id else str(job.request_id or "")
         record_out: dict[str, Any] = {
             "ts": _format_iso_utc(created_val),
             "level": str(event.get("level") or "INFO"),
             "logger": str(event.get("logger") or ""),
-            "request_id": str(job.request_id or ""),
+            "request_id": request_id_out,
             "user_id": str(job.user_id or ""),
             "session_id": str(job.session_id or ""),
             "chat_id": str(job.chat_id or ""),

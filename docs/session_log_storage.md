@@ -1,6 +1,6 @@
 # Encrypted session log storage (optional)
 
-**Scope:** Optional, valve-gated persistence of per-request `SessionLogger` output to encrypted zip archives on local disk.
+**Scope:** Optional, valve-gated persistence of `SessionLogger` output to encrypted zip archives on local disk, assembled per **message turn**.
 
 > **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
 
@@ -12,12 +12,19 @@ This document covers **local filesystem storage only**. For the companion featur
 
 ## What gets stored
 
-When enabled, the pipe writes **one encrypted zip file per completed request** containing:
+When enabled, the pipe writes **one encrypted zip file per message turn** (Open WebUI `message_id`) containing logs from:
+
+- the initial user send → model response
+- any intermediate OpenRouter traffic
+- any tool calls/results that occur within the turn
+
+In `TOOL_EXECUTION_MODE=Open-WebUI`, Open WebUI may re-invoke the pipe multiple times for the same `message_id` during tool loops. In that case, the pipe stages per-invocation log “segments” into the persistence layer and a background assembler merges them into a single archive.
 
 - `meta.json` — a small JSON document with:
   - `created_at` (UTC ISO timestamp)
   - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`)
-  - `request_id` (internal per-request key used for in-memory buffering)
+  - `request_id` (a representative internal per-request key used for in-memory buffering)
+  - `request_ids` (optional; sorted unique list of per-request identifiers found in the bundled events)
   - `log_format` (`jsonl`, `text`, or `both`)
 - `logs.jsonl` — newline-delimited JSON (one JSON object per log record).
 - `logs.txt` — plain text log output (optional; only when `SESSION_LOG_FORMAT=text|both`).
@@ -65,6 +72,13 @@ The pipe **skips persistence** when any of the following are true:
 - The request produced no captured log lines.
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.
+
+### Assembly timing
+
+Archives are written by a background assembler thread when:
+
+- a “terminal” segment is staged for `(chat_id, message_id)` (final assistant answer, error, or cancellation), or
+- no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail.
 
 Non-blocking behavior:
 
@@ -115,6 +129,8 @@ When storage is enabled, a background cleanup loop periodically:
 
 Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`.
 
+Additionally, once an archive is assembled, the per-invocation DB segments used to build it are deleted. A separate “stale finalize” path can assemble + delete segments for abandoned turns after a long timeout.
+
 Operational note:
 
 - Cleanup is performed per-process and tracks the session log directories that have been used in that process. In multi-worker deployments, each worker performs its own cleanup pass.
@@ -136,6 +152,11 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
 | `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory log records retained per request before older entries are dropped. |
 | `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
+| `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | int | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
+| `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | int | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
+| `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | int | `25` | Max turns processed per assembler tick. |
+| `SESSION_LOG_STALE_FINALIZE_SECONDS` | int | `7200` | If no terminal segment arrives for a turn, assemble an **incomplete** archive after this timeout. |
+| `SESSION_LOG_LOCK_STALE_SECONDS` | int | `1800` | DB lock row stale timeout (multi-worker safety). |
 | `ENABLE_TIMING_LOG` | bool | `false` | Capture function entrance/exit timing data. |
 | `TIMING_LOG_FILE` | str | `logs/timing.jsonl` | File path for timing log output. |
 

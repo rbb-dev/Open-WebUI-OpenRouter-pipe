@@ -56,7 +56,7 @@ class TestBlocklistFunction:
 
     def test_blocklist_has_expected_count(self):
         """Blocklist should contain the expected number of models."""
-        assert len(DIRECT_UPLOAD_BLOCKLIST) == 24
+        assert len(DIRECT_UPLOAD_BLOCKLIST) == 29
 
     def test_all_blocklist_entries_are_strings(self):
         """All blocklist entries should be non-empty strings."""

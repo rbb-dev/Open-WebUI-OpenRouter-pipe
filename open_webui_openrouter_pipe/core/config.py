@@ -976,6 +976,35 @@ class Valves(BaseModel):
             "'both' writes both files."
         ),
     )
+    SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS: int = Field(
+        default=30,
+        ge=1,
+        description="How often (in seconds) to scan staged DB session-log segments and assemble per-message zip archives.",
+    )
+    SESSION_LOG_ASSEMBLER_JITTER_SECONDS: int = Field(
+        default=10,
+        ge=0,
+        description="Random jitter (0..N seconds) added to assembler sleeps so multiple workers do not run in lockstep.",
+    )
+    SESSION_LOG_ASSEMBLER_BATCH_SIZE: int = Field(
+        default=25,
+        ge=1,
+        le=500,
+        description="Maximum number of message bundles to assemble per assembler cycle.",
+    )
+    SESSION_LOG_STALE_FINALIZE_SECONDS: int = Field(
+        default=6 * 7200,
+        ge=60,
+        description=(
+            "If a message has staged session-log segments but never reaches a terminal state "
+            "(crash/kill), finalize an incomplete zip after this many seconds since the last segment."
+        ),
+    )
+    SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
+        default=1800,
+        ge=60,
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed.",
+    )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
         description=(
