@@ -715,6 +715,7 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
                 callback=capture_request,
             )
 
+            session = None
             try:
                 body = {"model": "fake.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
                 metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "fake.model"}}
@@ -755,6 +756,8 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
                 assert captured_body.get("reasoning", {}).get("effort") == "high"
                 assert captured_body["stream"] is False
             finally:
+                if session is not None:
+                    await session.close()
                 await pipe.close()
     finally:
         # Reset dynamic specs
@@ -815,6 +818,7 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
                 callback=capture_request,
             )
 
+            session = None
             try:
                 body = {"model": "unlisted.model", "messages": [{"role": "user", "content": "hi"}], "stream": True}
                 metadata = {"chat_id": "c1", "message_id": "m1", "model": {"id": "unlisted.model"}}
@@ -853,6 +857,8 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
                 assert captured_body.get("reasoning", {}).get("effort") == pipe.valves.REASONING_EFFORT
                 assert captured_body["stream"] is False
             finally:
+                if session is not None:
+                    await session.close()
                 await pipe.close()
     finally:
         # Reset dynamic specs
@@ -914,6 +920,7 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
             },
         )
 
+        session = None
         try:
             session = pipe._create_http_session(pipe.valves)
 
@@ -934,6 +941,8 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
             assert captured["pipe_id"] == "openrouter_responses_api_pipe"
             assert captured["usage"] == {"input_tokens": 5, "output_tokens": 2}
         finally:
+            if session is not None:
+                await session.close()
             await pipe.close()
 
 
@@ -985,6 +994,7 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
             callback=capture_request,
         )
 
+        session = None
         try:
             session = pipe._create_http_session(pipe.valves)
 
@@ -1015,6 +1025,8 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
             assert metadata.get("chat_id") == "c1"
             assert metadata.get("message_id") == "m1"
         finally:
+            if session is not None:
+                await session.close()
             await pipe.close()
 
 

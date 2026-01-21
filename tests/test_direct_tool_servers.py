@@ -28,6 +28,7 @@ async def test_direct_tool_servers_are_advertised_and_executable():
     Exercises real tool server integration logic and real HTTP request construction.
     """
     pipe = Pipe()
+    session = None
 
     # Track event_call invocations
     event_call_payloads: list[dict[str, Any]] = []
@@ -152,6 +153,8 @@ async def test_direct_tool_servers_are_advertised_and_executable():
     finally:
         # Clean up specs
         ModelFamily.set_dynamic_specs({})
+        if session is not None:
+            await session.close()
         await pipe.close()
 
 
@@ -165,6 +168,7 @@ async def test_direct_tool_servers_skipped_without_event_call():
     Captures HTTP request to verify tools were NOT added.
     """
     pipe = Pipe()
+    session = None
 
     # Track the HTTP request body to verify tools were NOT added
     captured_request_body: dict[str, Any] | None = None
@@ -281,4 +285,6 @@ async def test_direct_tool_servers_skipped_without_event_call():
     finally:
         # Clean up specs
         ModelFamily.set_dynamic_specs({})
+        if session is not None:
+            await session.close()
         await pipe.close()
