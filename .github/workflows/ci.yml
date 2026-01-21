@@ -34,7 +34,7 @@ jobs:
           . .venv/bin/activate
           python -m pip install --upgrade open-webui
           python -m pip install --upgrade -e .
-          python -m pip install --upgrade pytest pytest-asyncio pyright cairosvg pyzipper
+          python -m pip install --upgrade pytest pytest-asyncio pyright cairosvg pyzipper aioresponses
 
       - name: Run tests and checks
         run: |
