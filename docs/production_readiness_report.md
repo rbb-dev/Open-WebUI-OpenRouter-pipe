@@ -154,7 +154,7 @@ Operator guidance:
 
 The pipe uses:
 
-- a bounded request queue (`_QUEUE_MAXSIZE = 500`), and
+- a bounded request queue (`_QUEUE_MAXSIZE = 1000`), and
 - a per-process concurrency semaphore controlled by `MAX_CONCURRENT_REQUESTS` (default `200`).
 
 Notes:
