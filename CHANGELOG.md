@@ -1,4 +1,3 @@
-## [unreleased]
 
 ### 🚀 Features
 
@@ -77,6 +76,7 @@
 - Harden Direct Uploads metadata safety and improve fail-open UX
 - Use OWUI metadata tool registry for native tools
 - Bypass OWUI File Context for diverted direct uploads
+- Harden streaming and breaker edge cases
 
 ### 💼 Other
 
@@ -850,6 +850,7 @@ Removed redundant details from the documentation section and streamlined the con
 - Add dev env repro + usage ingest helper
 - Redact data-url base64 blobs in debug logs
 - Checkpoint 1.1.1
+- Consolidate shared helpers and constants
 
 ### 🛡️ Security
 

@@ -897,13 +897,18 @@ class ModelCatalogManager:
             meta_obj = ModelMeta(**meta_dict)
             params_obj = ModelParams()
 
+            access_mode = str(
+                getattr(self._pipe.valves, "NEW_MODEL_ACCESS_CONTROL", "admins") or ""
+            ).strip().lower()
+            access_control = {} if access_mode == "admins" else None
+
             model_form = ModelForm(
                 id=openwebui_model_id,
                 base_model_id=None,
                 name=name,
                 meta=meta_obj,
                 params=params_obj,
-                access_control=None,
+                access_control=access_control,
                 is_active=True,
             )
             # Use empty user_id to let OWUI handle ownership defaults

@@ -67,6 +67,7 @@ Behavior:
   - `meta.profile_image_url` (model icon as a PNG data URL), and
   - `meta.description` (model description text).
   This behavior is controlled by `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES`, and `UPDATE_MODEL_DESCRIPTIONS`. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
+  - New model access control defaults are set **on insert only**: `NEW_MODEL_ACCESS_CONTROL` determines whether newly inserted OpenRouter overlays are public (`access_control=None`) or private (`access_control={}`), with the `admins` option relying on Open WebUI’s `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 
 ---
 
