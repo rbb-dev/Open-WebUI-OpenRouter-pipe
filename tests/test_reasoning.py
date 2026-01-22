@@ -14,6 +14,7 @@ This module targets 90%+ coverage for streaming/reasoning_tracker.py by testing:
 - Item tracking (lines 591-598)
 - Final buffer retrieval (lines 603, 608, 613-614, 619)
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

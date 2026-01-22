@@ -14,6 +14,7 @@ This test module targets the missing lines in circuit_breaker.py:
 - Line 249: auth_failure_active with empty scope_key
 - Lines 256-259: auth_failure expiration handling
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

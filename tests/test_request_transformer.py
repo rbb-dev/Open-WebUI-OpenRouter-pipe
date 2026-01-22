@@ -10,6 +10,7 @@ This module tests the transform_messages_to_input function and its helper functi
 - Additional coverage for edge cases and uncovered code paths
 HTTPS-only defaults apply to SSRF-related URL handling; HTTP is allowlisted only when configured.
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

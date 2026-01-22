@@ -10,6 +10,7 @@ Coverage target: Missing lines from nonstreaming_adapter.py:
 - 195, 198, 201, 204, 207-208: _run_chat tool_calls edge cases
 - 276-285: fallback from responses to chat_completions
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
 import json

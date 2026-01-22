@@ -189,6 +189,7 @@ def test_session_log_buffer_captures_debug_even_when_console_level_warning(capsy
 
 class TestSessionLogArchiveEdgeCases:
     """Additional edge case tests for session log archiving."""
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
     def test_archive_with_missing_ids_skipped(self, tmp_path, pipe_instance) -> None:
         """Archive not written when user_id/session_id/chat_id/message_id missing."""

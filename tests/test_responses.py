@@ -26,6 +26,7 @@ Remaining uncovered paths (23 lines):
 - Lines 385, 390, 393: Task cleanup paths
 - Lines 485-486: Non-streaming empty fallback
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
 import json

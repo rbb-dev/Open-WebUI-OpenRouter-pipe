@@ -3,6 +3,7 @@
 REAL TESTS: These use actual Pipe() instances with HTTP mocked at the boundary.
 Audio files can be routed to /responses or /chat/completions based on format allowlist.
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
 import base64

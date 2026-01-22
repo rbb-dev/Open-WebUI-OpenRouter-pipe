@@ -676,7 +676,7 @@ async def transform_messages_to_input(
                                     if file_id:
                                         file_data = None
                                     else:
-                                        return None
+                                        return result
                                 else:
                                     fname = filename or remote_url.split("/")[-1].split("?")[0]
                                     stored_id = await _download_and_store(remote_url, name_hint=fname)
@@ -750,7 +750,7 @@ async def transform_messages_to_input(
                                     if file_id:
                                         file_url = None
                                     else:
-                                        return None
+                                        return result
                                 else:
                                     stored_id = await _download_and_store(file_url, name_hint=name_hint)
                                     if stored_id:
@@ -793,7 +793,7 @@ async def transform_messages_to_input(
                         if file_id:
                             file_data = None
                         else:
-                            return None
+                            return result
 
                     if (
                         isinstance(file_url, str)
@@ -811,7 +811,7 @@ async def transform_messages_to_input(
                         if file_id:
                             file_url = None
                         else:
-                            return None
+                            return result
 
                     if file_id:
                         result["file_id"] = file_id

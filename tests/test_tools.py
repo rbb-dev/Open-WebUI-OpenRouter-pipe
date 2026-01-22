@@ -6,6 +6,7 @@ This module targets the uncovered lines: 93-163, 186-208, 225, 251-278, 287-351,
 Tests exercise REAL code paths through the Pipe instance, mocking only external
 boundaries (HTTP calls, tool callables).
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

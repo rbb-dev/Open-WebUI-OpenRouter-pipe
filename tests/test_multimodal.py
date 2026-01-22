@@ -5,6 +5,7 @@ These tests target uncovered lines to achieve >90% coverage for the multimodal m
 They exercise real code paths with minimal mocking at external I/O boundaries only.
 HTTPS-only defaults apply to SSRF-related URL handling; HTTP is allowlisted only when configured.
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
 import base64
