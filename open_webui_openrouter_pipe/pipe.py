@@ -731,7 +731,7 @@ class Pipe:
         except Exception as exc:
             if client is not None:
                 with contextlib.suppress(Exception):
-                    await client.close()
+                    await client.aclose()
             self._redis_enabled = False
             self._redis_client = None
             self.logger.warning("Redis cache disabled (%s)", exc)
