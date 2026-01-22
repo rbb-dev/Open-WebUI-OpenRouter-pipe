@@ -17,6 +17,7 @@ This module tests utility functions to achieve high coverage including:
 - _sanitize_path_component: Path sanitization
 - _retry_after_seconds: HTTP retry-after parsing
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

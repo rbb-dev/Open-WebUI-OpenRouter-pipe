@@ -27,6 +27,7 @@ async def test_direct_tool_servers_are_advertised_and_executable():
     REAL TEST - Uses aioresponses for HTTP boundary mocking.
     Exercises real tool server integration logic and real HTTP request construction.
     """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
     pipe = Pipe()
     session = None
 

@@ -8,6 +8,7 @@ Target uncovered lines:
 - Lines 79-80: Exception reading response text in DEBUG-enabled path
 - Lines 89-94: Exception in outer try block of _debug_print_error_response
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

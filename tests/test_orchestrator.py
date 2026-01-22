@@ -8,6 +8,7 @@ This test file covers edge cases and error handling paths in the orchestrator:
 - Web search plugin configuration
 - Error retry logic (reasoning effort, prompt caching, etc.)
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

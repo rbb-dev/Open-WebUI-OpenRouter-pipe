@@ -15,6 +15,7 @@ This test file covers the missing lines in anthropic.py (79% coverage, 12 missin
 Uses real Pipe() instances and tests directly against the
 _maybe_apply_anthropic_prompt_caching function.
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

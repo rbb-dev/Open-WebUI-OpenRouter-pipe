@@ -107,6 +107,7 @@ async def test_registry_cache_prevents_refresh():
     - Real ensure_loaded flow
     - Would make HTTP call if cache expired (but doesn't because cache is fresh)
     """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
     from aioresponses import aioresponses
     import aiohttp
 

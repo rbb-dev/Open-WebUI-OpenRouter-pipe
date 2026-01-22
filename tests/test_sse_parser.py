@@ -15,6 +15,7 @@ This module covers the missing lines in sse_parser.py with focus on:
 - Delta batching threshold flush (line 508)
 - Final delta flush on completion and exception (lines 520-527)
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

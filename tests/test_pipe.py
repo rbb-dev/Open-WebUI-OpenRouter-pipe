@@ -4,6 +4,7 @@ This file merges tests from test_pipe_coverage.py and test_pipe_additional_cover
 Tests cover major uncovered code paths with real Pipe instances,
 mocking only external boundaries (HTTP via aioresponses, file I/O).
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
 

@@ -18,6 +18,7 @@ async def test_owui_metadata_tools_registry_is_used_for_native_tools(monkeypatch
     2. They are passed to the OpenRouter API request
     3. The real infrastructure processes tool calling correctly
     """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-key-12345")
 
     pipe = Pipe()

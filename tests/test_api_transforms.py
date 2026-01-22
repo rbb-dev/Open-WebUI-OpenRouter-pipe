@@ -4,6 +4,7 @@ This consolidated test module provides complete coverage for the transforms
 module, including both unit tests for isolated functions and integration tests
 through the Pipe class.
 """
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
 import json
@@ -94,7 +95,7 @@ class TestFilterOpenrouterRequest:
         """Test filtering with non-dict input raises ValueError."""
         # The function tries to call dict() on input, which fails for strings
         with pytest.raises(ValueError):
-            _filter_openrouter_request("not a dict")
+            _filter_openrouter_request("not a dict")  # type: ignore[arg-type]
 
     def test_null_values_dropped(self):
         """Test explicit null values are dropped."""
@@ -229,9 +230,9 @@ class TestFilterOpenrouterChatRequest:
 
     def test_non_dict_returns_empty(self):
         """Test non-dict input returns empty dict."""
-        assert _filter_openrouter_chat_request("not a dict") == {}
-        assert _filter_openrouter_chat_request(None) == {}
-        assert _filter_openrouter_chat_request(123) == {}
+        assert _filter_openrouter_chat_request("not a dict") == {}  # type: ignore[arg-type]
+        assert _filter_openrouter_chat_request(None) == {}  # type: ignore[arg-type]
+        assert _filter_openrouter_chat_request(123) == {}  # type: ignore[arg-type]
 
     def test_preserves_allowed_fields(self):
         """Test allowed fields are preserved."""
@@ -386,8 +387,8 @@ class TestResponsesPayloadToChatCompletionsPayload:
 
     def test_non_dict_returns_empty(self):
         """Test non-dict input returns empty dict."""
-        assert _responses_payload_to_chat_completions_payload("not a dict") == {}
-        assert _responses_payload_to_chat_completions_payload(None) == {}
+        assert _responses_payload_to_chat_completions_payload("not a dict") == {}  # type: ignore[arg-type]
+        assert _responses_payload_to_chat_completions_payload(None) == {}  # type: ignore[arg-type]
 
     def test_non_streaming_no_stream_options(self):
         """Test non-streaming request doesn't get stream_options."""
@@ -790,7 +791,7 @@ class TestChatResponseFormatToResponsesTextFormat:
             },
         }
         result = _chat_response_format_to_responses_text_format(value)
-
+        assert result is not None
         assert result["type"] == "json_schema"
         assert "schema" in result
 
