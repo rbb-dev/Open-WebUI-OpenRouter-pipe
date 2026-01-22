@@ -1,7 +1,7 @@
 # Open WebUI → OpenRouter Pipe
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 **Access 350+ AI models through one interface.**
@@ -76,7 +76,7 @@ Encryption, retention policies, request attribution, and operational hooks your 
 In Open WebUI: **Admin Panel** → **Functions** → **+** → **Import from Link**
 
 ```
-https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/v2.0.1/open_webui_openrouter_pipe.py
+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/v2.0.2/open_webui_openrouter_pipe.py
 ```
 
 If you want to stay up to date with the latest technical updates you can load it from the main branch.
