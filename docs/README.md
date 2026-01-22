@@ -61,7 +61,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - If you run Open WebUI behind a proxy/gateway, verify `BASE_URL` points to your gateway and that the gateway is correctly forwarding auth headers.
 
 ### Remote files or images fail to load
-- Remote downloads are subject to SSRF filtering and size limits. Review your remote download settings in [Valves & Configuration Atlas](valves_and_configuration_atlas.md) and the deep-dive in [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md).
+- Remote downloads are subject to SSRF filtering and size limits, with HTTPS-only defaults (HTTP allowlist available). Review your remote download settings in [Valves & Configuration Atlas](valves_and_configuration_atlas.md) and the deep-dive in [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md).
 
 ### Requests fail under load
 - Review concurrency limits, queueing behavior, and breaker controls in [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
@@ -79,7 +79,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md) — explains the two web-search toggles and how OpenRouter Search is auto-installed, only shown on models where it can work, and enabled by default (while still allowing per-model and per-chat control).
 
 ### Security and compliance guidance (admins)
-- [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls, and hardening guidance.
+- [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls (HTTPS-only by default), and hardening guidance.
 - [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) — what is persisted, how retention works, and operational considerations.
 - [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md) — multi-user identifiers and privacy guidance.
 - [Session Log Storage](session_log_storage.md) — optional encrypted, per-request archives for incident response.

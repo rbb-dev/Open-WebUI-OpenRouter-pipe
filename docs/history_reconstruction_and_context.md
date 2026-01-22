@@ -72,7 +72,7 @@ The pipe includes transformer functions for:
 - `input_audio` / `audio` → `input_audio`
 - `video_url` / `video` → `video_url`
 
-The security/size/SSRF rules and re-hosting behaviors are documented in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
+The security/size/SSRF rules (including HTTPS-only defaults) and re-hosting behaviors are documented in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
 
 ---
 
@@ -160,4 +160,3 @@ System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Confi
 Operational implications:
 - Conversations may still render in the UI, but upstream requests may lack some historical tool/reasoning context.
 - If you rely on long-lived replayability, validate your retention and key rotation procedures in [Persistence, Encryption & Storage](persistence_encryption_and_storage.md).
-

@@ -1,6 +1,6 @@
 # Multimodal Intake Pipeline
 
-This document describes how the pipe transforms Open WebUI message content into OpenRouter-compatible multimodal blocks (images, files, audio, and video), including storage behavior, SSRF protections, and size limits.
+This document describes how the pipe transforms Open WebUI message content into OpenRouter-compatible multimodal blocks (images, files, audio, and video), including storage behavior, SSRF protections, HTTPS-only defaults for remote URLs, and size limits.
 
 If you are specifically trying to **bypass Open WebUI RAG for chat uploads** and forward uploads as **native OpenRouter attachments**, see:
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md)
@@ -45,7 +45,7 @@ If storage cannot be resolved (for example in tests or synthetic contexts), the 
 
 ### Storage behavior (important)
 - If the image is provided as a **data URL** (`data:image/...;base64,...`), the pipe validates size, decodes, and uploads it to Open WebUI storage. The outgoing `input_image.image_url` references the internal Open WebUI file URL.
-- If the image is provided as a **remote URL** (`http://` or `https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and references the internal URL.
+- If the image is provided as a **remote URL** (`https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and references the internal URL. Plain `http://` is disabled by default and requires explicit allowlisting.
 - If the image is already an **Open WebUI file URL** (for example `/api/v1/files/...`), the pipe streams it and inlines it as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
 This image re-hosting behavior is intentionally “always on” for data URLs and remote URLs to avoid chat history bloat and to preserve replayability.
@@ -71,10 +71,10 @@ The pipe can re-host both `file_data` and `file_url` into Open WebUI storage:
 
 - When `SAVE_FILE_DATA_CONTENT=True` (default), and `file_data` is:
   - a `data:` URL, it is decoded and stored; the outgoing block will prefer `file_url` pointing to internal storage and will clear `file_data`.
-  - an `http://` or `https://` URL, it is downloaded and stored; the outgoing block will set `file_url` to internal storage and clear `file_data`.
+  - an `https://` URL, it is downloaded and stored; the outgoing block will set `file_url` to internal storage and clear `file_data`. Plain `http://` is disabled by default and requires explicit allowlisting.
 - When `SAVE_REMOTE_FILE_URLS=True` (default), and `file_url` is:
   - a `data:` URL, it is decoded and stored; the outgoing block rewrites `file_url` to the internal storage URL.
-  - an `http://` or `https://` URL, it is downloaded and stored; the outgoing block rewrites `file_url` to the internal storage URL.
+  - an `https://` URL, it is downloaded and stored; the outgoing block rewrites `file_url` to the internal storage URL. Plain `http://` is disabled by default and requires explicit allowlisting.
 
 If you want to reduce storage growth and accept the tradeoff that chat replay depends on third-party URLs, set `SAVE_REMOTE_FILE_URLS=False`.
 
@@ -109,7 +109,7 @@ The pipe uses Chat Completions-style `video_url` blocks:
 ### Validation and SSRF behavior
 - Data URLs (`data:video/...;base64,...`) are accepted only if their estimated decoded size is at or below `VIDEO_MAX_SIZE_MB`.
 - YouTube URLs are allowed (and may only work on certain model/provider combinations).
-- Remote URLs (`http://` / `https://`) that are not Open WebUI file URLs are checked by the SSRF guard when `ENABLE_SSRF_PROTECTION=True`.
+- Remote URLs (`https://` by default; `http://` only when allowlisted) that are not Open WebUI file URLs are checked by the SSRF guard when `ENABLE_SSRF_PROTECTION=True`.
 
 **Limitation:** Videos are not downloaded or re-hosted by the pipe; it passes the URL (or data URL) through after applying basic checks. If you need durability for video content, you must ensure the URL remains reachable or implement a storage policy outside this pipe.
 
@@ -119,7 +119,7 @@ The pipe uses Chat Completions-style `video_url` blocks:
 
 Remote downloads are used for images and for files when re-hosting is enabled. The downloader enforces:
 
-- **Protocols:** `http://` and `https://` only.
+- **Protocols:** `https://` only by default; `http://` requires `ALLOW_INSECURE_HTTP` + allowlisting.
 - **SSRF protection:** blocks private/internal address targets when enabled.
 - **Retry/backoff:** retries on network errors and transient HTTP statuses (`>=500` and `408/425/429`), with exponential backoff controlled by valves.
 - **Size limits:** enforced via `REMOTE_FILE_MAX_SIZE_MB` (and may be further capped to Open WebUI’s configured upload limits when available).
@@ -130,7 +130,9 @@ Remote downloads are used for images and for files when re-hosting is enabled. T
 
 | Valve | Default (verified) | What it controls |
 | --- | --- | --- |
-| `ENABLE_SSRF_PROTECTION` | `True` | Blocks remote downloads to private/internal network ranges. |
+| `ENABLE_SSRF_PROTECTION` | `True` | Blocks remote downloads to private/internal network ranges. HTTPS-only defaults still apply even if SSRF protection is disabled. |
+| `ALLOW_INSECURE_HTTP` | `False` | Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default. |
+| `ALLOW_INSECURE_HTTP_HOSTS` | `""` | Comma-separated list of hosts or host:port entries allowed for plaintext HTTP. Exact match only (no wildcards). Empty means no HTTP allowed. |
 | `REMOTE_DOWNLOAD_MAX_RETRIES` | `3` | Retry attempts for remote downloads. |
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `5` | Initial retry delay (exponential backoff). |
 | `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `45` | Max total retry time budget for one download. |

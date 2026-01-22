@@ -50,7 +50,9 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `FALLBACK_STORAGE_EMAIL` | `str` | `env OPENROUTER_STORAGE_USER_EMAIL, else openrouter-pipe@system.local` | Owner email used when multimodal uploads occur without a chat user (for example, API automations). |
 | `FALLBACK_STORAGE_NAME` | `str` | `env OPENROUTER_STORAGE_USER_NAME, else OpenRouter Pipe Storage` | Display name for the fallback storage owner. |
 | `FALLBACK_STORAGE_ROLE` | `str` | `env OPENROUTER_STORAGE_USER_ROLE, else pending` | Role assigned to the fallback storage account when auto-created. Defaults to a low-privilege role; override only if your deployment needs a dedicated service role. |
-| `ENABLE_SSRF_PROTECTION` | `bool` | `True` | Enable SSRF protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, RFC1918, link-local, etc.). |
+| `ENABLE_SSRF_PROTECTION` | `bool` | `True` | Enable SSRF protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, RFC1918, link-local, etc.). HTTPS-only defaults still apply even if SSRF protection is disabled. |
+| `ALLOW_INSECURE_HTTP` | `bool` | `False` | Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable alongside a narrow allowlist. |
+| `ALLOW_INSECURE_HTTP_HOSTS` | `str` | `""` | Comma-separated list of hosts or host:port entries allowed for plaintext HTTP. Exact match only (no wildcards). Empty means no HTTP allowed. Example: `example.com, example.org:8080, 203.0.113.10`. |
 | `MAX_INPUT_IMAGES_PER_REQUEST` | `int` | `5` | Maximum number of image inputs (user attachments plus assistant fallbacks) to include in a single provider request. |
 | `IMAGE_INPUT_SELECTION` | `Literal[\"user_turn_only\", \"user_then_assistant\"]` | `user_then_assistant` | Controls which images are forwarded to the provider. `user_turn_only` restricts inputs to the current user message; `user_then_assistant` falls back to the most recent assistant-generated images when the user did not attach any. |
 

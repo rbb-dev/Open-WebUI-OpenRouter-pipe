@@ -12,7 +12,7 @@ Security-relevant mechanisms implemented by the pipe include:
 
 1. **Secret valve handling** via `EncryptedStr` (optionally encrypts secret valve values at rest when `WEBUI_SECRET_KEY` is set).
 2. **Artifact encryption at rest** for persisted response artifacts when `ARTIFACT_ENCRYPTION_KEY` is configured.
-3. **SSRF protection** for remote URL downloads when `ENABLE_SSRF_PROTECTION=True`.
+3. **SSRF protection** for remote URL downloads when `ENABLE_SSRF_PROTECTION=True`, plus HTTPS-only defaults for remote URLs (HTTP allowlist available).
 4. **Multi-user isolation primitives** (request-scoped `contextvars`, per-pipe database tables and Redis namespaces).
 5. **Size/time guardrails** for remote downloads and base64 payloads to limit resource exhaustion.
 6. **Optional encrypted session log archives** (zip encryption) when session log storage is enabled.
@@ -108,9 +108,9 @@ Remote file/image/video URLs are security-sensitive because they can be used for
 
 ### Supported URL schemes
 
-The pipe’s remote download subsystem only accepts:
-- `http://`
-- `https://`
+The pipe’s remote download subsystem accepts:
+- `https://` (default)
+- `http://` only when explicitly allowlisted via `ALLOW_INSECURE_HTTP` + `ALLOW_INSECURE_HTTP_HOSTS`
 
 Other schemes are rejected.
 
@@ -122,6 +122,7 @@ When `ENABLE_SSRF_PROTECTION=True` (default):
 
 When `ENABLE_SSRF_PROTECTION=False`:
 - The pipe may attempt to fetch internal URLs reachable from your Open WebUI environment. Only disable SSRF protection with a clear threat model and compensating controls.
+HTTPS-only defaults still apply even if SSRF protection is disabled.
 
 ### Additional mitigations for downloads
 
@@ -133,7 +134,7 @@ Even when a URL passes SSRF checks, downloads are constrained by:
 Recommended operator action:
 - Keep SSRF protection enabled.
 - Apply outbound egress controls at the network layer (proxy allowlists, egress firewall rules).
-- If you must forbid plaintext `http://` downloads, enforce that via egress policy; the pipe permits both `http://` and `https://`.
+- HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
 
 ---
 
@@ -184,5 +185,5 @@ For a typical production deployment:
 1. Set `WEBUI_SECRET_KEY` so secret valve values can be encrypted at rest.
 2. Configure `OPENROUTER_API_KEY` (env) or `API_KEY` (valve).
 3. If you persist artifacts, set `ARTIFACT_ENCRYPTION_KEY` and keep `ENCRYPT_ALL=True` unless you have a clear reason to encrypt reasoning only.
-4. Keep `ENABLE_SSRF_PROTECTION=True` and enforce outbound egress policy.
+4. Keep `ENABLE_SSRF_PROTECTION=True`, keep HTTPS-only defaults, and enforce outbound egress policy (only allow HTTP if explicitly allowlisted).
 5. Review retention (`ARTIFACT_CLEANUP_DAYS`, session log retention) and validate it matches your operational requirements.

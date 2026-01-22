@@ -333,7 +333,8 @@ async def transform_messages_to_input(
                 """Convert Open WebUI image block into Responses format.
 
                 Handles image URLs and base64 data URLs, downloading remote images and
-                saving all images to OWUI storage to prevent data loss.
+                saving all images to OWUI storage to prevent data loss. HTTP is disabled
+                by default for remote URLs; see ALLOW_INSECURE_HTTP_* valves.
 
                 Supported Image Formats (per OpenRouter docs):
                     - image/png
@@ -380,6 +381,17 @@ async def transform_messages_to_input(
 
                     if not url:
                         return None
+
+                    if url.startswith("http://") and not _is_internal_file_url(url):
+                        if not self._is_insecure_http_allowed(url):
+                            self.logger.error("Blocked insecure HTTP image URL by default: %s", url)
+                            await self._emit_error(
+                                event_emitter,
+                                "Image URL blocked by security policy (HTTP disabled by default). "
+                                "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                                show_error_message=True,
+                            )
+                            return None
 
                     storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
 
@@ -653,29 +665,42 @@ async def transform_messages_to_input(
                         elif file_data.startswith(("http://", "https://")) and not _is_internal_storage(file_data):
                             try:
                                 remote_url = file_data
-                                fname = filename or remote_url.split("/")[-1].split("?")[0]
-                                stored_id = await _download_and_store(remote_url, name_hint=fname)
-                                if stored_id:
-                                    file_id = stored_id
-                                    file_url = None
-                                    file_url_set_from_file_data = True
+                                if remote_url.startswith("http://") and not self._is_insecure_http_allowed(remote_url):
+                                    self.logger.error("Blocked insecure HTTP file_data URL by default: %s", remote_url)
+                                    await self._emit_error(
+                                        event_emitter,
+                                        "File URL blocked by security policy (HTTP disabled by default). "
+                                        "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                                        show_error_message=True,
+                                    )
+                                    if file_id:
+                                        file_data = None
+                                    else:
+                                        return None
                                 else:
-                                    if not file_url:
-                                        file_url = remote_url
+                                    fname = filename or remote_url.split("/")[-1].split("?")[0]
+                                    stored_id = await _download_and_store(remote_url, name_hint=fname)
+                                    if stored_id:
+                                        file_id = stored_id
+                                        file_url = None
                                         file_url_set_from_file_data = True
-                                    if event_emitter:
-                                        label = fname or "remote file"
-                                        if not fname:
-                                            with contextlib.suppress(Exception):
-                                                host = urlparse(remote_url).netloc
-                                                if host:
-                                                    label = host
-                                        await self._emit_notification(
-                                            event_emitter,
-                                            f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
-                                            level="warning",
-                                        )
-                                file_data = None  # Clear, use URL instead
+                                    else:
+                                        if not file_url:
+                                            file_url = remote_url
+                                            file_url_set_from_file_data = True
+                                        if event_emitter:
+                                            label = fname or "remote file"
+                                            if not fname:
+                                                with contextlib.suppress(Exception):
+                                                    host = urlparse(remote_url).netloc
+                                                    if host:
+                                                        label = host
+                                            await self._emit_notification(
+                                                event_emitter,
+                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
+                                                level="warning",
+                                            )
+                                    file_data = None  # Clear, use URL instead
                             except Exception as exc:
                                 self.logger.error(f"Failed to download remote file: {exc}")
                                 await self._emit_error(
@@ -714,23 +739,36 @@ async def transform_messages_to_input(
                         elif file_url.startswith(("http://", "https://")) and not _is_internal_storage(file_url):
                             try:
                                 name_hint = filename or file_url.split("/")[-1].split("?")[0]
-                                stored_id = await _download_and_store(file_url, name_hint=name_hint)
-                                if stored_id:
-                                    file_id = stored_id
-                                    file_url = None
+                                if file_url.startswith("http://") and not self._is_insecure_http_allowed(file_url):
+                                    self.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
+                                    await self._emit_error(
+                                        event_emitter,
+                                        "File URL blocked by security policy (HTTP disabled by default). "
+                                        "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                                        show_error_message=True,
+                                    )
+                                    if file_id:
+                                        file_url = None
+                                    else:
+                                        return None
                                 else:
-                                    if event_emitter:
-                                        label = name_hint or "remote file"
-                                        if not name_hint:
-                                            with contextlib.suppress(Exception):
-                                                host = urlparse(file_url).netloc
-                                                if host:
-                                                    label = host
-                                        await self._emit_notification(
-                                            event_emitter,
-                                            f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
-                                            level="warning",
-                                        )
+                                    stored_id = await _download_and_store(file_url, name_hint=name_hint)
+                                    if stored_id:
+                                        file_id = stored_id
+                                        file_url = None
+                                    else:
+                                        if event_emitter:
+                                            label = name_hint or "remote file"
+                                            if not name_hint:
+                                                with contextlib.suppress(Exception):
+                                                    host = urlparse(file_url).netloc
+                                                    if host:
+                                                        label = host
+                                            await self._emit_notification(
+                                                event_emitter,
+                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
+                                                level="warning",
+                                            )
                             except Exception as exc:
                                 self.logger.error(f"Failed to download remote file_url: {exc}")
                                 await self._emit_error(
@@ -738,6 +776,42 @@ async def transform_messages_to_input(
                                     f"Failed to download file URL: {exc}",
                                     show_error_message=False
                                 )
+
+                    if (
+                        isinstance(file_data, str)
+                        and file_data.startswith("http://")
+                        and not _is_internal_storage(file_data)
+                        and not self._is_insecure_http_allowed(file_data)
+                    ):
+                        self.logger.error("Blocked insecure HTTP file_data URL by default: %s", file_data)
+                        await self._emit_error(
+                            event_emitter,
+                            "File URL blocked by security policy (HTTP disabled by default). "
+                            "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                            show_error_message=True,
+                        )
+                        if file_id:
+                            file_data = None
+                        else:
+                            return None
+
+                    if (
+                        isinstance(file_url, str)
+                        and file_url.startswith("http://")
+                        and not _is_internal_storage(file_url)
+                        and not self._is_insecure_http_allowed(file_url)
+                    ):
+                        self.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
+                        await self._emit_error(
+                            event_emitter,
+                            "File URL blocked by security policy (HTTP disabled by default). "
+                            "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                            show_error_message=True,
+                        )
+                        if file_id:
+                            file_url = None
+                        else:
+                            return None
 
                     if file_id:
                         result["file_id"] = file_id
@@ -1021,6 +1095,20 @@ async def transform_messages_to_input(
                         self.logger.warning("Video block has no URL")
                         return {"type": "video_url", "video_url": {"url": ""}}
 
+                    if (
+                        url.startswith("http://")
+                        and not ("/api/v1/files/" in url or "/files/" in url)
+                        and not self._is_insecure_http_allowed(url)
+                    ):
+                        self.logger.error("Blocked insecure HTTP video URL by default: %s", url)
+                        await self._emit_error(
+                            event_emitter,
+                            "Video URL blocked by security policy (HTTP disabled by default). "
+                            "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
+                            show_error_message=True,
+                        )
+                        return {"type": "video_url", "video_url": {"url": ""}}
+
                     if url.startswith("data:"):
                         if "," in url:
                             b64_data = url.split(",", 1)[1]
@@ -1053,7 +1141,7 @@ async def transform_messages_to_input(
                             done=False
                         )
                     elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
-                        # Apply SSRF protection for non-OWUI URLs
+                        # Apply SSRF protection for non-OWUI URLs (HTTP disabled by default)
                         if not await self._is_safe_url(url):
                             self.logger.error(f"SSRF protection blocked video URL: {url}")
                             await self._emit_error(

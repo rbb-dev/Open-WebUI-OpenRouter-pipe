@@ -56,7 +56,7 @@ Helpful error messages, real-time status updates, and transparent cost tracking 
 Rate limiting, circuit breakers, request admission controls, and graceful degradation — built for real workloads, not demos.
 
 🔐 **Security First**
-Encrypted credential storage, SSRF protection on remote fetches, no secrets in logs. Designed for environments where security reviews happen.
+Encrypted credential storage, SSRF protection with HTTPS-only remote fetches by default (HTTP allowlist available), no secrets in logs. Designed for environments where security reviews happen.
 
 📊 **Cost & Attribution**
 Track spending per user, per session. Optional Redis export for billing integration. Know who's using what.

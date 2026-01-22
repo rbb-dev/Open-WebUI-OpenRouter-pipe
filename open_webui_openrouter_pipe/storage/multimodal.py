@@ -2,7 +2,7 @@
 
 This module provides:
 - File retrieval from Open WebUI storage
-- Remote URL downloads with SSRF protection
+- Remote URL downloads with SSRF protection (HTTPS-only by default; HTTP allowlist via valves)
 - File uploads to Open WebUI storage
 - Image processing and data URL handling
 - Chat file tracking
@@ -178,7 +178,7 @@ class MultimodalHandler:
 
     This class encapsulates all file, image, audio, and video operations including:
     - File retrieval from Open WebUI storage
-    - Remote URL downloads with SSRF protection
+    - Remote URL downloads with SSRF protection (HTTPS-only by default)
     - File uploads to Open WebUI storage
     - Image processing and data URL handling
     - Chat file tracking
@@ -189,7 +189,7 @@ class MultimodalHandler:
     - Base64 encoding for data URLs
     - MIME type detection
     - YouTube URL handling
-    - SSRF protection with IP address validation
+    - SSRF protection with IP address validation (HTTP disabled by default)
     """
 
     @timed
@@ -870,7 +870,8 @@ class MultimodalHandler:
             - Files exceeding the effective limit are rejected with a warning
 
         Supported Protocols:
-            - http:// and https:// only
+            - https:// only by default
+            - http:// allowed only when ALLOW_INSECURE_HTTP=True and host is allowlisted
             - Other protocols return None
 
         MIME Type Normalization:
@@ -895,9 +896,12 @@ class MultimodalHandler:
         if not url.lower().startswith(("http://", "https://")):
             return None
 
-        # SSRF protection: Validate URL is not targeting private networks
+        # SSRF protection + HTTPS-only default: Validate URL is safe and allowed
         if not await self._is_safe_url(url):
-            self.logger.error(f"SSRF protection blocked download from: {url}")
+            self.logger.error(
+                "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
+                url,
+            )
             return None
 
         max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
@@ -1010,15 +1014,109 @@ class MultimodalHandler:
             url: URL to validate
 
         Returns:
-            True if URL is safe (not targeting private networks)
+            True if URL is safe (not targeting private networks) and allowed by HTTP policy
         """
+        if not self._is_insecure_http_allowed(url):
+            return False
         if not self.valves.ENABLE_SSRF_PROTECTION:
             return True
         return await asyncio.to_thread(self._is_safe_url_blocking, url)
 
     @timed
+    def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, Optional[int]]]:
+        """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""
+        if not isinstance(raw, str):
+            return set()
+        raw = raw.strip()
+        if not raw:
+            return set()
+        allowed: set[tuple[str, Optional[int]]] = set()
+        for entry in raw.split(","):
+            candidate = entry.strip()
+            if not candidate:
+                continue
+
+            host = candidate
+            port: Optional[int] = None
+
+            if candidate.startswith("[") and "]" in candidate:
+                # Bracketed IPv6 with optional port: [::1]:8080
+                host = candidate[1:candidate.index("]")]
+                remainder = candidate[candidate.index("]") + 1:]
+                if remainder.startswith(":") and remainder[1:]:
+                    if remainder[1:].isdigit():
+                        port = int(remainder[1:])
+                    else:
+                        continue
+            elif ":" in candidate:
+                # If there's only one colon, treat it as host:port (not IPv6).
+                if candidate.count(":") == 1:
+                    host_part, port_str = candidate.split(":", 1)
+                    if port_str.isdigit():
+                        port = int(port_str)
+                    else:
+                        continue
+                    host = host_part
+                else:
+                    # IPv6 without brackets (no port).
+                    host = candidate
+
+            host = host.strip().lower().rstrip(".")
+            if not host:
+                continue
+            if port is not None and (port <= 0 or port > 65535):
+                continue
+            allowed.add((host, port))
+        return allowed
+
+    @timed
+    def _is_insecure_http_allowed(self, url: str) -> bool:
+        """Return True when an http:// URL is explicitly allowed by valves."""
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme != "http":
+            return True
+        if _is_internal_file_url(url):
+            return True
+        if not self.valves.ALLOW_INSECURE_HTTP:
+            self.logger.warning(
+                "Blocked insecure HTTP URL by default (HTTP disabled by default; "
+                "set ALLOW_INSECURE_HTTP and ALLOW_INSECURE_HTTP_HOSTS to allow): %s",
+                url,
+            )
+            return False
+        allowlist = self._parse_insecure_http_allowlist(self.valves.ALLOW_INSECURE_HTTP_HOSTS)
+        if not allowlist:
+            self.logger.warning(
+                "Blocked insecure HTTP URL; allowlist empty (HTTP disabled by default): %s",
+                url,
+            )
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            self.logger.warning("HTTP URL has no hostname: %s", url)
+            return False
+        try:
+            port = parsed.port or 80
+        except ValueError:
+            self.logger.warning("HTTP URL has invalid port: %s", url)
+            return False
+        for allowed_host, allowed_port in allowlist:
+            if host == allowed_host and (allowed_port is None or allowed_port == port):
+                return True
+        self.logger.warning(
+            "Blocked insecure HTTP URL (host not allowlisted): %s (host=%s, port=%s)",
+            url,
+            host,
+            port,
+        )
+        return False
+
+    @timed
     def _is_safe_url_blocking(self, url: str) -> bool:
         """Blocking implementation of the SSRF guard (runs in a thread).
+
+        HTTP is disabled by default and only allowed when explicitly allowlisted.
 
         Args:
             url: URL to validate
@@ -1033,6 +1131,10 @@ class MultimodalHandler:
 
             parsed = urlparse(url)
             host = parsed.hostname
+            scheme = (parsed.scheme or "").lower()
+
+            if scheme == "http" and not self._is_insecure_http_allowed(url):
+                return False
 
             if not host:
                 self.logger.warning(f"URL has no hostname: {url}")
@@ -1127,6 +1229,7 @@ class MultimodalHandler:
             - Does not validate that the video ID exists or is accessible
             - Only checks URL format, not video availability
             - Query parameters (like &t=30s) are allowed
+            - HTTP is disabled by default; http:// URLs require ALLOW_INSECURE_HTTP allowlisting
 
         Example:
             >>> self._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")

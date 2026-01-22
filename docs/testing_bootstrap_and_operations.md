@@ -78,7 +78,7 @@ PYTHONPATH=. .venv/bin/pytest tests -q
 
 The suite is organized by subsystem. Common entry points:
 
-- `tests/test_multimodal_inputs.py`: multimodal URL/data handling and SSRF-related input guards.
+- `tests/test_multimodal_inputs.py`: multimodal URL/data handling and SSRF-related input guards (HTTPS-only defaults; HTTP allowlist coverage).
 - `tests/test_request_identifiers.py`: `SEND_*` valves and OpenRouter identifier mapping.
 - `tests/test_session_log_storage.py`: encrypted session log storage skip rules and archive behavior.
 - `tests/test_tool_schema.py`: strict tool schema transformations.
