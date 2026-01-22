@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import sys
 import types
@@ -215,6 +216,12 @@ def _install_pydantic_core_stub() -> None:
 
 
 def _install_sqlalchemy_stub() -> None:
+    import importlib.util
+
+    # Prefer real SQLAlchemy when available so tests can exercise DB-backed paths.
+    if importlib.util.find_spec("sqlalchemy") is not None:
+        return
+
     sa_pkg = cast(Any, _ensure_module("sqlalchemy"))
     exc_mod = cast(Any, _ensure_module("sqlalchemy.exc"))
     engine_mod = cast(Any, _ensure_module("sqlalchemy.engine"))
@@ -297,11 +304,36 @@ def _install_tenacity_stub() -> None:
 # Shared Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PIPES_TO_CLOSE: list["Pipe"] = []
+
+
+def _schedule_pipe_cleanup(pipe: "Pipe") -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(pipe.close())
+    else:
+        _PIPES_TO_CLOSE.append(pipe)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_pending_pipes():
+    yield
+    while _PIPES_TO_CLOSE:
+        pipe = _PIPES_TO_CLOSE.pop()
+        await pipe.close()
+
 
 @pytest.fixture
-def pipe_instance():
+def pipe_instance(request):
     """Return a fresh Pipe instance for tests."""
-    return Pipe()
+    pipe = Pipe()
+
+    def _finalize() -> None:
+        _schedule_pipe_cleanup(pipe)
+
+    request.addfinalizer(_finalize)
+    return pipe
 
 
 @pytest_asyncio.fixture

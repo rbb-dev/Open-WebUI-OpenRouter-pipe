@@ -1,12 +1,10 @@
 # Test Suite Audit Snapshot
 
-Audit completed by Claude Sonnet 4.5 (Claude Code) on 2026-01-22.
+Audit completed by Claude Opus 4.5 (Claude Code) on 2026-01-22.
 
 This document is a one-shot snapshot of the completed audit and is not intended
 to be maintained day-to-day. If you re-audit or materially rewrite the test suite,
 create a new snapshot (or resurrect a progress tracker) rather than editing this one.
-
-**Security note:** SSRF-related test expectations assume HTTPS-only defaults; plaintext HTTP is disabled by default and only allowed via the `ALLOW_INSECURE_HTTP` allowlist valves.
 
 ## Status
 
