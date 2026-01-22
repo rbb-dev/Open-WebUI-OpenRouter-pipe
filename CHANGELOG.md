@@ -34,6 +34,7 @@
 
 ### 🐛 Bug Fixes
 
+- Default remote URL handling to HTTPS-only, add HTTP allowlist valves, and update SSRF guidance to make the secure-by-default policy explicit.
 - Fix model timed model refresh bug
 - Preserve responses parameters
 - Keep optional tool schema fields optional

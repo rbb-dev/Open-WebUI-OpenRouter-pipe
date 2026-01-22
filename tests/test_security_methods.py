@@ -1,4 +1,4 @@
-"""Security-focused tests that exercise the real Pipe helpers."""
+"""Security-focused tests that exercise the real Pipe helpers (HTTPS-only by default)."""
 
 from __future__ import annotations
 
@@ -66,7 +66,46 @@ async def test_is_safe_url_blocks_private_ranges(pipe_instance_async, monkeypatc
 @pytest.mark.asyncio
 async def test_is_safe_url_blocks_literal_loopback(pipe_instance_async):
     """Literal loopback hosts are rejected without DNS lookups."""
-    assert await pipe_instance_async._is_safe_url("http://127.0.0.1/internal") is False
+    assert await pipe_instance_async._is_safe_url("https://127.0.0.1/internal") is False
+
+
+@pytest.mark.asyncio
+async def test_http_blocked_by_default(pipe_instance_async, monkeypatch):
+    """Plain HTTP URLs are blocked by default (before DNS)."""
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP = False
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP_HOSTS = ""
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("DNS should not be called for blocked HTTP URLs")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    assert await pipe_instance_async._is_safe_url("http://example.com/resource") is False
+
+
+@pytest.mark.asyncio
+async def test_http_allowlist_allows_host(pipe_instance_async, monkeypatch):
+    """Allowlisted HTTP hosts should pass the HTTP gate before SSRF checks."""
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP = True
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP_HOSTS = "example.com"
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+    )
+    assert await pipe_instance_async._is_safe_url("http://example.com/resource") is True
+
+
+@pytest.mark.asyncio
+async def test_http_allowlist_port_mismatch_blocks(pipe_instance_async, monkeypatch):
+    """Port-specific HTTP allowlist entries should not match other ports."""
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP = True
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP_HOSTS = "example.com:8080"
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+    )
+    assert await pipe_instance_async._is_safe_url("http://example.com:80/resource") is False
 
 
 @pytest.mark.asyncio
@@ -90,7 +129,7 @@ async def test_is_safe_url_rejects_urls_without_hostname(pipe_instance_async):
 async def test_is_safe_url_respects_disabled_valve(pipe_instance_async):
     """When protection is disabled, even private URLs are allowed."""
     pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = False
-    assert await pipe_instance_async._is_safe_url("http://127.0.0.1/admin") is True
+    assert await pipe_instance_async._is_safe_url("https://127.0.0.1/admin") is True
 
 
 @pytest.mark.asyncio
@@ -136,3 +175,5 @@ def test_valve_defaults_are_sensible():
     valves = Pipe.Valves()
     assert 1 <= valves.VIDEO_MAX_SIZE_MB <= 1000
     assert valves.ENABLE_SSRF_PROTECTION is True
+    assert valves.ALLOW_INSECURE_HTTP is False
+    assert valves.ALLOW_INSECURE_HTTP_HOSTS == ""

@@ -716,7 +716,19 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, 192.168.x.x, 10.x.x.x, etc.) to prevent internal network probing.",
+        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, 192.168.x.x, 10.x.x.x, etc.) to prevent internal network probing. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+    )
+    ALLOW_INSECURE_HTTP: bool = Field(
+        default=False,
+        description="Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable with a narrow allowlist in ALLOW_INSECURE_HTTP_HOSTS.",
+    )
+    ALLOW_INSECURE_HTTP_HOSTS: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of hosts or host:port entries allowed for plaintext HTTP. "
+            "Exact match only (no wildcards). Empty means no HTTP allowed. "
+            "Example: 'example.com, example.org:8080, 203.0.113.10'."
+        ),
     )
 
     # Models

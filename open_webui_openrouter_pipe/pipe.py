@@ -2654,6 +2654,13 @@ class Filter:
         return await self._multimodal_handler._is_safe_url(url)
 
     @timed
+    def _is_insecure_http_allowed(self, url: str) -> bool:
+        """Delegate to MultimodalHandler._is_insecure_http_allowed."""
+        if not self._multimodal_handler:
+            return False
+        return self._multimodal_handler._is_insecure_http_allowed(url)
+
+    @timed
     def _is_safe_url_blocking(self, url: str) -> bool:
         """Delegate to MultimodalHandler._is_safe_url_blocking."""
         if not self._multimodal_handler:

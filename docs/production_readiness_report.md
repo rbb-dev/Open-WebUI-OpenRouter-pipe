@@ -81,15 +81,14 @@ Related docs: [Security & Encryption](security_and_encryption.md).
 
 Remote downloads are security-sensitive. The pipe’s download subsystem:
 
-- permits `http://` and `https://` URLs (it is not HTTPS-only),
+- permits `https://` URLs by default and blocks `http://` unless explicitly allowlisted,
 - supports SSRF protection via `ENABLE_SSRF_PROTECTION` (default `True`),
 - enforces size limits and retry/time budgets for downloads.
 
 Operator guidance:
 
-- Keep SSRF protection enabled.
+- Keep SSRF protection enabled and keep HTTPS-only defaults (only allow HTTP via a narrow allowlist).
 - Enforce egress restrictions in your network (proxy allowlists, firewall rules).
-- If you require HTTPS-only remote retrieval, enforce it via egress policy (do not rely on the pipe alone).
 - If you enable model metadata sync (`UPDATE_MODEL_IMAGES=True` and/or `UPDATE_MODEL_CAPABILITIES=True` and/or `UPDATE_MODEL_DESCRIPTIONS=True`), allow outbound access to OpenRouter’s public catalogs and any icon hosts. Disable these valves in locked-down environments.
 
 Related docs: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md), [Security & Encryption](security_and_encryption.md).
@@ -241,7 +240,7 @@ Minimum functional:
 Recommended security:
 
 - `WEBUI_SECRET_KEY` is configured (so secret valves can be stored encrypted and decrypted reliably).
-- SSRF protection is enabled and network egress policy is in place.
+- SSRF protection is enabled, HTTPS-only defaults are in place, and network egress policy is configured.
 - Persistence posture is decided (encryption key set or intentionally left empty; retention windows set).
 
 Multi-worker readiness (only if applicable):
