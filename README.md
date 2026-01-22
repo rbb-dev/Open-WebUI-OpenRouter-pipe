@@ -4,13 +4,32 @@
 [![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
-**Access 300+ AI models through one beautiful interface.**
+**Access 350+ AI models through one interface.**
 
 Use GPT-5.2, Gemini 3, Claude Opus, Llama 4, and hundreds more — all from your Open WebUI, all through OpenRouter's unified API.
 
 ![output](https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97)
 
 ---
+
+## What this is (in one minute)
+
+* **OpenRouter Integration Subsystem for Open WebUI**: this isn't a standalone service. Open WebUI loads it as a Function / Pipe.
+* **Multimodal-aware routing adapters**: it inspects the payload (text + images/files/audio/video) and selects the appropriate endpoint + format the target model actually supports.
+* **Responses-first endpoint routing**: it builds canonical requests and routes to `/responses` or `/chat/completions` depending on model rules, fallback behaviour, or attachments.
+* **Operator controls via valves**: routing, limits, storage, security posture, telemetry, and templates.
+
+**If you fork this:** it’s worth keeping the tests and running them for changes (`pytest`) — and running `pyright` as well.  
+It keeps behaviour consistent and makes debugging a lot quicker.
+
+For the full documentation, start with `docs/README.md`.
+If you're reviewing code, start with the pytest test suite in `tests/`, 3200+ pytest tests with broad coverage.
+
+
+Check GitHub CI test workflows.
+
+---
+
 
 ## What You Get
 
@@ -23,7 +42,7 @@ Drop in images, PDFs, documents. The pipe figures out what each model supports a
 🔧 **Tools & Web Search**
 Your Open WebUI tools work seamlessly. OpenRouter's native web search is one toggle away.
 
-🎨 **Beautiful Integration**
+🎨 **Complete Integration**
 Model icons and descriptions sync automatically. Capabilities show up in the UI. It feels native because it is.
 
 💬 **Clear Communication**
@@ -58,6 +77,14 @@ In Open WebUI: **Admin Panel** → **Functions** → **+** → **Import from Lin
 
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/v2.0.1/open_webui_openrouter_pipe.py
+```
+
+If you want to stay up to date with the latest technical updates you can load it from the main branch.
+
+**`NOT`** recommended unless you are comfortable with bleeding-edge updates or control your own repository.
+
+```
+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/main/open_webui_openrouter_pipe.py
 ```
 
 **2. Enable**

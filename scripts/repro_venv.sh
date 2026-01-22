@@ -31,7 +31,7 @@ fi
 # --- installs (append as we go) ---
 "$VENV_DIR/bin/python" -m pip install --upgrade --prefer-binary open-webui
 "$VENV_DIR/bin/python" -m pip install --upgrade -e .
-"$VENV_DIR/bin/python" -m pip install --upgrade pytest pytest-asyncio pytest-cov
+"$VENV_DIR/bin/python" -m pip install --upgrade pytest pytest-asyncio pytest-cov aioresponses
 "$VENV_DIR/bin/python" -m pip install --upgrade ruff pyright vulture pyflakes
 "$VENV_DIR/bin/python" -m pip install --upgrade git-filter-repo
 "$VENV_DIR/bin/python" -m pip install --upgrade cairosvg
