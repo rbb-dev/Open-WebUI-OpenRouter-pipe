@@ -774,6 +774,18 @@ class Valves(BaseModel):
             "'exclude' hides tool-capable models."
         ),
     )
+    VARIANT_MODELS: str = Field(
+        default="",
+        title="Variant models",
+        description=(
+            "Comma-separated list of variant model entries in format 'base_id:variant_tag'. "
+            "Example: 'openai/gpt-4o:exacto,anthropic/claude-sonnet-4.5:extended'. "
+            "Each entry creates a virtual model that inherits the base model's metadata "
+            "(description, icon, capabilities) with the variant tag appended to the display name. "
+            "Supported tags: free, thinking, online, nitro, exacto, extended. "
+            "The full model ID with ':variant' suffix is sent to OpenRouter for specialized routing."
+        ),
+    )
 
     ENABLE_REASONING: bool = Field(
         default=True,

@@ -1,7 +1,7 @@
 # Open WebUI → OpenRouter Pipe
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.6.28%2B-green.svg)](https://openwebui.com/)
 
 **Access 350+ AI models through one interface.**
@@ -34,7 +34,7 @@ Check GitHub CI test workflows.
 ## What You Get
 
 🎯 **Every Model, One Place**
-GPT-5.2, Gemini 3, Claude Opus, Llama 4, DeepSeek, Qwen, Command R+ — browse them all, try them all, compare them all. One API key, one bill.
+GPT-5.2, Gemini 3, Claude Opus, Llama 4, DeepSeek, Qwen, Command R+ — browse them all, try them all, compare them all. One API key, one bill. Plus model variants (`:free`, `:thinking`, `:exacto`) for specialized routing.
 
 🖼️ **Multimodal That Actually Works**
 Drop in images, PDFs, documents. The pipe figures out what each model supports and handles the rest.
@@ -118,6 +118,7 @@ That's it. Start talking.
 Everything else lives in [`docs/`](docs/README.md):
 
 - [Configuration Reference](docs/valves_and_configuration_atlas.md) — all the knobs and switches
+- [Model Variants](docs/model-variants.md) — using :free, :thinking, :exacto, and other routing variants
 - [Security Guide](docs/security_and_encryption.md) — production hardening
 - [Tool Integration](docs/tooling_and_integrations.md) — extending with tools
 - [Cost & Attribution](docs/openrouter_integrations_and_telemetry.md) — billing and tracking
