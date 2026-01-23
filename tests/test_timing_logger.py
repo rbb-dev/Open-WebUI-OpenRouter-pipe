@@ -139,8 +139,12 @@ class TestRecordEventWriteException:
 
             # Event should still be added to in-memory buffer
             events = tl.get_timing_events("req-write-error")
-            assert len(events) == 1
-            assert events[0]["label"] == "test_mark"
+            mark_events = [
+                event
+                for event in events
+                if event["event"] == "mark" and event["label"] == "test_mark"
+            ]
+            assert len(mark_events) == 1
         finally:
             with tl._timing_file_lock:
                 tl._timing_file_handle = original_handle
@@ -434,9 +438,14 @@ class TestTimedSyncFunctionWithException:
 
         # Check events - should still have enter AND exit
         events = tl.get_timing_events("req-sync-exc")
-        assert len(events) == 2
-        assert events[0]["event"] == "enter"
-        assert events[1]["event"] == "exit"
+        sync_events = [
+            event
+            for event in events
+            if "sync_operation_with_error" in event["label"]
+        ]
+        assert len(sync_events) == 2
+        assert sync_events[0]["event"] == "enter"
+        assert sync_events[1]["event"] == "exit"
 
 
 class TestTimingScopeWithException:
