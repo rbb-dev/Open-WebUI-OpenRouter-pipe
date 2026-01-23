@@ -476,9 +476,31 @@ class OpenRouterModelRegistry:
     @classmethod
     @timed
     def api_model_id(cls, model_id: str) -> Optional[str]:
-        """Map sanitized Open WebUI ids back to provider ids."""
-        norm = ModelFamily.base_model(model_id)
-        return cls._id_map.get(norm)
+        """Map sanitized Open WebUI ids back to provider ids, preserving variant suffix.
+
+        Examples:
+            - "openai.gpt-4o" -> "openai/gpt-4o"
+            - "openai.gpt-4o:exacto" -> "openai/gpt-4o:exacto"
+            - "anthropic.claude-opus:extended" -> "anthropic/claude-opus:extended"
+        """
+        # Extract variant suffix if present
+        variant_suffix = ""
+        if ":" in model_id:
+            parts = model_id.rsplit(":", 1)
+            model_id_base = parts[0]
+            variant_suffix = f":{parts[1]}"
+        else:
+            model_id_base = model_id
+
+        # Normalize base and lookup
+        norm = ModelFamily.base_model(model_id_base)
+        provider_id = cls._id_map.get(norm)
+
+        if not provider_id:
+            return None
+
+        # Re-attach variant suffix
+        return f"{provider_id}{variant_suffix}" if variant_suffix else provider_id
 
     @classmethod
     @timed

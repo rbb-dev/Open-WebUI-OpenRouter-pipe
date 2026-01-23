@@ -1676,6 +1676,7 @@ class Filter:
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
         selected_models = self._apply_model_filters(selected_models, self.valves)
+        selected_models = self._expand_variant_models(selected_models, self.valves)
 
         self._maybe_schedule_model_metadata_sync(
             selected_models,
@@ -5492,6 +5493,94 @@ class Filter:
             filtered.append(model)
 
         return filtered
+
+    @timed
+    def _expand_variant_models(
+        self,
+        models: list[dict[str, Any]],
+        valves: "Pipe.Valves"
+    ) -> list[dict[str, Any]]:
+        """Expand model list by adding virtual variant model entries.
+
+        Args:
+            models: List of base models from catalog
+            valves: Pipe configuration valves
+
+        Returns:
+            Extended list with both base models and variant models
+        """
+        variant_specs_csv = (valves.VARIANT_MODELS or "").strip()
+        if not variant_specs_csv:
+            return models  # No variants configured
+
+        # Parse CSV into (base_id, variant_tag) tuples
+        variant_specs: list[tuple[str, str]] = []
+        for spec in variant_specs_csv.split(","):
+            spec = spec.strip()
+            if not spec or ":" not in spec:
+                continue
+
+            parts = spec.rsplit(":", 1)  # Split on last colon only
+            base_id = parts[0].strip()
+            variant_tag = parts[1].strip().lower()
+
+            if base_id and variant_tag:
+                variant_specs.append((base_id, variant_tag))
+
+        if not variant_specs:
+            return models  # Nothing to expand
+
+        # Build lookup map: original_id -> model dict
+        model_map: dict[str, dict[str, Any]] = {}
+        for model in models:
+            original_id = model.get("original_id", "")
+            if original_id:
+                model_map[original_id] = model
+
+        # Expand variants
+        expanded: list[dict[str, Any]] = list(models)  # Start with base models
+
+        for base_id, variant_tag in variant_specs:
+            # Find base model
+            base_model = model_map.get(base_id)
+            if not base_model:
+                self.logger.warning(
+                    "Variant model base not found: %s (skipping %s:%s)",
+                    base_id,
+                    base_id,
+                    variant_tag
+                )
+                continue
+
+            # Clone base model and modify for variant
+            variant_model = dict(base_model)  # Shallow copy
+
+            # Update ID to include variant suffix
+            base_sanitized_id = variant_model.get("id", "")
+            variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
+
+            # Keep original_id pointing to BASE (for icon/description lookups)
+            # Do NOT change original_id - it must stay as base_id for catalog lookups
+
+            # Update display name with tag (without angle brackets)
+            # Use exact base name and append variant tag
+            base_name = variant_model.get("name", base_id)
+            tag_display = variant_tag.capitalize()
+            variant_model["name"] = f"{base_name} {tag_display}"
+
+            # Keep norm_id pointing to base (for capability lookups)
+            # norm_id is used by ModelFamily.supports() to check features
+
+            # Add to expanded list
+            expanded.append(variant_model)
+
+            self.logger.debug(
+                "Added variant model: %s (from %s)",
+                variant_model["name"],
+                base_name
+            )
+
+        return expanded
 
 
     # ----------------------------------------------------------------------

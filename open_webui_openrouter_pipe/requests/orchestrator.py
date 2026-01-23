@@ -460,9 +460,13 @@ class RequestOrchestrator:
                     self._pipe._task_name(__task__) or "task",
                 )
         else:
-            if catalog_norm_ids and normalized_model_id not in enforced_norm_ids:
+            # Strip variant suffix from model ID for restriction checks
+            # Variants like :nitro, :free, :thinking are routing modifiers, not different models
+            base_model_for_check = normalized_model_id.rsplit(":", 1)[0] if ":" in normalized_model_id else normalized_model_id
+
+            if catalog_norm_ids and base_model_for_check not in enforced_norm_ids:
                 reasons = self._pipe._model_restriction_reasons(
-                    normalized_model_id,
+                    base_model_for_check,
                     valves=valves,
                     allowlist_norm_ids=allowlist_norm_ids,
                     catalog_norm_ids=catalog_norm_ids,
