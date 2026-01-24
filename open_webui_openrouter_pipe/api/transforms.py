@@ -915,7 +915,7 @@ def _responses_payload_to_chat_completions_payload(
     chat_payload: dict[str, Any] = {}
 
     # Core routing and identifiers
-    for key in ("model", "models", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms"):
+    for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms"):
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 
