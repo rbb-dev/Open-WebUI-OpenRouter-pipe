@@ -6,6 +6,9 @@ on:
     tags: ['v*']         # Create release on version tags (v2.0.3, v2.1.0, etc.)
   workflow_dispatch:     # Manual trigger
 
+permissions:
+  contents: write        # Required for creating releases
+
 jobs:
   bundle:
     runs-on: ubuntu-latest
