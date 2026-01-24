@@ -427,6 +427,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     # Core OpenAI-style chat completion fields (OpenRouter supports additional provider routing keys too).
     "model",
     "models",
+    "preset",
     "messages",
     "stream",
     "stream_options",
@@ -1375,14 +1376,7 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
                 continue
         filtered[key] = value
 
-    # Reorder so model and preset come first (OpenRouter expects this ordering)
-    ordered: Dict[str, Any] = {}
-    if "model" in filtered:
-        ordered["model"] = filtered.pop("model")
-    if "preset" in filtered:
-        ordered["preset"] = filtered.pop("preset")
-    ordered.update(filtered)
-    return ordered
+    return filtered
 
 
 
