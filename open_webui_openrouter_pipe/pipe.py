@@ -5500,32 +5500,49 @@ class Filter:
         models: list[dict[str, Any]],
         valves: "Pipe.Valves"
     ) -> list[dict[str, Any]]:
-        """Expand model list by adding virtual variant model entries.
+        """Expand model list by adding virtual variant and preset model entries.
+
+        Supports two syntaxes:
+        - Variants: "openai/gpt-4o:nitro" (uses : separator)
+        - Presets: "openai/gpt-4o@preset/email-copywriter" (uses @ separator)
 
         Args:
             models: List of base models from catalog
             valves: Pipe configuration valves
 
         Returns:
-            Extended list with both base models and variant models
+            Extended list with both base models and variant/preset models
         """
         variant_specs_csv = (valves.VARIANT_MODELS or "").strip()
         if not variant_specs_csv:
             return models  # No variants configured
 
-        # Parse CSV into (base_id, variant_tag) tuples
-        variant_specs: list[tuple[str, str]] = []
+        # Parse CSV into (base_id, variant_tag, is_preset) tuples
+        # Presets use @ separator, variants use : separator
+        variant_specs: list[tuple[str, str, bool]] = []
         for spec in variant_specs_csv.split(","):
             spec = spec.strip()
-            if not spec or ":" not in spec:
+            if not spec:
                 continue
 
-            parts = spec.rsplit(":", 1)  # Split on last colon only
-            base_id = parts[0].strip()
-            variant_tag = parts[1].strip().lower()
-
-            if base_id and variant_tag:
-                variant_specs.append((base_id, variant_tag))
+            # Try preset syntax first (@ separator)
+            if "@" in spec:
+                parts = spec.rsplit("@", 1)
+                base_id = parts[0].strip()
+                raw_tag = parts[1].strip()  # e.g., "preset/email-copywriter"
+                is_preset = raw_tag.startswith("preset/")
+                # Keep preset tags as-is (case-sensitive slugs)
+                variant_tag = raw_tag
+                if base_id and variant_tag:
+                    variant_specs.append((base_id, variant_tag, is_preset))
+            # Fall back to variant syntax (: separator)
+            elif ":" in spec:
+                parts = spec.rsplit(":", 1)
+                base_id = parts[0].strip()
+                variant_tag = parts[1].strip().lower()
+                if base_id and variant_tag:
+                    variant_specs.append((base_id, variant_tag, False))
+            # Skip invalid entries (no separator)
 
         if not variant_specs:
             return models  # Nothing to expand
@@ -5537,35 +5554,43 @@ class Filter:
             if original_id:
                 model_map[original_id] = model
 
-        # Expand variants
+        # Expand variants and presets
         expanded: list[dict[str, Any]] = list(models)  # Start with base models
 
-        for base_id, variant_tag in variant_specs:
+        for base_id, variant_tag, is_preset in variant_specs:
             # Find base model
             base_model = model_map.get(base_id)
             if not base_model:
+                separator = "@" if is_preset else ":"
                 self.logger.warning(
-                    "Variant model base not found: %s (skipping %s:%s)",
+                    "Variant model base not found: %s (skipping %s%s%s)",
                     base_id,
                     base_id,
+                    separator,
                     variant_tag
                 )
                 continue
 
-            # Clone base model and modify for variant
+            # Clone base model and modify for variant/preset
             variant_model = dict(base_model)  # Shallow copy
 
-            # Update ID to include variant suffix
+            # Update ID to include variant suffix (always use : internally)
             base_sanitized_id = variant_model.get("id", "")
             variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
 
             # Keep original_id pointing to BASE (for icon/description lookups)
             # Do NOT change original_id - it must stay as base_id for catalog lookups
 
-            # Update display name with tag (without angle brackets)
-            # Use exact base name and append variant tag
+            # Update display name with tag
+            # Use exact base name and append variant tag or preset label
             base_name = variant_model.get("name", base_id)
-            tag_display = variant_tag.capitalize()
+            if is_preset:
+                # "preset/email-copywriter" → "Preset: email-copywriter"
+                preset_slug = variant_tag.replace("preset/", "")
+                tag_display = f"Preset: {preset_slug}"
+            else:
+                # Standard variant: "nitro" → "Nitro"
+                tag_display = variant_tag.capitalize()
             variant_model["name"] = f"{base_name} {tag_display}"
 
             # Keep norm_id pointing to base (for capability lookups)
@@ -5575,7 +5600,8 @@ class Filter:
             expanded.append(variant_model)
 
             self.logger.debug(
-                "Added variant model: %s (from %s)",
+                "Added %s model: %s (from %s)",
+                "preset" if is_preset else "variant",
                 variant_model["name"],
                 base_name
             )

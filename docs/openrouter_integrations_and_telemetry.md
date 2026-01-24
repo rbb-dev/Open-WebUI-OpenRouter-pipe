@@ -39,6 +39,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Plugin configuration (for example OpenRouter web search attachment when enabled and supported). |
+| `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
 | `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |

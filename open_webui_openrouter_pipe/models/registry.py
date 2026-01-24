@@ -75,16 +75,34 @@ class ModelFamily:
     @classmethod
     @timed
     def _norm(cls, model_id: str) -> str:
-        """Normalize model ids by stripping pipe prefixes and date suffixes."""
+        """Normalize model ids by stripping pipe prefixes and date suffixes.
+
+        Preserves variant/preset suffixes (after :) unchanged to avoid corrupting
+        preset slugs that contain forward slashes (e.g., preset/my-preset).
+        """
         m = (model_id or "").strip()
+
+        # Preserve variant/preset suffix if present (e.g., ":exacto" or ":preset/slug")
+        suffix = ""
+        if ":" in m:
+            m, suffix = m.rsplit(":", 1)
+
+        # Only replace / with . in the base portion
         if "/" in m:
             m = m.replace("/", ".")
+
         pipe_id = cls._PIPE_ID.get()
         if pipe_id:
             pref = f"{pipe_id}."
             if m.startswith(pref):
                 m = m[len(pref):]
-        return cls._DATE_RE.sub("", m.lower())
+
+        base = cls._DATE_RE.sub("", m.lower())
+
+        # Re-attach suffix unchanged (not lowercased, not normalized)
+        if suffix:
+            return f"{base}:{suffix}"
+        return base
 
     @classmethod
     @timed
@@ -476,19 +494,20 @@ class OpenRouterModelRegistry:
     @classmethod
     @timed
     def api_model_id(cls, model_id: str) -> Optional[str]:
-        """Map sanitized Open WebUI ids back to provider ids, preserving variant suffix.
+        """Map sanitized Open WebUI ids back to provider ids, preserving variant/preset suffix.
 
         Examples:
             - "openai.gpt-4o" -> "openai/gpt-4o"
             - "openai.gpt-4o:exacto" -> "openai/gpt-4o:exacto"
             - "anthropic.claude-opus:extended" -> "anthropic/claude-opus:extended"
+            - "openai.gpt-4o:preset/email-copywriter" -> "openai/gpt-4o@preset/email-copywriter"
         """
-        # Extract variant suffix if present
-        variant_suffix = ""
+        # Extract variant/preset suffix if present
+        suffix_tag = ""
         if ":" in model_id:
             parts = model_id.rsplit(":", 1)
             model_id_base = parts[0]
-            variant_suffix = f":{parts[1]}"
+            suffix_tag = parts[1]  # e.g., "exacto" or "preset/email-copywriter"
         else:
             model_id_base = model_id
 
@@ -499,8 +518,14 @@ class OpenRouterModelRegistry:
         if not provider_id:
             return None
 
-        # Re-attach variant suffix
-        return f"{provider_id}{variant_suffix}" if variant_suffix else provider_id
+        # Re-attach suffix with appropriate separator
+        # Presets use @ separator, variants use : separator
+        if suffix_tag:
+            if suffix_tag.startswith("preset/"):
+                return f"{provider_id}@{suffix_tag}"
+            else:
+                return f"{provider_id}:{suffix_tag}"
+        return provider_id
 
     @classmethod
     @timed
