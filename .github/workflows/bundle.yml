@@ -2,7 +2,7 @@ name: Bundle Pipe
 
 on:
   push:
-    branches: [main]
+    branches: ['*']  # All branches
   release:
     types: [published]
   workflow_dispatch:  # Manual trigger
@@ -28,7 +28,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: open_webui_openrouter_pipe_bundled
+          name: open_webui_openrouter_pipe_bundled-${{ github.ref_name }}
           path: open_webui_openrouter_pipe_bundled.py
           retention-days: 90
 
