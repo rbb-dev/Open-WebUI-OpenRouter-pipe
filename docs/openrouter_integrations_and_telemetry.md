@@ -46,8 +46,9 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `transforms` | OpenRouter transforms list (for example automatic middle-out trimming when enabled). |
 
 Operational note:
-- The pipe always constructs a canonical “Responses-style” request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
-- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `top_logprobs`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
+- The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
+- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `top_logprobs`, `preset`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
+- When a `preset` parameter is present in the request body, the pipe automatically forces `/chat/completions` because presets only work on that endpoint. For presets that work with `/responses`, use the VARIANT_MODELS approach with `@preset/slug` syntax instead. See [Model Variants & Presets](model_variants_and_presets.md#presets).
 
 ### 2.2 Advanced Model Parameters (per-model overrides)
 Open WebUI allows per-model “Advanced Model Parameters” (stored on the model in `model.params`, typically under `model.params.custom_params`). This pipe supports a small set of per-model parameters that:

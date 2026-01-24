@@ -413,6 +413,31 @@ class RequestOrchestrator:
                     return ""
                 endpoint_override = "chat_completions"
 
+        # OpenRouter presets (preset field) only work on /chat/completions, not /responses.
+        # Force chat completions when a preset parameter is present in the request body.
+        if body.get("preset") and endpoint_override is None:
+            selected, forced = self._pipe._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
+            if forced and selected == "responses":
+                await self._pipe._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
+                    variables={
+                        "requested_model": body.get("model") or "",
+                        "required_endpoint": "chat_completions",
+                        "enforced_endpoint": "responses",
+                        "reason": "Preset parameter requires /chat/completions but the model is forced to /responses.",
+                    },
+                    log_message="Endpoint override conflict for preset parameter",
+                    log_level=logging.WARNING,
+                )
+                return ""
+            endpoint_override = "chat_completions"
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Forcing /chat/completions endpoint for preset parameter (preset=%s)",
+                    body.get("preset"),
+                )
+
         completions_body = CompletionsBody.model_validate(body)
 
         # Resolve full Open WebUI user model for uploads/status events.

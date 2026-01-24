@@ -76,7 +76,7 @@ Encryption, retention policies, request attribution, and operational hooks your 
 In Open WebUI: **Admin Panel** → **Functions** → **+** → **Import from Link**
 
 ```
-https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/v2.0.2/open_webui_openrouter_pipe.py
+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/raw/refs/heads/v2.0.3/open_webui_openrouter_pipe.py
 ```
 
 If you want to stay up to date with the latest technical updates you can load it from the main branch.
@@ -118,7 +118,7 @@ That's it. Start talking.
 Everything else lives in [`docs/`](docs/README.md):
 
 - [Configuration Reference](docs/valves_and_configuration_atlas.md) — all the knobs and switches
-- [Model Variants](docs/model-variants.md) — using :free, :thinking, :exacto, and other routing variants
+- [Model Variants & Presets](docs/model_variants_and_presets.md) — using :free, :thinking, :exacto variants and OpenRouter presets
 - [Security Guide](docs/security_and_encryption.md) — production hardening
 - [Tool Integration](docs/tooling_and_integrations.md) — extending with tools
 - [Cost & Attribution](docs/openrouter_integrations_and_telemetry.md) — billing and tracking

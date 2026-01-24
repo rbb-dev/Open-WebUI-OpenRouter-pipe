@@ -426,6 +426,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     # Core OpenAI-style chat completion fields (OpenRouter supports additional provider routing keys too).
     "model",
     "models",
+    "preset",
     "messages",
     "stream",
     "stream_options",
@@ -1373,6 +1374,7 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             if not value:
                 continue
         filtered[key] = value
+
     return filtered
 
 
