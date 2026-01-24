@@ -458,29 +458,15 @@ Each preset can manage:
 
 OpenRouter provides three ways to use presets. **This pipe supports two of them:**
 
-| Method | Syntax | Supported | Notes |
-|--------|--------|-----------|-------|
-| **Preset Field** | `"preset": "slug"` | ✅ Yes | Set via custom model parameter |
-| **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | Use in `VARIANT_MODELS` valve |
-| **Direct Model Reference** | `@preset/slug` | ❌ No | Requires major architectural changes |
+| Method | Syntax | Supported | Recommended | Notes |
+|--------|--------|-----------|-------------|-------|
+| **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | ⭐ **Yes** | Use in `VARIANT_MODELS` valve |
+| **Preset Field** | `"preset": "slug"` | ✅ Yes | No | Set via custom model parameter |
+| **Direct Model Reference** | `@preset/slug` | ❌ No | — | Requires major architectural changes |
 
-#### Method 1: Preset Field (Custom Parameter)
+#### Method 1: Combined Model and Preset (VARIANT_MODELS) — Recommended
 
-Set the `preset` parameter in a model's Advanced Settings to apply a preset to all requests using that model.
-
-**Configuration:**
-1. Go to **Admin → Models → [Model Name] → Settings**
-2. Under **Advanced Parameters**, add: `preset: your-preset-slug`
-3. Save the model settings
-
-**How it works:**
-- The pipe passes the `preset` field through to OpenRouter
-- OpenRouter applies the preset's configuration to the request
-- Useful when you want a specific model to always use a preset
-
-#### Method 2: Combined Model and Preset (VARIANT_MODELS)
-
-Create virtual model entries that combine a base model with a preset, making them discoverable in the model selector.
+Create virtual model entries that combine a base model with a preset, making them discoverable in the model selector. **This is the recommended approach** because it embeds the preset in the model ID, allowing the pipe to use OpenRouter's more feature-rich `/responses` endpoint.
 
 **Configuration:**
 ```
@@ -494,6 +480,27 @@ VARIANT_MODELS = "openai/gpt-4o@preset/email-copywriter,anthropic/claude-sonnet-
 - **OpenAI: GPT-4o Preset: email-copywriter** ← New virtual entry
 - Anthropic: Claude Sonnet 4
 - **Anthropic: Claude Sonnet 4 Preset: code-reviewer** ← New virtual entry
+
+#### Method 2: Preset Field (Custom Parameter)
+
+Set the `preset` parameter in a model's Advanced Settings to apply a preset to all requests using that model.
+
+> **⚠️ Endpoint Limitation:** This method forces the pipe to use OpenRouter's `/chat/completions` endpoint instead of the more feature-rich `/responses` endpoint. This is because the `preset` field is only supported on `/chat/completions`. For this reason, **Method 1 (VARIANT_MODELS) is recommended** when possible.
+
+**Configuration:**
+1. Go to **Admin → Models → [Model Name] → Settings**
+2. Under **Advanced Parameters**, add: `preset: your-preset-slug`
+3. Save the model settings
+
+**How it works:**
+- The pipe detects the `preset` parameter in the request body
+- Automatically routes the request to `/chat/completions` (required for preset field support)
+- OpenRouter applies the preset's configuration to the request
+
+**When to use:**
+- When you want a specific model to always use a preset
+- When you can't modify the `VARIANT_MODELS` valve
+- When the endpoint difference doesn't matter for your use case
 
 ### Preset Display Names
 
