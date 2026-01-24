@@ -1374,7 +1374,15 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             if not value:
                 continue
         filtered[key] = value
-    return filtered
+
+    # Reorder so model and preset come first (OpenRouter expects this ordering)
+    ordered: Dict[str, Any] = {}
+    if "model" in filtered:
+        ordered["model"] = filtered.pop("model")
+    if "preset" in filtered:
+        ordered["preset"] = filtered.pop("preset")
+    ordered.update(filtered)
+    return ordered
 
 
 
