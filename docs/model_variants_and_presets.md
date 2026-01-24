@@ -461,7 +461,7 @@ OpenRouter provides three ways to use presets. **This pipe supports two of them:
 | Method | Syntax | Supported | Recommended | Notes |
 |--------|--------|-----------|-------------|-------|
 | **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | ⭐ **Yes** | Use in `VARIANT_MODELS` valve |
-| **Preset Field** | `"preset": "slug"` | ✅ Yes | No | Set via custom model parameter |
+| **Preset Field** | `"preset": "slug"` | ⚠️ Partial | No | OpenRouter may not honor; see below |
 | **Direct Model Reference** | `@preset/slug` | ❌ No | — | Requires major architectural changes |
 
 #### Method 1: Combined Model and Preset (VARIANT_MODELS) — Recommended
@@ -485,6 +485,8 @@ VARIANT_MODELS = "openai/gpt-4o@preset/email-copywriter,anthropic/claude-sonnet-
 
 Set the `preset` parameter in a model's Advanced Settings to apply a preset to all requests using that model.
 
+> **⚠️ Known Issue:** During testing, OpenRouter was not honoring the `preset` field when sent via `/chat/completions`. The pipe correctly sends the `preset` parameter in the request payload, but OpenRouter may not apply the preset configuration. **We recommend using Method 1 (VARIANT_MODELS) instead**, which embeds the preset in the model ID and works reliably. If you need to use this method, contact [OpenRouter Support](https://openrouter.ai/docs) for assistance.
+
 > **⚠️ Endpoint Limitation:** This method forces the pipe to use OpenRouter's `/chat/completions` endpoint instead of the more feature-rich `/responses` endpoint. This is because the `preset` field is only supported on `/chat/completions`. For this reason, **Method 1 (VARIANT_MODELS) is recommended** when possible.
 
 **Configuration:**
@@ -495,12 +497,12 @@ Set the `preset` parameter in a model's Advanced Settings to apply a preset to a
 **How it works:**
 - The pipe detects the `preset` parameter in the request body
 - Automatically routes the request to `/chat/completions` (required for preset field support)
-- OpenRouter applies the preset's configuration to the request
+- The pipe sends the correct `preset` field to OpenRouter
 
 **When to use:**
-- When you want a specific model to always use a preset
+- When Method 1 (VARIANT_MODELS) is not available
 - When you can't modify the `VARIANT_MODELS` valve
-- When the endpoint difference doesn't matter for your use case
+- When OpenRouter resolves the preset field issue
 
 ### Preset Display Names
 

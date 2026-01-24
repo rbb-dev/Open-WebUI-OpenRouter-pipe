@@ -415,7 +415,20 @@ class RequestOrchestrator:
 
         # OpenRouter presets (preset field) only work on /chat/completions, not /responses.
         # Force chat completions when a preset parameter is present in the request body.
-        if body.get("preset") and endpoint_override is None:
+        # Extract preset from body top-level OR from params.custom_params (Open WebUI may not merge it)
+        preset = body.get("preset")
+        if not preset:
+            # Try extracting from nested params.custom_params location
+            params = body.get("params")
+            if isinstance(params, dict):
+                custom_params = params.get("custom_params")
+                if isinstance(custom_params, dict):
+                    preset = custom_params.get("preset")
+                    if preset:
+                        # Promote to top-level for downstream processing
+                        body["preset"] = preset
+
+        if preset and endpoint_override is None:
             selected, forced = self._pipe._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
             if forced and selected == "responses":
                 await self._pipe._emit_templated_error(
