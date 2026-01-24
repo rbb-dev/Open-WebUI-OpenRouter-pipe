@@ -17,3 +17,5 @@ coverage_annotate/
 *.egg-info/
 logs/
 cliff.toml
+plans/
+open_webui_openrouter_pipe_bundled.py

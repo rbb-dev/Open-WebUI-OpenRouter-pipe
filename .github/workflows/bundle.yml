@@ -1,0 +1,40 @@
+name: Bundle Pipe
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run bundler
+        run: python scripts/bundle.py
+
+      - name: Verify bundled file
+        run: python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled.py').read()); print('✓ Syntax valid')"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open_webui_openrouter_pipe_bundled
+          path: open_webui_openrouter_pipe_bundled.py
+          retention-days: 90
+
+      # Attach to GitHub Release (only on release events)
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: open_webui_openrouter_pipe_bundled.py
