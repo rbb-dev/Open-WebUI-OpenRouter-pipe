@@ -46,6 +46,11 @@ This pipe can automatically sync Open WebUI model metadata for the OpenRouter mo
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 
+### Optional: model variants and presets
+This pipe supports OpenRouter model variants (`:nitro`, `:free`, `:exacto`, etc.) and user-defined presets. Configure `VARIANT_MODELS` to expose these as separate model selector entries.
+
+See: [Model Variants & Presets](model_variants_and_presets.md).
+
 ---
 
 ## Common troubleshooting
@@ -77,6 +82,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md) — forward chat uploads to OpenRouter as direct files/audio/video with per-chat toggles and safety gates.
 - [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) — identifiers, metadata, optional telemetry exports, and OpenRouter-facing headers.
 - [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md) — explains the two web-search toggles and how OpenRouter Search is auto-installed, only shown on models where it can work, and enabled by default (while still allowing per-model and per-chat control).
+- [Model Variants & Presets](model_variants_and_presets.md) — create virtual model entries for OpenRouter variants (`:nitro`, `:exacto`, etc.) and user-defined presets (`@preset/your-preset`) to expose specialized routing options in the model selector.
 
 ### Security and compliance guidance (admins)
 - [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls (HTTPS-only by default), and hardening guidance.

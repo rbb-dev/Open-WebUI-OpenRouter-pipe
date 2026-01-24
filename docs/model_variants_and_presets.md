@@ -1,6 +1,8 @@
-# Model Variants
+# Model Variants & Presets
 
-OpenRouter's model variants allow you to access specialized routing behaviors by appending variant suffixes to model IDs. This pipe supports creating virtual model catalog entries that make variants fully discoverable in the Open WebUI model selector.
+OpenRouter's model variants allow you to access specialized routing behaviors by appending variant suffixes to model IDs. OpenRouter presets let you save and reuse LLM configurations (system prompts, provider routing, parameters) without changing code.
+
+This pipe supports creating virtual model catalog entries that make both variants and presets fully discoverable in the Open WebUI model selector.
 
 ---
 
@@ -432,6 +434,128 @@ VARIANT_MODELS = "moonshotai/kimi-k2-0905:exacto,deepseek/deepseek-v3.1-terminus
 
 ---
 
+## Presets
+
+[OpenRouter Presets](https://openrouter.ai/docs/guides/features/presets) allow you to separate your LLM configuration from your code. Create and manage presets through the OpenRouter web application to control provider routing, model selection, system prompts, and other parameters, then reference them in API requests.
+
+### What Are Presets?
+
+Presets are named configurations that encapsulate all the settings needed for a specific use case. For example, you might create:
+
+- An **email-copywriter** preset for generating marketing copy
+- An **inbound-classifier** preset for categorizing customer inquiries
+- A **code-reviewer** preset for analyzing pull requests
+
+Each preset can manage:
+
+- Provider routing preferences (sort by price, latency, etc.)
+- Model selection (specific model or array of models with fallbacks)
+- System prompts
+- Generation parameters (temperature, top_p, etc.)
+- Provider inclusion/exclusion rules
+
+### Supported Preset Methods
+
+OpenRouter provides three ways to use presets. **This pipe supports two of them:**
+
+| Method | Syntax | Supported | Notes |
+|--------|--------|-----------|-------|
+| **Preset Field** | `"preset": "slug"` | ✅ Yes | Set via custom model parameter |
+| **Combined Model and Preset** | `model@preset/slug` | ✅ Yes | Use in `VARIANT_MODELS` valve |
+| **Direct Model Reference** | `@preset/slug` | ❌ No | Requires major architectural changes |
+
+#### Method 1: Preset Field (Custom Parameter)
+
+Set the `preset` parameter in a model's Advanced Settings to apply a preset to all requests using that model.
+
+**Configuration:**
+1. Go to **Admin → Models → [Model Name] → Settings**
+2. Under **Advanced Parameters**, add: `preset: your-preset-slug`
+3. Save the model settings
+
+**How it works:**
+- The pipe passes the `preset` field through to OpenRouter
+- OpenRouter applies the preset's configuration to the request
+- Useful when you want a specific model to always use a preset
+
+#### Method 2: Combined Model and Preset (VARIANT_MODELS)
+
+Create virtual model entries that combine a base model with a preset, making them discoverable in the model selector.
+
+**Configuration:**
+```
+VARIANT_MODELS = "openai/gpt-4o@preset/email-copywriter,anthropic/claude-sonnet-4@preset/code-reviewer"
+```
+
+**Syntax:** `base_model_id@preset/preset-slug`
+
+**Result in Model Selector:**
+- OpenAI: GPT-4o
+- **OpenAI: GPT-4o Preset: email-copywriter** ← New virtual entry
+- Anthropic: Claude Sonnet 4
+- **Anthropic: Claude Sonnet 4 Preset: code-reviewer** ← New virtual entry
+
+### Preset Display Names
+
+Preset models use a distinctive display format to differentiate them from built-in variants:
+
+| Type | Input | Display Name |
+|------|-------|--------------|
+| Variant | `openai/gpt-4o:nitro` | OpenAI: GPT-4o **Nitro** |
+| Preset | `openai/gpt-4o@preset/email-copywriter` | OpenAI: GPT-4o **Preset: email-copywriter** |
+
+The `Preset:` label makes it clear which models are using user-defined presets vs OpenRouter's built-in variants.
+
+### Mixing Variants and Presets
+
+You can configure both variants and presets in the same `VARIANT_MODELS` valve:
+
+```
+VARIANT_MODELS = "openai/gpt-4o:nitro,openai/gpt-4o@preset/email-copywriter,anthropic/claude-opus:exacto"
+```
+
+**Result:**
+- OpenAI: GPT-4o Nitro (variant - high speed)
+- OpenAI: GPT-4o Preset: email-copywriter (preset - custom config)
+- Anthropic: Claude Opus Exacto (variant - tool accuracy)
+
+### Preset API Behavior
+
+When you select a preset model:
+
+1. **User selects:** "GPT-4o Preset: email-copywriter" from model selector
+2. **Internal ID:** `openai.gpt-4o:preset/email-copywriter` (sanitized for Open WebUI)
+3. **API request:** `{"model": "openai/gpt-4o@preset/email-copywriter"}` (sent to OpenRouter)
+4. **OpenRouter:** Applies the preset configuration before processing
+
+Note: The internal separator (`:`) is converted to `@` when sending to OpenRouter, matching their API expectations.
+
+### Creating Presets
+
+Presets are created and managed in your [OpenRouter dashboard](https://openrouter.ai/settings/presets):
+
+1. Go to **Settings → Presets** in OpenRouter
+2. Click **Create Preset**
+3. Configure your desired settings (model, system prompt, temperature, etc.)
+4. Save with a memorable slug (e.g., `email-copywriter`)
+5. Reference it in this pipe using `@preset/your-slug`
+
+### Preset Limitations
+
+1. **Presets are account-specific:**
+   - Presets are tied to your OpenRouter account
+   - Team members need access to the same OpenRouter organization to use shared presets
+
+2. **No preset discovery:**
+   - The pipe cannot auto-discover your available presets
+   - You must manually configure preset entries in `VARIANT_MODELS`
+
+3. **Direct Model Reference not supported:**
+   - Using `@preset/slug` as the entire model ID is not supported
+   - Presets must be combined with a base model
+
+---
+
 ## Limitations & Future Enhancements
 
 ### Current Limitations
@@ -474,6 +598,7 @@ class UserValves:
 ### OpenRouter Documentation
 
 - [Model Variants Overview](https://openrouter.ai/docs/guides/routing/model-variants)
+- [Presets Guide](https://openrouter.ai/docs/guides/features/presets)
 - [Exacto Variant Details](.external/openrouter_docs/guides/routing/model-variants/exacto.md)
 - [Thinking Variant Details](.external/openrouter_docs/guides/routing/model-variants/thinking.md)
 
@@ -495,12 +620,6 @@ Unit tests: [tests/test_variant_models.py](../tests/test_variant_models.py)
 
 ---
 
-## Version History
-
-- **v2.0.3** - Initial implementation of VARIANT_MODELS valve and virtual catalog entries
-
----
-
 ## Support
 
 If you encounter issues with model variants:
@@ -512,4 +631,4 @@ If you encounter issues with model variants:
 
 ---
 
-*This feature enables full discoverability and usability of OpenRouter's variant routing system within Open WebUI's native interface.*
+*This feature enables full discoverability and usability of OpenRouter's variant routing system and user-defined presets within Open WebUI's native interface.*

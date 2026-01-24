@@ -415,6 +415,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "tools",
     "tool_choice",
     "plugins",
+    "preset",
     "text",
     "parallel_tool_calls",
     "user",
