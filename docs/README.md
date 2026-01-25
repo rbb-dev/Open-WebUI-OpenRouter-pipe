@@ -80,6 +80,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [Valves & Configuration Atlas](valves_and_configuration_atlas.md) — authoritative configuration reference (defaults verified against code/tests).
 - [Error Handling & User Experience](error_handling_and_user_experience.md) — what users see, how errors are structured, and how to troubleshoot.
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md) — forward chat uploads to OpenRouter as direct files/audio/video with per-chat toggles and safety gates.
+- [OpenRouter Provider Routing](openrouter_provider_routing.md) — control which infrastructure providers serve your requests with per-model filters, ORDER dropdowns, and compliance options (ZDR, fallbacks).
 - [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) — identifiers, metadata, optional telemetry exports, and OpenRouter-facing headers.
 - [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md) — explains the two web-search toggles and how OpenRouter Search is auto-installed, only shown on models where it can work, and enabled by default (while still allowing per-model and per-chat control).
 - [Model Variants & Presets](model_variants_and_presets.md) — create virtual model entries for OpenRouter variants (`:nitro`, `:exacto`, etc.) and user-defined presets (`@preset/your-preset`) to expose specialized routing options in the model selector.

@@ -65,6 +65,28 @@ class ModelCatalogManager:
         self._model_metadata_sync_task: asyncio.Task | None = None
         self._model_metadata_sync_key: tuple[Any, ...] | None = None
 
+        # Cached provider map for immediate access in pipes()
+        self._cached_provider_map: dict[str, dict[str, Any]] = {}
+
+    def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
+        """Return the cached provider map from the last frontend catalog fetch.
+
+        Returns a dict with structure:
+        {
+            "openai/gpt-4o": {
+                "providers": ["openai", "azure", "together"],
+                "quantizations": ["fp16", "bf16"],
+                "short_name": "GPT-4o",
+                "provider_names": {"openai": "OpenAI", "azure": "Azure", ...}
+            },
+            ...
+        }
+
+        This allows immediate access to provider data in pipes() without waiting
+        for the background sync task. The map is populated by _sync_model_metadata_to_owui().
+        """
+        return self._cached_provider_map
+
     @timed
     def maybe_schedule_model_metadata_sync(
         self,
@@ -85,6 +107,12 @@ class ModelCatalogManager:
             pipe_identifier: The pipe's identifier (e.g., "openrouter")
         """
         valves = self._pipe.valves
+
+        # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
+        admin_routing_models = (getattr(valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        user_routing_models = (getattr(valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        provider_routing_enabled = bool(admin_routing_models or user_routing_models)
+
         if not (
             valves.UPDATE_MODEL_CAPABILITIES
             or valves.UPDATE_MODEL_IMAGES
@@ -94,6 +122,7 @@ class ModelCatalogManager:
             or valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
             or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            or provider_routing_enabled
         ):
             return
         if not selected_models:
@@ -111,6 +140,8 @@ class ModelCatalogManager:
             bool(valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER),
             bool(valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
             bool(valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
+            admin_routing_models,
+            user_routing_models,
         )
         if sync_key == self._model_metadata_sync_key:
             return
@@ -265,6 +296,104 @@ class ModelCatalogManager:
         return mapping
 
     @timed
+    def _build_model_provider_map(
+        self,
+        frontend_data: dict[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Build a model slug -> provider info mapping from frontend catalog.
+
+        Returns a dict with structure:
+        {
+            "openai/gpt-4o": {
+                "providers": ["openai", "azure", "together"],
+                "quantizations": ["fp16", "bf16"],
+                "short_name": "GPT-4o",
+                "provider_names": {"openai": "OpenAI", "azure": "Azure", ...}
+            },
+            ...
+        }
+
+        The frontend catalog returns one entry per model+provider combination. This method
+        groups entries by model slug to extract the full list of available providers,
+        quantizations, display names, and other metadata for each model.
+
+        Note: Filters out variant-only endpoints (where model_variant_slug is set) to avoid
+        advertising providers that only serve :free/:thinking variants. This prevents users
+        from selecting providers that aren't available for the base model.
+        """
+        if not isinstance(frontend_data, dict):
+            return {}
+        raw_items = frontend_data.get("data")
+        if not isinstance(raw_items, list):
+            return {}
+
+        model_providers: dict[str, set[str]] = {}
+        model_quantizations: dict[str, set[str]] = {}
+        model_short_names: dict[str, str] = {}
+        model_provider_names: dict[str, dict[str, str]] = {}  # model_slug -> {provider_slug: display_name}
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            model_slug = item.get("slug")
+            if not isinstance(model_slug, str) or not model_slug:
+                continue
+
+            # Capture short_name (only need to do this once per model)
+            if model_slug not in model_short_names:
+                short_name = item.get("short_name")
+                if isinstance(short_name, str) and short_name:
+                    model_short_names[model_slug] = short_name
+
+            endpoint = item.get("endpoint")
+            if not isinstance(endpoint, dict):
+                continue
+
+            # Skip variant-only endpoints - these providers only serve variant models
+            # (e.g., :free, :thinking) and aren't available for the base model
+            if endpoint.get("model_variant_slug"):
+                continue
+
+            # Extract provider slug and display name
+            provider_info = endpoint.get("provider_info")
+            if isinstance(provider_info, dict):
+                provider_slug = provider_info.get("slug")
+                if isinstance(provider_slug, str) and provider_slug:
+                    if model_slug not in model_providers:
+                        model_providers[model_slug] = set()
+                    model_providers[model_slug].add(provider_slug)
+
+                    # Capture provider display name (prefer displayName, fallback to name)
+                    if model_slug not in model_provider_names:
+                        model_provider_names[model_slug] = {}
+                    if provider_slug not in model_provider_names[model_slug]:
+                        display_name = provider_info.get("displayName") or provider_info.get("name")
+                        if isinstance(display_name, str) and display_name:
+                            model_provider_names[model_slug][provider_slug] = display_name
+
+            # Extract quantization
+            quantization = endpoint.get("quantization")
+            if isinstance(quantization, str) and quantization:
+                if model_slug not in model_quantizations:
+                    model_quantizations[model_slug] = set()
+                model_quantizations[model_slug].add(quantization)
+
+        # Build final mapping with sorted lists and metadata
+        result: dict[str, dict[str, Any]] = {}
+        all_slugs = set(model_providers.keys()) | set(model_quantizations.keys())
+
+        for slug in all_slugs:
+            result[slug] = {
+                "providers": sorted(model_providers.get(slug, set())),
+                "quantizations": sorted(model_quantizations.get(slug, set())),
+                "short_name": model_short_names.get(slug, ""),
+                "provider_names": model_provider_names.get(slug, {}),
+            }
+
+        return result
+
+    @timed
     async def _fetch_frontend_model_catalog(
         self,
         session: aiohttp.ClientSession,
@@ -323,6 +452,12 @@ class ModelCatalogManager:
     ) -> None:
         """Sync model metadata (capabilities, profile images, descriptions) into OWUI's Models table."""
         valves = self._pipe.valves
+
+        # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
+        admin_routing_models = (getattr(valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        user_routing_models = (getattr(valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        provider_routing_enabled = bool(admin_routing_models or user_routing_models)
+
         if not (
             valves.UPDATE_MODEL_CAPABILITIES
             or valves.UPDATE_MODEL_IMAGES
@@ -332,6 +467,7 @@ class ModelCatalogManager:
             or valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
             or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            or provider_routing_enabled
         ):
             return
         if not models:
@@ -346,8 +482,30 @@ class ModelCatalogManager:
                 valves.UPDATE_MODEL_IMAGES
                 or valves.UPDATE_MODEL_CAPABILITIES
                 or valves.AUTO_ATTACH_ORS_FILTER
+                or provider_routing_enabled
             ):
                 frontend_data = await self._fetch_frontend_model_catalog(session)
+
+            # Log frontend catalog fetch result for debugging
+            if frontend_data is None:
+                self.logger.warning("Frontend catalog fetch returned None")
+            elif isinstance(frontend_data, dict):
+                data_items = frontend_data.get("data")
+                if isinstance(data_items, list):
+                    self.logger.info(
+                        "Frontend catalog fetched successfully: %d items in 'data' array",
+                        len(data_items),
+                    )
+                else:
+                    self.logger.warning(
+                        "Frontend catalog fetched but 'data' key is not a list: %s",
+                        type(data_items).__name__ if data_items is not None else "missing",
+                    )
+            else:
+                self.logger.warning(
+                    "Frontend catalog fetch returned unexpected type: %s",
+                    type(frontend_data).__name__,
+                )
 
             icon_mapping: dict[str, str] = {}
             if valves.UPDATE_MODEL_IMAGES:
@@ -356,6 +514,19 @@ class ModelCatalogManager:
             web_search_mapping: dict[str, bool] = {}
             if valves.UPDATE_MODEL_CAPABILITIES or valves.AUTO_ATTACH_ORS_FILTER:
                 web_search_mapping = self._build_web_search_support_mapping(frontend_data)
+
+            # Build provider map for provider routing filters
+            provider_map: dict[str, dict[str, list[str]]] = {}
+            if provider_routing_enabled:
+                provider_map = self._build_model_provider_map(frontend_data)
+                # Cache for immediate access in pipes()
+                self._cached_provider_map = provider_map
+                # Log what _build_model_provider_map returned
+                self.logger.info(
+                    "Provider map built: %d models have provider info. Sample keys: %s",
+                    len(provider_map),
+                    list(provider_map.keys())[:5] if provider_map else "[]",
+                )
 
             maker_mapping: dict[str, str] = {}
             if valves.UPDATE_MODEL_IMAGES:
@@ -487,6 +658,45 @@ class ModelCatalogManager:
                         len(models),
                     )
 
+            # Provider routing filter generation
+            provider_routing_filter_map: dict[str, str] = {}  # model_slug -> filter_id
+            if provider_routing_enabled:
+                admin_list = [m.strip() for m in admin_routing_models.split(",") if m.strip()]
+                user_list = [m.strip() for m in user_routing_models.split(",") if m.strip()]
+                self.logger.info(
+                    "Provider routing enabled: admin_models=%d, user_models=%d, provider_map_size=%d",
+                    len(admin_list),
+                    len(user_list),
+                    len(provider_map),
+                )
+                if provider_map:
+                    try:
+                        provider_routing_filter_map = await run_in_threadpool(
+                            self._pipe._ensure_provider_routing_filters,
+                            admin_routing_models,
+                            user_routing_models,
+                            provider_map,
+                            models,
+                            pipe_identifier,
+                        )
+                        if not isinstance(provider_routing_filter_map, dict):
+                            provider_routing_filter_map = {}
+                    except Exception as exc:
+                        self.logger.warning("Provider routing filter generation failed: %s", exc, exc_info=True)
+                        provider_routing_filter_map = {}
+                else:
+                    self.logger.warning(
+                        "Provider routing enabled but provider_map is empty (frontend catalog may have failed to load)"
+                    )
+
+                # Summary log for provider routing auto-attachment
+                if provider_routing_filter_map:
+                    self.logger.info(
+                        "Auto-attaching provider routing filters to %d model(s): %s",
+                        len(provider_routing_filter_map),
+                        ", ".join(sorted(provider_routing_filter_map.keys())),
+                    )
+
             @timed
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -562,6 +772,21 @@ class ModelCatalogManager:
                     direct_uploads_filter_function_id and valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
                 )
 
+                # Look up provider routing filter ID for this model
+                # NOTE: Use original_id (e.g., "openai/gpt-4o") not openrouter_id (sanitized "openai.gpt-4o")
+                # because the filter map keys come from valve input which uses original OpenRouter format
+                original_id = model.get("original_id")
+                pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
+
+                # DEBUG: trace provider routing attachment
+                if provider_routing_filter_map:
+                    self.logger.debug(
+                        "PR lookup: original_id=%r, map_keys=%r, pr_filter_id=%r",
+                        original_id,
+                        list(provider_routing_filter_map.keys()),
+                        pr_filter_id,
+                    )
+
                 if (
                     not capabilities
                     and not description
@@ -569,6 +794,7 @@ class ModelCatalogManager:
                     and not auto_attach_or_default
                     and not pipe_capabilities
                     and not auto_attach_direct_uploads
+                    and not pr_filter_id
                 ):
                     return
 
@@ -589,6 +815,7 @@ class ModelCatalogManager:
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
+                            provider_routing_filter_id=pr_filter_id,
                             openrouter_pipe_capabilities=pipe_capabilities,
                             description=description,
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
@@ -622,6 +849,7 @@ class ModelCatalogManager:
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
+        provider_routing_filter_id: str | None = None,
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
         description: str | None = None,
         update_descriptions: bool = False,
@@ -812,6 +1040,62 @@ class ModelCatalogManager:
             meta_dict["openrouter_pipe"] = pipe_meta
             return True
 
+        @timed
+        def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
+            """Attach provider routing filter to model if configured."""
+            # DEBUG: Log entry into attachment function
+            self.logger.debug(
+                "PR attach attempt: model=%r, filter_id=%r",
+                openwebui_model_id,
+                provider_routing_filter_id,
+            )
+
+            if not provider_routing_filter_id:
+                self.logger.debug("PR attach: filter_id is None/empty, skipping")
+                return False
+
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            pipe_meta = meta_dict.get("openrouter_pipe")
+            previous_id = None
+            if isinstance(pipe_meta, dict):
+                prev = pipe_meta.get("provider_routing_filter_id")
+                if isinstance(prev, str) and prev and prev != provider_routing_filter_id:
+                    previous_id = prev
+
+            had = set(normalized)
+            wanted = set(had)
+            wanted.add(provider_routing_filter_id)
+            if previous_id:
+                wanted.discard(previous_id)
+
+            # DEBUG: Log the comparison
+            self.logger.debug(
+                "PR attach: current_filterIds=%r, had=%r, wanted=%r, previous_id=%r",
+                normalized,
+                had,
+                wanted,
+                previous_id,
+            )
+
+            if wanted == had:
+                self.logger.debug("PR attach: wanted==had, no change needed")
+                return False
+
+            # Preserve order as much as possible; append new id at the end.
+            if provider_routing_filter_id not in normalized:
+                normalized.append(provider_routing_filter_id)
+            normalized = [fid for fid in normalized if fid in wanted]
+            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            pipe_meta["provider_routing_filter_id"] = provider_routing_filter_id
+            meta_dict["openrouter_pipe"] = pipe_meta
+
+            self.logger.debug(
+                "PR attach: SUCCESS - new filterIds=%r",
+                meta_dict["filterIds"],
+            )
+            return True
+
         if existing:
             # Update existing model - preserve ALL existing fields including owner
             meta_dict = {}
@@ -848,6 +1132,14 @@ class ModelCatalogManager:
             if _apply_direct_uploads_filter_ids(meta_dict):
                 meta_updated = True
 
+            if _apply_provider_routing_filter_ids(meta_dict):
+                meta_updated = True
+                self.logger.debug(
+                    "Attached provider routing filter '%s' to model '%s'",
+                    provider_routing_filter_id,
+                    openwebui_model_id,
+                )
+
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)
                 if pipe_meta.get("capabilities") != openrouter_pipe_capabilities:
@@ -883,6 +1175,12 @@ class ModelCatalogManager:
             _apply_filter_ids(meta_dict)
             _apply_default_filter_ids(meta_dict)
             _apply_direct_uploads_filter_ids(meta_dict)
+            if _apply_provider_routing_filter_ids(meta_dict):
+                self.logger.debug(
+                    "Attached provider routing filter '%s' to new model '%s'",
+                    provider_routing_filter_id,
+                    openwebui_model_id,
+                )
 
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)

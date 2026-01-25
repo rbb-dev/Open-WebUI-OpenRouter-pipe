@@ -420,6 +420,10 @@ ALLOWED_OPENROUTER_FIELDS = {
     "user",
     "session_id",
     "transforms",
+    # OpenRouter routing extras (same as chat/completions)
+    "provider",
+    "route",
+    "debug",
 }
 
 ALLOWED_OPENROUTER_CHAT_FIELDS = {
