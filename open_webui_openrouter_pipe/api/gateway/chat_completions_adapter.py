@@ -219,7 +219,7 @@ class ChatCompletionsAdapter:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._record_failure(breaker_key)
-                        special_statuses = {400, 401, 402, 403, 408, 429}
+                        special_statuses = {400, 401, 402, 403, 404, 408, 429}
                         if resp.status in special_statuses:
                             extra_meta: dict[str, Any] = {}
                             retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
@@ -601,7 +601,7 @@ class ChatCompletionsAdapter:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._record_failure(breaker_key)
-                        special_statuses = {400, 401, 402, 403, 408, 429}
+                        special_statuses = {400, 401, 402, 403, 404, 408, 429}
                         if resp.status in special_statuses:
                             extra_meta: dict[str, Any] = {}
                             retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")

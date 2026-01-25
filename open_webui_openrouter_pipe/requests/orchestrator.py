@@ -480,6 +480,24 @@ class RequestOrchestrator:
         self._pipe._apply_reasoning_preferences(responses_body, valves)
         self._pipe._apply_gemini_thinking_config(responses_body, valves)
         self._pipe._apply_context_transforms(responses_body, valves)
+
+        # Inject provider routing from filter-injected metadata
+        # Only for non-task requests - task models (title, tags, follow-ups) use different models
+        # that may not have the same providers available
+        if __task__ is None and isinstance(__metadata__, dict):
+            pipe_meta = __metadata__.get("openrouter_pipe")
+            if isinstance(pipe_meta, dict):
+                filter_provider = pipe_meta.get("provider")
+                if isinstance(filter_provider, dict) and filter_provider:
+                    # Merge filter-injected provider settings with any existing provider settings
+                    existing_provider = responses_body.provider or {}
+                    if isinstance(existing_provider, dict):
+                        merged_provider = {**existing_provider, **filter_provider}
+                    else:
+                        merged_provider = filter_provider
+                    responses_body.provider = merged_provider
+                    self.logger.debug("Injected provider routing from filter: %s", filter_provider)
+
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
             if responses_body.max_output_tokens is None:
                 default_max = ModelFamily.max_completion_tokens(responses_body.model)

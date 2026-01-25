@@ -434,7 +434,10 @@ async def test_responses_streaming_error_408_timeout(pipe_instance_async):
 
 @pytest.mark.asyncio
 async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
-    """Test generic 4xx error (lines 146-149)."""
+    """Test generic 4xx error (lines 146-149).
+
+    Uses 405 (Method Not Allowed) since 404 is now in special_statuses.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -449,7 +452,7 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
             payload=error_response,
-            status=404,  # Not in special_statuses
+            status=405,  # Not in special_statuses (404 is now special)
         )
 
         with pytest.raises(RuntimeError) as exc_info:
@@ -464,7 +467,7 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
 
         await session.close()
 
-    assert "404" in str(exc_info.value)
+    assert "405" in str(exc_info.value)
 
 
 # ============================================================================
@@ -956,14 +959,17 @@ async def test_responses_nonstreaming_error_429_with_headers(pipe_instance_async
 
 @pytest.mark.asyncio
 async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
-    """Test non-streaming generic 4xx error (lines 478-480)."""
+    """Test non-streaming generic 4xx error (lines 478-480).
+
+    Uses 405 (Method Not Allowed) since 404 is now in special_statuses.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
     error_response = {
         "error": {
-            "message": "Not found",
+            "message": "Method not allowed",
         }
     }
 
@@ -971,7 +977,7 @@ async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
             payload=error_response,
-            status=404,
+            status=405,  # Not in special_statuses (404 is now special)
         )
 
         with pytest.raises(RuntimeError) as exc_info:
@@ -985,7 +991,7 @@ async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
 
         await session.close()
 
-    assert "404" in str(exc_info.value)
+    assert "405" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
