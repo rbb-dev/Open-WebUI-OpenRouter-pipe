@@ -1196,9 +1196,10 @@ class ModelCatalogManager:
             params_obj = ModelParams()
 
             access_mode = str(
-                getattr(self._pipe.valves, "NEW_MODEL_ACCESS_CONTROL", "admins") or ""
+                getattr(self._pipe.valves, "NEW_MODEL_ACCESS_CONTROL", "admins") or "admins"
             ).strip().lower()
-            access_control = {} if access_mode == "admins" else None
+            # Default to private ({}); only public if explicitly set
+            access_control = None if access_mode == "public" else {}
 
             model_form = ModelForm(
                 id=openwebui_model_id,

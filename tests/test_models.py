@@ -1039,11 +1039,11 @@ def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None
     assert inserted_form.access_control == {}
 
 
-def test_update_or_insert_new_model_access_control_all(pipe_instance) -> None:
-    """Sets None access control (all users) when configured."""
+def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None:
+    """Sets None access control (all users) when configured to 'public'."""
     pipe = pipe_instance
     pipe._ensure_catalog_manager()
-    pipe.valves.NEW_MODEL_ACCESS_CONTROL = "all"
+    pipe.valves.NEW_MODEL_ACCESS_CONTROL = "public"
     model_id = "test_pipe.openai.gpt-4o"
 
     insert_mock = Mock()
@@ -1065,6 +1065,35 @@ def test_update_or_insert_new_model_access_control_all(pipe_instance) -> None:
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
     assert inserted_form.access_control is None
+
+
+def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe_instance) -> None:
+    """Invalid access control values should default to private (fail-safe)."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    pipe.valves.NEW_MODEL_ACCESS_CONTROL = "invalid_value"  # type: ignore[assignment]
+    model_id = "test_pipe.openai.gpt-4o"
+
+    insert_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+         patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        pipe._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            {"vision": True},
+            None,
+            True,
+            False,
+        )
+
+    insert_mock.assert_called_once()
+    inserted_form = insert_mock.call_args[0][0]
+    # Invalid values should default to private ({}) not public (None)
+    assert inserted_form.access_control == {}
 
 
 def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
