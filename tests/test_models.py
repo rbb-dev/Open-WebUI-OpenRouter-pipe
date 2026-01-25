@@ -620,6 +620,10 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
     last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
 
+    # Get provider routing valve values for sync_key
+    admin_routing = (getattr(pipe.valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
+    user_routing = (getattr(pipe.valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
+
     pipe._catalog_manager._model_metadata_sync_key = (
         "test_pipe",
         float(last_fetch or 0.0),
@@ -632,6 +636,8 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         bool(pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER),
         bool(pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
         bool(pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
+        admin_routing,
+        user_routing,
     )
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
@@ -775,8 +781,9 @@ async def test_sync_model_metadata_ors_filter_warning_not_installed(pipe_instanc
             pipe_identifier="test_pipe",
         )
 
-    mock_warning.assert_called_once()
-    assert "AUTO_ATTACH_ORS_FILTER is enabled" in mock_warning.call_args[0][0]
+    # Check that the ORS filter warning was among the warnings logged
+    warning_messages = [call[0][0] for call in mock_warning.call_args_list]
+    assert any("AUTO_ATTACH_ORS_FILTER is enabled" in msg for msg in warning_messages)
 
 
 @pytest.mark.asyncio
@@ -802,8 +809,9 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
             pipe_identifier="test_pipe",
         )
 
-    mock_warning.assert_called_once()
-    assert "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled" in mock_warning.call_args[0][0]
+    # Check that the direct uploads warning was among the warnings logged
+    warning_messages = [call[0][0] for call in mock_warning.call_args_list]
+    assert any("AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled" in msg for msg in warning_messages)
 
 
 @pytest.mark.asyncio

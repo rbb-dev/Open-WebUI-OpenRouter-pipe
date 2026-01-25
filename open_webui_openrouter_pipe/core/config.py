@@ -48,6 +48,10 @@ _ORS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_search"
 _DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
 
+_PROVIDER_ROUTING_FILTER_MARKER_PREFIX = "openrouter_pipe:provider_routing:"
+_PROVIDER_ROUTING_FILTER_MARKER_VERSION = "v1"
+_PROVIDER_ROUTING_FILTER_ID_PREFIX = "openrouter_provider_"
+
 _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     {
         "image_generation_call",
@@ -1449,6 +1453,26 @@ class Valves(BaseModel):
         description=(
             "When enabled, automatically installs/updates the companion OpenRouter Direct Uploads filter function in Open WebUI. "
             "This is required for AUTO_ATTACH_DIRECT_UPLOADS_FILTER when the filter hasn't been installed manually."
+        ),
+    )
+
+    # Provider Routing Filters
+    ADMIN_PROVIDER_ROUTING_MODELS: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of model slugs (e.g., 'openai/gpt-4o, anthropic/claude-3.5-sonnet') for which "
+            "to generate admin-only provider routing filters. These filters enforce provider preferences (order, "
+            "only, ignore, sort, quantizations, etc.) that users cannot override or disable. "
+            "Leave empty to disable admin provider routing filters."
+        ),
+    )
+    USER_PROVIDER_ROUTING_MODELS: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of model slugs (e.g., 'meta-llama/llama-3.2-3b-instruct') for which "
+            "to generate user-configurable provider routing filters. Users can toggle these filters per-chat "
+            "and configure their own provider preferences via UserValves. "
+            "Leave empty to disable user provider routing filters."
         ),
     )
 

@@ -195,6 +195,35 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `DIRECT_AUDIO` | `bool` | `False` | When enabled, divert eligible chat audio uploads and forward them as direct audio inputs. |
 | `DIRECT_VIDEO` | `bool` | `False` | When enabled, divert eligible chat video uploads and forward them as direct video inputs (via `/chat/completions`). |
 
+### Provider routing filters
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs (e.g., `openai/gpt-4o, anthropic/claude-3.5-sonnet`) for which to generate admin-only provider routing filters. These filters enforce provider preferences (order, fallbacks, ZDR, etc.) that users cannot override or disable. Leave empty to disable. |
+| `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Models in both lists get filters with admin defaults and user overrides. |
+
+Notes:
+- Provider routing filters are generated dynamically from OpenRouter's `/api/frontend/models` catalog.
+- Each filter exposes an **ORDER dropdown** with all provider priority permutations (using human-readable provider names).
+- Admin-only filters use `toggle=False` (always run, cannot be disabled per-chat).
+- User-configurable filters use `toggle=True` (can be toggled on/off per-chat).
+- Provider routing is **not applied** to task model requests (title, tags, follow-ups).
+- Variant-only providers (e.g., Venice serving only `:free` variants) are excluded from base model routing options.
+
+See: [OpenRouter Provider Routing](openrouter_provider_routing.md).
+
+#### Generated filter valves (per model)
+
+Each generated provider routing filter has these valves (admin and/or user depending on visibility):
+
+| Valve | Type | Default | Maps to OpenRouter API |
+| --- | --- | --- | --- |
+| `ORDER` | `Literal[...]` | `"(no preference)"` | `provider.order` — Provider priority ordering |
+| `ALLOW_FALLBACKS` | `bool` | `True` | `provider.allow_fallbacks` — Use backup providers if preferred unavailable |
+| `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` — Only use providers supporting all request params |
+| `ZDR` | `bool` | `False` | `provider.zdr` — Zero Data Retention enforcement |
+| `QUANTIZATIONS` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` — Filter by quantization level (when available) |
+
 ### Reporting, UI behavior, and request identifiers
 
 | Valve | Type | Default (verified) | Purpose / notes |
