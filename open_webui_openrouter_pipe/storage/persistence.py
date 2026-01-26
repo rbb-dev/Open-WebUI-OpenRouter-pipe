@@ -910,6 +910,87 @@ class ArtifactStore:
                     row.pop("_persisted", None)
 
     @timed
+    def _try_acquire_lock_sync(self, lock_row: dict[str, Any]) -> bool:
+        """Attempt to acquire a distributed lock by inserting a lock row.
+
+        Uses INSERT ON CONFLICT DO NOTHING to avoid exceptions when another
+        worker already holds the lock. This is the standard pattern for
+        distributed locking in multi-worker environments.
+
+        Args:
+            lock_row: Dict with lock data including 'id', 'chat_id', 'message_id',
+                     'item_type', 'payload', etc.
+
+        Returns:
+            True if lock was acquired (row inserted)
+            False if lock is held by another worker (row already exists)
+        """
+        if not self._item_model or not self._session_factory or not self._engine:
+            return False
+
+        # Determine dialect for appropriate upsert syntax
+        dialect_name = self._engine.dialect.name
+
+        # Prepare row data
+        now = datetime.datetime.now(datetime.UTC)
+        lock_id = lock_row.get("id")
+        if not lock_id:
+            return False
+
+        payload = lock_row.get("payload")
+        if payload is not None and not isinstance(payload, str):
+            payload = json.dumps(payload)
+
+        values = {
+            "id": lock_id,
+            "chat_id": lock_row.get("chat_id"),
+            "message_id": lock_row.get("message_id"),
+            "model_id": lock_row.get("model_id"),
+            "item_type": lock_row.get("item_type"),
+            "payload": payload,
+            "is_encrypted": lock_row.get("is_encrypted", False),
+            "created_at": now,
+        }
+
+        session: Session = self._session_factory()  # type: ignore[call-arg]
+        try:
+            # Use dialect-specific INSERT ON CONFLICT DO NOTHING
+            if dialect_name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                stmt = pg_insert(self._item_model.__table__).values(**values)
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+            elif dialect_name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                stmt = sqlite_insert(self._item_model.__table__).values(**values)
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+            else:
+                # Fallback for other dialects: try plain insert, catch duplicate key
+                try:
+                    instance = self._item_model(**values)  # type: ignore[call-arg]
+                    session.add(instance)
+                    session.commit()
+                    return True
+                except SQLAlchemyError as exc:
+                    session.rollback()
+                    # Check if it's a duplicate key error
+                    exc_str = str(exc).lower()
+                    if "duplicate" in exc_str or "unique" in exc_str or "constraint" in exc_str:
+                        return False
+                    raise
+
+            result = session.execute(stmt)
+            session.commit()
+
+            # rowcount == 1 means the row was inserted (we got the lock)
+            # rowcount == 0 means conflict occurred (lock held by another worker)
+            return result.rowcount == 1
+        except SQLAlchemyError:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @timed
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
         """Persist artifacts, optionally via Redis write-behind."""
         if not rows:
