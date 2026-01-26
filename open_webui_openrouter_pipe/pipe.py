@@ -3216,6 +3216,11 @@ class Filter:
         return self._artifact_store._is_duplicate_key_error(exc)
 
     @timed
+    def _try_acquire_lock_sync(self, lock_row: dict[str, Any]) -> bool:
+        """Delegate to ArtifactStore._try_acquire_lock_sync."""
+        return self._artifact_store._try_acquire_lock_sync(lock_row)
+
+    @timed
     def _db_fetch_sync(
         self,
         chat_id: str,
@@ -4527,13 +4532,10 @@ class Filter:
                 "thread": threading.get_ident(),
             },
         }
-        try:
-            self._db_persist_sync([lock_row])
-        except Exception as exc:
-            if self._is_duplicate_key_error(exc):
-                return False
-            self.logger.debug("Session log lock failed", exc_info=True)
-            return False
+        # Use upsert-based lock acquisition (INSERT ON CONFLICT DO NOTHING)
+        # to avoid noisy duplicate key errors in multi-worker environments
+        if not self._try_acquire_lock_sync(lock_row):
+            return False  # Another worker holds the lock
 
         # Fetch all segment ids for this message (including any terminal markers).
         session = session_factory()  # type: ignore[call-arg]

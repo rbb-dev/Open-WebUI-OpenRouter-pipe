@@ -55,6 +55,11 @@ class _Field:
         return ("desc", self.name)
 
 
+class _FakeTable:
+    """Fake SQLAlchemy table for testing dialect-specific inserts."""
+    pass
+
+
 class _FakeModel:
     id = _Field("id")
     chat_id = _Field("chat_id")
@@ -64,6 +69,7 @@ class _FakeModel:
     payload = _Field("payload")
     is_encrypted = _Field("is_encrypted")
     created_at = _Field("created_at")
+    __table__ = _FakeTable()  # For dialect-specific INSERT ON CONFLICT
 
     def __init__(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -1260,3 +1266,385 @@ def test_sanitize_table_fragment_special_chars():
     result = _sanitize_table_fragment("My-Table.Name!")
     assert "_" in result or result.isalnum()
     assert result == result.lower()
+
+
+# -----------------------------------------------------------------------------
+# Tests for _try_acquire_lock_sync (distributed locking)
+# -----------------------------------------------------------------------------
+
+
+def test_try_acquire_lock_sync_no_model(pipe_instance):
+    """Test _try_acquire_lock_sync returns False when no model configured."""
+    store = pipe_instance._artifact_store
+    store._item_model = None
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+    assert store._try_acquire_lock_sync(lock_row) is False
+
+
+def test_try_acquire_lock_sync_no_session_factory(pipe_instance):
+    """Test _try_acquire_lock_sync returns False when no session factory."""
+    store = pipe_instance._artifact_store
+    store._session_factory = None
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+    assert store._try_acquire_lock_sync(lock_row) is False
+
+
+def test_try_acquire_lock_sync_no_engine(pipe_instance):
+    """Test _try_acquire_lock_sync returns False when no engine."""
+    store = pipe_instance._artifact_store
+    store._engine = None
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+    assert store._try_acquire_lock_sync(lock_row) is False
+
+
+def test_try_acquire_lock_sync_no_lock_id(pipe_instance):
+    """Test _try_acquire_lock_sync returns False when lock row has no id."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    lock_row = {
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+    assert store._try_acquire_lock_sync(lock_row) is False
+
+
+def test_try_acquire_lock_sync_success_postgresql(pipe_instance):
+    """Test _try_acquire_lock_sync succeeds with PostgreSQL dialect."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "postgresql"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeResult:
+        rowcount = 1  # Row was inserted = lock acquired
+
+    class _FakeSession:
+        def execute(self, stmt):
+            return _FakeResult()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    # Mock the pg_insert at the point where it's imported in the function
+    mock_stmt = MagicMock()
+    mock_insert_func = MagicMock()
+    mock_insert_func.return_value.values.return_value.on_conflict_do_nothing.return_value = mock_stmt
+
+    with patch.dict("sys.modules", {"sqlalchemy.dialects.postgresql": MagicMock(insert=mock_insert_func)}):
+        with patch("sqlalchemy.dialects.postgresql.insert", mock_insert_func):
+            result = store._try_acquire_lock_sync(lock_row)
+            assert result is True
+
+
+def test_try_acquire_lock_sync_conflict_postgresql(pipe_instance):
+    """Test _try_acquire_lock_sync returns False on conflict (another worker has lock)."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "postgresql"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeResult:
+        rowcount = 0  # No row inserted = conflict = lock held by another worker
+
+    class _FakeSession:
+        def execute(self, stmt):
+            return _FakeResult()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    mock_stmt = MagicMock()
+    mock_insert_func = MagicMock()
+    mock_insert_func.return_value.values.return_value.on_conflict_do_nothing.return_value = mock_stmt
+
+    with patch.dict("sys.modules", {"sqlalchemy.dialects.postgresql": MagicMock(insert=mock_insert_func)}):
+        with patch("sqlalchemy.dialects.postgresql.insert", mock_insert_func):
+            result = store._try_acquire_lock_sync(lock_row)
+            assert result is False  # Lock not acquired - another worker has it
+
+
+def test_try_acquire_lock_sync_success_sqlite(pipe_instance):
+    """Test _try_acquire_lock_sync succeeds with SQLite dialect."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "sqlite"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeResult:
+        rowcount = 1
+
+    class _FakeSession:
+        def execute(self, stmt):
+            return _FakeResult()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    mock_stmt = MagicMock()
+    mock_insert_func = MagicMock()
+    mock_insert_func.return_value.values.return_value.on_conflict_do_nothing.return_value = mock_stmt
+
+    with patch.dict("sys.modules", {"sqlalchemy.dialects.sqlite": MagicMock(insert=mock_insert_func)}):
+        with patch("sqlalchemy.dialects.sqlite.insert", mock_insert_func):
+            result = store._try_acquire_lock_sync(lock_row)
+            assert result is True
+
+
+def test_try_acquire_lock_sync_fallback_dialect_success(pipe_instance):
+    """Test _try_acquire_lock_sync fallback for unknown dialects (success case)."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "mysql"  # Unknown dialect - should use fallback
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeSession:
+        def add(self, instance):
+            pass
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    result = store._try_acquire_lock_sync(lock_row)
+    assert result is True
+
+
+def test_try_acquire_lock_sync_fallback_dialect_duplicate(pipe_instance):
+    """Test _try_acquire_lock_sync fallback returns False on duplicate key error."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "mysql"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeSession:
+        def add(self, instance):
+            pass
+
+        def commit(self):
+            raise SQLAlchemyError("duplicate key value violates unique constraint")
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    result = store._try_acquire_lock_sync(lock_row)
+    assert result is False  # Duplicate = lock held by another
+
+
+def test_try_acquire_lock_sync_fallback_dialect_other_error(pipe_instance):
+    """Test _try_acquire_lock_sync fallback re-raises non-duplicate errors."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "mysql"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeSession:
+        def add(self, instance):
+            pass
+
+        def commit(self):
+            raise SQLAlchemyError("connection timeout")
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock"},
+    }
+
+    with pytest.raises(SQLAlchemyError, match="connection timeout"):
+        store._try_acquire_lock_sync(lock_row)
+
+
+def test_try_acquire_lock_sync_payload_serialization(pipe_instance):
+    """Test _try_acquire_lock_sync serializes dict payload to JSON."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    class _FakeDialect:
+        name = "postgresql"
+
+    class _FakeEngine:
+        dialect = _FakeDialect()
+
+    class _FakeResult:
+        rowcount = 1
+
+    class _FakeSession:
+        def execute(self, stmt):
+            return _FakeResult()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    store._engine = _FakeEngine()
+    store._session_factory = lambda: _FakeSession()
+
+    lock_row = {
+        "id": "test-lock-id",
+        "chat_id": "chat-1",
+        "message_id": "msg-1",
+        "item_type": "session_log_lock",
+        "payload": {"type": "session_log_lock", "pid": 12345},  # Dict payload
+    }
+
+    mock_values = MagicMock()
+    mock_insert_func = MagicMock()
+    mock_insert_func.return_value.values = mock_values
+    mock_values.return_value.on_conflict_do_nothing.return_value = MagicMock()
+
+    with patch.dict("sys.modules", {"sqlalchemy.dialects.postgresql": MagicMock(insert=mock_insert_func)}):
+        with patch("sqlalchemy.dialects.postgresql.insert", mock_insert_func):
+            store._try_acquire_lock_sync(lock_row)
+
+            # Verify values() was called and payload was serialized
+            mock_values.assert_called_once()
+            call_kwargs = mock_values.call_args[1]
+            assert "payload" in call_kwargs
+            # Payload should be a JSON string, not a dict
+            assert isinstance(call_kwargs["payload"], str)
+            assert "session_log_lock" in call_kwargs["payload"]

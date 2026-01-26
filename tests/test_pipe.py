@@ -24,6 +24,8 @@ from unittest.mock import MagicMock, Mock, patch, AsyncMock
 import pytest
 from aioresponses import aioresponses
 
+from sqlalchemy import Table, Column, String, Boolean, DateTime, MetaData
+
 from open_webui_openrouter_pipe import (
     EncryptedStr,
     Pipe,
@@ -5209,6 +5211,37 @@ class _Field:
         return ("desc", self.name)
 
 
+# Real SQLAlchemy Table for dialect-specific INSERT ON CONFLICT
+_fake_metadata = MetaData()
+_fake_table = Table(
+    "fake_response_items",
+    _fake_metadata,
+    Column("id", String, primary_key=True),
+    Column("chat_id", String),
+    Column("message_id", String),
+    Column("model_id", String),
+    Column("item_type", String),
+    Column("payload", String),
+    Column("is_encrypted", Boolean),
+    Column("created_at", DateTime),
+)
+
+
+class _FakeDialect:
+    """Fake SQLAlchemy dialect for testing."""
+    name = "sqlite"
+
+
+class _FakeEngine:
+    """Fake SQLAlchemy engine for testing."""
+    dialect = _FakeDialect()
+
+
+class _FakeResult:
+    """Fake SQLAlchemy result for execute() calls."""
+    rowcount = 1  # Lock acquired by default
+
+
 class _FakeModel:
     id = _Field("id")
     chat_id = _Field("chat_id")
@@ -5218,6 +5251,7 @@ class _FakeModel:
     payload = _Field("payload")
     is_encrypted = _Field("is_encrypted")
     created_at = _Field("created_at")
+    __table__ = _fake_table  # Real SQLAlchemy Table for INSERT ON CONFLICT
 
     def __init__(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -5313,6 +5347,10 @@ class _FakeSession:
     def close(self) -> None:
         return None
 
+    def execute(self, stmt):
+        """Handle INSERT statements for _try_acquire_lock_sync."""
+        return _FakeResult()
+
     def query(self, *fields):
         if not fields:
             return _FakeQuery(self._rows)
@@ -5330,6 +5368,7 @@ def _install_fake_store(pipe: Pipe) -> list[_FakeModel]:
     store_any._session_factory = lambda: _FakeSession(rows)
     store_any._artifact_table_name = "response_items_test"
     store_any._db_executor = ThreadPoolExecutor(max_workers=1)
+    store_any._engine = _FakeEngine()  # Required for _try_acquire_lock_sync
     return rows
 
 
