@@ -983,7 +983,8 @@ class ArtifactStore:
 
             # rowcount == 1 means the row was inserted (we got the lock)
             # rowcount == 0 means conflict occurred (lock held by another worker)
-            return result.rowcount == 1
+            # Use getattr for type safety (CursorResult has rowcount, Result typing doesn't expose it)
+            return getattr(result, "rowcount", 0) == 1
         except SQLAlchemyError:
             session.rollback()
             raise
