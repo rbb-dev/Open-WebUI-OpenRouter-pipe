@@ -157,7 +157,7 @@ class TestValidateFilterSource:
         """Empty source should fail."""
         is_valid, error = Pipe._validate_filter_source("")
         assert is_valid is False
-        assert "Empty" in error or "invalid" in error.lower()
+        assert error is not None and ("Empty" in error or "invalid" in error.lower())
 
     def test_none_source(self):
         """None source should fail."""
