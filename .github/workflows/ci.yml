@@ -11,7 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  tests-and-typecheck:
+    name: Tests & Type Check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
