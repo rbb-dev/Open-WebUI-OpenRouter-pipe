@@ -598,9 +598,6 @@ class EventEmitterHandler:
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
 
-        # Get the original event emitter (if any) for test compatibility
-        original_emitter = job.event_emitter
-
         @timed
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit status updates for late-arriving reasoning without spamming the UI."""
@@ -653,13 +650,6 @@ class EventEmitterHandler:
             if not isinstance(event, dict):
                 return
 
-            # Call the original emitter first (for tests and other consumers)
-            if original_emitter:
-                try:
-                    await original_emitter(event)
-                except Exception:
-                    pass  # Don't let emitter failures break streaming
-
             etype = event.get("type")
             raw_data = event.get("data")
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
@@ -677,9 +667,28 @@ class EventEmitterHandler:
                         assistant_sent = assistant_sent + delta
                 elif isinstance(content, str) and content:
                     if content.startswith(assistant_sent):
+                        # Normal append - compute delta from difference
                         delta_text = content[len(assistant_sent) :]
                         assistant_sent = content
+                    # Note: Content replacement (e.g., tool cards) should use
+                    # chat:completion event, not chat:message. The chat:completion
+                    # handler syncs assistant_sent without emitting to the stream.
                 if isinstance(delta_text, str) and delta_text:
+                    answer_started = True
+                    if thinking_status_enabled and reasoning_status_buffer:
+                        await _maybe_emit_reasoning_status("", force=True)
+                    await self._put_middleware_stream_item(
+                        job,
+                        stream_queue,
+                        openai_chat_chunk_message_template(model_id, delta_text),
+                    )
+                return
+
+            if etype == "chat:message:delta":
+                # Optimized delta event: content IS the delta, emit directly
+                delta_text = data.get("content")
+                if isinstance(delta_text, str) and delta_text:
+                    assistant_sent = assistant_sent + delta_text
                     answer_started = True
                     if thinking_status_enabled and reasoning_status_buffer:
                         await _maybe_emit_reasoning_status("", force=True)
@@ -752,6 +761,17 @@ class EventEmitterHandler:
             if etype == "chat:completion":
                 if thinking_status_enabled and reasoning_status_buffer:
                     await _maybe_emit_reasoning_status("", force=True)
+
+                # Sync assistant_sent when chat:completion has content (OWUI replacement)
+                # This ensures subsequent text deltas compute correctly.
+                # chat:completion with content is used for tool cards (OWUI parity).
+                completion_content = data.get("content")
+                if isinstance(completion_content, str):
+                    assistant_sent = completion_content
+                    # Pass through SSE so tool cards reach the frontend
+                    # OWUI's process_chat_response will emit this as a replacement event
+                    await self._put_middleware_stream_item(job, stream_queue, {"event": event})
+
                 error = data.get("error")
                 if isinstance(error, dict) and error:
                     await self._put_middleware_stream_item(job, stream_queue, {"error": error})

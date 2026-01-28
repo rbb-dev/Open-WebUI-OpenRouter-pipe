@@ -967,10 +967,9 @@ class StreamingHandler:
                             assistant_message += normalized_delta
                             await event_emitter(
                                 {
-                                    "type": "chat:message",
+                                    "type": "chat:message:delta",
                                     "data": {
-                                        "content": assistant_message,
-                                        "delta": normalized_delta,
+                                        "content": normalized_delta,
                                     },
                                 }
                             )
@@ -1471,10 +1470,12 @@ class StreamingHandler:
                         if image_markdowns:
                             note_model_activity()
                             note_generation_activity()
+                            msg_before = len(assistant_message)
                             for snippet in image_markdowns:
                                 assistant_message = _append_output_block(assistant_message, snippet)
                             if event_emitter:
-                                await event_emitter({"type": "chat:message", "data": {"content": assistant_message}})
+                                image_delta = assistant_message[msg_before:]
+                                await event_emitter({"type": "chat:message:delta", "data": {"content": image_delta}})
 
                         continue
 
@@ -1682,11 +1683,10 @@ class StreamingHandler:
 
                         break
 
-                    # Build and emit in-progress tool execution cards (OpenWebUI parity)
-                    # Cards are APPENDED to assistant_message (OWUI appends: content = f"{content}{cards}")
-                    # This maintains chronological order: text_before + cards + text_after
+                    # Build and emit in-progress (spinning) tool cards
+                    # In-progress cards are ephemeral: emit via chat:completion so they do NOT
+                    # enter content_blocks or persistence. They will be replaced once completed.
                     in_progress_cards_html = ""
-                    cards_start_pos = len(assistant_message)  # Track where cards start
                     show_tool_cards = getattr(valves, "SHOW_TOOL_CARDS", False)
                     if show_tool_cards and event_emitter and body.stream and calls:
                         try:
@@ -1701,19 +1701,22 @@ class StreamingHandler:
                                     f'<summary>Executing...</summary>\n</details>\n'
                                 )
                             if in_progress_cards_html:
-                                # APPEND cards to message (chronological order)
-                                assistant_message = assistant_message + in_progress_cards_html
-                                await event_emitter({
-                                    "type": "chat:message",
-                                    "data": {"content": assistant_message},
-                                })
+                                # Emit via chat:completion (immediate display, NOT tracked)
+                                # Do NOT add to assistant_message - spinners are ephemeral
+                                await event_emitter(
+                                    {
+                                        "type": "chat:completion",
+                                        "data": {"content": assistant_message + in_progress_cards_html},
+                                    }
+                                )
                         except Exception as exc:
                             self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
 
                     function_outputs = await self._pipe._execute_function_calls(calls, tool_registry)
 
-                    # Replace in-progress cards with completed cards (OpenWebUI parity)
-                    # Cards are at position cards_start_pos in assistant_message
+                    # Emit completed tool cards
+                    # 1) chat:message:delta to persist completed cards
+                    # 2) chat:completion to immediately replace spinners in the UI
                     if show_tool_cards and event_emitter and body.stream and calls and function_outputs:
                         try:
                             completed_cards_html = ""
@@ -1736,15 +1739,21 @@ class StreamingHandler:
                                     f'<summary>Tool Executed</summary>\n</details>\n'
                                 )
                             if completed_cards_html:
-                                # Replace in-progress cards with completed cards at the tracked position
-                                # assistant_message = text_before + in_progress_cards + (maybe more text)
-                                text_before = assistant_message[:cards_start_pos]
-                                text_after = assistant_message[cards_start_pos + len(in_progress_cards_html):]
-                                assistant_message = text_before + completed_cards_html + text_after
-                                await event_emitter({
-                                    "type": "chat:message",
-                                    "data": {"content": assistant_message},
-                                })
+                                # Persist completed cards in the streaming content
+                                assistant_message = assistant_message + completed_cards_html
+                                await event_emitter(
+                                    {
+                                        "type": "chat:message:delta",
+                                        "data": {"content": completed_cards_html},
+                                    }
+                                )
+                                # Immediately replace spinners in the UI
+                                await event_emitter(
+                                    {
+                                        "type": "chat:completion",
+                                        "data": {"content": assistant_message},
+                                    }
+                                )
                         except Exception as exc:
                             self.logger.debug("Failed to emit completed tool cards: %s", exc)
 
@@ -1941,8 +1950,8 @@ class StreamingHandler:
                     if event_emitter:
                         await event_emitter(
                             {
-                                "type": "chat:message",
-                                "data": {"content": assistant_message, "delta": delta},
+                                "type": "chat:message:delta",
+                                "data": {"content": delta},
                             }
                         )
 
@@ -2383,7 +2392,9 @@ def _wrap_event_emitter(
     async def _wrapped(event: Dict[str, Any]) -> None:
         """Proxy emitter that suppresses selected event types."""
         etype = (event or {}).get("type")
-        if suppress_chat_messages and etype == "chat:message":
+        # Suppress BOTH chat:message AND chat:message:delta for non-streaming
+        # Tool cards use chat:message:delta which would leak through otherwise
+        if suppress_chat_messages and etype in ("chat:message", "chat:message:delta"):
             return  # swallow incremental deltas
         if suppress_completion and etype == "chat:completion":
             return  # optionally swallow completion frames

@@ -457,8 +457,8 @@ class TestStreamingLoopBasic:
         )
 
         assert result == "Hello beautiful world!"
-        chat_messages = _collect_events_of_type(emitted, "chat:message")
-        assert len(chat_messages) == 3
+        chat_deltas = _collect_events_of_type(emitted, "chat:message:delta")
+        assert len(chat_deltas) == 3
 
     @pytest.mark.asyncio
     async def test_streaming_loop_empty_delta(self, monkeypatch, pipe_instance_async):
@@ -3863,15 +3863,15 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
     assert "Analysing" in reasoning_text, f"Expected 'Analysing' in reasoning deltas, got: {reasoning_text}"
     assert "Late reasoning" in reasoning_text, f"Expected 'Late reasoning' in reasoning deltas, got: {reasoning_text}"
 
-    # Verify regular content message exists
-    chat_messages = [
+    # Verify regular content message exists (using chat:message:delta for streaming)
+    chat_deltas = [
         item
         for item in emitted
-        if isinstance(item, dict) and item.get("type") == "chat:message"
+        if isinstance(item, dict) and item.get("type") == "chat:message:delta"
     ]
     assert any(
         item.get("data", {}).get("content") == "Hello"
-        for item in chat_messages
+        for item in chat_deltas
     ), "Expected chat:message with 'Hello'"
 
     # Verify reasoning:completed event is emitted at the end
@@ -4308,8 +4308,8 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance
     notifications = [e for e in emitted if e.get("type") == "notification"]
     assert notifications, "Expected a notification when MAX_FUNCTION_CALL_LOOPS is reached"
     assert "MAX_FUNCTION_CALL_LOOPS" in notifications[-1]["data"]["content"]
-    chat_messages = [e for e in emitted if e.get("type") == "chat:message"]
-    assert any("Tool step limit reached" in (m.get("data", {}).get("content") or "") for m in chat_messages)
+    chat_deltas = [e for e in emitted if e.get("type") == "chat:message:delta"]
+    assert any("Tool step limit reached" in (m.get("data", {}).get("content") or "") for m in chat_deltas)
 
 
 # ===== From integration/test_streaming_queue_integration.py =====
