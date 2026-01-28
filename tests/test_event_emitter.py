@@ -1088,8 +1088,12 @@ async def test_make_middleware_stream_emitter_non_dict_event(pipe_instance_async
 
 
 @pytest.mark.asyncio
-async def test_make_middleware_stream_emitter_original_emitter_called(pipe_instance_async):
-    """Test middleware stream emitter calls original emitter."""
+async def test_make_middleware_stream_emitter_events_go_to_stream(pipe_instance_async):
+    """Test middleware stream emitter puts events on stream (not original_emitter).
+
+    Events should only go through SSE to avoid double emission.
+    The original_emitter is NOT called to prevent duplication.
+    """
     pipe = pipe_instance_async
 
     original_emitted = []
@@ -1114,20 +1118,27 @@ async def test_make_middleware_stream_emitter_original_emitter_called(pipe_insta
 
     emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Emit event
+    # Emit event - should go to stream, NOT original_emitter
     await emitter({"type": "chat:message", "data": {"delta": "Hi", "content": "Hi"}})
 
-    # Original emitter should have been called
-    assert len(original_emitted) == 1
+    # Original emitter should NOT have been called (prevents double emission)
+    assert len(original_emitted) == 0
+
+    # Event should have been converted to OpenAI-format chunk on the stream
+    assert queue.qsize() >= 1
 
 
 @pytest.mark.asyncio
-async def test_make_middleware_stream_emitter_original_emitter_exception(pipe_instance_async):
-    """Test middleware stream emitter handles original emitter exception."""
+async def test_make_middleware_stream_emitter_does_not_call_failing_emitter(pipe_instance_async):
+    """Test middleware stream emitter does not call original emitter (avoids double emission).
+
+    Even if job.event_emitter would fail, it should not affect streaming because
+    we don't call it anymore - events go only through SSE.
+    """
     pipe = pipe_instance_async
 
     async def failing_emitter(event):
-        raise RuntimeError("Emitter failed")
+        raise RuntimeError("Emitter failed - should not be called!")
 
     class _FakeJob:
         def __init__(self):
@@ -1139,17 +1150,17 @@ async def test_make_middleware_stream_emitter_original_emitter_exception(pipe_in
                 MIDDLEWARE_STREAM_QUEUE_MAXSIZE=0,
             )
             self.future = asyncio.get_running_loop().create_future()
-            self.event_emitter = failing_emitter
+            self.event_emitter = failing_emitter  # Would fail if called
 
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
     emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Should not raise, should continue processing
+    # Should not raise - we don't call original_emitter anymore
     await emitter({"type": "chat:message", "data": {"delta": "Hi", "content": "Hi"}})
 
-    # Should still queue the item
+    # Should queue the item (stream still works)
     assert queue.qsize() == 1
 
 
