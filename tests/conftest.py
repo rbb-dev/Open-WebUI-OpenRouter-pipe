@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CRITICAL: Environment setup MUST happen before ANY other imports
+# ─────────────────────────────────────────────────────────────────────────────
+# When OWUI middleware is imported, it triggers heavy initialization:
+# - Alembic/Peewee database migrations (~30-60s)
+# - Vector DB client instantiation with ChromaDB (~20-40s)
+# - ML model loading (sentence-transformers, torch) (~60-90s)
+# - 100+ PersistentConfig database lookups (~10-20s)
+# Total: ~208 seconds without these flags!
+import os
+os.environ.setdefault("ENABLE_DB_MIGRATIONS", "false")
+os.environ.setdefault("DATA_DIR", "/tmp/owui-test-data")
+os.environ.setdefault("WEBUI_AUTH", "false")
+
 import asyncio
 import base64
 import sys
@@ -179,6 +193,118 @@ def _install_open_webui_stubs() -> None:
     misc_mod.run_in_threadpool = _run_in_threadpool
     misc_mod.openai_chat_chunk_message_template = _openai_chat_chunk_message_template
     utils_pkg.misc = misc_mod
+
+    # Stub for open_webui.utils.middleware (used by streaming_core.py)
+    middleware_mod = cast(Any, _ensure_module("open_webui.utils.middleware"))
+
+    def _apply_source_context_to_messages(
+        request_context: Any,
+        messages: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        user_message: str,
+    ) -> list[dict[str, Any]]:
+        """Stub for OWUI's apply_source_context_to_messages.
+
+        In real OWUI, this injects RAG context from sources into the messages
+        using <source> XML tags. We simulate that behavior here.
+        """
+        if not sources or not messages:
+            return messages
+
+        # Build source context with <source> tags (matches OWUI format)
+        # A single source may contain multiple documents, each gets its own tag
+        source_tags = []
+        global_idx = 1
+        for src in sources:
+            name = src.get("name", src.get("source", {}).get("name", f"Source {global_idx}"))
+            raw_content = src.get("content", src.get("document", [""]))
+            metadata_list = src.get("metadata", [])
+
+            # Handle multiple documents in a single source entry
+            if isinstance(raw_content, list):
+                for doc_idx, content in enumerate(raw_content):
+                    # Get URL from corresponding metadata if available
+                    url = ""
+                    if doc_idx < len(metadata_list):
+                        url = metadata_list[doc_idx].get("source", "")
+                    source_tags.append(
+                        f'<source id="{global_idx}" name="{name}" url="{url}">{content[:500]}</source>'
+                    )
+                    global_idx += 1
+            else:
+                url = src.get("url", src.get("source", {}).get("url", ""))
+                source_tags.append(
+                    f'<source id="{global_idx}" name="{name}" url="{url}">{raw_content[:500]}</source>'
+                )
+                global_idx += 1
+
+        if not source_tags:
+            return messages
+
+        # Build context block with citation instructions (OWUI format)
+        # OWUI adds instructions like "Cite sources as [1], [2], etc."
+        context_block = (
+            "Use the following sources to answer. Cite using [id] format (e.g., [1], [2]).\n\n"
+            + "\n".join(source_tags)
+            + "\n\n"
+        )
+
+        # Prepend to the last user message (OWUI behavior)
+        modified = []
+        user_found = False
+        for msg in reversed(messages):
+            if not user_found and msg.get("role") == "user":
+                content = msg.get("content", "")
+                # Handle both string content and list content (Chat Completions multimodal format)
+                if isinstance(content, str):
+                    msg = {**msg, "content": context_block + content}
+                elif isinstance(content, list) and content:
+                    # Find first text block and prepend source context
+                    new_content = []
+                    prepended = False
+                    for block in content:
+                        if not prepended and isinstance(block, dict) and block.get("type") in ("text", "input_text"):
+                            new_block = {**block, "text": context_block + block.get("text", "")}
+                            new_content.append(new_block)
+                            prepended = True
+                        else:
+                            new_content.append(block)
+                    msg = {**msg, "content": new_content}
+                user_found = True
+            modified.insert(0, msg)
+        return modified
+
+    def _get_citation_source_from_tool_result(
+        tool_name: str,
+        tool_params: dict[str, Any],
+        tool_result: str,
+        tool_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Stub for OWUI's get_citation_source_from_tool_result.
+
+        In real OWUI, this extracts citation sources from tool results.
+        For tests, we return a simple citation based on tool output.
+        Note: tool_id parameter matches production OWUI signature.
+        """
+        import json as _json
+        sources = []
+        try:
+            result_data = _json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+            if isinstance(result_data, list):
+                for item in result_data[:5]:  # Limit to 5 sources
+                    if isinstance(item, dict):
+                        sources.append({
+                            "name": item.get("title", item.get("name", "Source")),
+                            "url": item.get("url", item.get("link", "")),
+                            "content": item.get("content", item.get("snippet", "")),
+                        })
+        except Exception:
+            pass
+        return sources
+
+    middleware_mod.apply_source_context_to_messages = _apply_source_context_to_messages
+    middleware_mod.get_citation_source_from_tool_result = _get_citation_source_from_tool_result
+    utils_pkg.middleware = middleware_mod
     open_webui.utils = utils_pkg
 
     config_mod = cast(Any, _ensure_module("open_webui.config"))
@@ -495,3 +621,30 @@ _install_fastapi_stub()
 # ─────────────────────────────────────────────────────────────────────────────
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, ModelFamily
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global Model Registry Reset (prevents catalog leakage between tests)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _reset_model_registry():
+    """Reset OpenRouterModelRegistry class-level state before each test.
+
+    The registry uses class-level attributes for catalog caching. Without this reset,
+    tests that run earlier can pollute the catalog state, causing later tests that
+    mock HTTP responses to fail because the mock is never hit (cache is still valid).
+    """
+    reg = OpenRouterModelRegistry
+    reg._models = []
+    reg._specs = {}
+    reg._id_map = {}
+    reg._last_fetch = 0.0
+    reg._lock = asyncio.Lock()
+    reg._next_refresh_after = 0.0
+    reg._consecutive_failures = 0
+    reg._last_error = None
+    reg._last_error_time = 0.0
+    ModelFamily.set_dynamic_specs(None)
+    yield

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -18,12 +19,26 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from ..storage.persistence import generate_item_id
 from ..api.transforms import ResponsesBody
-from ..core.timing_logger import timed
+from ..core.timing_logger import timed, timing_mark
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
+    from starlette.requests import Request
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+
+# Import process_tool_result from OpenWebUI (>= 0.7.0)
+# Falls back to None if not available - we handle gracefully
+try:
+    from open_webui.utils.middleware import process_tool_result as _owui_process_tool_result
+except ImportError:
+    _owui_process_tool_result = None  # type: ignore[assignment]
+
+# Import Users model for dict→UserModel conversion (required by process_tool_result)
+try:
+    from open_webui.models.users import Users as _Users
+except ImportError:
+    _Users = None  # type: ignore[assignment,misc]
 
 @dataclass(slots=True)
 class _QueuedToolCall:
@@ -47,6 +62,10 @@ class _ToolExecutionContext:
     user_id: str
     event_emitter: "EventEmitter | None"
     batch_cap: int
+    # Phase 3: Add request/user/metadata for process_tool_result() integration
+    request: "Request | None" = None
+    user: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
 
@@ -65,6 +84,90 @@ class ToolExecutor:
         self._pipe = pipe
         self.logger = logger
         self._legacy_tool_warning_emitted = False
+
+    @timed
+    async def _process_tool_result_safe(
+        self,
+        tool_name: str,
+        tool_type: str,
+        raw_result: Any,
+        context: "_ToolExecutionContext | None",
+        *,
+        is_direct_tool: bool = False,
+    ) -> tuple[str, list[dict[str, Any]], list[str]]:
+        """Process tool result to extract text, files, and embeds safely.
+
+        This wraps OpenWebUI's process_tool_result() with proper error handling
+        to ensure no tool can crash the pipe. If OpenWebUI's function is unavailable
+        or fails, we fall back to simple str() conversion.
+
+        Args:
+            tool_name: Name of the tool that produced the result
+            tool_type: Type of tool (function, mcp, external, etc.)
+            raw_result: Raw result from tool execution (before str conversion)
+            context: Tool execution context with request/user/metadata
+
+        Returns:
+            Tuple of (output_text, files_list, embeds_list)
+
+        Note:
+            Files are typically images/audio from MCP tools or OpenAPI responses.
+            Embeds are HTML snippets from HTMLResponse with Content-Disposition: inline.
+        """
+        timing_mark(f"process_result:{tool_name}")
+        files: list[dict[str, Any]] = []
+        embeds: list[str] = []
+
+        try:
+            # If OpenWebUI's process_tool_result is available and we have context, use it
+            if _owui_process_tool_result is not None and context is not None:
+                try:
+                    # Convert user dict to UserModel if needed (OWUI uses attribute access)
+                    user_obj = context.user
+                    if isinstance(user_obj, dict) and _Users is not None:
+                        user_id = user_obj.get("id")
+                        if user_id:
+                            # Use thread pool to avoid blocking event loop on sync DB call
+                            user_obj = await asyncio.to_thread(_Users.get_user_by_id, user_id)
+                    processed_result, files, embeds = _owui_process_tool_result(
+                        request=context.request,
+                        tool_function_name=tool_name,
+                        tool_result=raw_result,
+                        tool_type=tool_type,
+                        direct_tool=is_direct_tool,
+                        metadata=context.metadata,
+                        user=user_obj,
+                    )
+                    # process_tool_result returns stringified result
+                    output_text = "" if processed_result is None else str(processed_result)
+                    timing_mark(f"process_result:{tool_name}:owui_done")
+                    return output_text, files, embeds
+                except Exception as proc_exc:
+                    # OpenWebUI's function failed - fall back to simple conversion
+                    self.logger.debug(
+                        "process_tool_result failed for '%s', falling back to str(): %s",
+                        tool_name,
+                        proc_exc,
+                    )
+                    # Continue to fallback below
+
+            # Fallback: simple str() conversion (always works, never crashes)
+            output_text = "" if raw_result is None else str(raw_result)
+            timing_mark(f"process_result:{tool_name}:fallback_done")
+            return output_text, files, embeds
+
+        except Exception as exc:
+            # Ultimate safety net - should never reach here but guarantees no crash
+            self.logger.warning(
+                "Unexpected error processing result for '%s': %s",
+                tool_name,
+                exc,
+            )
+            try:
+                output_text = "" if raw_result is None else str(raw_result)
+            except Exception:
+                output_text = f"[Tool result could not be serialized: {type(raw_result).__name__}]"
+            return output_text, [], []
 
     @timed
     async def _execute_function_calls(
@@ -387,68 +490,132 @@ class ToolExecutor:
         calls: list[dict],
         tools: dict[str, dict[str, Any]],
     ) -> list[dict]:
-        """Legacy direct execution path used when tool context is unavailable."""
+        """Legacy direct execution path used when tool context is unavailable.
 
+        Note: In legacy mode, we don't have full context (request/user/metadata)
+        so file/embed extraction from process_tool_result() won't work fully.
+        This is expected - legacy mode is a fallback.
+        """
         if not self._legacy_tool_warning_emitted:
             self._legacy_tool_warning_emitted = True
             self.logger.warning("Tool queue unavailable; falling back to direct execution.")
 
-        tasks: list[Awaitable] = []
-        for call in calls:
-            raw_name = call.get("name")
-            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
-            if not tool_name:
-                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool call missing name")))
-                continue
-            tool_cfg = tools.get(tool_name)
-            if not tool_cfg:
-                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool not found")))
-                continue
-            fn = tool_cfg.get("callable")
-            if fn is None:
-                tasks.append(asyncio.sleep(0, result=RuntimeError("Tool has no callable configured")))
-                continue
-            raw_args_value = call.get("arguments")
-            if isinstance(raw_args_value, str) and not raw_args_value.strip():
-                required: list[str] = []
-                spec = tool_cfg.get("spec")
-                if isinstance(spec, dict):
-                    params = spec.get("parameters")
-                    if isinstance(params, dict):
-                        req = params.get("required")
-                        if isinstance(req, list):
-                            required = [r for r in req if isinstance(r, str) and r.strip()]
-                if required:
-                    tasks.append(asyncio.sleep(0, result=RuntimeError("Missing tool arguments (empty string)")))
-                    continue
-                raw_args_value = "{}"
-            raw_args = raw_args_value if raw_args_value is not None else "{}"
-            try:
-                args = self._pipe._parse_tool_arguments(raw_args)
-            except Exception as exc:
-                tasks.append(asyncio.sleep(0, result=RuntimeError(f"Invalid arguments: {exc}")))
-                continue
-            if inspect.iscoroutinefunction(fn):
-                tasks.append(fn(**args))
-            else:
-                tasks.append(asyncio.to_thread(fn, **args))
+        # Track tasks with their metadata for result processing
+        task_entries: list[tuple[dict, dict[str, Any] | None, Awaitable]] = []
 
+        for call in calls:
+            timing_mark(f"legacy_tool_prep:{call.get('name', 'unknown')}")
+            try:
+                raw_name = call.get("name")
+                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                if not tool_name:
+                    task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError("Tool call missing name"))))
+                    continue
+
+                tool_cfg = tools.get(tool_name)
+                if not tool_cfg:
+                    task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError("Tool not found"))))
+                    continue
+
+                fn = tool_cfg.get("callable")
+                if fn is None:
+                    task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError("Tool has no callable configured"))))
+                    continue
+
+                raw_args_value = call.get("arguments")
+                if isinstance(raw_args_value, str) and not raw_args_value.strip():
+                    required: list[str] = []
+                    try:
+                        spec = tool_cfg.get("spec")
+                        if isinstance(spec, dict):
+                            params = spec.get("parameters")
+                            if isinstance(params, dict):
+                                req = params.get("required")
+                                if isinstance(req, list):
+                                    required = [r for r in req if isinstance(r, str) and r.strip()]
+                    except Exception:
+                        pass  # Non-critical - continue with empty required list
+                    if required:
+                        task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError("Missing tool arguments (empty string)"))))
+                        continue
+                    raw_args_value = "{}"
+
+                raw_args = raw_args_value if raw_args_value is not None else "{}"
+                try:
+                    args = self._pipe._parse_tool_arguments(raw_args)
+                except Exception as exc:
+                    task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError(f"Invalid arguments: {exc}"))))
+                    continue
+
+                if inspect.iscoroutinefunction(fn):
+                    task_entries.append((call, tool_cfg, fn(**args)))
+                else:
+                    task_entries.append((call, tool_cfg, asyncio.to_thread(fn, **args)))
+
+            except Exception as prep_exc:
+                # Safety net for any unexpected error during preparation
+                self.logger.debug("Tool preparation failed for '%s': %s", call.get("name"), prep_exc)
+                task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError(f"Preparation error: {prep_exc}"))))
+
+        # Execute all tasks, catching exceptions per-task
+        tasks = [entry[2] for entry in task_entries]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+
         outputs: list[dict] = []
-        for call, result in zip(calls, results):
-            if isinstance(result, Exception):
-                status = "failed"
-                output_text = f"Tool error: {result}"
-            else:
-                status = "completed"
-                output_text = "" if result is None else str(result)
-            outputs.append(
-                self._build_tool_output(
-                    call,
-                    output_text,
-                    status=status,
+        for (call, tool_cfg, _), result in zip(task_entries, results):
+            tool_name = call.get("name", "unknown")
+            timing_mark(f"legacy_tool_result:{tool_name}")
+
+            try:
+                if isinstance(result, Exception):
+                    status = "failed"
+                    output_text = f"Tool error: {result}"
+                else:
+                    status = "completed"
+                    # Get tool type for process_tool_result
+                    tool_type = "function"
+                    if tool_cfg is not None:
+                        try:
+                            tool_type = (tool_cfg.get("type") or "function").lower()
+                        except Exception:
+                            pass
+
+                    # Use safe result processing (no context in legacy mode)
+                    is_direct = bool(tool_cfg.get("direct")) if tool_cfg else False
+                    output_text, files, embeds = await self._process_tool_result_safe(
+                        tool_name=tool_name,
+                        tool_type=tool_type,
+                        raw_result=result,
+                        context=None,  # Legacy mode has no context
+                        is_direct_tool=is_direct,
+                    )
+
+                    # Log if we extracted files/embeds (won't be emitted in legacy mode)
+                    if files or embeds:
+                        self.logger.debug(
+                            "Tool '%s' produced %d files, %d embeds (not emitted in legacy mode)",
+                            tool_name, len(files), len(embeds),
+                        )
+
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        output_text,
+                        status=status,
+                    )
                 )
-            )
+
+            except Exception as output_exc:
+                # Safety net - ensure we always produce an output
+                self.logger.warning("Failed to build output for '%s': %s", tool_name, output_exc)
+                outputs.append(
+                    self._build_tool_output(
+                        call,
+                        f"Tool output error: {output_exc}",
+                        status="failed",
+                    )
+                )
+
         return outputs
 
     @timed
@@ -484,6 +651,8 @@ class ToolExecutor:
         output_text: str,
         *,
         status: str = "completed",
+        files: list[dict[str, Any]] | None = None,
+        embeds: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build standardized tool output payload.
 
@@ -491,9 +660,11 @@ class ToolExecutor:
             call: Original tool call dict
             output_text: Tool output or error message
             status: Execution status (completed, failed, skipped, etc.)
+            files: Optional list of extracted files (images, audio, etc.)
+            embeds: Optional list of HTML embed strings
 
         Returns:
-            Responses API compatible tool output item
+            Responses API compatible tool output item with optional files/embeds
         """
         call_id = call.get("call_id") or generate_item_id()
         # OpenRouter Responses schema does not accept arbitrary status values (e.g. "failed")
@@ -501,10 +672,16 @@ class ToolExecutor:
         # the accepted enum for compatibility.
         allowed_statuses = {"completed", "incomplete", "in_progress"}
         normalized_status = status if status in allowed_statuses else "completed"
-        return {
+        result: dict[str, Any] = {
             "type": "function_call_output",
             "id": generate_item_id(),
             "status": normalized_status,
             "call_id": call_id,
             "output": output_text,
         }
+        # Include files/embeds if provided (for tool card HTML attributes)
+        if files:
+            result["files"] = files
+        if embeds:
+            result["embeds"] = embeds
+        return result

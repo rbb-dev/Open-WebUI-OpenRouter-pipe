@@ -56,7 +56,7 @@ export WEBUI_SECRET_KEY="$(openssl rand -base64 32)"
 
 **Important:** `WEBUI_SECRET_KEY` protects *secret valve storage*. It does not, by itself, enable or disable artifact encryption. Artifact encryption is controlled by `ARTIFACT_ENCRYPTION_KEY` and related valves (next section).
 
-**Warning:** If a secret valve value is stored with the `encrypted:` prefix but `WEBUI_SECRET_KEY` is missing or does not match the key used when the value was stored, Open WebUI will be unable to decrypt it at runtime. In that situation, `EncryptedStr.decrypt()` returns a different string than the intended plaintext. Operationally, this can cause:
+**Warning:** If a secret valve value is stored with the `encrypted:` prefix but `WEBUI_SECRET_KEY` is missing or does not match the key used when the value was stored, `EncryptedStr.decrypt()` returns the original `encrypted:...` prefixed string unchanged (the ciphertext is not decrypted). Operationally, this can cause:
 
 - Provider authentication failures (if `API_KEY` cannot be recovered).
 - A different artifact storage table namespace (if `ARTIFACT_ENCRYPTION_KEY` cannot be recovered), making previously persisted artifacts appear “missing” until the correct `WEBUI_SECRET_KEY` is restored.
@@ -117,7 +117,7 @@ Other schemes are rejected.
 ### SSRF guard behavior
 
 When `ENABLE_SSRF_PROTECTION=True` (default):
-- The pipe blocks remote fetches to private/internal address ranges (loopback, RFC1918, link-local, multicast/reserved ranges, etc.).
+- The pipe blocks remote fetches to private/internal address ranges (loopback, RFC1918, link-local, multicast, reserved, and unspecified ranges).
 - Downloads that fail SSRF checks are rejected and logged; the pipe proceeds without crashing the request.
 
 When `ENABLE_SSRF_PROTECTION=False`:
@@ -135,6 +135,10 @@ Recommended operator action:
 - Keep SSRF protection enabled.
 - Apply outbound egress controls at the network layer (proxy allowlists, egress firewall rules).
 - HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
+
+### Debug log safety
+
+When debug logging is active, the pipe automatically redacts large base64 data URLs in log output via `_redact_payload_blobs()`, preventing multi-megabyte log entries and reducing risk of sensitive data leakage in debug logs.
 
 ---
 

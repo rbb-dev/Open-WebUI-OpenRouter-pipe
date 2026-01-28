@@ -86,6 +86,7 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `TOOL_EXECUTION_MODE` | `Literal["Pipeline","Open-WebUI"]` | `Pipeline` | Select the tool execution backend. `Pipeline` executes tool calls inside the pipe (batching/breakers/special backends). `Open-WebUI` bypasses the internal executor and returns tool calls to Open WebUI to execute; tool result persistence in the pipe is disabled in this mode. |
+| `SHOW_TOOL_CARDS` | `bool` | `False` | Show collapsible cards in chat with tool name, arguments, and results. When disabled (default), tools run silently without visual status indicators. Only applies when `TOOL_EXECUTION_MODE="Pipeline"`. |
 | `ENABLE_STRICT_TOOL_CALLING` | `bool` | `True` | When True, converts Open WebUI registry tools to strict JSON Schema for more predictable function calling. Applies only when `TOOL_EXECUTION_MODE="Pipeline"` (pass-through forwards schemas as-is). |
 | `MAX_FUNCTION_CALL_LOOPS` | `int` | `25` | Maximum number of full “model → tools → model” execution cycles allowed per request. |
 | `MAX_PARALLEL_TOOLS_GLOBAL` | `int` | `200` | Maximum number of tool executions allowed concurrently per process. |

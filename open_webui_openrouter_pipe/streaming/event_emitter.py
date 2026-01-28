@@ -381,6 +381,70 @@ class EventEmitterHandler:
 
 
     @timed
+    async def _emit_files(
+        self,
+        event_emitter: EventEmitter | None,
+        files: list[dict[str, Any]],
+    ) -> None:
+        """Emit extracted files from tool results to the UI.
+
+        Files typically contain images, audio, or other media extracted from
+        tool execution results (e.g., image generation tools, MCP multipart results).
+
+        Args:
+            event_emitter: Event emitter for UI communication
+            files: List of file dicts with 'type' and 'url' or 'content' keys
+                   Example: [{"type": "image", "url": "/api/v1/files/..."}]
+
+        Note:
+            This method is called after tool execution when files are extracted
+            from tool results via OpenWebUI's process_tool_result() function.
+        """
+        if event_emitter is None or not files:
+            return
+
+        try:
+            await event_emitter({
+                "type": "files",
+                "data": {"files": files},
+            })
+        except Exception as exc:
+            self.logger.debug("Failed to emit files event: %s", exc)
+
+
+    @timed
+    async def _emit_embeds(
+        self,
+        event_emitter: EventEmitter | None,
+        embeds: list[str],
+    ) -> None:
+        """Emit embedded HTML content from tool results to the UI.
+
+        Embeds are HTML snippets (typically iframes or interactive components)
+        that should be displayed inline in the chat. They come from tools that
+        return HTMLResponse with Content-Disposition: inline.
+
+        Args:
+            event_emitter: Event emitter for UI communication
+            embeds: List of HTML strings to embed in the response
+
+        Note:
+            This method is called after tool execution when HTML embeds are
+            extracted from tool results via OpenWebUI's process_tool_result() function.
+        """
+        if event_emitter is None or not embeds:
+            return
+
+        try:
+            await event_emitter({
+                "type": "embeds",
+                "data": {"embeds": embeds},
+            })
+        except Exception as exc:
+            self.logger.debug("Failed to emit embeds event: %s", exc)
+
+
+    @timed
     async def _emit_completion(
         self,
         event_emitter: EventEmitter | None,

@@ -718,6 +718,11 @@ class RequestOrchestrator:
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
         anthropic_prompt_cache_retry_attempted = False
+        self.logger.debug(
+            "Orchestrator: __request__ type=%s, is_none=%s",
+            type(__request__).__name__,
+            __request__ is None,
+        )
         while True:
             try:
                 if responses_body.stream:

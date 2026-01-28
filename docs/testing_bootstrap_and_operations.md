@@ -99,7 +99,7 @@ The suite is organized by subsystem. Common entry points:
 
 | Step | Why |
 | --- | --- |
-| Confirm Open WebUI ≥ 0.6.28 | The pipe manifest requires 0.6.28. |
+| Confirm Open WebUI ≥ 0.7.0 | The pipe manifest requires 0.7.0. |
 | Set `OPENROUTER_API_KEY` (valve or env) | Required for provider requests. |
 | Configure `WEBUI_SECRET_KEY` | Recommended so Open WebUI can encrypt/decrypt secret valve values stored via `EncryptedStr`. |
 | Decide on `ARTIFACT_ENCRYPTION_KEY` | Set before first launch if you plan to encrypt persisted artifacts; rotating later creates a new table and strands old rows. |

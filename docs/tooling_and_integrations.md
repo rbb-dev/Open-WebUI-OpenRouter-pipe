@@ -107,6 +107,26 @@ Notes:
 
 ---
 
+## Tool execution cards (`SHOW_TOOL_CARDS`)
+
+When `SHOW_TOOL_CARDS` is enabled, the pipe displays collapsible cards in the chat UI showing tool execution status:
+
+- **In-progress cards**: Appear when a tool starts executing, showing the tool name and arguments.
+- **Completed cards**: Replace in-progress cards when execution finishes, showing tool name, arguments, and results.
+
+By default, `SHOW_TOOL_CARDS` is **disabled** for a cleaner chat experience. Tools execute silently without visual indicators.
+
+Enable this valve when you want:
+- Debugging visibility into tool execution
+- Users to see what tools are running and their outputs
+- Transparency about tool arguments and results
+
+This setting is available as both an admin valve and a user valve (users can override the admin default).
+
+**Note:** This feature only applies when `TOOL_EXECUTION_MODE="Pipeline"`. In `Open-WebUI` mode, the pipe doesn't execute tools itself, so it cannot display execution cards.
+
+---
+
 ## Concurrency, batching, and timeouts (per request)
 
 Tools are executed via a per-request worker pool backed by a bounded queue:

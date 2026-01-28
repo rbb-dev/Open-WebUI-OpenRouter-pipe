@@ -1,4 +1,45 @@
 
+### 🐛 Bug Fixes
+
+- Use getattr for rowcount to satisfy pyright
+- Add fetch-depth: 0 for release notes generation
+
+### ⚙️ Miscellaneous Tasks
+
+- Rename job to 'Tests & Type Check'
+
+### 🐛 Bug Fixes
+
+- Make new models private by default (fail-safe)
+- Add type guard for optional error in test assertion
+- Use upsert for session log lock to avoid duplicate key errors
+
+### ⚙️ Miscellaneous Tasks
+
+- Use uv for faster dependency installation
+- Bump version to 2.0.5
+
+### 🚀 Features
+
+- Add dynamic per-model provider routing filters
+
+### 🐛 Bug Fixes
+
+- Add 404 to special_statuses for OpenRouterAPIError formatting
+
+### 💼 Other
+
+- Merge branch 'dev'
+- Merge branch 'refs/heads/dev'
+
+### 📚 Documentation
+
+- Update install URLs to use bundled releases
+
+### ⚙️ Miscellaneous Tasks
+
+- Generate release notes with clickable commit links
+
 ### 🚀 Features
 
 - Implement major overhaul for concurrency and resilience
@@ -31,10 +72,17 @@
 - Modularize into package. add timing instrumentation
 - Enable direct uploads by default with blocklist for incompatible models
 - Assemble per-message session log zips and capture full OpenRouter I/O
+- Default new OpenRouter models to admins-only access
+- Add model variants support (v2.0.3)
+- Add OpenRouter presets support
+- Add OpenRouter presets support
+- Add OpenRouter presets support
+- Add bundler script and CI workflow
+- Build bundled artifact on all branches
+- Add tag-based releases and auto-updating latest release
 
 ### 🐛 Bug Fixes
 
-- Default remote URL handling to HTTPS-only, add HTTP allowlist valves, and update SSRF guidance to make the secure-by-default policy explicit.
 - Fix model timed model refresh bug
 - Preserve responses parameters
 - Keep optional tool schema fields optional
@@ -78,6 +126,12 @@
 - Use OWUI metadata tool registry for native tools
 - Bypass OWUI File Context for diverted direct uploads
 - Harden streaming and breaker edge cases
+- Use aclose() for async Redis client cleanup
+- Default to HTTPS-only remote fetches
+- Resolve all pyright type checking errors (283→0)
+- Preserve preset field through responses→chat conversion
+- Add permissions for release creation
+- Add permissions for release creation
 
 ### 💼 Other
 
@@ -175,16 +229,12 @@ and ensures any remaining chunk is emitted before reasoning completes
 to prevent lost content.
 
 🤖 Generated with Claude Code
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Add IDE and tooling directories to gitignore
 
 Exclude Claude Code and VSCode configuration directories from version
 control as they contain local development environment settings.
 
 🤖 Generated with Claude Code
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Replace image link in README
 
 Updated image in README with a new link.
@@ -292,10 +342,6 @@ Implements complete file, image, and audio input handling for OpenRouter Respons
 
 ## Dependencies
 - Added httpx requirement for HTTP client operations
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Add production-ready configurable size limits for multimodal inputs
 
 Replaced all hardcoded size limits with configurable valves to support different deployment scenarios (development, staging, production) without code changes.
@@ -335,10 +381,6 @@ This one-time processing cost at message send time prevents permanent data loss 
 - **Memory Safety**: Early validation prevents issues from oversized base64 payloads
 - **User Visibility**: Size limit violations clearly logged with specific valve values
 - **Production Ready**: Sensible defaults with safe bounds suitable for production deployment
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Add audio file MIME type detection for automatic format conversion
 
 When users upload audio files (WAV, MP3) to Open WebUI, the pipe now detects the audio MIME type and automatically routes them to the audio input handler instead of treating them as regular files.
@@ -382,13 +424,9 @@ To test:
 1. Upload a WAV or MP3 file to a chat using one of the supported audio models
 2. The pipe should detect the audio MIME type and convert the format
 3. Check logs for "Detected audio file (MIME: audio/xxx), routing to audio handler"
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Revert "Add audio file MIME type detection for automatic format conversion"
 
-This reverts commit 4453f219b392e4cb30527a7769fc5fe0a56384bd.
+This reverts commit 130bbfa4a5277c768c74feaa047d688869082408.
 - Add comprehensive multimodal support improvements
 
 Major Changes:
@@ -424,10 +462,6 @@ Technical Notes:
 - Videos NOT downloaded/stored (too large) - URLs passed through
 - IDE warnings about 'self' in nested functions are false positives (closure scope)
 - All transformers follow same async pattern with error handling
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Add critical security fixes and improvements
 
 CRITICAL Security Fixes:
@@ -598,10 +632,6 @@ trying to access these variables which didn't exist in static method scope.
 
 The method now accepts these variables as optional parameters, allowing them to be passed
 when available while maintaining backward compatibility by defaulting to None.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Fix test_transform_messages.py for instance method change
 
 Updated _run_transform() to instantiate ResponsesBody with required fields
@@ -612,20 +642,12 @@ All 3 transform_messages tests now pass:
 - test_transform_messages_skips_orphaned_function_calls
 - test_transform_messages_keeps_complete_function_call_pairs
 - test_transform_messages_skips_orphaned_function_call_outputs
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Remove obsolete limits field check for max_completion_tokens
 
 OpenRouter API no longer returns the limits field. All 330 models
 in the current API provide max_completion_tokens via top_provider
 instead. Simplified the extraction logic to only read from
 top_provider.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Update SessionLogger console format to match loguru style
 
 Changed console formatter to include:
@@ -636,19 +658,11 @@ Changed console formatter to include:
 Removed session/user fields from console output as they're rarely
 populated outside of active request contexts. The cleaner format
 now matches loguru's style used by Open-WebUI.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Normalize line endings from CRLF to LF across all files
 
 Converted all text files to use Unix-style line endings (LF) instead of
 Windows-style (CRLF) for better cross-platform compatibility and cleaner
 diffs in version control.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 - Align remote download caps with RAG settings
 
 - openrouter_responses_pipe.py: read Open WebUI config for FILE_MAX_SIZE/BYPASS flags, bump REMOTE_FILE_MAX_SIZE_MB defaults, enforce effective limits, and tighten docs/comments.
@@ -806,6 +820,12 @@ Updated the documentation relationship map to use Mermaid syntax and removed the
 
 Removed redundant details from the documentation section and streamlined the content for clarity.
 - Delete work files
+- Update QUEUE_MAXSIZE
+- Update readme and venv script
+- Merge branch 'v2.0.3'
+- Merge branch 'v2.0.3'
+- Merge branch 'v2.0.3'
+- Merge v2.0.3: presets support, bundler, CI workflow
 
 ### 🚜 Refactor
 
@@ -830,6 +850,7 @@ Removed redundant details from the documentation section and streamlined the con
 - Align Python version with Open WebUI
 - Explain Direct Uploads vs OWUI File Context
 - Clarify stub auto-update and fork behavior
+- Note OpenRouter preset field issue in testing
 
 ### 🧪 Testing
 
@@ -840,6 +861,8 @@ Removed redundant details from the documentation section and streamlined the con
 - Expand coverage for streaming and helper utilities
 - Set stream=true in streaming loop tests
 - Strengthen coverage and reduce drift
+- Consolidate test suite and fix async cleanup issues
+- Tolerate extra timing events in logger tests
 
 ### ⚙️ Miscellaneous Tasks
 
@@ -852,6 +875,11 @@ Removed redundant details from the documentation section and streamlined the con
 - Redact data-url base64 blobs in debug logs
 - Checkpoint 1.1.1
 - Consolidate shared helpers and constants
+- Add GitHub Actions workflow with venv + deps
+- Clean up aiohttp ClientSession leaks in tests
+- Install aioresponses for tests
+- Bump version to v2.0.2
+- Trigger bundle workflow
 
 ### 🛡️ Security
 
