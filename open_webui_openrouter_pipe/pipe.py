@@ -620,6 +620,8 @@ class Pipe:
     @timed
     def _maybe_start_log_worker(self) -> None:
         """Ensure the async logging queue + worker are started."""
+        if getattr(self, "_closed", False):
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -654,18 +656,31 @@ class Pipe:
 
         @timed
         async def _ensure_worker() -> None:
-            async with pipe_self._log_worker_lock:  # type: ignore[arg-type]
-                if pipe_self._log_worker_task and not pipe_self._log_worker_task.done():
-                    return
-                if pipe_self._log_queue is None:
-                    pipe_self._log_queue = asyncio.Queue(maxsize=1000)
-                    SessionLogger.set_log_queue(pipe_self._log_queue)
-                pipe_self._log_worker_task = loop.create_task(
-                    Pipe._log_worker_loop(pipe_self._log_queue),
-                    name="openrouter-log-worker",
-                )
+            if getattr(pipe_self, "_closed", False):
+                return
+            try:
+                async with pipe_self._log_worker_lock:  # type: ignore[arg-type]
+                    if getattr(pipe_self, "_closed", False):
+                        return
+                    if pipe_self._log_worker_task and not pipe_self._log_worker_task.done():
+                        return
+                    if pipe_self._log_queue is None:
+                        pipe_self._log_queue = asyncio.Queue(maxsize=1000)
+                        SessionLogger.set_log_queue(pipe_self._log_queue)
+                    pipe_self._log_worker_task = loop.create_task(
+                        Pipe._log_worker_loop(pipe_self._log_queue),
+                        name="openrouter-log-worker",
+                    )
+            except Exception:
+                # Never let background startup tasks create noisy "Task exception was never retrieved"
+                pipe_self.logger.debug("Log worker startup task failed", exc_info=True)
 
-        loop.create_task(_ensure_worker())
+        def _consume_background_exception(task: asyncio.Task) -> None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.exception()
+
+        start_task = loop.create_task(_ensure_worker(), name="openrouter-log-worker-start")
+        start_task.add_done_callback(_consume_background_exception)
 
     @timed
     def _maybe_start_redis(self) -> None:
@@ -2824,8 +2839,14 @@ class Filter:
             except Exception:  # pragma: no cover - defensive for older asyncio implementations
                 worker_loop = None
             if worker_loop is None or worker_loop is asyncio.get_running_loop():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await worker
+                try:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await worker
+                except RuntimeError as exc:
+                    # Shutdown/reload edge-case: avoid noisy logs when a stale coroutine/task leaks through.
+                    if "cannot reuse already awaited coroutine" not in str(exc):
+                        raise
+                    self.logger.debug("Ignoring log worker shutdown error: %s", exc)
             else:
                 self.logger.debug(
                     "Skipping await for log worker bound to a different event loop during close()."
@@ -2875,7 +2896,13 @@ class Filter:
 
         if loop and loop.is_running():
             try:
-                loop.create_task(self.close())
+                task = loop.create_task(self.close(), name="openrouter-pipe-close")
+
+                def _consume_background_exception(task: asyncio.Task) -> None:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        task.exception()
+
+                task.add_done_callback(_consume_background_exception)
             except RuntimeError:
                 pass
         else:
@@ -3728,6 +3755,42 @@ class Filter:
         if not self._event_emitter_handler:
             return
         await self._event_emitter_handler._emit_citation(event_emitter, citation)
+
+    @timed
+    async def _emit_files(
+        self,
+        event_emitter: Optional[EventEmitter],
+        files: list[dict[str, Any]],
+    ):
+        """Emit extracted files from tool results to the UI.
+
+        Files are typically images/audio from MCP tools or OpenAPI responses.
+        Delegates to EventEmitterHandler._emit_files.
+        """
+        if not self._event_emitter_handler:
+            return
+        try:
+            await self._event_emitter_handler._emit_files(event_emitter, files)
+        except Exception as exc:
+            self.logger.debug("Failed to emit files: %s", exc)
+
+    @timed
+    async def _emit_embeds(
+        self,
+        event_emitter: Optional[EventEmitter],
+        embeds: list[str],
+    ):
+        """Emit embedded HTML content from tool results to the UI.
+
+        Embeds are HTML snippets from tools returning HTMLResponse.
+        Delegates to EventEmitterHandler._emit_embeds.
+        """
+        if not self._event_emitter_handler:
+            return
+        try:
+            await self._event_emitter_handler._emit_embeds(event_emitter, embeds)
+        except Exception as exc:
+            self.logger.debug("Failed to emit embeds: %s", exc)
 
     @timed
     async def _emit_completion(
@@ -4942,6 +5005,10 @@ class Filter:
                     user_id=job.user_id,
                     event_emitter=stream_emitter or job.event_emitter,
                     batch_cap=job.valves.TOOL_BATCH_CAP,
+                    # Phase 3: Add context for process_tool_result() integration
+                    request=job.request,
+                    user=job.user,
+                    metadata=job.metadata,
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
                 for worker_idx in range(worker_count):
@@ -5777,7 +5844,7 @@ class Filter:
         self.logger.debug("Batched %s tool(s) for %s", len(batch), batch[0].call.get("name"))
         tasks = [self._invoke_tool_call(item, context) for item in batch]
         gather_coro = asyncio.gather(*tasks, return_exceptions=True)
-        results: list[tuple[str, str] | BaseException] = []
+        results: list[tuple[str, str, list[dict[str, Any]], list[str]] | BaseException] = []
         try:
             if context.batch_timeout:
                 results = await asyncio.wait_for(gather_coro, timeout=context.batch_timeout)
@@ -5822,8 +5889,8 @@ class Filter:
                     status="failed",
                 )
             else:
-                status, text = result
-                payload = self._build_tool_output(item.call, text, status=status)
+                status, text, files, embeds = result
+                payload = self._build_tool_output(item.call, text, status=status, files=files, embeds=embeds)
                 tool_type = (item.tool_cfg.get("type") or "function").lower()
                 self._reset_tool_failure_type(context.user_id, tool_type)
             item.future.set_result(payload)
@@ -5833,7 +5900,7 @@ class Filter:
         self,
         item: _QueuedToolCall,
         context: _ToolExecutionContext,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
         """Invoke a single tool call with circuit breaker protection."""
         tool_type = (item.tool_cfg.get("type") or "function").lower()
         if not self._tool_type_allows(context.user_id, tool_type):
@@ -5841,6 +5908,8 @@ class Filter:
             return (
                 "skipped",
                 f"Tool '{item.call.get('name')}' temporarily disabled due to repeated errors.",
+                [],
+                [],
             )
 
         async with context.per_request_semaphore:
@@ -5855,16 +5924,67 @@ class Filter:
         item: _QueuedToolCall,
         context: _ToolExecutionContext,
         tool_type: str,
-    ) -> tuple[str, str]:
-        """Run a tool with retry logic."""
+    ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
+        """Run a tool with retry logic.
+
+        This method executes the tool callable with timeout and optional retries,
+        then processes the result to extract text, files, and embeds.
+        Files and embeds are emitted to UI via event_emitter AND returned for
+        inclusion in tool card HTML attributes.
+
+        Returns:
+            Tuple of (status, text, files, embeds) where:
+            - status: "completed", "failed", or "skipped"
+            - text: Processed tool output as string
+            - files: List of file dicts (e.g., [{"type": "image", "url": "..."}])
+            - embeds: List of HTML embed strings
+        """
+        tool_name = item.call.get("name", "unknown")
+        timing_mark(f"tool_run:{tool_name}:start")
+
         fn = item.tool_cfg.get("callable")
         if not callable(fn):
-            message = f"Tool '{item.call.get('name')}' is missing a callable handler."
+            message = f"Tool '{tool_name}' is missing a callable handler."
             self.logger.warning("%s", message)
             self._record_tool_failure_type(context.user_id, tool_type)
-            return ("failed", message)
+            return ("failed", message, [], [])
         fn_to_call = cast(ToolCallable, fn)
         timeout = float(context.timeout)
+
+        # Helper to process result and emit files/embeds
+        async def _process_and_emit(raw_result: Any) -> tuple[str, list[dict[str, Any]], list[str]]:
+            timing_mark(f"tool_run:{tool_name}:processing")
+            try:
+                # Use the tool executor's safe processing method
+                executor = self._ensure_tool_executor()
+                text, files, embeds = await executor._process_tool_result_safe(
+                    tool_name=tool_name,
+                    tool_type=tool_type,
+                    raw_result=raw_result,
+                    context=context,
+                )
+
+                # Emit files if any were extracted
+                if files and context.event_emitter:
+                    try:
+                        await self._emit_files(context.event_emitter, files)
+                        timing_mark(f"tool_run:{tool_name}:files_emitted")
+                    except Exception as emit_exc:
+                        self.logger.debug("Failed to emit files for '%s': %s", tool_name, emit_exc)
+
+                # Emit embeds if any were extracted
+                if embeds and context.event_emitter:
+                    try:
+                        await self._emit_embeds(context.event_emitter, embeds)
+                        timing_mark(f"tool_run:{tool_name}:embeds_emitted")
+                    except Exception as emit_exc:
+                        self.logger.debug("Failed to emit embeds for '%s': %s", tool_name, emit_exc)
+
+                return text, files, embeds
+            except Exception as proc_exc:
+                # Safety net - never crash, just return stringified result
+                self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc)
+                return ("" if raw_result is None else str(raw_result)), [], []
 
         # Import tenacity for retries
         try:
@@ -5872,19 +5992,21 @@ class Filter:
         except ImportError:
             # Fallback without retries if tenacity not available
             try:
+                timing_mark(f"tool_run:{tool_name}:executing_no_retry")
                 result = await asyncio.wait_for(
                     self._call_tool_callable(fn_to_call, item.args),
                     timeout=timeout,
                 )
                 self._reset_tool_failure_type(context.user_id, tool_type)
-                text = "" if result is None else str(result)
-                return ("completed", text)
+                text, files, embeds = await _process_and_emit(result)
+                timing_mark(f"tool_run:{tool_name}:done")
+                return ("completed", text, files, embeds)
             except Exception as exc:
                 self._record_tool_failure_type(context.user_id, tool_type)
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(
                         "Tool '%s' execution failed.",
-                        item.call.get("name"),
+                        tool_name,
                         exc_info=True,
                     )
                 raise
@@ -5898,23 +6020,25 @@ class Filter:
         try:
             async for attempt in retryer:
                 with attempt:
+                    timing_mark(f"tool_run:{tool_name}:attempt_{attempt.retry_state.attempt_number}")
                     result = await asyncio.wait_for(
                         self._call_tool_callable(fn_to_call, item.args),
                         timeout=timeout,
                     )
                     self._reset_tool_failure_type(context.user_id, tool_type)
-                    text = "" if result is None else str(result)
-                    return ("completed", text)
+                    text, files, embeds = await _process_and_emit(result)
+                    timing_mark(f"tool_run:{tool_name}:done")
+                    return ("completed", text, files, embeds)
         except Exception as exc:
             self._record_tool_failure_type(context.user_id, tool_type)
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Tool '%s' execution failed.",
-                    item.call.get("name"),
+                    tool_name,
                     exc_info=True,
                 )
             raise
-        return ("failed", "Tool execution produced no output.")
+        return ("failed", "Tool execution produced no output.", [], [])
 
     @timed
     async def _call_tool_callable(self, fn: ToolCallable, args: dict[str, Any]) -> Any:
@@ -6715,9 +6839,13 @@ class Filter:
         output_text: str,
         *,
         status: str = "completed",
+        files: list[dict[str, Any]] | None = None,
+        embeds: list[str] | None = None,
     ) -> dict[str, Any]:
         """Delegate to ToolExecutor._build_tool_output."""
-        return self._ensure_tool_executor()._build_tool_output(call, output_text, status=status)
+        return self._ensure_tool_executor()._build_tool_output(
+            call, output_text, status=status, files=files, embeds=embeds
+        )
 
 
     # ----------------------------------------------------------------------

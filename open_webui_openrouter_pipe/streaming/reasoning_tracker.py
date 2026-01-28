@@ -580,7 +580,10 @@ class ReasoningTracker:
         }
 
         if self._event_emitter:
-            await self._pipe._emit_citation(self._event_emitter, citation)
+            try:
+                await self._pipe._emit_citation(self._event_emitter, citation)
+            except Exception as exc:
+                self._pipe.logger.debug("Failed to emit reasoning citation: %s", exc)
 
         self.emitted_citations.append(citation)
         return citation

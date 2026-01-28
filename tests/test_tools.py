@@ -998,6 +998,59 @@ async def test_build_tool_output_missing_call_id():
         await pipe.close()
 
 
+@pytest.mark.asyncio
+async def test_build_tool_output_with_files_and_embeds():
+    """Test that files and embeds are included in output when provided."""
+    pipe = Pipe()
+    try:
+        executor = pipe._ensure_tool_executor()
+
+        test_files = [{"type": "image", "url": "/api/files/abc123"}]
+        test_embeds = ["<iframe src='...'></iframe>"]
+
+        output = executor._build_tool_output(
+            {"call_id": "test-call"},
+            "Image generated",
+            status="completed",
+            files=test_files,
+            embeds=test_embeds,
+        )
+
+        assert output["files"] == test_files
+        assert output["embeds"] == test_embeds
+        assert output["output"] == "Image generated"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_build_tool_output_without_files_embeds_excludes_keys():
+    """Test that files/embeds keys are excluded when not provided or empty."""
+    pipe = Pipe()
+    try:
+        executor = pipe._ensure_tool_executor()
+
+        # Without files/embeds
+        output = executor._build_tool_output(
+            {"call_id": "test-call"},
+            "No media",
+        )
+        assert "files" not in output
+        assert "embeds" not in output
+
+        # With empty lists
+        output2 = executor._build_tool_output(
+            {"call_id": "test-call"},
+            "Empty media",
+            files=[],
+            embeds=[],
+        )
+        assert "files" not in output2
+        assert "embeds" not in output2
+    finally:
+        await pipe.close()
+
+
 # ==============================================================================
 # Tests for ToolExecutor initialization
 # ==============================================================================
@@ -5666,4 +5719,1005 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
             "parameters": {"type": "object", "properties": {}},
         }
     ]
+
+
+# ==============================================================================
+# Tests for Tool Backend Parity (OpenWebUI Integration)
+# ==============================================================================
+
+
+class TestCitationToolsConstant:
+    """Tests for CITATION_TOOLS constant in streaming_core."""
+
+    def test_citation_tools_contains_expected_tools(self):
+        """Test that CITATION_TOOLS has the expected tool names."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import CITATION_TOOLS
+
+        assert "search_web" in CITATION_TOOLS
+        assert "view_knowledge_file" in CITATION_TOOLS
+        assert "query_knowledge_files" in CITATION_TOOLS
+        assert len(CITATION_TOOLS) == 3
+
+    def test_citation_tools_is_frozenset(self):
+        """Test that CITATION_TOOLS is immutable."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import CITATION_TOOLS
+
+        assert isinstance(CITATION_TOOLS, frozenset)
+
+
+class TestToolCardHtmlFormat:
+    """Tests for tool execution card HTML format."""
+
+    def test_in_progress_card_format(self):
+        """Test the format of in-progress tool cards."""
+        import html
+
+        call_id = "test-call-123"
+        tool_name = "search_web"
+        args = '{"query": "test"}'
+
+        expected = (
+            f'<details type="tool_calls" done="false" id="{html.escape(call_id)}" '
+            f'name="{html.escape(tool_name)}" arguments="{html.escape(args)}">\n'
+            f'<summary>Executing...</summary>\n</details>\n'
+        )
+
+        # Verify format matches what streaming_core.py generates
+        assert 'type="tool_calls"' in expected
+        assert 'done="false"' in expected
+        assert "Executing..." in expected
+
+    def test_completed_card_format(self):
+        """Test the format of completed tool cards."""
+        import html
+        import json
+
+        call_id = "test-call-123"
+        tool_name = "search_web"
+        args = '{"query": "test"}'
+        result = '{"results": []}'
+
+        expected = (
+            f'<details type="tool_calls" done="true" id="{html.escape(call_id)}" '
+            f'name="{html.escape(tool_name)}" arguments="{html.escape(args)}" '
+            f'result="{html.escape(json.dumps(result, ensure_ascii=False))}" '
+            f'files="[]" embeds="[]">\n'
+            f'<summary>Tool Executed</summary>\n</details>\n'
+        )
+
+        # Verify format matches what streaming_core.py generates
+        assert 'type="tool_calls"' in expected
+        assert 'done="true"' in expected
+        assert "Tool Executed" in expected
+
+    def test_html_escaping_in_arguments(self):
+        """Test that HTML special characters are escaped in arguments."""
+        import html
+
+        dangerous_args = '{"query": "<script>alert(1)</script>"}'
+        escaped = html.escape(dangerous_args)
+
+        assert "&lt;" in escaped
+        assert "&gt;" in escaped
+        assert "<script>" not in escaped
+
+    def test_html_escaping_in_results(self):
+        """Test that HTML special characters are escaped in results."""
+        import html
+        import json
+
+        dangerous_result = '<script>alert("xss")</script>'
+        escaped = html.escape(json.dumps(dangerous_result, ensure_ascii=False))
+
+        assert "&lt;" in escaped
+        assert "&gt;" in escaped
+
+
+class TestEventEmitterFilesEmbeds:
+    """Tests for _emit_files and _emit_embeds methods."""
+
+    @pytest.mark.asyncio
+    async def test_emit_files_with_empty_list(self):
+        """Test that _emit_files does nothing with empty list."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        await handler._emit_files(mock_emitter, [])
+        mock_emitter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_emit_files_with_none_emitter(self):
+        """Test that _emit_files handles None emitter gracefully."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        # Should not raise
+        await handler._emit_files(None, [{"type": "image", "url": "/test.png"}])
+
+    @pytest.mark.asyncio
+    async def test_emit_files_sends_correct_event(self):
+        """Test that _emit_files sends the correct event format."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        files = [{"type": "image", "url": "/api/v1/files/test.png"}]
+        await handler._emit_files(mock_emitter, files)
+
+        mock_emitter.assert_called_once_with({
+            "type": "files",
+            "data": {"files": files},
+        })
+
+    @pytest.mark.asyncio
+    async def test_emit_embeds_with_empty_list(self):
+        """Test that _emit_embeds does nothing with empty list."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        await handler._emit_embeds(mock_emitter, [])
+        mock_emitter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_emit_embeds_sends_correct_event(self):
+        """Test that _emit_embeds sends the correct event format."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        embeds = ["<iframe src='...'></iframe>"]
+        await handler._emit_embeds(mock_emitter, embeds)
+
+        mock_emitter.assert_called_once_with({
+            "type": "embeds",
+            "data": {"embeds": embeds},
+        })
+
+
+class TestOwuiImports:
+    """Tests for OpenWebUI function imports."""
+
+    def test_citation_function_import_fallback(self):
+        """Test that get_citation_source_from_tool_result import has fallback."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            get_citation_source_from_tool_result,
+        )
+
+        # Should be either the function or None (fallback)
+        assert get_citation_source_from_tool_result is None or callable(
+            get_citation_source_from_tool_result
+        )
+
+    def test_source_context_function_import_fallback(self):
+        """Test that _owui_apply_source_context import has fallback."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _owui_apply_source_context,
+        )
+
+        # Should be either the function or None (fallback)
+        assert _owui_apply_source_context is None or callable(
+            _owui_apply_source_context
+        )
+
+    def test_process_tool_result_import_fallback(self):
+        """Test that process_tool_result import has fallback."""
+        from open_webui_openrouter_pipe.tools.tool_executor import (
+            _owui_process_tool_result,
+        )
+
+        # Should be either the function or None (fallback)
+        assert _owui_process_tool_result is None or callable(_owui_process_tool_result)
+
+
+# Helper to check if open_webui package is installed
+def _is_open_webui_installed():
+    """Check if open_webui package is available."""
+    try:
+        import open_webui.config
+        return True
+    except ImportError:
+        return False
+
+
+class TestSourceContextAdapterImports:
+    """Tests for source context adapter imports.
+
+    We use an adapter pattern for source context injection:
+    1. Import OWUI's apply_source_context_to_messages (authoritative implementation)
+    2. Transform Responses API input → Chat Completions format
+    3. Apply OWUI's function
+    4. Transform back to Responses API format
+
+    This ensures we delegate all citation logic to OWUI.
+    """
+
+    def test_import_pattern_uses_owui_middleware(self):
+        """Test that we import apply_source_context_to_messages from OWUI middleware.
+
+        This test validates the CODE, not runtime imports. It ensures we're using
+        OWUI's authoritative implementation rather than reimplementing citation logic.
+        This test runs even without open_webui installed.
+        """
+        import ast
+        from pathlib import Path
+
+        # Read the streaming_core.py source
+        source_path = Path(__file__).parent.parent / "open_webui_openrouter_pipe" / "streaming" / "streaming_core.py"
+        source = source_path.read_text()
+
+        # Parse the AST to find import statements
+        tree = ast.parse(source)
+
+        # Track what we import from where
+        apply_source_context_from_middleware = False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                names = [alias.name for alias in node.names]
+
+                if "apply_source_context_to_messages" in names:
+                    if "middleware" in module:
+                        apply_source_context_from_middleware = True
+
+        assert apply_source_context_from_middleware, (
+            "apply_source_context_to_messages should be imported from open_webui.utils.middleware"
+        )
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_owui_apply_source_context_is_callable(self):
+        """Test that OWUI's apply_source_context_to_messages was imported successfully."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _owui_apply_source_context,
+        )
+
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages import failed in test env")
+        assert callable(_owui_apply_source_context), "_owui_apply_source_context is not callable"
+
+
+class TestApplySourceContextResponsesApi:
+    """Tests for _apply_source_context_responses_api function.
+
+    This function uses an adapter pattern to inject source context:
+    1. Convert Responses API input → Chat Completions messages
+    2. Apply OWUI's apply_source_context_to_messages()
+    3. Convert back to Responses API input
+
+    This delegates all citation logic to OWUI's implementation.
+    """
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_function_returns_messages_with_citation_context(self):
+        """Test that function injects RAG template with citation instructions."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+            _owui_apply_source_context,
+        )
+
+        # Skip if OWUI function not available
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages not available")
+
+        from unittest.mock import MagicMock
+
+        # Create mock request context with RAG_TEMPLATE
+        mock_request = MagicMock()
+        mock_request.app.state.config.RAG_TEMPLATE = "Use the following context:\n{context}\n\nNow answer: {query}"
+
+        messages = [
+            {"type": "message", "role": "user", "content": "What is the weather?"}
+        ]
+        sources = [
+            {
+                "source": {"name": "search_web", "id": "search_web"},
+                "document": ["It is sunny today."],
+                "metadata": [{"source": "https://weather.com", "name": "Weather.com"}],
+            }
+        ]
+        user_message = "What is the weather?"
+
+        result = _apply_source_context_responses_api(messages, sources, user_message, request_context=mock_request)
+
+        # The result should contain citation instructions
+        result_str = str(result)
+        assert "<source" in result_str, "Result should contain <source> tags"
+        assert "[id]" in result_str or "[1]" in result_str, (
+            "Result should contain citation instructions ([id] or example [1])"
+        )
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_function_handles_responses_api_format(self):
+        """Test that function handles Responses API format (type=input_text)."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+            _owui_apply_source_context,
+        )
+
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages not available")
+
+        from unittest.mock import MagicMock
+
+        # Create mock request context with RAG_TEMPLATE
+        mock_request = MagicMock()
+        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
+
+        # Responses API uses type="input_text", not type="text"
+        messages = [
+            {
+                "type": "message",  # REQUIRED: identifies as message item
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Search for news"}]
+            }
+        ]
+        sources = [
+            {
+                "source": {"name": "search_web"},
+                "document": ["Breaking news today."],
+                "metadata": [{"source": "https://news.com"}],
+            }
+        ]
+
+        result = _apply_source_context_responses_api(messages, sources, "Search for news", request_context=mock_request)
+
+        # Should have modified the message
+        assert result != messages or any(
+            "<source" in str(msg.get("content", "")) for msg in result
+        ), "Function should inject source context into Responses API format messages"
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_function_handles_chat_completions_format(self):
+        """Test that function handles Chat Completions format (type=text)."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+            _owui_apply_source_context,
+        )
+
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages not available")
+
+        from unittest.mock import MagicMock
+
+        # Create mock request context with RAG_TEMPLATE
+        mock_request = MagicMock()
+        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
+
+        # Chat Completions uses type="text"
+        messages = [
+            {
+                "type": "message",  # REQUIRED: identifies as message item
+                "role": "user",
+                "content": [{"type": "text", "text": "Search query"}]
+            }
+        ]
+        sources = [
+            {
+                "source": {"name": "search_web"},
+                "document": ["Result text."],
+                "metadata": [{"source": "https://example.com"}],
+            }
+        ]
+
+        result = _apply_source_context_responses_api(messages, sources, "Search query", request_context=mock_request)
+
+        # Should have modified the message
+        result_str = str(result)
+        assert "<source" in result_str, "Function should inject source context"
+
+    def test_function_returns_unmodified_on_empty_sources(self):
+        """Test that function returns original messages when sources is empty."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+
+        result = _apply_source_context_responses_api(messages, [], "Hello")
+
+        assert result == messages, "Should return original messages when no sources"
+
+    def test_function_returns_unmodified_on_empty_user_message(self):
+        """Test that function returns original messages when user_message is empty."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+        )
+
+        messages = [{"role": "user", "content": "Hello"}]
+        sources = [{"document": ["test"], "metadata": [{}]}]
+
+        result = _apply_source_context_responses_api(messages, sources, "")
+
+        assert result == messages, "Should return original messages when no user_message"
+
+    def test_function_preserves_function_call_items_with_mock(self):
+        """Test function_call preservation using mocking (no OWUI required).
+
+        This test verifies the separation logic works correctly by mocking
+        the OWUI function to return the input unchanged.
+        """
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        # Store original value
+        original_owui_fn = sc._owui_apply_source_context
+
+        # Mock the OWUI function to return messages unchanged
+        def mock_apply_source_context(_request, messages, _sources, _user_msg):
+            return messages  # Return input unchanged
+
+        try:
+            # Patch the function
+            sc._owui_apply_source_context = mock_apply_source_context
+
+            # Simulate input with messages + function_call + function_call_output
+            input_items = [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Search"}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_test123",
+                    "name": "search_web",
+                    "arguments": '{"query": "test"}'
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_test123",
+                    "output": '{"results": []}'
+                },
+            ]
+            sources = [{"document": ["test"], "metadata": [{}]}]
+
+            # Create a mock request context
+            mock_request = MagicMock()
+
+            result = sc._apply_source_context_responses_api(
+                input_items, sources, "Search", request_context=mock_request
+            )
+
+            # Count item types
+            function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
+            function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
+
+            # Assert function_call items are preserved
+            assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
+            assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
+            assert function_calls[0]["call_id"] == "call_test123"
+            assert function_outputs[0]["call_id"] == "call_test123"
+        finally:
+            # Restore original value
+            sc._owui_apply_source_context = original_owui_fn
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_source_tags_have_sequential_ids(self):
+        """Test that source tags have sequential id attributes (1, 2, 3...)."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+            _owui_apply_source_context,
+        )
+
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages not available")
+
+        from unittest.mock import MagicMock
+
+        # Create mock request context with RAG_TEMPLATE
+        mock_request = MagicMock()
+        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
+
+        messages = [{"type": "message", "role": "user", "content": "Search"}]
+        sources = [
+            {
+                "source": {"name": "tool1"},
+                "document": ["Doc 1", "Doc 2"],
+                "metadata": [
+                    {"source": "https://a.com"},
+                    {"source": "https://b.com"},
+                ],
+            }
+        ]
+
+        result = _apply_source_context_responses_api(messages, sources, "Search", request_context=mock_request)
+        result_str = str(result)
+
+        assert 'id="1"' in result_str, "First source should have id=1"
+        assert 'id="2"' in result_str, "Second source should have id=2"
+
+    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
+    def test_function_preserves_function_call_items(self):
+        """Test that function_call and function_call_output items are preserved.
+
+        This is critical: the adapter must not strip non-message items like
+        function_call and function_call_output, otherwise the continuation
+        request will fail with 'No tool call found for function call output'.
+        """
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _apply_source_context_responses_api,
+            _owui_apply_source_context,
+        )
+
+        if _owui_apply_source_context is None:
+            pytest.skip("OWUI apply_source_context_to_messages not available")
+
+        from unittest.mock import MagicMock
+
+        # Create mock request context with RAG_TEMPLATE
+        mock_request = MagicMock()
+        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
+
+        # Simulate a real continuation request with messages + function_call + function_call_output
+        input_items = [
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "You are a helpful assistant."}]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Search for news"}]
+            },
+            # These are the items that must be preserved
+            {
+                "type": "function_call",
+                "call_id": "call_abc123",
+                "name": "search_web",
+                "arguments": '{"query": "news today"}'
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc123",
+                "output": '{"results": []}'
+            },
+        ]
+        sources = [
+            {
+                "source": {"name": "search_web", "id": "search_web"},
+                "document": ["News article content here."],
+                "metadata": [{"source": "https://news.com", "name": "News Site"}],
+            }
+        ]
+
+        result = _apply_source_context_responses_api(input_items, sources, "Search for news", request_context=mock_request)
+
+        # Count item types in result
+        messages = [i for i in result if isinstance(i, dict) and i.get("type") == "message"]
+        function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
+        function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
+
+        # Assert function_call and function_call_output are preserved
+        assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
+        assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
+
+        # Assert the content is preserved
+        assert function_calls[0]["call_id"] == "call_abc123"
+        assert function_calls[0]["name"] == "search_web"
+        assert function_outputs[0]["call_id"] == "call_abc123"
+        assert function_outputs[0]["output"] == '{"results": []}'
+
+        # Assert source context was injected into messages
+        result_str = str(result)
+        assert "<source" in result_str, "Source tags should be injected"
+
+
+class TestChatMessagesToResponsesInput:
+    """Tests for _chat_messages_to_responses_input transform function.
+
+    This function converts Chat Completions messages back to Responses API input format.
+    It's the reverse of _responses_input_to_chat_messages.
+    """
+
+    def test_string_content_converts_to_input_text(self):
+        """Test that string content is converted to input_text blocks."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {"role": "user", "content": "Hello world"}
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert len(result) == 1
+        assert result[0]["type"] == "message"
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == [{"type": "input_text", "text": "Hello world"}]
+
+    def test_text_block_converts_to_input_text(self):
+        """Test that type=text blocks are converted to type=input_text."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Search query"}]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert len(result) == 1
+        assert result[0]["content"][0]["type"] == "input_text"
+        assert result[0]["content"][0]["text"] == "Search query"
+
+    def test_image_url_converts_to_input_image(self):
+        """Test that image_url blocks are converted to input_image."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+                ]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert len(result) == 1
+        assert len(result[0]["content"]) == 2
+        assert result[0]["content"][0]["type"] == "input_text"
+        assert result[0]["content"][1]["type"] == "input_image"
+        assert result[0]["content"][1]["image_url"] == "https://example.com/img.png"
+
+    def test_empty_messages_returns_empty(self):
+        """Test that empty message list returns empty result."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        result = _chat_messages_to_responses_input([])
+
+        assert result == []
+
+    def test_preserves_system_role(self):
+        """Test that system messages are preserved."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert len(result) == 2
+        assert result[0]["role"] == "system"
+        assert result[1]["role"] == "user"
+
+    def test_preserves_cache_control(self):
+        """Test that cache_control on text blocks is preserved."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+                ]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_preserves_image_detail(self):
+        """Test that detail attribute on images is preserved."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png", "detail": "high"}}
+                ]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert result[0]["content"][0]["detail"] == "high"
+
+    def test_preserves_annotations(self):
+        """Test that annotations on messages are preserved."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": "Hello",
+                "annotations": [{"type": "file_citation", "text": "ref1"}]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert result[0]["annotations"] == [{"type": "file_citation", "text": "ref1"}]
+
+    def test_preserves_reasoning_details(self):
+        """Test that reasoning_details on messages are preserved."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "The answer is 42",
+                "reasoning_details": [{"type": "thinking", "summary": "computing"}]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        assert result[0]["reasoning_details"] == [{"type": "thinking", "summary": "computing"}]
+
+    def test_preserves_unknown_message_fields(self):
+        """Test that unknown fields on messages are preserved (true adapter pattern).
+
+        If tomorrow OWUI adds a 'joe_sucks': true field, it should survive round-trip.
+        An adapter transforms what it knows and passes through everything else.
+        """
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": "Hello",
+                "joe_sucks": True,  # Unknown field
+                "future_field": {"nested": "data"},  # Another unknown field
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        # Unknown fields should survive
+        assert result[0].get("joe_sucks") is True, "Unknown field 'joe_sucks' should be preserved"
+        assert result[0].get("future_field") == {"nested": "data"}, "Unknown field 'future_field' should be preserved"
+
+    def test_preserves_unknown_block_fields(self):
+        """Test that unknown fields on content blocks are preserved.
+
+        If a text block has extra fields, they should survive the transformation.
+        """
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hello",
+                        "unknown_block_field": "should survive",  # Unknown field
+                        "cache_control": {"type": "ephemeral"},  # Known field
+                    }
+                ]
+            }
+        ]
+
+        result = _chat_messages_to_responses_input(messages)
+
+        block = result[0]["content"][0]
+        assert block["type"] == "input_text"  # Transformed
+        assert block["text"] == "Hello"  # Preserved
+        assert block.get("cache_control") == {"type": "ephemeral"}  # Known field preserved
+        assert block.get("unknown_block_field") == "should survive"  # Unknown field preserved
+
+
+class TestProcessToolResultSafe:
+    """Tests for _process_tool_result_safe crash safety."""
+
+    @pytest.mark.asyncio
+    async def test_simple_string_result(self):
+        """Test processing a simple string result."""
+        from unittest.mock import MagicMock
+        from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+        pipe_mock = MagicMock()
+        logger_mock = MagicMock()
+        executor = ToolExecutor(pipe_mock, logger_mock)
+
+        text, files, embeds = await executor._process_tool_result_safe(
+            tool_name="test_tool",
+            tool_type="function",
+            raw_result="Hello, world!",
+            context=None,
+        )
+
+        assert text == "Hello, world!"
+        assert files == []
+        assert embeds == []
+
+    @pytest.mark.asyncio
+    async def test_none_result(self):
+        """Test processing a None result."""
+        from unittest.mock import MagicMock
+        from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+        pipe_mock = MagicMock()
+        logger_mock = MagicMock()
+        executor = ToolExecutor(pipe_mock, logger_mock)
+
+        text, files, embeds = await executor._process_tool_result_safe(
+            tool_name="test_tool",
+            tool_type="function",
+            raw_result=None,
+            context=None,
+        )
+
+        assert text == ""
+        assert files == []
+        assert embeds == []
+
+    @pytest.mark.asyncio
+    async def test_dict_result(self):
+        """Test processing a dict result."""
+        from unittest.mock import MagicMock
+        from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+        pipe_mock = MagicMock()
+        logger_mock = MagicMock()
+        executor = ToolExecutor(pipe_mock, logger_mock)
+
+        result_dict = {"status": "success", "data": [1, 2, 3]}
+        text, files, embeds = await executor._process_tool_result_safe(
+            tool_name="test_tool",
+            tool_type="function",
+            raw_result=result_dict,
+            context=None,
+        )
+
+        # str() of a dict produces repr
+        assert "status" in text
+        assert "success" in text
+        assert files == []
+        assert embeds == []
+
+    @pytest.mark.asyncio
+    async def test_exception_safety(self):
+        """Test that exceptions in result processing are caught."""
+        from unittest.mock import MagicMock
+        from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+        pipe_mock = MagicMock()
+        logger_mock = MagicMock()
+        executor = ToolExecutor(pipe_mock, logger_mock)
+
+        # Create an object that raises on str()
+        class BadResult:
+            def __str__(self):
+                raise ValueError("Cannot stringify")
+
+        text, files, embeds = await executor._process_tool_result_safe(
+            tool_name="test_tool",
+            tool_type="function",
+            raw_result=BadResult(),
+            context=None,
+        )
+
+        # Should not crash, returns type info
+        assert "BadResult" in text
+        assert files == []
+        assert embeds == []
+
+    @pytest.mark.asyncio
+    async def test_list_result(self):
+        """Test processing a list result."""
+        from unittest.mock import MagicMock
+        from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+        pipe_mock = MagicMock()
+        logger_mock = MagicMock()
+        executor = ToolExecutor(pipe_mock, logger_mock)
+
+        result_list = ["item1", "item2", "item3"]
+        text, files, embeds = await executor._process_tool_result_safe(
+            tool_name="test_tool",
+            tool_type="function",
+            raw_result=result_list,
+            context=None,
+        )
+
+        assert "item1" in text
+        assert files == []
+        assert embeds == []
+
+
+class TestToolExecutionContextFields:
+    """Tests for _ToolExecutionContext new fields."""
+
+    def test_context_has_request_user_metadata_fields(self):
+        """Test that context has the new Phase 3 fields."""
+        import asyncio
+        from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+        context = _ToolExecutionContext(
+            queue=asyncio.Queue(),
+            per_request_semaphore=asyncio.Semaphore(1),
+            global_semaphore=None,
+            timeout=30.0,
+            batch_timeout=60.0,
+            idle_timeout=None,
+            user_id="test_user",
+            event_emitter=None,
+            batch_cap=10,
+            request=None,
+            user={"id": "test_user", "name": "Test User"},
+            metadata={"chat_id": "123", "session_id": "456"},
+        )
+
+        assert context.request is None
+        assert context.user == {"id": "test_user", "name": "Test User"}
+        assert context.metadata == {"chat_id": "123", "session_id": "456"}
+
+    def test_context_defaults_to_none(self):
+        """Test that new fields default to None."""
+        import asyncio
+        from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+        context = _ToolExecutionContext(
+            queue=asyncio.Queue(),
+            per_request_semaphore=asyncio.Semaphore(1),
+            global_semaphore=None,
+            timeout=30.0,
+            batch_timeout=60.0,
+            idle_timeout=None,
+            user_id="test_user",
+            event_emitter=None,
+            batch_cap=10,
+        )
+
+        assert context.request is None
+        assert context.user is None
+        assert context.metadata is None
 

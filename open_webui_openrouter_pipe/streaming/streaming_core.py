@@ -7,6 +7,7 @@ and endpoint selection.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -32,7 +33,7 @@ else:
     ResponsesBody = Any
 
 # Import error classes
-from ..core.errors import OpenRouterAPIError
+from ..core.errors import OpenRouterAPIError, StatusMessages
 
 # Import SessionLogger
 from ..core.logging_system import SessionLogger
@@ -75,13 +76,200 @@ from ..api.transforms import (
 )
 
 # Import config classes
-from ..core.config import EncryptedStr
+from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE
 
 # Import Open WebUI models
 try:
     from open_webui.models.chats import Chats  # type: ignore[import-not-found]
 except ImportError:
     Chats = None  # type: ignore
+
+# Import citation extraction function (OpenWebUI >= 0.7.0)
+try:
+    from open_webui.utils.middleware import get_citation_source_from_tool_result  # type: ignore[import-not-found]
+except ImportError:
+    get_citation_source_from_tool_result = None  # type: ignore
+
+# Import OWUI's apply_source_context_to_messages for source context injection
+# This is the authoritative implementation - we use adapter transforms to support Responses API
+try:
+    from open_webui.utils.middleware import apply_source_context_to_messages as _owui_apply_source_context  # type: ignore[import-not-found]
+except ImportError:
+    _owui_apply_source_context = None  # type: ignore
+
+# Import our transform function for Responses API → Chat Completions conversion
+from ..api.transforms import _responses_input_to_chat_messages
+
+
+def _chat_messages_to_responses_input(messages: list) -> list:
+    """
+    Convert Chat Completions messages back to Responses API input format.
+
+    TRUE ADAPTER PATTERN: Start with original, transform only what we know,
+    pass through everything else unchanged. Never filter/drop unknown fields.
+
+    Transforms applied:
+    - Block type: "text" → "input_text"
+    - Block type: "image_url" → "input_image" (also flattens nested url)
+    - Message: adds "type": "message" wrapper
+
+    Everything else passes through unchanged (unknown fields, future additions, etc.)
+    """
+    result = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+
+        content = msg.get("content")
+
+        # Transform content blocks
+        content_blocks: list[dict] = []
+        if isinstance(content, str):
+            content_blocks.append({"type": "input_text", "text": content})
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+
+                if btype == "text":
+                    # Transform text → input_text, preserving ALL other fields
+                    transformed = dict(block)  # Copy everything
+                    transformed["type"] = "input_text"  # Only change type
+                    content_blocks.append(transformed)
+
+                elif btype == "image_url":
+                    # Transform image_url → input_image, flatten nested url
+                    transformed = dict(block)  # Copy everything
+                    transformed["type"] = "input_image"
+                    # Flatten nested {"url": "..."} to just the url string
+                    img_url = transformed.pop("image_url", {})
+                    if isinstance(img_url, dict):
+                        transformed["image_url"] = img_url.get("url", "")
+                        # Preserve detail if nested
+                        if "detail" in img_url and "detail" not in transformed:
+                            transformed["detail"] = img_url["detail"]
+                    else:
+                        transformed["image_url"] = str(img_url) if img_url else ""
+                    content_blocks.append(transformed)
+
+                elif btype == "file":
+                    # Transform file → input_file (reverse of _responses_input_to_chat_messages)
+                    # This ensures round-trip integrity when source context injection modifies messages
+                    transformed = dict(block)  # Copy everything
+                    transformed["type"] = "input_file"
+                    file_payload = transformed.pop("file", {})
+                    if isinstance(file_payload, dict):
+                        if file_payload.get("filename"):
+                            transformed["filename"] = file_payload["filename"]
+                        if file_payload.get("file_data"):
+                            transformed["file_data"] = file_payload["file_data"]
+                    content_blocks.append(transformed)
+
+                else:
+                    # Pass through ALL other block types unchanged
+                    content_blocks.append(block)
+
+        if content_blocks:
+            # Start with original message, add/update only what we need
+            out_msg = dict(msg)  # Copy ALL fields from original
+            out_msg["type"] = "message"  # Ensure type is set
+            out_msg["content"] = content_blocks  # Replace with transformed content
+            result.append(out_msg)
+
+    return result
+
+
+def _apply_source_context_responses_api(
+    input_items: list,
+    sources: list,
+    user_message: str,
+    request_context: Optional[Request] = None,
+) -> list:
+    """
+    Apply source context to messages in Responses API format.
+
+    Uses adapter pattern:
+    1. Separate messages from non-message items (function_call, function_call_output)
+    2. Convert messages: Responses API input → Chat Completions messages
+    3. Apply OWUI's apply_source_context_to_messages()
+    4. Convert back: Chat Completions → Responses API input
+    5. Reassemble: modified messages first, then non-message items appended
+
+    Note: Non-message items (function_call, function_call_output) are appended
+    after transformed messages. For typical input (messages only), order is preserved.
+
+    This delegates all citation logic to OWUI's implementation while preserving
+    function_call and function_call_output items that must stay in the input.
+    """
+    _logger = logging.getLogger("open_webui_openrouter_pipe.streaming.source_context")
+
+    if not sources or not user_message:
+        return input_items
+
+    if _owui_apply_source_context is None:
+        _logger.warning("OWUI apply_source_context_to_messages not available - skipping source context")
+        return input_items
+
+    if request_context is None:
+        _logger.warning("request_context is None - cannot apply source context")
+        return input_items
+
+    # Step 1: Separate messages from non-message items (function_call, function_call_output, etc.)
+    # We need to preserve non-message items exactly as they were
+    messages_only: list[dict] = []
+    non_message_items: list[tuple[int, dict]] = []  # (original_index, item)
+
+    for idx, item in enumerate(input_items):
+        if isinstance(item, dict) and item.get("type") == "message":
+            messages_only.append(item)
+        elif isinstance(item, dict):
+            non_message_items.append((idx, item))
+
+    _logger.debug(
+        "Separated input: %d messages, %d non-message items (function_call/output)",
+        len(messages_only),
+        len(non_message_items),
+    )
+
+    if not messages_only:
+        # No messages to process - return original
+        return input_items
+
+    # Step 2: Convert Responses API messages → Chat Completions messages
+    chat_messages = _responses_input_to_chat_messages(messages_only, allow_unknown_fields=True)
+    _logger.debug("Converted %d Responses API messages → %d Chat Completions messages", len(messages_only), len(chat_messages))
+
+    # Step 3: Apply OWUI's source context injection (handles RAG template, citation formatting)
+    modified_chat_messages = _owui_apply_source_context(
+        request_context,
+        chat_messages,
+        sources,
+        user_message,
+    )
+    _logger.debug("Applied source context via OWUI adapter")
+
+    # Step 4: Convert back Chat Completions → Responses API input
+    modified_messages = _chat_messages_to_responses_input(modified_chat_messages)
+    _logger.debug("Converted %d Chat Completions messages → %d Responses API messages", len(modified_chat_messages), len(modified_messages))
+
+    # Step 5: Reassemble - messages first, then non-message items in their relative order
+    # This preserves the expected structure: messages, then function_call items, then function_call_output items
+    result = list(modified_messages)
+    for _, item in non_message_items:
+        result.append(item)
+
+    _logger.debug(
+        "Reassembled result: %d total items (%d messages + %d non-message)",
+        len(result),
+        len(modified_messages),
+        len(non_message_items),
+    )
+
+    return result
+
+# Tools that produce citations when executed
+CITATION_TOOLS = frozenset({"search_web", "view_knowledge_file", "query_knowledge_files"})
 
 # Type hints for Open WebUI components
 EventEmitter = Any  # Callable[[dict[str, Any]], Awaitable[None]]
@@ -969,7 +1157,10 @@ class StreamingHandler:
                                     "date_accessed": datetime.date.today().isoformat(),
                                 }],
                             }
-                            await self._pipe._emit_citation(event_emitter, citation)
+                            try:
+                                await self._pipe._emit_citation(event_emitter, citation)
+                            except Exception as exc:
+                                self.logger.debug("Failed to emit annotation citation: %s", exc)
                             emitted_citations.append(citation)
 
                         continue
@@ -1491,7 +1682,172 @@ class StreamingHandler:
 
                         break
 
+                    # Build and emit in-progress tool execution cards (OpenWebUI parity)
+                    # Cards are APPENDED to assistant_message (OWUI appends: content = f"{content}{cards}")
+                    # This maintains chronological order: text_before + cards + text_after
+                    in_progress_cards_html = ""
+                    cards_start_pos = len(assistant_message)  # Track where cards start
+                    show_tool_cards = getattr(valves, "SHOW_TOOL_CARDS", False)
+                    if show_tool_cards and event_emitter and body.stream and calls:
+                        try:
+                            for call in calls:
+                                call_id = call.get("call_id") or call.get("id") or ""
+                                tool_name = (call.get("name") or "").strip()
+                                raw_args = call.get("arguments") or "{}"
+                                args_json = raw_args if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)
+                                in_progress_cards_html += (
+                                    f'<details type="tool_calls" done="false" id="{html.escape(call_id)}" '
+                                    f'name="{html.escape(tool_name)}" arguments="{html.escape(args_json)}">\n'
+                                    f'<summary>Executing...</summary>\n</details>\n'
+                                )
+                            if in_progress_cards_html:
+                                # APPEND cards to message (chronological order)
+                                assistant_message = assistant_message + in_progress_cards_html
+                                await event_emitter({
+                                    "type": "chat:message",
+                                    "data": {"content": assistant_message},
+                                })
+                        except Exception as exc:
+                            self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
+
                     function_outputs = await self._pipe._execute_function_calls(calls, tool_registry)
+
+                    # Replace in-progress cards with completed cards (OpenWebUI parity)
+                    # Cards are at position cards_start_pos in assistant_message
+                    if show_tool_cards and event_emitter and body.stream and calls and function_outputs:
+                        try:
+                            completed_cards_html = ""
+                            for call, output in zip(calls, function_outputs):
+                                call_id = call.get("call_id") or call.get("id") or ""
+                                tool_name = (call.get("name") or "").strip()
+                                raw_args = call.get("arguments") or "{}"
+                                args_json = raw_args if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)
+                                result_str = output.get("output") or ""
+                                # Extract files/embeds from tool output (populated by process_tool_result)
+                                tool_files = output.get("files") or []
+                                tool_embeds = output.get("embeds") or []
+                                files_attr = html.escape(json.dumps(tool_files if tool_files else []))
+                                embeds_attr = html.escape(json.dumps(tool_embeds if tool_embeds else []))
+                                completed_cards_html += (
+                                    f'<details type="tool_calls" done="true" id="{html.escape(call_id)}" '
+                                    f'name="{html.escape(tool_name)}" arguments="{html.escape(args_json)}" '
+                                    f'result="{html.escape(json.dumps(result_str, ensure_ascii=False))}" '
+                                    f'files="{files_attr}" embeds="{embeds_attr}">\n'
+                                    f'<summary>Tool Executed</summary>\n</details>\n'
+                                )
+                            if completed_cards_html:
+                                # Replace in-progress cards with completed cards at the tracked position
+                                # assistant_message = text_before + in_progress_cards + (maybe more text)
+                                text_before = assistant_message[:cards_start_pos]
+                                text_after = assistant_message[cards_start_pos + len(in_progress_cards_html):]
+                                assistant_message = text_before + completed_cards_html + text_after
+                                await event_emitter({
+                                    "type": "chat:message",
+                                    "data": {"content": assistant_message},
+                                })
+                        except Exception as exc:
+                            self.logger.debug("Failed to emit completed tool cards: %s", exc)
+
+                    # Extract citations from tool results (OpenWebUI parity)
+                    # Collection happens regardless of event_emitter (needed for source context)
+                    collected_sources: list[dict[str, Any]] = []
+                    if get_citation_source_from_tool_result is not None:
+                        for call, output in zip(calls, function_outputs):
+                            tool_name = (call.get("name") or "").strip()
+                            if tool_name not in CITATION_TOOLS:
+                                continue
+                            if output.get("status") != "completed":
+                                continue
+                            try:
+                                tool_params = _safe_json_loads(call.get("arguments") or "{}")
+                                tool_result = output.get("output") or ""
+                                call_id = call.get("call_id") or call.get("id") or ""
+                                citations = get_citation_source_from_tool_result(
+                                    tool_name=tool_name,
+                                    tool_params=tool_params if isinstance(tool_params, dict) else {},
+                                    tool_result=tool_result,
+                                    tool_id=call_id,
+                                )
+                                for source in citations:
+                                    collected_sources.append(source)
+                                    # Emit citation only if event_emitter available
+                                    if event_emitter:
+                                        await self._pipe._emit_citation(event_emitter, source)
+                                        self.logger.debug(
+                                            "Emitted citation from tool=%s: %s",
+                                            tool_name,
+                                            source.get("source", {}).get("name", "unknown"),
+                                        )
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Failed to extract citations from tool=%s: %s",
+                                    tool_name,
+                                    exc,
+                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                )
+
+                    # Apply source context to messages for RAG-style context injection
+                    # This enables the model to generate inline [1], [2] citations
+                    # Uses adapter pattern: Responses API → Chat Completions → OWUI function → Responses API
+                    self.logger.debug(
+                        "Source context check: collected_sources=%d, owui_fn=%s, request_ctx=%s",
+                        len(collected_sources),
+                        _owui_apply_source_context is not None,
+                        request_context is not None,
+                    )
+                    if collected_sources:
+                        try:
+                            # Extract the last user message for context
+                            user_message = ""
+                            for item in reversed(body.input):
+                                if isinstance(item, dict):
+                                    if item.get("role") == "user":
+                                        content = item.get("content")
+                                        if isinstance(content, str):
+                                            user_message = content
+                                            break
+                                        elif isinstance(content, list):
+                                            for block in content:
+                                                # Handle both Chat Completions (type=text) and Responses API (type=input_text)
+                                                if isinstance(block, dict) and block.get("type") in ("text", "input_text"):
+                                                    user_message = block.get("text") or ""
+                                                    break
+                                            if user_message:
+                                                break
+                            self.logger.debug(
+                                "User message extraction: found=%s, input_items=%d",
+                                bool(user_message),
+                                len(body.input) if hasattr(body.input, '__len__') else -1,
+                            )
+                            if user_message:
+                                # Use adapter function that transforms to/from Chat Completions
+                                # This delegates to OWUI's apply_source_context_to_messages
+                                input_before = len(body.input)
+                                body.input = _apply_source_context_responses_api(
+                                    list(body.input),
+                                    collected_sources,
+                                    user_message,
+                                    request_context=request_context,
+                                )
+                                # Verify source context was injected
+                                has_source_tags = any(
+                                    '<source' in str(item.get('content', ''))
+                                    for item in body.input if isinstance(item, dict)
+                                )
+                                self.logger.debug(
+                                    "Applied source context: input=%d->%d items, sources=%d, has_source_tags=%s",
+                                    input_before,
+                                    len(body.input),
+                                    len(collected_sources),
+                                    has_source_tags,
+                                )
+                        except Exception as exc:
+                            self.logger.debug(
+                                "Failed to apply source context: %s",
+                                exc,
+                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                            )
+
                     if persist_tools_enabled:
                         self.logger.debug("💾 Persisting %d tool results", len(function_outputs))
                         persist_payloads: list[dict] = []

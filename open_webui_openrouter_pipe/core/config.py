@@ -896,6 +896,11 @@ class Valves(BaseModel):
             "passes tool calls through so Open WebUI executes them and renders the native tool UI."
         ),
     )
+    SHOW_TOOL_CARDS: bool = Field(
+        default=False,
+        title="Show tool execution cards",
+        description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently without visual status indicators.",
+    )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=True,
         title="Keep tool results",
@@ -1558,6 +1563,11 @@ class UserValves(BaseModel):
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
             "'Open-WebUI' bypasses the internal executor and lets Open WebUI run tools."
         ),
+    )
+    SHOW_TOOL_CARDS: bool = Field(
+        default=False,
+        title="Show tool execution cards",
+        description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently.",
     )
 
 

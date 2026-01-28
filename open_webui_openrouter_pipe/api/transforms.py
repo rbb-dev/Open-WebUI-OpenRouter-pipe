@@ -732,11 +732,20 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
 # -----------------------------------------------------------------------------
 
 @timed
-def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
+def _responses_input_to_chat_messages(
+    input_value: Any,
+    *,
+    allow_unknown_fields: bool = False,
+) -> list[dict[str, Any]]:
     """Convert Responses API input array -> Chat Completions messages array.
 
     Best-effort mapping for supported multimodal blocks. Unsupported blocks are
     degraded to text notes rather than dropped.
+
+    Args:
+        input_value: Responses API input (list of message items, string, or None)
+        allow_unknown_fields: When True, preserves unknown/custom fields from input items.
+            When False (default), only copies known/validated fields for stricter behavior.
     """
     if input_value is None:
         return []
@@ -764,25 +773,122 @@ def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
             role = (item.get("role") or "").strip().lower()
             if not role:
                 continue
-            raw_annotations = item.get("annotations")
-            msg_annotations: list[Any] = (
-                list(raw_annotations)
-                if isinstance(raw_annotations, list) and raw_annotations
-                else []
-            )
-            raw_reasoning_details = item.get("reasoning_details")
-            msg_reasoning_details: list[Any] = (
-                list(raw_reasoning_details)
-                if isinstance(raw_reasoning_details, list) and raw_reasoning_details
-                else []
-            )
+
             raw_content = item.get("content")
+
+            # -----------------------------------------------------------------
+            # Strict provider payload mode (default): build minimal message/block
+            # shapes to avoid leaking unknown/custom fields into /chat/completions.
+            # -----------------------------------------------------------------
+            if not allow_unknown_fields:
+                raw_annotations = item.get("annotations")
+                msg_annotations: list[Any] = (
+                    list(raw_annotations)
+                    if isinstance(raw_annotations, list) and raw_annotations
+                    else []
+                )
+                raw_reasoning_details = item.get("reasoning_details")
+                msg_reasoning_details: list[Any] = (
+                    list(raw_reasoning_details)
+                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details
+                    else []
+                )
+
+                if isinstance(raw_content, str):
+                    msg: dict[str, Any] = {"role": role, "content": raw_content}
+                    if msg_annotations:
+                        msg["annotations"] = msg_annotations
+                    if msg_reasoning_details:
+                        msg["reasoning_details"] = msg_reasoning_details
+                    messages.append(msg)
+                    continue
+
+                blocks_out: list[dict[str, Any]] = []
+                if isinstance(raw_content, list):
+                    for block in raw_content:
+                        if not isinstance(block, dict):
+                            continue
+                        btype = block.get("type")
+                        if btype in {"input_text", "output_text"}:
+                            text = block.get("text")
+                            if isinstance(text, str) and text:
+                                blocks_out.append(
+                                    _to_text_block(text, cache_control=block.get("cache_control"))
+                                )
+                            continue
+                        if btype == "input_image":
+                            url = block.get("image_url")
+                            if isinstance(url, str) and url.strip():
+                                image_url_obj: dict[str, Any] = {"url": url.strip()}
+                                detail = block.get("detail")
+                                if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+                                    image_url_obj["detail"] = detail
+                                blocks_out.append({"type": "image_url", "image_url": image_url_obj})
+                            continue
+                        if btype == "image_url":
+                            image_url_val = block.get("image_url")
+                            if isinstance(image_url_val, dict):
+                                blocks_out.append({"type": "image_url", "image_url": dict(image_url_val)})
+                            elif isinstance(image_url_val, str) and image_url_val.strip():
+                                blocks_out.append({"type": "image_url", "image_url": {"url": image_url_val.strip()}})
+                            continue
+                        if btype == "input_audio":
+                            audio = block.get("input_audio")
+                            if isinstance(audio, dict):
+                                blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
+                            continue
+                        if btype == "video_url":
+                            video_url = block.get("video_url")
+                            if isinstance(video_url, dict):
+                                blocks_out.append({"type": "video_url", "video_url": dict(video_url)})
+                            elif isinstance(video_url, str) and video_url.strip():
+                                blocks_out.append({"type": "video_url", "video_url": {"url": video_url.strip()}})
+                            continue
+                        if btype == "input_file":
+                            filename = block.get("filename")
+                            file_data = block.get("file_data")
+                            file_url = block.get("file_url")
+                            file_payload: dict[str, Any] = {}
+                            if isinstance(filename, str) and filename.strip():
+                                file_payload["filename"] = filename.strip()
+                            file_value: Optional[str] = None
+                            if isinstance(file_data, str) and file_data.strip():
+                                file_value = file_data.strip()
+                            elif isinstance(file_url, str) and file_url.strip():
+                                file_value = file_url.strip()
+                            if file_value:
+                                file_payload["file_data"] = file_value
+                            if file_payload:
+                                blocks_out.append({"type": "file", "file": file_payload})
+                            continue
+
+                if not blocks_out:
+                    # If the role message had no supported blocks, keep shape with empty content.
+                    msg: dict[str, Any] = {"role": role, "content": ""}
+                    if msg_annotations:
+                        msg["annotations"] = msg_annotations
+                    if msg_reasoning_details:
+                        msg["reasoning_details"] = msg_reasoning_details
+                    messages.append(msg)
+                else:
+                    msg = {"role": role, "content": blocks_out}
+                    if msg_annotations:
+                        msg["annotations"] = msg_annotations
+                    if msg_reasoning_details:
+                        msg["reasoning_details"] = msg_reasoning_details
+                    messages.append(msg)
+                continue
+
+            # -----------------------------------------------------------------
+            # Permissive adapter mode: used for OWUI-internal transforms only.
+            # Preserve unknown/custom fields so round-trips don't lose data.
+            # -----------------------------------------------------------------
+            msg: dict[str, Any] = dict(item)  # Copy ALL fields from original
+            msg.pop("type", None)  # Remove "type": "message" (not used in Chat Completions)
+            msg["role"] = role  # Normalize role
+
             if isinstance(raw_content, str):
-                msg: dict[str, Any] = {"role": role, "content": raw_content}
-                if msg_annotations:
-                    msg["annotations"] = msg_annotations
-                if msg_reasoning_details:
-                    msg["reasoning_details"] = msg_reasoning_details
+                msg["content"] = raw_content
                 messages.append(msg)
                 continue
 
@@ -792,45 +898,74 @@ def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
                     if not isinstance(block, dict):
                         continue
                     btype = block.get("type")
+
                     if btype in {"input_text", "output_text"}:
-                        text = block.get("text")
+                        # Transform input_text/output_text → text, preserving ALL other fields
+                        transformed = dict(block)  # Copy everything
+                        transformed["type"] = "text"  # Only change type
+                        text = transformed.get("text")
                         if isinstance(text, str) and text:
-                            blocks_out.append(
-                                _to_text_block(text, cache_control=block.get("cache_control"))
-                            )
+                            blocks_out.append(transformed)
                         continue
+
                     if btype == "input_image":
-                        url = block.get("image_url")
-                        if isinstance(url, str) and url.strip():
-                            image_url_obj: dict[str, Any] = {"url": url.strip()}
-                            detail = block.get("detail")
-                            if isinstance(detail, str) and detail in {"auto", "low", "high"}:
-                                image_url_obj["detail"] = detail
-                            blocks_out.append({"type": "image_url", "image_url": image_url_obj})
+                        # Transform input_image → image_url, preserving ALL other fields
+                        transformed = dict(block)  # Copy everything
+                        transformed["type"] = "image_url"
+                        url = transformed.pop("image_url", "")
+                        # Nest url in {"url": "..."} for Chat Completions format
+                        image_url_obj: dict[str, Any] = {"url": url.strip() if isinstance(url, str) else ""}
+                        # Move detail inside the image_url object if present
+                        detail = transformed.pop("detail", None)
+                        if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+                            image_url_obj["detail"] = detail
+                        transformed["image_url"] = image_url_obj
+                        if image_url_obj["url"]:
+                            blocks_out.append(transformed)
                         continue
+
                     if btype == "image_url":
-                        image_url_val = block.get("image_url")
+                        # Already in Chat Completions format - pass through, preserving ALL fields
+                        transformed = dict(block)
+                        image_url_val = transformed.get("image_url")
                         if isinstance(image_url_val, dict):
-                            blocks_out.append({"type": "image_url", "image_url": dict(image_url_val)})
+                            transformed["image_url"] = dict(image_url_val)
                         elif isinstance(image_url_val, str) and image_url_val.strip():
-                            blocks_out.append({"type": "image_url", "image_url": {"url": image_url_val.strip()}})
+                            transformed["image_url"] = {"url": image_url_val.strip()}
+                        else:
+                            continue
+                        blocks_out.append(transformed)
                         continue
+
                     if btype == "input_audio":
-                        audio = block.get("input_audio")
+                        # Pass through with copy
+                        transformed = dict(block)
+                        audio = transformed.get("input_audio")
                         if isinstance(audio, dict):
-                            blocks_out.append({"type": "input_audio", "input_audio": dict(audio)})
+                            transformed["input_audio"] = dict(audio)
+                            blocks_out.append(transformed)
                         continue
+
                     if btype == "video_url":
-                        video_url = block.get("video_url")
+                        # Pass through with copy, normalizing url format
+                        transformed = dict(block)
+                        video_url = transformed.get("video_url")
                         if isinstance(video_url, dict):
-                            blocks_out.append({"type": "video_url", "video_url": dict(video_url)})
+                            transformed["video_url"] = dict(video_url)
                         elif isinstance(video_url, str) and video_url.strip():
-                            blocks_out.append({"type": "video_url", "video_url": {"url": video_url.strip()}})
+                            transformed["video_url"] = {"url": video_url.strip()}
+                        else:
+                            continue
+                        blocks_out.append(transformed)
                         continue
+
                     if btype == "input_file":
-                        filename = block.get("filename")
-                        file_data = block.get("file_data")
-                        file_url = block.get("file_url")
+                        # Transform input_file → file format
+                        transformed = dict(block)
+                        transformed["type"] = "file"
+                        filename = transformed.pop("filename", None)
+                        file_data = transformed.pop("file_data", None)
+                        file_url = transformed.pop("file_url", None)
                         file_payload: dict[str, Any] = {}
                         if isinstance(filename, str) and filename.strip():
                             file_payload["filename"] = filename.strip()
@@ -842,24 +977,15 @@ def _responses_input_to_chat_messages(input_value: Any) -> list[dict[str, Any]]:
                         if file_value:
                             file_payload["file_data"] = file_value
                         if file_payload:
-                            blocks_out.append({"type": "file", "file": file_payload})
+                            transformed["file"] = file_payload
+                            blocks_out.append(transformed)
                         continue
 
-            if not blocks_out:
-                # If the role message had no supported blocks, keep shape with empty content.
-                msg: dict[str, Any] = {"role": role, "content": ""}
-                if msg_annotations:
-                    msg["annotations"] = msg_annotations
-                if msg_reasoning_details:
-                    msg["reasoning_details"] = msg_reasoning_details
-                messages.append(msg)
-            else:
-                msg = {"role": role, "content": blocks_out}
-                if msg_annotations:
-                    msg["annotations"] = msg_annotations
-                if msg_reasoning_details:
-                    msg["reasoning_details"] = msg_reasoning_details
-                messages.append(msg)
+                    # Pass through ALL other block types unchanged
+                    blocks_out.append(dict(block))
+
+            msg["content"] = blocks_out if blocks_out else ""
+            messages.append(msg)
             continue
 
         if itype == "function_call_output":
@@ -1043,7 +1169,7 @@ def _responses_payload_to_chat_completions_payload(
     if tool_choice is not None:
         chat_payload["tool_choice"] = tool_choice
 
-    # Input -> messages
+    # Input -> messages (strict: provider-bound /chat/completions payload)
     chat_payload["messages"] = _responses_input_to_chat_messages(responses_payload.get("input"))
 
     instructions = responses_payload.get("instructions")

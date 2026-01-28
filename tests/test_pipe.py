@@ -2865,10 +2865,12 @@ class TestToolExecution:
             context.timeout = 10.0
             context.user_id = "test_user"
 
-            status, text = await pipe._run_tool_with_retries(item, context, "function")
+            status, text, files, embeds = await pipe._run_tool_with_retries(item, context, "function")
 
             assert status == "completed"
             assert text == "success"
+            assert files == []
+            assert embeds == []
         finally:
             await pipe.close()
 
@@ -2887,10 +2889,12 @@ class TestToolExecution:
             context.timeout = 10.0
             context.user_id = "test_user"
 
-            status, text = await pipe._run_tool_with_retries(item, context, "function")
+            status, text, files, embeds = await pipe._run_tool_with_retries(item, context, "function")
 
             assert status == "failed"
             assert "missing a callable" in text
+            assert files == []
+            assert embeds == []
         finally:
             await pipe.close()
 
@@ -2949,10 +2953,12 @@ class TestToolExecution:
             context.per_request_semaphore = asyncio.Semaphore(1)
             context.global_semaphore = None
 
-            status, text = await pipe._invoke_tool_call(item, context)
+            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
 
             assert status == "skipped"
             assert "temporarily disabled" in text.lower()
+            assert files == []
+            assert embeds == []
         finally:
             await pipe.close()
 
@@ -5132,13 +5138,17 @@ async def test_run_tool_with_retries_success_and_missing_callable(pipe_instance)
         batch_cap=1,
     )
 
-    status, text = await pipe._run_tool_with_retries(good, context, "function")
+    status, text, files, embeds = await pipe._run_tool_with_retries(good, context, "function")
     assert status == "completed"
     assert text == "ok"
+    assert files == []
+    assert embeds == []
 
-    status, message = await pipe._run_tool_with_retries(bad, context, "function")
+    status, message, files, embeds = await pipe._run_tool_with_retries(bad, context, "function")
     assert status == "failed"
     assert "missing a callable" in message
+    assert files == []
+    assert embeds == []
 
 
 @pytest.mark.asyncio
@@ -10030,7 +10040,7 @@ class TestDelMethodPaths:
         # Capture the coroutine so it doesn't produce "never awaited" warning
         captured_coro = None
 
-        def capture_and_raise(coro):
+        def capture_and_raise(coro, **kwargs):
             nonlocal captured_coro
             captured_coro = coro
             raise RuntimeError("Cannot create task")
