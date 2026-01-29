@@ -24,17 +24,23 @@ jobs:
           python-version: '3.11'
 
       - name: Run bundler
-        run: python scripts/bundle.py
+        run: |
+          python scripts/bundle.py
+          python scripts/bundle.py --compress
 
-      - name: Verify bundled file
-        run: python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled.py').read()); print('✓ Syntax valid')"
+      - name: Verify bundled files
+        run: |
+          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled.py', encoding='utf-8').read()); print('✓ bundled.py syntax valid')"
+          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled_compressed.py', encoding='utf-8').read()); print('✓ bundled_compressed.py syntax valid')"
 
       # Always upload artifact (for testing/debugging)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: open_webui_openrouter_pipe_bundled-${{ github.ref_name }}
-          path: open_webui_openrouter_pipe_bundled.py
+          path: |
+            open_webui_openrouter_pipe_bundled.py
+            open_webui_openrouter_pipe_bundled_compressed.py
           retention-days: 90
 
       # Generate release notes with commit links for versioned releases
@@ -60,7 +66,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: open_webui_openrouter_pipe_bundled.py
+          files: |
+            open_webui_openrouter_pipe_bundled.py
+            open_webui_openrouter_pipe_bundled_compressed.py
           body: ${{ steps.release_notes.outputs.notes }}
 
       # Update "dev" pre-release on dev branch push
@@ -77,7 +85,11 @@ jobs:
 
             For stable versions, use the [latest release](../../releases/latest) instead.
 
-            **Direct download:** [open_webui_openrouter_pipe_bundled.py](../../releases/download/dev/open_webui_openrouter_pipe_bundled.py)
-          files: open_webui_openrouter_pipe_bundled.py
+            **Direct downloads:**
+            - [open_webui_openrouter_pipe_bundled.py](../../releases/download/dev/open_webui_openrouter_pipe_bundled.py)
+            - [open_webui_openrouter_pipe_bundled_compressed.py](../../releases/download/dev/open_webui_openrouter_pipe_bundled_compressed.py)
+          files: |
+            open_webui_openrouter_pipe_bundled.py
+            open_webui_openrouter_pipe_bundled_compressed.py
           prerelease: true
           make_latest: false  # Don't mark as "Latest" (that's for versioned releases)

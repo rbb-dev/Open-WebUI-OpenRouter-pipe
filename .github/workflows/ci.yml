@@ -41,6 +41,19 @@ jobs:
       - name: Run tests and checks
         run: |
           source .venv/bin/activate
+          # Build monolith bundles (used by Open WebUI "Import from Link")
+          python scripts/bundle.py
+          python scripts/bundle.py --compress
+
+          # Run the test suite in 3 modes:
+          # 1) Normal package imports (on-disk modules)
+          # 2) Bundled raw monolith
+          # 3) Bundled compressed monolith
+          echo "==> pytest (package imports)"
           PYTHONPATH=. pytest tests -q
+          echo "==> pytest (bundled: open_webui_openrouter_pipe_bundled.py)"
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q
+          echo "==> pytest (bundled: open_webui_openrouter_pipe_bundled_compressed.py)"
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q
           python -m compileall open_webui_openrouter_pipe tests filters
           pyright

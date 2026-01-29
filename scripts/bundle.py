@@ -2,56 +2,57 @@
 """
 Bundle the modular open_webui_openrouter_pipe package into a single monolithic .py file.
 
-This script creates a standalone version of the pipe that can be pasted directly
-into Open WebUI without requiring pip installation from GitHub.
+This bundler uses a "single-file package" strategy:
+- Embed each package module as source text
+- Install a sys.meta_path finder/loader to serve imports from the embedded sources
+
+Two output formats are supported:
+- Raw (default): embedded sources are readable/editable Python strings
+- Compressed (--compress): embedded sources are zlib+base64 blobs inflated at import time
 
 Usage:
-    python scripts/bundle.py [--output PATH]
+    python scripts/bundle.py
+    python scripts/bundle.py --compress
+    python scripts/bundle.py --output PATH
 
-Output:
-    dist/open_webui_openrouter_pipe_bundled.py (default)
+Output (defaults):
+    open_webui_openrouter_pipe_bundled.py
+    open_webui_openrouter_pipe_bundled_compressed.py   (with --compress)
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import base64
 import re
-import sys
+import zlib
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 
 # Project root (parent of scripts/)
 PROJECT_ROOT = Path(__file__).parent.parent
 PACKAGE_DIR = PROJECT_ROOT / "open_webui_openrouter_pipe"
 STUB_FILE = PROJECT_ROOT / "open_webui_openrouter_pipe.py"
-DEFAULT_OUTPUT = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled.py"
+
+DEFAULT_OUTPUT_RAW = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled.py"
+DEFAULT_OUTPUT_COMPRESSED = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled_compressed.py"
 
 
-def extract_stub_header(stub_path: Path) -> str:
-    """Extract the docstring header from the stub file and transform for bundled version."""
+def _read_stub_version(stub_path: Path) -> str:
     content = stub_path.read_text(encoding="utf-8")
+    match = re.search(r"^version:\s*([^\n]+)", content, re.MULTILINE)
+    return match.group(1).strip() if match else "0.0.0"
 
-    # Find the docstring (first triple-quoted block)
-    match = re.match(r'^("""[\s\S]*?""")', content)
-    if match:
-        header = match.group(1)
-    else:
-        header = None
 
-    # Build a proper bundled header
-    # Extract version from stub if present (match "version:" at start of line, not "required_open_webui_version:")
-    version_match = re.search(r'^version:\s*([^\n]+)', content, re.MULTILINE)
-    version = version_match.group(1).strip() if version_match else "2.0.3"
-
+def _render_header(*, version: str, compressed: bool) -> str:
+    description_prefix = " and compressed " if compressed else " "
     return f'''"""
 title: Open WebUI OpenRouter Responses Pipe
 author: rbb-dev
 author_url: https://github.com/rbb-dev
 git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
-description: OpenRouter Responses API integration for Open WebUI (bundled monolith - no pip install required)
+description: OpenRouter Responses API integration for Open WebUI (bundled{description_prefix}monolith)
 required_open_webui_version: 0.7.0
 version: {version}
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
@@ -59,219 +60,274 @@ license: MIT
 """'''
 
 
-def collect_modules(package_dir: Path) -> Dict[str, str]:
-    """
-    Walk the package directory and collect all module sources.
-
-    Returns a dict mapping module paths (e.g., "open_webui_openrouter_pipe.core.config")
-    to their source code.
-    """
-    modules: Dict[str, str] = {}
+def collect_modules(package_dir: Path) -> dict[str, str]:
+    """Collect all Python modules under `package_dir` as {module_path: source}."""
+    modules: dict[str, str] = {}
     package_name = package_dir.name
 
     for py_file in sorted(package_dir.rglob("*.py")):
-        # Skip __pycache__ and test files
         if "__pycache__" in str(py_file):
             continue
 
-        # Calculate module path
         relative = py_file.relative_to(package_dir)
         parts = list(relative.parts)
 
-        # Handle __init__.py -> package name
         if parts[-1] == "__init__.py":
             parts = parts[:-1]
-            if not parts:
-                module_path = package_name
-            else:
-                module_path = f"{package_name}.{'.'.join(parts)}"
+            module_path = package_name if not parts else f"{package_name}.{'.'.join(parts)}"
         else:
-            # Regular module
             parts[-1] = parts[-1][:-3]  # Remove .py
             module_path = f"{package_name}.{'.'.join(parts)}"
 
-        # Read source
-        source = py_file.read_text(encoding="utf-8")
-        modules[module_path] = source
+        modules[module_path] = py_file.read_text(encoding="utf-8")
 
     return modules
 
 
-def escape_source(source: str) -> str:
-    """Escape source code for embedding in a triple-quoted string."""
-    # We'll use a raw string approach with base64 for problematic content
-    # But first, try simple escaping
+def _literal_lines_for_text(text: str) -> list[str]:
+    """Render `text` as one or more adjacent Python string literals.
 
-    # Replace backslash-quote sequences that could break triple quotes
-    # and escape any triple quotes in the source
-    escaped = source.replace("\\", "\\\\")
-    escaped = escaped.replace('"""', '\\"\\"\\"')
+    Intended to be placed inside parentheses, one literal per line, so Python
+    concatenates them at compile time.
+    """
+    if not text:
+        return []
+    if "'''" in text:
+        raise ValueError("text contains triple-single-quote delimiter")
 
-    return escaped
+    # Raw strings cannot end with an odd number of backslashes. Split one off.
+    if text.endswith("\\"):
+        trailing = len(text) - len(text.rstrip("\\"))
+        if trailing % 2 == 1:
+            if len(text) == 1:
+                return [repr("\\")]
+            return [f"r'''{text[:-1]}'''", repr("\\")]
 
-
-def generate_import_hook() -> str:
-    """Generate the import hook code that loads bundled modules."""
-    return '''
-# =============================================================================
-# BUNDLED IMPORT HOOK
-# =============================================================================
-# This hook intercepts imports for the bundled package and loads module sources
-# from the _BUNDLED_MODULES dictionary instead of the filesystem.
-
-import sys
-import types
-from importlib.abc import MetaPathFinder, Loader
-from importlib.machinery import ModuleSpec
-
-class _BundledModuleFinder(MetaPathFinder):
-    """Meta path finder that locates bundled modules."""
-
-    def find_spec(self, fullname, path, target=None):
-        if fullname in _BUNDLED_MODULES:
-            return ModuleSpec(fullname, _BundledModuleLoader(fullname), is_package=self._is_package(fullname))
-        return None
-
-    def _is_package(self, fullname):
-        """Check if the module is a package (has submodules)."""
-        prefix = fullname + "."
-        return any(k.startswith(prefix) for k in _BUNDLED_MODULES)
+    return [f"r'''{text}'''"]
 
 
-class _BundledModuleLoader(Loader):
-    """Loader that executes bundled module source code."""
-
-    def __init__(self, fullname):
-        self.fullname = fullname
-
-    def create_module(self, spec):
-        # Use default module creation
-        return None
-
-    def exec_module(self, module):
-        # Set up package attributes
-        if any(k.startswith(self.fullname + ".") for k in _BUNDLED_MODULES):
-            module.__path__ = []
-            module.__package__ = self.fullname
-        else:
-            module.__package__ = self.fullname.rpartition(".")[0] or self.fullname
-
-        # Set __file__ to a synthetic path for debugging
-        module.__file__ = f"<bundled:{self.fullname}>"
-
-        # Execute the module source
-        source = _BUNDLED_MODULES.get(self.fullname, "")
-        if source.strip():
-            code = compile(source, module.__file__, "exec")
-            exec(code, module.__dict__)
+def _source_expr_raw(source: str) -> str:
+    """Return a Python expression which evaluates to `source` (readable raw-string form)."""
+    parts = source.split("'''")
+    expr_lines: list[str] = ["("]
+    for idx, part in enumerate(parts):
+        for lit in _literal_lines_for_text(part):
+            expr_lines.append(f"    {lit}")
+        if idx < len(parts) - 1:
+            expr_lines.append('    "\'\'\'"')
+    expr_lines.append(")")
+    return "\n".join(expr_lines)
 
 
-# Install the import hook BEFORE any imports from the bundled package
-sys.meta_path.insert(0, _BundledModuleFinder())
+def _b64_chunks_expr(b64_text: str, *, chunk_size: int = 120) -> str:
+    """Return a Python expression for a long base64 string using adjacent string literals."""
+    if len(b64_text) <= chunk_size:
+        return repr(b64_text)
 
-'''
-
-
-def generate_modules_dict(modules: Dict[str, str]) -> str:
-    """Generate the _BUNDLED_MODULES dictionary definition."""
-    lines = ["# ============================================================================="]
-    lines.append("# BUNDLED MODULE SOURCES")
-    lines.append("# =============================================================================")
-    lines.append(f"# Total modules: {len(modules)}")
-    lines.append("")
-    lines.append("_BUNDLED_MODULES = {")
-
-    # Sort modules to ensure consistent output
-    for module_path in sorted(modules.keys()):
-        source = modules[module_path]
-        escaped = escape_source(source)
-        lines.append(f'    "{module_path}": """')
-        lines.append(escaped)
-        lines.append('""",')
-        lines.append("")
-
-    lines.append("}")
-    lines.append("")
-
+    chunks = [b64_text[i : i + chunk_size] for i in range(0, len(b64_text), chunk_size)]
+    lines = ["("]
+    for chunk in chunks:
+        lines.append(f"    {repr(chunk)}")
+    lines.append(")")
     return "\n".join(lines)
 
 
-def generate_entry_point() -> str:
-    """Generate the entry point that exports the Pipe class."""
-    return '''
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
-# Import and export the Pipe class for Open WebUI
-
-from open_webui_openrouter_pipe import Pipe
-
-# Handle Open WebUI's module naming convention
-_MODULE_PREFIX = "function_"
-_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else Pipe.id
-
-# Create a wrapper class with the runtime ID
-class Pipe(Pipe):
-    id = _runtime_id
-
-__all__ = ["Pipe"]
-'''
+def _compress_source_zlib_base64(source: str) -> str:
+    raw = source.encode("utf-8")
+    comp = zlib.compress(raw, level=9)
+    return base64.b64encode(comp).decode("ascii")
 
 
-def bundle(output_path: Path) -> None:
-    """Bundle the package into a single file."""
-    print(f"Bundling {PACKAGE_DIR.name}...")
+def _generate_runtime(*, compressed: bool) -> str:
+    lines: list[str] = []
+    lines.append("# =============================================================================")
+    lines.append("# BUNDLED IMPORT HOOK")
+    lines.append("# =============================================================================")
+    lines.append("# - Loads open_webui_openrouter_pipe.* from embedded sources")
+    lines.append("# - Populates linecache so inspect.getsource() works")
+    lines.append("")
+    lines.append("from __future__ import annotations")
+    lines.append("")
+    lines.append("import linecache")
+    lines.append("import sys")
+    lines.append("from importlib.abc import Loader, MetaPathFinder")
+    lines.append("from importlib.machinery import ModuleSpec")
+    if compressed:
+        lines.append("import base64")
+        lines.append("import zlib")
+    lines.append("")
 
-    # Collect all module sources
+    if compressed:
+        lines.append("_BUNDLED_SOURCES_Z: dict[str, str] = {}")
+        lines.append("_BUNDLED_SOURCES: dict[str, str] = {}  # decompressed cache")
+        lines.append("")
+        lines.append("def _bundled_source(fullname: str) -> str:")
+        lines.append("    cached = _BUNDLED_SOURCES.get(fullname)")
+        lines.append("    if cached is not None:")
+        lines.append("        return cached")
+        lines.append("    payload = _BUNDLED_SOURCES_Z.get(fullname)")
+        lines.append('    if payload is None:')
+        lines.append('        return ""')
+        lines.append("    raw = zlib.decompress(base64.b64decode(payload))")
+        lines.append('    text = raw.decode(\"utf-8\")')
+        lines.append("    _BUNDLED_SOURCES[fullname] = text")
+        lines.append("    return text")
+        lines.append("")
+        lines.append("def _bundled_has_module(fullname: str) -> bool:")
+        lines.append("    return fullname in _BUNDLED_SOURCES_Z")
+    else:
+        lines.append("_BUNDLED_SOURCES: dict[str, str] = {}")
+        lines.append("")
+        lines.append("def _bundled_source(fullname: str) -> str:")
+        lines.append('    return _BUNDLED_SOURCES.get(fullname, "")')
+        lines.append("")
+        lines.append("def _bundled_has_module(fullname: str) -> bool:")
+        lines.append("    return fullname in _BUNDLED_SOURCES")
+
+    lines.append("")
+    lines.append("def _bundled_is_package(fullname: str) -> bool:")
+    lines.append('    prefix = fullname + "."')
+    if compressed:
+        lines.append("    return any(name.startswith(prefix) for name in _BUNDLED_SOURCES_Z)")
+    else:
+        lines.append("    return any(name.startswith(prefix) for name in _BUNDLED_SOURCES)")
+    lines.append("")
+    lines.append("class _BundledModuleFinder(MetaPathFinder):")
+    lines.append("    def find_spec(self, fullname, path, target=None):")
+    lines.append("        if not _bundled_has_module(fullname):")
+    lines.append("            return None")
+    lines.append("        return ModuleSpec(")
+    lines.append("            fullname,")
+    lines.append("            _BundledModuleLoader(fullname),")
+    lines.append("            is_package=_bundled_is_package(fullname),")
+    lines.append("        )")
+    lines.append("")
+    lines.append("class _BundledModuleLoader(Loader):")
+    lines.append("    def __init__(self, fullname: str):")
+    lines.append("        self.fullname = fullname")
+    lines.append("")
+    lines.append("    def create_module(self, spec):")
+    lines.append("        return None  # default module creation")
+    lines.append("")
+    lines.append("    def exec_module(self, module):")
+    lines.append("        if _bundled_is_package(self.fullname):")
+    lines.append("            module.__path__ = []")
+    lines.append("            module.__package__ = self.fullname")
+    lines.append("        else:")
+    lines.append('            module.__package__ = self.fullname.rpartition(\".\")[0] or self.fullname')
+    lines.append("")
+    lines.append('        module.__file__ = f\"<bundled:{self.fullname}>\"')
+    lines.append("")
+    lines.append("        source = _bundled_source(self.fullname)")
+    lines.append("        if not source.strip():")
+    lines.append("            return")
+    lines.append("")
+    lines.append("        # Make inspect.getsource() work for bundled modules")
+    lines.append("        linecache.cache[module.__file__] = (")
+    lines.append("            len(source),")
+    lines.append("            None,")
+    lines.append("            source.splitlines(True),")
+    lines.append("            module.__file__,")
+    lines.append("        )")
+    lines.append("")
+    lines.append('        code = compile(source, module.__file__, \"exec\")')
+    lines.append("        exec(code, module.__dict__)")
+    lines.append("")
+    lines.append("def _install_bundled_finder() -> None:")
+    lines.append("    for finder in sys.meta_path:")
+    lines.append("        if isinstance(finder, _BundledModuleFinder):")
+    lines.append("            return")
+    lines.append("    sys.meta_path.insert(0, _BundledModuleFinder())")
+    lines.append("")
+    lines.append("_install_bundled_finder()")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_entry_point() -> str:
+    return "\n".join(
+        [
+            "# =============================================================================",
+            "# ENTRY POINT",
+            "# =============================================================================",
+            "# Import and export the Pipe class for Open WebUI",
+            "",
+            "from open_webui_openrouter_pipe import Pipe as BasePipe",
+            "",
+            '_MODULE_PREFIX = \"function_\"',
+            "_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id",
+            "",
+            "class Pipe(BasePipe):",
+            "    id = _runtime_id",
+            "",
+            '__all__ = [\"Pipe\"]',
+            "",
+        ]
+    )
+
+
+def bundle(*, output_path: Path, compressed: bool) -> None:
+    version = _read_stub_version(STUB_FILE)
     modules = collect_modules(PACKAGE_DIR)
-    print(f"  Found {len(modules)} modules")
 
-    # Calculate total lines
-    total_lines = sum(source.count("\n") + 1 for source in modules.values())
-    print(f"  Total source lines: {total_lines:,}")
+    parts: list[str] = []
+    parts.append(_render_header(version=version, compressed=compressed))
+    parts.append("")
+    parts.append(_generate_runtime(compressed=compressed))
 
-    # Build the bundled file
-    parts = []
-
-    # 1. Header (generated for bundled version)
-    header = extract_stub_header(STUB_FILE)
-    parts.append(header)
+    parts.append("# =============================================================================")
+    parts.append("# BUNDLED MODULE SOURCES")
+    parts.append("# =============================================================================")
+    parts.append(f"# Total modules: {len(modules)}")
     parts.append("")
 
-    # 2. Import hook
-    parts.append(generate_import_hook())
+    if compressed:
+        for module_name in sorted(modules):
+            b64 = _compress_source_zlib_base64(modules[module_name])
+            expr = _b64_chunks_expr(b64)
+            parts.append(f"# --- {module_name} ---")
+            parts.append(f"_BUNDLED_SOURCES_Z[{module_name!r}] = {expr}")
+            parts.append("")
+    else:
+        for module_name in sorted(modules):
+            expr = _source_expr_raw(modules[module_name])
+            parts.append(f"# --- {module_name} ---")
+            parts.append(f"_BUNDLED_SOURCES[{module_name!r}] = {expr}")
+            parts.append("")
 
-    # 3. Modules dictionary
-    parts.append(generate_modules_dict(modules))
+    parts.append(_generate_entry_point())
 
-    # 4. Entry point
-    parts.append(generate_entry_point())
-
-    # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    content = "\n".join(parts)
-    output_path.write_text(content, encoding="utf-8")
+    output_path.write_text("\n".join(parts), encoding="utf-8")
 
-    # Report size
-    size_kb = len(content.encode("utf-8")) / 1024
-    print(f"  Output: {output_path}")
-    print(f"  Size: {size_kb:.1f} KB")
-    print("Done!")
+    size_kb = output_path.stat().st_size / 1024
+    mode = "compressed" if compressed else "raw"
+    print(f"Wrote {output_path} ({mode}, {size_kb:.1f} KB)")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bundle open_webui_openrouter_pipe into a single monolithic .py file"
     )
     parser.add_argument(
-        "--output", "-o",
+        "--compress",
+        action="store_true",
+        help="Store module sources as zlib+base64 blobs and inflate at import time",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"Output file path (default: {DEFAULT_OUTPUT})"
+        default=None,
+        help="Output file path (defaults depend on --compress)",
     )
     args = parser.parse_args()
 
-    bundle(args.output)
+    output = args.output
+    if output is None:
+        output = DEFAULT_OUTPUT_COMPRESSED if args.compress else DEFAULT_OUTPUT_RAW
+
+    bundle(output_path=output, compressed=bool(args.compress))
 
 
 if __name__ == "__main__":

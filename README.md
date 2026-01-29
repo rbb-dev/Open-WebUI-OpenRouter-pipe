@@ -75,19 +75,37 @@ Encryption, retention policies, request attribution, and operational hooks your 
 
 In Open WebUI: **Admin Panel** → **Functions** → **+** → **Import from Link**
 
+Pick one:
+
+**Readable bundle (easy to audit/edit):**
+
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled.py
 ```
 
-This downloads the latest stable release — a single-file bundle automatically generated from the modular source code on every release.
+**Compressed bundle (same behavior, smaller + less clutter in the editor):**
+
+```
+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled_compressed.py
+```
+
+Both are automatically generated from the same modular source code on every release.
 
 <details>
 <summary>Alternative: bleeding-edge from dev branch</summary>
 
 For the latest development commits (may be unstable):
 
+**Readable bundle:**
+
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/download/dev/open_webui_openrouter_pipe_bundled.py
+```
+
+**Compressed bundle:**
+
+```
+https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/download/dev/open_webui_openrouter_pipe_bundled_compressed.py
 ```
 
 </details>

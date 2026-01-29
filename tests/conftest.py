@@ -20,6 +20,7 @@ import asyncio
 import base64
 import sys
 import types
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -616,9 +617,47 @@ _install_tenacity_stub()
 _install_fastapi_stub()
 
 
+def _maybe_install_bundled_pipe() -> None:
+    """Optionally preload a generated monolith bundle for testing.
+
+    Set `OWUI_PIPE_BUNDLE_PATH` to a bundled .py file (e.g.
+    open_webui_openrouter_pipe_bundled.py or open_webui_openrouter_pipe_bundled_compressed.py)
+    to run the test suite against the single-file package import-hook implementation.
+    """
+    bundle_path = os.environ.get("OWUI_PIPE_BUNDLE_PATH")
+    if not bundle_path:
+        return
+
+    # Pytest loads a bootstrap plugin from `pytest.ini` under this package name
+    # (open_webui_openrouter_pipe.pytest_bootstrap) before it imports conftest.
+    # When running in bundled mode we want to replace the on-disk package with
+    # the monolith implementation, so purge any previously imported package
+    # modules before importing the bundle file.
+    prefix = "open_webui_openrouter_pipe"
+    for name in list(sys.modules):
+        if name == prefix or name.startswith(prefix + "."):
+            sys.modules.pop(name, None)
+
+    path = Path(bundle_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"OWUI_PIPE_BUNDLE_PATH does not exist: {path}")
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("owui_pipe_bundle", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to create module spec for bundle: {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["owui_pipe_bundle"] = module
+    spec.loader.exec_module(module)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Import Pipe (AFTER stubs are installed)
 # ─────────────────────────────────────────────────────────────────────────────
+
+_maybe_install_bundled_pipe()
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, ModelFamily
