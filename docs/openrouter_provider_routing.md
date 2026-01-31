@@ -259,6 +259,9 @@ The generated filters expose a subset of OpenRouter's provider routing options. 
 | `data_collection` | `"allow" \| "deny"` | Control data storage policies |
 | `max_price.prompt` | `number` | Max price for prompt ($/M tokens) |
 | `max_price.completion` | `number` | Max price for completion ($/M tokens) |
+| `max_price.image` | `number` | Max price per image ($/image) |
+| `max_price.audio` | `number` | Max price for audio ($/unit) |
+| `max_price.request` | `number` | Max price per request ($/request) |
 
 ---
 

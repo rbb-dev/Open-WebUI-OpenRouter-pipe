@@ -1983,6 +1983,9 @@ class Filter:
         MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")
         MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")
         MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")
+        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
+        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
+        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
 '''
 
         # Generate UserValves class (for user) if visibility is 'user' or 'both'
@@ -2005,6 +2008,9 @@ class Filter:
         MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")
         MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")
         MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")
+        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
+        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
+        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
 '''
 
         # Generate init based on visibility
@@ -2224,12 +2230,27 @@ class Filter:
         # Price limits
         max_price_prompt = get_float("MAX_PRICE_PROMPT")
         max_price_completion = get_float("MAX_PRICE_COMPLETION")
-        if max_price_prompt > 0 or max_price_completion > 0:
+        max_price_image = get_float("MAX_PRICE_IMAGE")
+        max_price_audio = get_float("MAX_PRICE_AUDIO")
+        max_price_request = get_float("MAX_PRICE_REQUEST")
+        if (
+            max_price_prompt > 0
+            or max_price_completion > 0
+            or max_price_image > 0
+            or max_price_audio > 0
+            or max_price_request > 0
+        ):
             provider["max_price"] = {}
             if max_price_prompt > 0:
                 provider["max_price"]["prompt"] = max_price_prompt
             if max_price_completion > 0:
                 provider["max_price"]["completion"] = max_price_completion
+            if max_price_image > 0:
+                provider["max_price"]["image"] = max_price_image
+            if max_price_audio > 0:
+                provider["max_price"]["audio"] = max_price_audio
+            if max_price_request > 0:
+                provider["max_price"]["request"] = max_price_request
 
         # Inject into metadata if we have any provider settings
         if provider:

@@ -408,6 +408,25 @@ class TestGeneratedInletMethod:
         assert "def inlet(" in source
         assert "def __init__(" in source
 
+    def test_generated_filter_includes_max_price_extensions(self):
+        """Generated filter should include extended max_price valves and injection."""
+        source = Pipe._render_provider_routing_filter_source(
+            model_slug="test/model",
+            providers=["openai"],
+            quantizations=["fp16"],
+            visibility="both",
+        )
+
+        assert "MAX_PRICE_IMAGE" in source
+        assert "MAX_PRICE_AUDIO" in source
+        assert "MAX_PRICE_REQUEST" in source
+        assert 'max_price_image = get_float("MAX_PRICE_IMAGE")' in source
+        assert 'max_price_audio = get_float("MAX_PRICE_AUDIO")' in source
+        assert 'max_price_request = get_float("MAX_PRICE_REQUEST")' in source
+        assert 'provider["max_price"]["image"] = max_price_image' in source
+        assert 'provider["max_price"]["audio"] = max_price_audio' in source
+        assert 'provider["max_price"]["request"] = max_price_request' in source
+
     def test_admin_only_filter_structure(self):
         """Admin-only filters should have toggle=False and no UserValves."""
         source = Pipe._render_provider_routing_filter_source(

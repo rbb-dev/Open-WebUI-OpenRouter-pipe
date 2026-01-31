@@ -223,6 +223,9 @@ Each generated provider routing filter has these valves (admin and/or user depen
 | `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` — Only use providers supporting all request params |
 | `ZDR` | `bool` | `False` | `provider.zdr` — Zero Data Retention enforcement |
 | `QUANTIZATIONS` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` — Filter by quantization level (when available) |
+| `MAX_PRICE_IMAGE` | `float` | `0` | `provider.max_price.image` — Max price per image ($/image), 0=no limit |
+| `MAX_PRICE_AUDIO` | `float` | `0` | `provider.max_price.audio` — Max price for audio ($/unit), 0=no limit |
+| `MAX_PRICE_REQUEST` | `float` | `0` | `provider.max_price.request` — Max price per request ($/request), 0=no limit |
 
 ### Reporting, UI behavior, and request identifiers
 
