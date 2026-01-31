@@ -176,6 +176,17 @@ See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openroute
 
 ---
 
+## OpenRouter response-healing plugin (intentionally not exposed)
+
+OpenRouter offers a response-healing plugin that can attempt to repair malformed outputs. This pipe does **not** expose that plugin on purpose:
+
+- We prefer failing fast when a model returns malformed JSON or invalid structured output.
+- Silent repairs can hide real model issues (bad prompts, low token budgets, provider quirks) and make debugging harder.
+
+If you want auto-healing, integrate it explicitly in your own request layer so it is visible and auditable.
+
+---
+
 ## Open WebUI Direct Tool Servers
 
 Direct Tool Servers are configured and executed by Open WebUI, but advertised/executed through this pipe:

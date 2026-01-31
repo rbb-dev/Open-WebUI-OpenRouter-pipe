@@ -201,6 +201,9 @@ Operational guidance:
 - Web search:
   - When the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches the OpenRouter web-search plugin.
   - `WEB_SEARCH_MAX_RESULTS` caps result count.
+- Response healing:
+  - The OpenRouter response-healing plugin is intentionally **not** exposed by this pipe.
+  - We prefer fail-fast behavior for malformed/invalid outputs so errors remain visible.
 - Tools:
   - Tool schemas are built from Open WebUI’s `__tools__` registry plus any selected Open WebUI **Direct Tool Servers**.
   - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO).
