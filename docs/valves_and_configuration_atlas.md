@@ -194,6 +194,7 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `DIRECT_FILES` | `bool` | `False` | When enabled, divert eligible chat file uploads and forward them as direct document inputs. |
 | `DIRECT_AUDIO` | `bool` | `False` | When enabled, divert eligible chat audio uploads and forward them as direct audio inputs. |
 | `DIRECT_VIDEO` | `bool` | `False` | When enabled, divert eligible chat video uploads and forward them as direct video inputs (via `/chat/completions`). |
+| `DIRECT_PDF_PARSER` | `Literal["Native","PDF Text","Mistral OCR"]` | `"Native"` | Selects the OpenRouter PDF parsing engine for PDF uploads (requires `DIRECT_FILES` enabled). |
 
 ### Provider routing filters
 

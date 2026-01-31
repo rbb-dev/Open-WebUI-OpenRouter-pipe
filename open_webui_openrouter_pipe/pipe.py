@@ -1002,7 +1002,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -1077,6 +1077,10 @@ class Filter:
         DIRECT_VIDEO: bool = Field(
             default=False,
             description="When enabled, uploads video directly to the model.",
+        )
+        DIRECT_PDF_PARSER: Literal["Native", "PDF Text", "Mistral OCR"] = Field(
+            default="Native",
+            description="OpenRouter PDF engine selection for direct uploads (requires Direct Files enabled).",
         )
 
     def __init__(self) -> None:
@@ -1179,6 +1183,7 @@ class Filter:
         enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))
         enable_audio = bool(getattr(user_valves, "DIRECT_AUDIO", False))
         enable_video = bool(getattr(user_valves, "DIRECT_VIDEO", False))
+        pdf_parser = getattr(user_valves, "DIRECT_PDF_PARSER", "Native")
 
         files = body.get("files", None)
         if not isinstance(files, list) or not files:
@@ -1193,6 +1198,7 @@ class Filter:
         retained: list[Any] = []
         warnings: list[str] = []
         total_bytes = 0
+        pdf_seen = False
 
         total_limit = int(self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB) * 1024 * 1024
         file_limit = int(self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
@@ -1225,6 +1231,8 @@ class Filter:
             )
             content_type = content_type.strip().lower() if isinstance(content_type, str) else ""
             name = item.get("name") or ""
+            filename = name.strip().lower() if isinstance(name, str) else ""
+            is_pdf = ("pdf" in content_type) or filename.endswith(".pdf")
 
             size_bytes = self._to_int(item.get("size"))
             if size_bytes is None or size_bytes < 0:
@@ -1265,6 +1273,8 @@ class Filter:
                         "content_type": content_type,
                     }
                 )
+                if is_pdf:
+                    pdf_seen = True
                 continue
 
             if kind == "audio":
@@ -1369,6 +1379,8 @@ class Filter:
                 pipe_meta["direct_uploads"] = attachments
                 # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
                 attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
+                if pdf_seen and isinstance(pdf_parser, str) and pdf_parser.strip():
+                    attachments["pdf_parser"] = pdf_parser.strip()
 
                 for key in ("files", "audio", "video"):
                     items = diverted.get(key) or []

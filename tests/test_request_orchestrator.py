@@ -576,6 +576,82 @@ async def test_inject_direct_uploads_handles_list_content():
 
 
 @pytest.mark.asyncio
+async def test_direct_uploads_pdf_parser_injects_plugin():
+    """Ensure pdf_parser selection injects file-parser plugin with engine."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        metadata: dict[str, Any] = {
+            "chat_id": "chat_123",
+            "model": {"id": "openai/gpt-4o-mini"},
+            "openrouter_pipe": {
+                "direct_uploads": {
+                    "files": [{"id": "file_1", "name": "doc.pdf"}],
+                    "pdf_parser": "PDF Text",
+                }
+            },
+        }
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        async def mock_inline_owui_file_id(file_id, *args, **kwargs):
+            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+
+        pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini",
+                "messages": [{"role": "user", "content": "summarize"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert len(captured_payloads) >= 1
+        for payload in captured_payloads:
+            plugins = payload.get("plugins", [])
+            file_plugins = [
+                p for p in plugins if isinstance(p, dict) and p.get("id") == "file-parser"
+            ]
+            assert len(file_plugins) == 1
+            assert file_plugins[0].get("pdf", {}).get("engine") == "pdf-text"
+
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
 async def test_inject_direct_uploads_handles_none_content():
     """Test that _inject_direct_uploads_into_messages handles None content.
 

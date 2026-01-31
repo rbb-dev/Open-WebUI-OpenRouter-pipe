@@ -244,8 +244,23 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `DIRECT_FILES` | `False` | Divert eligible chat file uploads and forward them as direct document inputs. |
 | `DIRECT_AUDIO` | `False` | Divert eligible audio uploads and forward them as direct audio inputs. |
 | `DIRECT_VIDEO` | `False` | Divert eligible video uploads and forward them as direct video inputs (routes via `/chat/completions`). |
+| `DIRECT_PDF_PARSER` | `"Native"` | Selects the OpenRouter PDF parsing engine for PDF uploads (requires `DIRECT_FILES` enabled). |
 
 ---
+
+## PDF parser selection
+
+Direct PDF uploads can use OpenRouter’s PDF processing engines. The **PDF Parser** user valve controls which engine is requested.
+
+Options (UI label → OpenRouter engine ID):
+- `Native` → `native`
+- `PDF Text` → `pdf-text`
+- `Mistral OCR` → `mistral-ocr`
+
+Notes:
+- The parser choice is applied only when a **PDF** upload is diverted to OpenRouter.
+- `DIRECT_FILES` must be enabled; otherwise PDFs stay on the normal OWUI RAG path and this valve has no effect.
+- See OpenRouter’s PDF Inputs guide for details: https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 
 ## Troubleshooting
 

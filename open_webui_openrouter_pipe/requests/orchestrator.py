@@ -82,6 +82,9 @@ class RequestOrchestrator:
             allowlist_csv = attachments.get("responses_audio_format_allowlist")
             if isinstance(allowlist_csv, str):
                 extracted["responses_audio_format_allowlist"] = allowlist_csv
+            pdf_parser = attachments.get("pdf_parser")
+            if isinstance(pdf_parser, str) and pdf_parser.strip():
+                extracted["pdf_parser"] = pdf_parser.strip()
             for key in ("files", "audio", "video"):
                 items = attachments.get(key)
                 if not isinstance(items, list):
@@ -692,6 +695,28 @@ class RequestOrchestrator:
                 responses_body.tools = tools
             elif ModelFamily.supports("function_calling", responses_body.model):
                 responses_body.tools = tools
+
+        pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
+        if isinstance(pdf_parser, str) and pdf_parser.strip():
+            parser_key = pdf_parser.strip()
+            engine_map = {
+                "Native": "native",
+                "PDF Text": "pdf-text",
+                "Mistral OCR": "mistral-ocr",
+                "native": "native",
+                "pdf-text": "pdf-text",
+                "mistral-ocr": "mistral-ocr",
+            }
+            engine = engine_map.get(parser_key)
+            if engine:
+                plugins = list(responses_body.plugins or [])
+                has_file_parser = any(
+                    isinstance(entry, dict) and entry.get("id") == "file-parser"
+                    for entry in plugins
+                )
+                if not has_file_parser:
+                    plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
+                    responses_body.plugins = plugins
 
         ors_requested = bool(features.get(_ORS_FILTER_FEATURE_FLAG, False))
         if ModelFamily.supports("web_search_tool", responses_body.model) and ors_requested:

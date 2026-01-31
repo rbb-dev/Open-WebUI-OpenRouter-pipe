@@ -342,6 +342,39 @@ def test_inlet_diverts_files_when_enabled():
     assert direct_uploads["files"][0]["id"] == "file_1"
 
 
+def test_inlet_records_pdf_parser_for_diverted_pdfs():
+    """Test inlet records selected PDF parser when diverting PDFs."""
+    filt = Filter()
+
+    files = [
+        {
+            "id": "file_1",
+            "type": "file",
+            "name": "document.pdf",
+            "size": 1024,
+            "content_type": "application/pdf",
+        }
+    ]
+    body = {"files": list(files)}
+    metadata = {}
+    user = {"valves": Filter.UserValves(DIRECT_FILES=True, DIRECT_PDF_PARSER="Mistral OCR")}
+    model = {
+        "info": {
+            "meta": {
+                "openrouter_pipe": {
+                    "capabilities": {"file_input": True}
+                }
+            }
+        }
+    }
+
+    filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
+
+    pipe_meta = metadata.get("openrouter_pipe", {})
+    direct_uploads = pipe_meta.get("direct_uploads", {})
+    assert direct_uploads.get("pdf_parser") == "Mistral OCR"
+
+
 def test_inlet_retains_files_when_user_valve_disabled():
     """Test inlet retains files when DIRECT_FILES is disabled."""
     filt = Filter()
