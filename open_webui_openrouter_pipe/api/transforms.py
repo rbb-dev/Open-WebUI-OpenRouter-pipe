@@ -103,7 +103,6 @@ class ResponsesBody(BaseModel):
     verbosity: Optional[str] = None
     web_search_options: Optional[Dict[str, Any]] = None
     stream_options: Optional[Dict[str, Any]] = None
-    usage: Optional[Dict[str, Any]] = None
 
     # OpenRouter routing extras (best-effort passthrough for /chat/completions).
     provider: Optional[Dict[str, Any]] = None
@@ -435,7 +434,6 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "messages",
     "stream",
     "stream_options",
-    "usage",
     "max_tokens",
     "max_completion_tokens",
     "temperature",
@@ -1056,20 +1054,7 @@ def _responses_payload_to_chat_completions_payload(
     if stream:
         existing_stream_options = responses_payload.get("stream_options")
         if isinstance(existing_stream_options, dict):
-            stream_options = dict(existing_stream_options)
-        else:
-            stream_options = {}
-        stream_options.setdefault("include_usage", True)
-        chat_payload["stream_options"] = stream_options
-
-    # OpenRouter usage accounting (enables cost + cached/reasoning token metrics).
-    existing_usage = responses_payload.get("usage")
-    if isinstance(existing_usage, dict):
-        merged_usage = dict(existing_usage)
-        merged_usage["include"] = True
-        chat_payload["usage"] = merged_usage
-    else:
-        chat_payload["usage"] = {"include": True}
+            chat_payload["stream_options"] = dict(existing_stream_options)
 
     # Sampling + misc OpenAI params (may exist as extra fields on ResponsesBody)
     passthrough = (

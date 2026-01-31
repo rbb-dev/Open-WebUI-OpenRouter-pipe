@@ -3527,8 +3527,6 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
     chat = _responses_payload_to_chat_completions_payload(payload)
     assert chat["model"] == payload["model"]
     assert chat["stream"] is True
-    assert chat["stream_options"]["include_usage"] is True
-    assert chat["usage"] == {"include": True}
     assert chat["messages"][0]["role"] == "system"
     assert chat["messages"][0]["content"][0]["type"] == "text"
     assert chat["messages"][0]["content"][0]["text"] == "SYSTEM INSTRUCTIONS"

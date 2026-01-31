@@ -335,8 +335,8 @@ class TestResponsesPayloadToChatCompletionsPayload:
         assert result["tools"][0]["type"] == "function"
         assert result["tools"][0]["function"]["name"] == "search"
 
-    def test_sets_stream_options(self):
-        """Test that stream_options are set for streaming."""
+    def test_stream_options_not_injected(self):
+        """Test that stream_options are not injected when absent."""
         payload = {
             "model": "openai/gpt-4o",
             "stream": True,
@@ -344,7 +344,7 @@ class TestResponsesPayloadToChatCompletionsPayload:
         }
         result = _responses_payload_to_chat_completions_payload(payload)
 
-        assert result.get("stream_options", {}).get("include_usage") is True
+        assert "stream_options" not in result
 
     def test_rounds_top_k(self):
         """Test that top_k is rounded to integer."""
@@ -407,14 +407,12 @@ class TestResponsesPayloadToChatCompletionsPayload:
         }
         result = _responses_payload_to_chat_completions_payload(payload)
         assert result["stream_options"]["custom"] is True
-        assert result["stream_options"]["include_usage"] is True
 
-    def test_existing_usage_merged(self):
-        """Test existing usage is merged with include=True."""
+    def test_usage_not_forwarded(self):
+        """Test usage is not forwarded to chat payload."""
         payload = {"model": "gpt-4", "input": [], "usage": {"custom": "value"}}
         result = _responses_payload_to_chat_completions_payload(payload)
-        assert result["usage"]["custom"] == "value"
-        assert result["usage"]["include"] is True
+        assert "usage" not in result
 
     def test_int_params_rounded(self):
         """Test integer parameters are rounded."""
@@ -2594,4 +2592,3 @@ def test_filter_openrouter_request_drops_invalid_top_k() -> None:
     payload = {"model": "openai/gpt-5", "input": [], "top_k": "nope"}
     filtered = _filter_openrouter_request(payload)
     assert "top_k" not in filtered
-
