@@ -76,7 +76,6 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `AUTO_CONTEXT_TRIMMING` | `bool` | `True` | Automatically attaches OpenRouter’s `middle-out` transform so long prompts are trimmed from the middle instead of failing with context errors. |
 | `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Default reasoning effort requested from supported models. |
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Controls the reasoning summary emitted by supported models. |
-| `GEMINI_THINKING_LEVEL` | `Literal[\"auto\", \"low\", \"high\"]` | `auto` | Controls `thinking_level` for Gemini 3.x models. `auto` maps minimal/low effort to LOW and everything else to HIGH. |
 | `GEMINI_THINKING_BUDGET` | `int` | `1024` | Base thinking budget (tokens) for Gemini 2.5 models (0 disables thinking). |
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `conversation` | Reasoning retention: `disabled` keeps nothing; `next_reply` keeps thoughts until the following assistant reply finishes; `conversation` keeps them for the full chat history. |
 | `TASK_MODEL_REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `low` | Reasoning effort requested for Open WebUI task payloads (titles/tags/etc.) when they target this pipe’s models. |

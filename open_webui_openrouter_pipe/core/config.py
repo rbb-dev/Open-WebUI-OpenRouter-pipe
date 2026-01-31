@@ -853,14 +853,6 @@ class Valves(BaseModel):
         title="Reasoning summary",
         description="Controls the reasoning summary emitted by supported models (auto/concise/detailed). Set to 'disabled' to skip requesting reasoning summaries.",
     )
-    GEMINI_THINKING_LEVEL: Literal["auto", "low", "high"] = Field(
-        default="auto",
-        title="Gemini 3 thinking level",
-        description=(
-            "Controls the thinking_level sent to Gemini 3.x models. 'auto' maps minimal/low effort to LOW and "
-            "everything else to HIGH. Set explicitly to 'low' or 'high' to override."
-        ),
-    )
     GEMINI_THINKING_BUDGET: int = Field(
         default=1024,
         ge=0,

@@ -4438,28 +4438,6 @@ async def test_transform_messages_skips_image_generation_artifacts(monkeypatch):
         pipe.shutdown()
 
 
-def test_apply_gemini_thinking_config_sets_level():
-    pipe = Pipe()
-
-    # Set real model capabilities using ModelFamily.set_dynamic_specs
-    ModelFamily.set_dynamic_specs({
-        "google.gemini-3-pro-image-preview": {
-            "supported_parameters": ["reasoning"]
-        }
-    })
-
-    try:
-        valves = pipe.Valves(REASONING_EFFORT="high")
-        body = ResponsesBody(model="google/gemini-3-pro-image-preview", input=[])
-        pipe._apply_reasoning_preferences(body, valves)
-        pipe._apply_gemini_thinking_config(body, valves)
-        assert body.thinking_config == {"include_thoughts": True, "thinking_level": "HIGH"}
-        assert body.reasoning is None
-        assert body.include_reasoning is None
-    finally:
-        pipe.shutdown()
-
-
 def test_apply_gemini_thinking_config_sets_budget():
     pipe = Pipe()
 
@@ -10438,7 +10416,5 @@ class TestInitArtifactStoreDelegation:
             pipe._init_artifact_store("test_pipe", table_fragment="test")
         finally:
             pipe.shutdown()
-
-
 
 

@@ -132,7 +132,6 @@ class ReasoningConfigManager:
         # Lazy import to avoid circular dependency
         from .registry import (
             _classify_gemini_thinking_family,
-            _map_effort_to_gemini_level,
             _map_effort_to_gemini_budget,
         )
 
@@ -162,20 +161,12 @@ class ReasoningConfigManager:
             return
 
         thinking_config: dict[str, Any] = {"include_thoughts": True}
-        if family == "gemini-3":
-            level = _map_effort_to_gemini_level(effort_hint, valves.GEMINI_THINKING_LEVEL)
-            if level is None:
-                responses_body.thinking_config = None
-                setattr(responses_body, "include_reasoning", False)
-                return
-            thinking_config["thinking_level"] = level
-        elif family == "gemini-2.5":
-            budget = _map_effort_to_gemini_budget(effort_hint, valves.GEMINI_THINKING_BUDGET)
-            if budget is None:
-                responses_body.thinking_config = None
-                setattr(responses_body, "include_reasoning", False)
-                return
-            thinking_config["thinking_budget"] = budget
+        budget = _map_effort_to_gemini_budget(effort_hint, valves.GEMINI_THINKING_BUDGET)
+        if budget is None:
+            responses_body.thinking_config = None
+            setattr(responses_body, "include_reasoning", False)
+            return
+        thinking_config["thinking_budget"] = budget
 
         responses_body.thinking_config = thinking_config
         responses_body.reasoning = None

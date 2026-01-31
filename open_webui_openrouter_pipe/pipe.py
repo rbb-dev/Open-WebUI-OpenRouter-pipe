@@ -198,9 +198,6 @@ from .storage.multimodal import (
 )
 # Imports from models.registry
 from .models.registry import (
-    _classify_gemini_thinking_family,
-    _map_effort_to_gemini_level,
-    _map_effort_to_gemini_budget,
     OpenRouterModelRegistry,
     ModelFamily,
     sanitize_model_id,

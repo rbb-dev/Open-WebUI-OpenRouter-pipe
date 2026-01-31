@@ -1848,111 +1848,6 @@ class TestApplyGeminiThinkingConfig:
 
         assert body.thinking_config is None
 
-    def test_gemini_3_model_sets_thinking_level(self, pipe_instance):
-        """For Gemini 3 models, thinking_level is set based on effort."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config == {"include_thoughts": True, "thinking_level": "HIGH"}
-        assert body.reasoning is None
-        assert body.include_reasoning is None
-
-    def test_gemini_3_model_low_effort_maps_to_low_level(self, pipe_instance):
-        """For Gemini 3 models, 'low' effort maps to 'LOW' level."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="low",
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config["thinking_level"] == "LOW"
-
-    def test_gemini_3_model_minimal_effort_maps_to_low_level(self, pipe_instance):
-        """For Gemini 3 models, 'minimal' effort maps to 'LOW' level."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="minimal",
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config["thinking_level"] == "LOW"
-
-    def test_gemini_3_model_override_level_low(self, pipe_instance):
-        """For Gemini 3 models, GEMINI_THINKING_LEVEL can override to LOW."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-            GEMINI_THINKING_LEVEL="low",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config["thinking_level"] == "LOW"
-
-    def test_gemini_3_model_override_level_high(self, pipe_instance):
-        """For Gemini 3 models, GEMINI_THINKING_LEVEL can override to HIGH."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="low",
-            GEMINI_THINKING_LEVEL="high",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config["thinking_level"] == "HIGH"
-
-    def test_gemini_3_model_effort_none_disables_thinking(self, pipe_instance):
-        """For Gemini 3 models, effort 'none' disables thinking."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="none",
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is None
-        assert body.include_reasoning is False
-
     def test_gemini_25_model_sets_thinking_budget(self, pipe_instance):
         """For Gemini 2.5 models, thinking_budget is set based on effort."""
         ModelFamily.set_dynamic_specs({
@@ -2089,133 +1984,7 @@ class TestApplyGeminiThinkingConfig:
 
         assert body.thinking_config is None
         assert body.include_reasoning is False
-
-    def test_reasoning_not_requested_no_thinking_config(self, pipe_instance):
-        """When reasoning is not requested, no thinking_config is set."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        # reasoning not set, include_reasoning not set
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is None
-        assert body.include_reasoning is False
-
-    def test_reasoning_enabled_false_no_thinking_config(self, pipe_instance):
-        """When reasoning.enabled is False, no thinking_config is set."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": False}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is None
-
-    def test_reasoning_exclude_true_no_thinking_config(self, pipe_instance):
-        """When reasoning.exclude is True, no thinking_config is set."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True, "exclude": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is None
-
-    def test_include_reasoning_flag_triggers_thinking_config(self, pipe_instance):
-        """When include_reasoning is True, thinking_config is set."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.include_reasoning = True
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is not None
-        assert body.thinking_config["include_thoughts"] is True
-
-    def test_gemini_3_effort_from_valve_when_not_in_reasoning(self, pipe_instance):
-        """For Gemini 3, effort falls back to valve when not in reasoning dict."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="minimal",
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True}  # No effort specified
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        # Should use valve's minimal -> LOW
-        assert body.thinking_config["thinking_level"] == "LOW"
-
-    def test_gemini_3_effort_from_reasoning_dict_takes_precedence(self, pipe_instance):
-        """For Gemini 3, effort from reasoning dict overrides valve."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="low",  # Would map to LOW
-            GEMINI_THINKING_LEVEL="auto",
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        body.reasoning = {"enabled": True, "effort": "high"}  # Override
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        # Should use reasoning dict's high -> HIGH
-        assert body.thinking_config["thinking_level"] == "HIGH"
-
-    def test_gemini_3_level_none_from_include_flag_with_none_effort(self, pipe_instance):
-        """For Gemini 3, include_reasoning=True with 'none' effort disables thinking.
-
-        This covers lines 168-170: when _map_effort_to_gemini_level returns None.
-        The path is: include_reasoning=True forces reasoning_requested=True, but
-        then effort_hint='none' makes _map_effort_to_gemini_level return None.
-        """
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3-pro": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="none",  # Will be used since reasoning dict effort is empty
-            GEMINI_THINKING_LEVEL="auto",  # auto + 'none' effort -> None level
-        )
-        body = ResponsesBody(model="google/gemini-3-pro", input=[])
-        # include_reasoning=True forces reasoning_requested=True despite enabled=False
-        body.include_reasoning = True
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        # effort 'none' -> level is None -> thinking disabled
-        assert body.thinking_config is None
-        assert body.include_reasoning is False
+        assert body.reasoning == {"enabled": True}
 
     def test_gemini_25_budget_none_from_include_flag_with_none_effort(self, pipe_instance):
         """For Gemini 2.5, include_reasoning=True with 'none' effort disables thinking.
@@ -2375,7 +2144,7 @@ class TestShouldRetryWithoutReasoning:
 
     def test_logs_info_when_retrying(self, pipe_instance, caplog):
         """When retrying, logs an info message."""
-        body = ResponsesBody(model="google.gemini-3-pro", input=[])
+        body = ResponsesBody(model="test.model", input=[])
         body.include_reasoning = True
         error = OpenRouterAPIError(
             status=400,
@@ -2388,7 +2157,7 @@ class TestShouldRetryWithoutReasoning:
 
         assert result is True
         assert any("Retrying without reasoning" in message for message in caplog.messages)
-        assert any("google.gemini-3-pro" in message for message in caplog.messages)
+        assert any("test.model" in message for message in caplog.messages)
 
 
 # -----------------------------------------------------------------------------
@@ -2452,23 +2221,6 @@ class TestEdgeCases:
         pipe_instance._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
-
-    def test_gemini_exact_model_name_match(self, pipe_instance):
-        """Handles exact Gemini model names (e.g., 'google.gemini-3')."""
-        ModelFamily.set_dynamic_specs({
-            "google.gemini-3": {"supported_parameters": frozenset(["reasoning"])}
-        })
-        valves = pipe_instance.Valves(
-            ENABLE_REASONING=True,
-            REASONING_EFFORT="high",
-        )
-        body = ResponsesBody(model="google/gemini-3", input=[])
-        body.reasoning = {"enabled": True}
-
-        pipe_instance._apply_gemini_thinking_config(body, valves)
-
-        assert body.thinking_config is not None
-        assert "thinking_level" in body.thinking_config
 
     def test_gemini_25_exact_model_name_match(self, pipe_instance):
         """Handles exact Gemini 2.5 model names."""

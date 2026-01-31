@@ -579,8 +579,6 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
 def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
     """Return the Gemini thinking family for the provided normalized model id."""
     lowered = (normalized_model_id or "").lower()
-    if lowered.startswith("google.gemini-3-") or lowered == "google.gemini-3":
-        return "gemini-3"
     if lowered.startswith("google.gemini-2.5-") or lowered == "google.gemini-2.5":
         return "gemini-2.5"
     return None
@@ -605,24 +603,6 @@ def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> Optional[int]
     return int(max(1, round(base_budget * scalar)))
 
 
-# -----------------------------------------------------------------------------
-# Model Selection and Effort Mapping
-# -----------------------------------------------------------------------------
-
-@timed
-def _map_effort_to_gemini_level(effort: str, valve_level: str) -> Optional[str]:
-    """Map our reasoning effort preference onto Gemini 3 thinking levels."""
-    effective = (valve_level or "auto").strip().lower()
-    if effective in {"low", "high"}:
-        return effective.upper()
-    normalized = (effort or "").strip().lower()
-    if normalized in {"none", ""}:
-        return None
-    if normalized in {"minimal", "low"}:
-        return "LOW"
-    return "HIGH"
-
-
 @timed
 def _parse_model_patterns(value: Any) -> list[str]:
     """Parse comma-separated fnmatch patterns (order preserved, empty removed)."""
@@ -638,4 +618,3 @@ def _parse_model_patterns(value: Any) -> list[str]:
             continue
         patterns.append(candidate)
     return patterns
-
