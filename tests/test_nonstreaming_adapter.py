@@ -624,6 +624,52 @@ async def test_nonstreaming_chat_developer_role_and_usage_details(pipe_instance_
     assert usage.get("cost_details", {}).get("output") == 0.0032
 
 
+@pytest.mark.asyncio
+async def test_nonstreaming_chat_refusal_field(pipe_instance_async):
+    """Test _run_chat uses refusal when content is empty."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    response_json = {
+        "id": "chatcmpl-789",
+        "choices": [{
+            "message": {"role": "assistant", "content": None, "refusal": "No, I can't do that."},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+    }
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload=response_json,
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Do the thing"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+            endpoint_override="chat_completions",
+        ):
+            events.append(event)
+
+        await session.close()
+
+    refusal_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    assert any("can't do that" in e.get("delta", "") for e in refusal_deltas)
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1
+    output = completed[0].get("response", {}).get("output", [])
+    message = next((o for o in output if o.get("type") == "message"), {})
+    content = message.get("content", [])
+    assert content and "can't do that" in content[0].get("text", "")
+
+
 # ============================================================================
 # _run_chat Annotations Tests (lines 165, 167, 173-174, 176, 179, 184)
 # ============================================================================

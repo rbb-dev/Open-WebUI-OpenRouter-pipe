@@ -281,6 +281,10 @@ class NonStreamingAdapter:
                 yield {"type": "response.output_item.done", "item": reasoning_item}
 
             assistant_text = _extract_chat_message_text(message_obj)
+            if not assistant_text:
+                refusal_text = message_obj.get("refusal")
+                if isinstance(refusal_text, str) and refusal_text.strip():
+                    assistant_text = refusal_text
             if assistant_text:
                 yield {"type": "response.output_text.delta", "delta": assistant_text}
 

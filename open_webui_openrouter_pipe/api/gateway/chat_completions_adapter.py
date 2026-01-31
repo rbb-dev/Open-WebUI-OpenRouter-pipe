@@ -104,6 +104,8 @@ class ChatCompletionsAdapter:
         image_item_id: str | None = None
         image_output_item: dict[str, Any] | None = None
         images_emitted = False
+        refusal_text_parts: list[str] = []
+        refusal_text_seen = False
 
         @timed
         def _ensure_tool_call_id(index: int, current: dict[str, Any]) -> str:
@@ -404,6 +406,11 @@ class ChatCompletionsAdapter:
                                                 "item_id": reasoning_item_id,
                                                 "delta": message_reasoning_text,
                                             }
+                                    if not refusal_text_seen:
+                                        message_refusal = message_obj.get("refusal")
+                                        if isinstance(message_refusal, str) and message_refusal.strip():
+                                            refusal_text_parts.append(message_refusal)
+                                            refusal_text_seen = True
                                     message_images = message_obj.get("images")
                                     if (
                                         not images_emitted
@@ -467,6 +474,11 @@ class ChatCompletionsAdapter:
                                 if isinstance(content_delta, str) and content_delta:
                                     assistant_text_parts.append(content_delta)
                                     yield {"type": "response.output_text.delta", "delta": content_delta}
+
+                                delta_refusal = delta_obj.get("refusal")
+                                if isinstance(delta_refusal, str) and delta_refusal.strip():
+                                    refusal_text_parts.append(delta_refusal)
+                                    refusal_text_seen = True
 
                                 tool_calls = delta_obj.get("tool_calls")
                                 if isinstance(tool_calls, list) and tool_calls:
@@ -554,6 +566,11 @@ class ChatCompletionsAdapter:
             }
 
         assistant_text = "".join(assistant_text_parts)
+        if not assistant_text:
+            refusal_text = "".join(refusal_text_parts).strip()
+            if refusal_text:
+                yield {"type": "response.output_text.delta", "delta": refusal_text}
+                assistant_text = refusal_text
         message_item: dict[str, Any] = {
             "type": "message",
             "role": "assistant",

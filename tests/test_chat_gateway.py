@@ -3015,6 +3015,59 @@ async def test_chat_completions_streaming_message_images(pipe_instance_async):
     assert result[0].get("image_url", {}).get("url") == "https://example.com/image.png"
 
 
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_refusal_field(pipe_instance_async):
+    """Test streaming response with refusal-only message."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    sse_response = (
+        _sse({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "refusal": "I can't help with that.",
+                },
+            }]
+        })
+        + "data: [DONE]\n\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = []
+        async for event in pipe.send_openai_chat_completions_streaming_request(
+            session,
+            {"model": "openai/gpt-4o", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    refusal_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    assert any("can't help" in e.get("delta", "") for e in refusal_deltas)
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1
+    output = completed[0].get("response", {}).get("output", [])
+    message = next((o for o in output if o.get("type") == "message"), {})
+    content = message.get("content", [])
+    assert content and "can't help" in content[0].get("text", "")
+
+
 # ============================================================================
 # Streaming Request Tests - Annotations/Citations
 # ============================================================================
