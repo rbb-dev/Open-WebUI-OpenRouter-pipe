@@ -6277,8 +6277,18 @@ class TestStreamingCoreAdditionalCoverage:
                             "type": "message",
                             "role": "assistant",
                             "annotations": [
-                                {"type": "file_ref", "file_id": "file-1"},
-                                {"type": "file_ref", "file_id": "file-2"},
+                                {
+                                    "type": "file_citation",
+                                    "file_id": "file-1",
+                                    "filename": "doc1.pdf",
+                                    "index": 0,
+                                },
+                                {
+                                    "type": "file_citation",
+                                    "file_id": "file-2",
+                                    "filename": "doc2.pdf",
+                                    "index": 1,
+                                },
                             ],
                         },
                     ],
@@ -6314,7 +6324,21 @@ class TestStreamingCoreAdditionalCoverage:
         assert result == "Hello"
         # Check that annotations persistence was called
         annotation_calls = [c for c in upsert_calls if "annotations" in c[2]]
-        assert len(annotation_calls) >= 1 or True  # Exercises the code path
+        expected_annotations = [
+            {
+                "type": "file_citation",
+                "file_id": "file-1",
+                "filename": "doc1.pdf",
+                "index": 0,
+            },
+            {
+                "type": "file_citation",
+                "file_id": "file-2",
+                "filename": "doc2.pdf",
+                "index": 1,
+            },
+        ]
+        assert any(call[2]["annotations"] == expected_annotations for call in annotation_calls)
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_fn)
 

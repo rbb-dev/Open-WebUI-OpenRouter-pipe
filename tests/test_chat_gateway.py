@@ -3851,7 +3851,14 @@ async def test_transform_messages_to_input_preserves_annotations() -> None:
                 {
                     "role": "assistant",
                     "content": "ok",
-                    "annotations": [{"type": "file_annotation", "foo": "bar"}],
+                    "annotations": [
+                        {
+                            "type": "file_citation",
+                            "file_id": "file-123",
+                            "filename": "doc.pdf",
+                            "index": 0,
+                        }
+                    ],
                     "reasoning_details": [{"type": "reasoning.text", "text": "think"}],
                 },
                 {"role": "user", "content": "next"},
@@ -3860,7 +3867,14 @@ async def test_transform_messages_to_input_preserves_annotations() -> None:
         )
         assistant_items = [i for i in out if i.get("type") == "message" and i.get("role") == "assistant"]
         assert assistant_items, "Expected assistant message in Responses input"
-        assert assistant_items[0]["annotations"] == [{"type": "file_annotation", "foo": "bar"}]
+        assert assistant_items[0]["annotations"] == [
+            {
+                "type": "file_citation",
+                "file_id": "file-123",
+                "filename": "doc.pdf",
+                "index": 0,
+            }
+        ]
         assert assistant_items[0]["reasoning_details"] == [{"type": "reasoning.text", "text": "think"}]
     finally:
         await pipe.close()

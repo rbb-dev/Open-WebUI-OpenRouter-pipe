@@ -2825,8 +2825,14 @@ class TestAnnotationsAndReasoning:
                 "role": "assistant",
                 "content": "Response with citation.",
                 "annotations": [
-                    {"type": "url_citation", "url": "https://example.com", "text": "source"}
-                ]
+                    {"type": "url_citation", "url": "https://example.com", "text": "source"},
+                    {
+                        "type": "file_citation",
+                        "file_id": "file-123",
+                        "filename": "doc.pdf",
+                        "index": 0,
+                    },
+                ],
             }
         ]
 
@@ -2834,8 +2840,15 @@ class TestAnnotationsAndReasoning:
 
         assert len(result) == 1
         assert "annotations" in result[0]
-        assert len(result[0]["annotations"]) == 1
-        assert result[0]["annotations"][0]["type"] == "url_citation"
+        assert result[0]["annotations"] == [
+            {"type": "url_citation", "url": "https://example.com", "text": "source"},
+            {
+                "type": "file_citation",
+                "file_id": "file-123",
+                "filename": "doc.pdf",
+                "index": 0,
+            },
+        ]
 
     @pytest.mark.asyncio
     async def test_assistant_reasoning_details_preserved(self, pipe_instance):
