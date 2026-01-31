@@ -800,6 +800,31 @@ class TestModelSelectionAndFiltering:
             ModelFamily.set_dynamic_specs({})
             pipe.shutdown()
 
+    def test_apply_model_filters_zdr_only(self):
+        """Test that _apply_model_filters with ZDR_MODELS_ONLY filters correctly."""
+        pipe = Pipe()
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_zdr_ids = OpenRouterModelRegistry._zdr_model_ids
+
+        try:
+            OpenRouterModelRegistry._zdr_model_ids = {"zdr.model"}
+            pipe.valves.ZDR_MODELS_ONLY = True
+            pipe.valves.FREE_MODEL_FILTER = "all"
+            pipe.valves.TOOL_CALLING_FILTER = "all"
+
+            models = [
+                {"id": "zdr.model", "norm_id": "zdr.model", "name": "ZDR"},
+                {"id": "non.zdr", "norm_id": "non.zdr", "name": "Non-ZDR"},
+            ]
+
+            result = pipe._apply_model_filters(models, pipe.valves)
+            assert len(result) == 1
+            assert result[0]["norm_id"] == "zdr.model"
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr_ids
+            pipe.shutdown()
+
     def test_apply_model_filters_empty_input(self):
         """Test that _apply_model_filters returns empty list for empty input."""
         pipe = Pipe()
@@ -960,6 +985,31 @@ class TestModelSelectionAndFiltering:
             assert "TOOL_CALLING_FILTER=exclude" in reasons
         finally:
             ModelFamily.set_dynamic_specs({})
+            pipe.shutdown()
+
+    def test_model_restriction_reasons_zdr_filter(self):
+        """Test that _model_restriction_reasons checks ZDR_MODELS_ONLY."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "auto"
+        pipe.valves.FREE_MODEL_FILTER = "all"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+        pipe.valves.ZDR_MODELS_ONLY = True
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_zdr_ids = OpenRouterModelRegistry._zdr_model_ids
+
+        try:
+            OpenRouterModelRegistry._zdr_model_ids = {"zdr.model"}
+            reasons = pipe._model_restriction_reasons(
+                "non.zdr",
+                valves=pipe.valves,
+                allowlist_norm_ids=set(),
+                catalog_norm_ids={"zdr.model", "non.zdr"},
+            )
+
+            assert "ZDR_MODELS_ONLY" in reasons
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr_ids
             pipe.shutdown()
 
 
@@ -10463,4 +10513,3 @@ class TestInitArtifactStoreDelegation:
             pipe._init_artifact_store("test_pipe", table_fragment="test")
         finally:
             pipe.shutdown()
-

@@ -175,6 +175,7 @@ class OpenRouterModelRegistry:
     _models: list[dict[str, Any]] = []
     _specs: Dict[str, Dict[str, Any]] = {}
     _id_map: Dict[str, str] = {}  # normalized sanitized id -> original id
+    _zdr_model_ids: set[str] | None = None
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
     _next_refresh_after: float = 0.0
@@ -262,6 +263,17 @@ class OpenRouterModelRegistry:
             raise
 
         data = payload.get("data") or []
+        zdr_model_ids: set[str] | None = None
+        try:
+            zdr_model_ids = await cls._fetch_zdr_model_ids(
+                session,
+                base_url=base_url,
+                api_key=api_key,
+                logger=logger,
+                http_referer=http_referer,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load OpenRouter ZDR endpoint list: %s", exc)
         raw_specs: Dict[str, Dict[str, Any]] = {}
         models: list[dict[str, Any]] = []
         id_map: Dict[str, str] = {}
@@ -341,6 +353,8 @@ class OpenRouterModelRegistry:
                 "pricing": pricing,
                 "architecture": architecture,
             }
+            if zdr_model_ids is not None:
+                specs[norm_id]["zdr_capable"] = norm_id in zdr_model_ids
 
         models.sort(key=lambda m: m["name"].lower())
         if not models:
@@ -348,6 +362,8 @@ class OpenRouterModelRegistry:
         cls._models = models
         cls._specs = specs
         cls._id_map = id_map
+        if zdr_model_ids is not None:
+            cls._zdr_model_ids = zdr_model_ids
 
         # Share dynamic specs with ModelFamily for downstream feature checks.
         ModelFamily.set_dynamic_specs(specs)
@@ -517,6 +533,8 @@ class OpenRouterModelRegistry:
             spec = cls._specs.get(model["norm_id"])
             if spec and spec.get("capabilities"):
                 item["capabilities"] = dict(spec["capabilities"])
+            if spec and "zdr_capable" in spec:
+                item["zdr_capable"] = spec["zdr_capable"]
             enriched.append(item)
         return enriched
 
@@ -563,6 +581,64 @@ class OpenRouterModelRegistry:
         """Return the cached spec for ``model_id`` (or an empty dict)."""
         norm = ModelFamily.base_model(model_id)
         return cls._specs.get(norm) or {}
+
+    @classmethod
+    @timed
+    def zdr_model_ids(cls) -> set[str] | None:
+        """Return cached ZDR-capable model ids (or None if unavailable)."""
+        if cls._zdr_model_ids is None:
+            return None
+        return set(cls._zdr_model_ids)
+
+    @classmethod
+    @timed
+    def is_zdr_capable(cls, model_id: str) -> bool | None:
+        """Return True/False if ZDR list is available, otherwise None."""
+        if cls._zdr_model_ids is None:
+            return None
+        norm = ModelFamily.base_model(model_id)
+        base = norm.rsplit(":", 1)[0] if ":" in norm else norm
+        return base in cls._zdr_model_ids
+
+    @classmethod
+    @timed
+    async def _fetch_zdr_model_ids(
+        cls,
+        session: aiohttp.ClientSession,
+        *,
+        base_url: str,
+        api_key: str,
+        logger: logging.Logger,
+        http_referer: str | None = None,
+    ) -> set[str]:
+        """Fetch OpenRouter ZDR endpoints and return normalized model ids."""
+        from ..requests.debug import _debug_print_request, _debug_print_error_response
+
+        url = base_url.rstrip("/") + "/endpoints/zdr"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "X-Title": _OPENROUTER_TITLE,
+            "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
+        }
+        _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
+        async with session.get(url, headers=headers) as resp:
+            if resp.status >= 400:
+                await _debug_print_error_response(resp, logger=logger)
+            resp.raise_for_status()
+            payload = await resp.json()
+
+        data = payload.get("data") or []
+        model_ids: set[str] = set()
+        for item in data:
+            model_id = item.get("model_id") or item.get("id")
+            if not model_id:
+                continue
+            sanitized = sanitize_model_id(model_id)
+            norm = ModelFamily.base_model(sanitized)
+            base = norm.rsplit(":", 1)[0] if ":" in norm else norm
+            if base:
+                model_ids.add(base)
+        return model_ids
 
 # -----------------------------------------------------------------------------
 # Additional Model Helper Functions

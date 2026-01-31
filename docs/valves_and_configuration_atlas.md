@@ -65,6 +65,9 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `NEW_MODEL_ACCESS_CONTROL` | `Literal["public","admins"]` | `admins` | Default access control for **new** OpenRouter model overlays inserted into Open WebUI (existing `access_control` is preserved). `public` sets `access_control=None` (any user can read). `admins` sets `access_control={}` (private) and relies on Open WebUI’s `BYPASS_ADMIN_ACCESS_CONTROL` for admin access; otherwise admins must be granted access explicitly. |
 | `FREE_MODEL_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on summed OpenRouter pricing fields. `all` disables filtering; `only` restricts to free models (sum==0 and at least one numeric pricing value); `exclude` hides free models. |
 | `TOOL_CALLING_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on tool calling support (supported_parameters includes `tools` or `tool_choice`). `all` disables filtering; `only` restricts to tool-capable models; `exclude` hides tool-capable models. |
+| `ZDR_MODELS_ONLY` | `bool` | `False` | Hide models that are not ZDR-capable (based on `/endpoints/zdr`). Catalog filter only; does not enforce ZDR on requests. |
+| `ZDR_ENFORCE` | `bool` | `False` | Enforce ZDR on every request by sending `provider.zdr=true` and rejecting non‑ZDR models. |
+| `ALLOW_USER_ZDR_OVERRIDE` | `bool` | `True` | Allow users to request ZDR per chat via `REQUEST_ZDR` (ignored when `ZDR_ENFORCE` is enabled). |
 | `UPDATE_MODEL_IMAGES` | `bool` | `True` | When enabled, sync OpenRouter model icons into Open WebUI model metadata (`meta.profile_image_url`) as PNG data URLs. Disabling avoids extra outbound fetches and model-metadata writes. |
 | `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Disabling avoids model-metadata writes. |
 | `UPDATE_MODEL_DESCRIPTIONS` | `bool` | `True` | When enabled, sync Open WebUI model descriptions (`meta.description`) from the OpenRouter `/models` catalog. Disabling avoids model-metadata writes and preserves operator-managed descriptions. |
@@ -79,6 +82,8 @@ Defaults and valve names are verified against `open_webui_openrouter_pipe/open_w
 | `GEMINI_THINKING_BUDGET` | `int` | `1024` | Base thinking budget (tokens) for Gemini 2.5 models (0 disables thinking). |
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `conversation` | Reasoning retention: `disabled` keeps nothing; `next_reply` keeps thoughts until the following assistant reply finishes; `conversation` keeps them for the full chat history. |
 | `TASK_MODEL_REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `low` | Reasoning effort requested for Open WebUI task payloads (titles/tags/etc.) when they target this pipe’s models. |
+
+See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 
 ### Tool execution and function calling
 
@@ -311,3 +316,4 @@ User valves provide per-user behavior overrides for a subset of settings.
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Choose how detailed the reasoning summary should be. |
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `next_reply` | User-level reasoning retention preference. |
 | `PERSIST_TOOL_RESULTS` | `bool` | `True` | Let the AI reuse outputs from tools later in the conversation. |
+| `REQUEST_ZDR` | `bool` | `False` | Request ZDR routing for this chat. |

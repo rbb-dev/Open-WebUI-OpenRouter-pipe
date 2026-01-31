@@ -501,6 +501,54 @@ class RequestOrchestrator:
                     responses_body.provider = merged_provider
                     self.logger.debug("Injected provider routing from filter: %s", filter_provider)
 
+        normalized_model_id = ModelFamily.base_model(responses_body.model)
+        admin_enforce_zdr = bool(getattr(valves, "ZDR_ENFORCE", False))
+        allow_user_zdr = bool(getattr(valves, "ALLOW_USER_ZDR_OVERRIDE", True))
+        user_requests_zdr = False
+        if allow_user_zdr and not admin_enforce_zdr:
+            user_valves_raw = __user__.get("valves") or {}
+            try:
+                user_valves = self._pipe.UserValves.model_validate(user_valves_raw)
+                user_requests_zdr = bool(getattr(user_valves, "REQUEST_ZDR", False))
+            except Exception:
+                user_requests_zdr = False
+        enforce_zdr = admin_enforce_zdr or user_requests_zdr
+        if enforce_zdr:
+            base_model_for_check = normalized_model_id.rsplit(":", 1)[0] if ":" in normalized_model_id else normalized_model_id
+            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(base_model_for_check)
+            if zdr_capable is False:
+                task_name = self._pipe._task_name(__task__) if __task__ else ""
+                if __task__:
+                    return self._pipe._build_task_fallback_content(task_name)
+                await self._pipe._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.MODEL_RESTRICTED_TEMPLATE,
+                    variables={
+                        "requested_model": responses_body.model,
+                        "normalized_model_id": normalized_model_id,
+                        "restriction_reasons": "ZDR_ENFORCE",
+                        "model_id_filter": "",
+                        "free_model_filter": "",
+                        "tool_calling_filter": "",
+                    },
+                    log_message=(
+                        f"Model restricted due to ZDR enforcement (requested={responses_body.model}, "
+                        f"normalized={normalized_model_id})"
+                    ),
+                    log_level=logging.WARNING,
+                )
+                return ""
+            if zdr_capable is None:
+                self.logger.warning(
+                    "ZDR enforcement requested but ZDR endpoint list is unavailable; proceeding without validation."
+                )
+
+            existing_provider = responses_body.provider or {}
+            if isinstance(existing_provider, dict):
+                responses_body.provider = {**existing_provider, "zdr": True}
+            else:
+                responses_body.provider = {"zdr": True}
+
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
             if responses_body.max_output_tokens is None:
                 default_max = ModelFamily.max_completion_tokens(responses_body.model)
@@ -509,7 +557,6 @@ class RequestOrchestrator:
         else:
             responses_body.max_output_tokens = None
 
-        normalized_model_id = ModelFamily.base_model(responses_body.model)
         task_mode = bool(__task__)
         if task_mode:
             if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:

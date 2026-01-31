@@ -6530,13 +6530,24 @@ class Filter:
 
         free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
         tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
-        if free_mode == "all" and tool_mode == "all":
+        zdr_only = bool(getattr(valves, "ZDR_MODELS_ONLY", False))
+        zdr_model_ids = None
+        if zdr_only:
+            zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
+            if zdr_model_ids is None:
+                self.logger.warning(
+                    "ZDR model filter enabled but ZDR endpoint list is unavailable; skipping ZDR filtering."
+                )
+        if free_mode == "all" and tool_mode == "all" and not (zdr_only and zdr_model_ids is not None):
             return models
 
         filtered: list[dict[str, Any]] = []
         for model in models:
             norm_id = model.get("norm_id") or ""
             if not norm_id:
+                continue
+
+            if zdr_only and zdr_model_ids is not None and norm_id not in zdr_model_ids:
                 continue
 
             if free_mode != "all":
@@ -6709,6 +6720,12 @@ class Filter:
                 reasons.append("TOOL_CALLING_FILTER=only")
             elif tool_mode == "exclude" and supports_tools:
                 reasons.append("TOOL_CALLING_FILTER=exclude")
+
+        zdr_only = bool(getattr(valves, "ZDR_MODELS_ONLY", False))
+        if zdr_only and model_norm_id in catalog_norm_ids:
+            zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
+            if zdr_model_ids is not None and model_norm_id not in zdr_model_ids:
+                reasons.append("ZDR_MODELS_ONLY")
 
         return reasons
 

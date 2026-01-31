@@ -778,6 +778,30 @@ class Valves(BaseModel):
             "'exclude' hides tool-capable models."
         ),
     )
+    ZDR_MODELS_ONLY: bool = Field(
+        default=False,
+        title="ZDR models only",
+        description=(
+            "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
+            "This is a catalog filter only; it does not enforce ZDR on requests."
+        ),
+    )
+    ZDR_ENFORCE: bool = Field(
+        default=False,
+        title="Enforce ZDR",
+        description=(
+            "When enabled, all requests include provider.zdr=true and will be rejected if the selected model "
+            "does not have any ZDR endpoints."
+        ),
+    )
+    ALLOW_USER_ZDR_OVERRIDE: bool = Field(
+        default=True,
+        title="Allow user ZDR override",
+        description=(
+            "When enabled, users can toggle 'Request ZDR' per chat. "
+            "If Enforce ZDR is enabled, user overrides are ignored."
+        ),
+    )
     VARIANT_MODELS: str = Field(
         default="",
         title="Variant models",
@@ -1572,6 +1596,11 @@ class UserValves(BaseModel):
         default=False,
         title="Show tool execution cards",
         description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently.",
+    )
+    REQUEST_ZDR: bool = Field(
+        default=False,
+        title="Request ZDR",
+        description="Request Zero Data Retention routing for this chat.",
     )
 
 
