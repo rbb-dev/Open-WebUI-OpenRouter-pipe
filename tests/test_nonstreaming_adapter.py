@@ -501,6 +501,55 @@ async def test_nonstreaming_chat_reasoning_field(pipe_instance_async):
     assert len(reasoning_done) == 1
 
 
+@pytest.mark.asyncio
+async def test_nonstreaming_chat_message_images(pipe_instance_async):
+    """Test _run_chat emits image output items for message images."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    response_json = {
+        "id": "chatcmpl-123",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "Image attached",
+                "images": [{"image_url": {"url": "https://example.com/image.png"}}],
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+    }
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload=response_json,
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Show image"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+            endpoint_override="chat_completions",
+        ):
+            events.append(event)
+
+        await session.close()
+
+    image_done = [
+        e for e in events
+        if e.get("type") == "response.output_item.done" and e.get("item", {}).get("type") == "image_generation_call"
+    ]
+    assert len(image_done) == 1
+    result = image_done[0].get("item", {}).get("result", [])
+    assert isinstance(result, list) and result
+    assert result[0].get("image_url", {}).get("url") == "https://example.com/image.png"
+
+
 # ============================================================================
 # _run_chat Annotations Tests (lines 165, 167, 173-174, 176, 179, 184)
 # ============================================================================

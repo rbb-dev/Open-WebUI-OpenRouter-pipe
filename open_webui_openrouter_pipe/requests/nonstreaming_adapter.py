@@ -173,6 +173,32 @@ class NonStreamingAdapter:
                 reasoning_text_parts.append(message_reasoning_text)
                 yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": message_reasoning_text}
 
+            image_output_item: dict[str, Any] | None = None
+            message_images = message_obj.get("images")
+            if isinstance(message_images, list) and message_images:
+                image_results: list[Any] = []
+                for entry in message_images:
+                    if isinstance(entry, dict):
+                        image_results.append(dict(entry))
+                    elif isinstance(entry, str) and entry.strip():
+                        image_results.append(entry.strip())
+                if image_results:
+                    image_item_id = f"image-{generate_item_id()}"
+                    image_output_item = {
+                        "type": "image_generation_call",
+                        "id": image_item_id,
+                        "status": "completed",
+                        "result": image_results,
+                    }
+                    yield {
+                        "type": "response.output_item.added",
+                        "item": dict(image_output_item, status="in_progress"),
+                    }
+                    yield {
+                        "type": "response.output_item.done",
+                        "item": image_output_item,
+                    }
+
             annotations = message_obj.get("annotations")
             if isinstance(annotations, list) and annotations:
                 seen_urls: set[str] = set()
@@ -269,6 +295,8 @@ class NonStreamingAdapter:
                 output_message["reasoning_details"] = [dict(a) for a in reasoning_details if isinstance(a, dict)]
 
             output: list[dict[str, Any]] = [output_message]
+            if image_output_item is not None:
+                output.append(image_output_item)
             output.extend(output_calls)
 
             yield {

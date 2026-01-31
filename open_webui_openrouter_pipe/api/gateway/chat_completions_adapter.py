@@ -101,6 +101,9 @@ class ChatCompletionsAdapter:
         reasoning_summary_text: str | None = None
         reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         reasoning_details_order: list[tuple[str, str]] = []
+        image_item_id: str | None = None
+        image_output_item: dict[str, Any] | None = None
+        images_emitted = False
 
         @timed
         def _ensure_tool_call_id(index: int, current: dict[str, Any]) -> str:
@@ -401,6 +404,36 @@ class ChatCompletionsAdapter:
                                                 "item_id": reasoning_item_id,
                                                 "delta": message_reasoning_text,
                                             }
+                                    message_images = message_obj.get("images")
+                                    if (
+                                        not images_emitted
+                                        and isinstance(message_images, list)
+                                        and message_images
+                                    ):
+                                        image_results: list[Any] = []
+                                        for entry in message_images:
+                                            if isinstance(entry, dict):
+                                                image_results.append(dict(entry))
+                                            elif isinstance(entry, str) and entry.strip():
+                                                image_results.append(entry.strip())
+                                        if image_results:
+                                            if image_item_id is None:
+                                                image_item_id = f"image-{generate_item_id()}"
+                                            image_output_item = {
+                                                "type": "image_generation_call",
+                                                "id": image_item_id,
+                                                "status": "completed",
+                                                "result": image_results,
+                                            }
+                                            yield {
+                                                "type": "response.output_item.added",
+                                                "item": dict(image_output_item, status="in_progress"),
+                                            }
+                                            yield {
+                                                "type": "response.output_item.done",
+                                                "item": image_output_item,
+                                            }
+                                            images_emitted = True
 
                                 if annotations:
                                     for raw_ann in annotations:
@@ -532,6 +565,8 @@ class ChatCompletionsAdapter:
         if final_reasoning_details:
             message_item["reasoning_details"] = final_reasoning_details
         output: list[dict[str, Any]] = [message_item]
+        if image_output_item is not None:
+            output.append(image_output_item)
         for index in sorted(tool_calls_by_index.keys()):
             current = tool_calls_by_index[index]
             call_id = _ensure_tool_call_id(index, current)

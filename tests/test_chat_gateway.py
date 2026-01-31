@@ -2962,6 +2962,59 @@ async def test_chat_completions_streaming_reasoning_field(pipe_instance_async):
     assert content and "Thinking aloud" in content[0].get("text", "")
 
 
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_message_images(pipe_instance_async):
+    """Test streaming response with message images."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    sse_response = (
+        _sse({"choices": [{"delta": {"content": "Here is an image"}, "finish_reason": None}]})
+        + _sse({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Here is an image",
+                    "images": [{"image_url": {"url": "https://example.com/image.png"}}],
+                },
+            }]
+        })
+        + "data: [DONE]\n\n"
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            body=sse_response.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+            status=200,
+        )
+
+        events = []
+        async for event in pipe.send_openai_chat_completions_streaming_request(
+            session,
+            {"model": "openai/gpt-4o", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            events.append(event)
+
+        await session.close()
+
+    image_done = [
+        e for e in events
+        if e.get("type") == "response.output_item.done" and e.get("item", {}).get("type") == "image_generation_call"
+    ]
+    assert len(image_done) == 1
+    result = image_done[0].get("item", {}).get("result", [])
+    assert isinstance(result, list) and result
+    assert result[0].get("image_url", {}).get("url") == "https://example.com/image.png"
+
+
 # ============================================================================
 # Streaming Request Tests - Annotations/Citations
 # ============================================================================
