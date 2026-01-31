@@ -351,8 +351,11 @@ class ModelCatalogManager:
                 continue
 
             # Skip variant-only endpoints - these providers only serve variant models
-            # (e.g., :free, :thinking) and aren't available for the base model
-            if endpoint.get("model_variant_slug"):
+            # (e.g., :free, :thinking) and aren't available for the base model.
+            # The frontend catalog now includes model_variant_slug even for base models,
+            # so only skip when it differs from the base slug.
+            model_variant_slug = endpoint.get("model_variant_slug")
+            if isinstance(model_variant_slug, str) and model_variant_slug and model_variant_slug != model_slug:
                 continue
 
             # Extract provider slug and display name
