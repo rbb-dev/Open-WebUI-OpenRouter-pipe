@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 from aioresponses import aioresponses
+from aioresponses.core import CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
 from open_webui_openrouter_pipe.requests.nonstreaming_adapter import NonStreamingAdapter
@@ -548,6 +549,79 @@ async def test_nonstreaming_chat_message_images(pipe_instance_async):
     result = image_done[0].get("item", {}).get("result", [])
     assert isinstance(result, list) and result
     assert result[0].get("image_url", {}).get("url") == "https://example.com/image.png"
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_chat_developer_role_and_usage_details(pipe_instance_async):
+    """Test developer role passes through and usage details map to responses usage."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    captured = {}
+
+    def _callback(url, **kwargs):
+        captured.update(kwargs)
+        return CallbackResult(
+            status=200,
+            payload={
+                "id": "chatcmpl-456",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Done"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 8,
+                    "total_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                    "completion_tokens_details": {"reasoning_tokens": 3},
+                    "cost": 0.0042,
+                    "cost_details": {"input": 0.001, "output": 0.0032},
+                },
+            },
+        )
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            callback=_callback,
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {
+                "model": "openai/gpt-4o",
+                "input": [
+                    {"type": "message", "role": "developer", "content": "Follow my instructions."},
+                    {"type": "message", "role": "user", "content": "Hi"},
+                ],
+            },
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+            endpoint_override="chat_completions",
+        ):
+            events.append(event)
+
+        await session.close()
+
+    sent_json = captured.get("json") or {}
+    sent_messages = sent_json.get("messages", [])
+    roles = [m.get("role") for m in sent_messages if isinstance(m, dict)]
+    assert "developer" in roles
+
+    completed = [e for e in events if e.get("type") == "response.completed"]
+    assert len(completed) == 1
+    usage = completed[0].get("response", {}).get("usage", {})
+    assert usage.get("input_tokens") == 12
+    assert usage.get("output_tokens") == 8
+    assert usage.get("total_tokens") == 20
+    assert usage.get("input_tokens_details", {}).get("cached_tokens") == 2
+    assert usage.get("output_tokens_details", {}).get("reasoning_tokens") == 3
+    assert usage.get("cost") == 0.0042
+    assert usage.get("cost_details", {}).get("output") == 0.0032
 
 
 # ============================================================================
