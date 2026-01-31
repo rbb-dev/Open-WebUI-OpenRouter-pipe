@@ -62,6 +62,7 @@ Behavior:
   - `auto` exposes the full catalog.
   - A comma-separated list restricts the exposed models.
 - The pipe returns a minimal `{"id","name"}` list for the model selector.
+- The special `openrouter/auto` model is included in the catalog and can be selected like any other model. Auto Router configuration (allowed model patterns) is managed in the OpenRouter UI (Settings → Plugins) and is not surfaced in Open WebUI.
 - Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
   - `meta.capabilities` (capability checkboxes), and
   - `meta.profile_image_url` (model icon as a PNG data URL), and
