@@ -1850,9 +1850,9 @@ def test_format_final_status_description_includes_cost_tokens_and_tps(pipe_insta
         stream_duration=2.0,
     )
 
-    assert description.startswith("Time: 3.21s  20.0 tps")
-    assert "Cost $0.012345" in description
-    assert "Total tokens: 160 (Input: 120, Output: 40, Cached: 20, Reasoning: 5)" in description
+    assert description.startswith("⧗ 3.21s 20.0 tps")
+    assert "$0.012345" in description
+    assert "⇅ 160 (▲ 120, ▼ 40, ↺ 20, ▽ 5)" in description
 
 
 def test_format_final_status_description_respects_disabled_flag(pipe_instance):

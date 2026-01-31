@@ -298,14 +298,14 @@ class ErrorFormatter:
             return default_description
 
         usage = total_usage or {}
-        time_segment = f"Time: {elapsed:.2f}s"
+        time_segment = f"⧗ {elapsed:.2f}s"
         tokens_for_tps: Optional[int] = None
         segments: list[str] = []
 
         cost = usage.get("cost")
         if isinstance(cost, (int, float)) and cost > 0:
             cost_str = f"{cost:.6f}".rstrip("0").rstrip(".")
-            segments.append(f"Cost ${cost_str}")
+            segments.append(f"${cost_str}")
 
         @timed
         def _to_int(value: Any) -> Optional[int]:
@@ -339,21 +339,21 @@ class ErrorFormatter:
 
         token_details: list[str] = []
         if input_tokens is not None:
-            token_details.append(f"Input: {input_tokens}")
+            token_details.append(f"▲ {input_tokens}")
         if output_tokens is not None:
-            token_details.append(f"Output: {output_tokens}")
+            token_details.append(f"▼ {output_tokens}")
         if cached_tokens is not None and cached_tokens > 0:
-            token_details.append(f"Cached: {cached_tokens}")
+            token_details.append(f"↺ {cached_tokens}")
         if reasoning_tokens is not None and reasoning_tokens > 0:
-            token_details.append(f"Reasoning: {reasoning_tokens}")
+            token_details.append(f"▽ {reasoning_tokens}")
 
         if total_tokens is not None:
-            token_segment = f"Total tokens: {total_tokens}"
+            token_segment = f"⇅ {total_tokens}"
             if token_details:
                 token_segment += f" ({', '.join(token_details)})"
             segments.append(token_segment)
         elif token_details:
-            segments.append("Tokens: " + ", ".join(token_details))
+            segments.append("⇅ " + ", ".join(token_details))
 
         if (
             tokens_for_tps is not None
@@ -362,7 +362,7 @@ class ErrorFormatter:
         ):
             tokens_per_second = tokens_for_tps / stream_duration
             if tokens_per_second > 0:
-                time_segment = f"{time_segment}  {tokens_per_second:.1f} tps"
+                time_segment = f"{time_segment} {tokens_per_second:.1f} tps"
 
         segments.insert(0, time_segment)
 
