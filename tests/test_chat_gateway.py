@@ -3141,13 +3141,15 @@ def test_chat_usage_to_responses_usage_basic():
     assert result["output_tokens"] == 50
 
 
-def test_chat_usage_to_responses_usage_with_cached():
-    """Test usage conversion with cached tokens."""
+def test_chat_usage_to_responses_usage_with_prompt_details():
+    """Test usage conversion with prompt token details."""
     raw_usage = {
         "prompt_tokens": 100,
         "completion_tokens": 50,
         "prompt_tokens_details": {
             "cached_tokens": 30,
+            "cache_write_tokens": 100,
+            "audio_tokens": 0,
         },
     }
 
@@ -3156,6 +3158,8 @@ def test_chat_usage_to_responses_usage_with_cached():
     assert result["input_tokens"] == 100
     assert result["output_tokens"] == 50
     assert result["input_tokens_details"]["cached_tokens"] == 30
+    assert result["input_tokens_details"]["cache_write_tokens"] == 100
+    assert result["input_tokens_details"]["audio_tokens"] == 0
 
 
 def test_chat_usage_to_responses_usage_with_reasoning():
@@ -3165,6 +3169,7 @@ def test_chat_usage_to_responses_usage_with_reasoning():
         "completion_tokens": 80,
         "completion_tokens_details": {
             "reasoning_tokens": 30,
+            "foo": 2,
         },
     }
 
@@ -3173,6 +3178,22 @@ def test_chat_usage_to_responses_usage_with_reasoning():
     assert result["input_tokens"] == 100
     assert result["output_tokens"] == 80
     assert result["output_tokens_details"]["reasoning_tokens"] == 30
+    assert result["output_tokens_details"]["foo"] == 2
+
+
+def test_chat_usage_to_responses_usage_with_cost_details():
+    """Test usage conversion with cost details."""
+    raw_usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "cost_details": {"upstream_inference_cost": 19},
+    }
+
+    result = ChatCompletionsAdapter._chat_usage_to_responses_usage(raw_usage)
+
+    assert result["input_tokens"] == 100
+    assert result["output_tokens"] == 50
+    assert result["cost_details"]["upstream_inference_cost"] == 19
 
 
 def test_chat_usage_to_responses_usage_empty():

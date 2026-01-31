@@ -789,20 +789,16 @@ class ChatCompletionsAdapter:
             if key in raw_usage:
                 usage[key] = raw_usage[key]
 
+        cost_details = raw_usage.get("cost_details")
+        if isinstance(cost_details, dict) and cost_details:
+            usage["cost_details"] = dict(cost_details)
+
         prompt_details = raw_usage.get("prompt_tokens_details")
         if isinstance(prompt_details, dict) and prompt_details:
-            cached = prompt_details.get("cached_tokens")
-            if cached is not None:
-                usage.setdefault("input_tokens_details", {})
-                if isinstance(usage["input_tokens_details"], dict):
-                    usage["input_tokens_details"]["cached_tokens"] = cached
+            usage["input_tokens_details"] = dict(prompt_details)
 
         completion_details = raw_usage.get("completion_tokens_details")
         if isinstance(completion_details, dict) and completion_details:
-            reasoning_tokens = completion_details.get("reasoning_tokens")
-            if reasoning_tokens is not None:
-                usage.setdefault("output_tokens_details", {})
-                if isinstance(usage["output_tokens_details"], dict):
-                    usage["output_tokens_details"]["reasoning_tokens"] = reasoning_tokens
+            usage["output_tokens_details"] = dict(completion_details)
 
         return usage
