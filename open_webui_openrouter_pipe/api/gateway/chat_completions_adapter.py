@@ -97,6 +97,7 @@ class ChatCompletionsAdapter:
         latest_message_annotations: list[dict[str, Any]] = []
         reasoning_item_id: str | None = None
         reasoning_text_parts: list[str] = []
+        reasoning_text_seen = False
         reasoning_summary_text: str | None = None
         reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         reasoning_details_order: list[tuple[str, str]] = []
@@ -317,6 +318,7 @@ class ChatCompletionsAdapter:
                                             text = entry.get("text")
                                             if isinstance(text, str) and text:
                                                 reasoning_text_parts.append(text)
+                                                reasoning_text_seen = True
                                                 yield {
                                                     "type": "response.reasoning_text.delta",
                                                     "item_id": reasoning_item_id,
@@ -331,6 +333,31 @@ class ChatCompletionsAdapter:
                                                     "item_id": reasoning_item_id,
                                                     "text": reasoning_summary_text,
                                                 }
+
+                                delta_reasoning_text = None
+                                for key in ("reasoning", "reasoning_content"):
+                                    candidate = delta_obj.get(key)
+                                    if isinstance(candidate, str) and candidate.strip():
+                                        delta_reasoning_text = candidate
+                                        break
+                                if delta_reasoning_text:
+                                    if reasoning_item_id is None:
+                                        reasoning_item_id = f"reasoning-{generate_item_id()}"
+                                        yield {
+                                            "type": "response.output_item.added",
+                                            "item": {
+                                                "type": "reasoning",
+                                                "id": reasoning_item_id,
+                                                "status": "in_progress",
+                                            },
+                                        }
+                                    reasoning_text_parts.append(delta_reasoning_text)
+                                    reasoning_text_seen = True
+                                    yield {
+                                        "type": "response.reasoning_text.delta",
+                                        "item_id": reasoning_item_id,
+                                        "delta": delta_reasoning_text,
+                                    }
 
                                 annotations: list[Any] = []
                                 delta_annotations = delta_obj.get("annotations")
@@ -349,6 +376,31 @@ class ChatCompletionsAdapter:
                                         for entry in message_reasoning_details:
                                             if isinstance(entry, dict):
                                                 _record_reasoning_detail(entry)
+                                    if not reasoning_text_seen:
+                                        message_reasoning_text = None
+                                        for key in ("reasoning", "reasoning_content"):
+                                            candidate = message_obj.get(key)
+                                            if isinstance(candidate, str) and candidate.strip():
+                                                message_reasoning_text = candidate
+                                                break
+                                        if message_reasoning_text:
+                                            if reasoning_item_id is None:
+                                                reasoning_item_id = f"reasoning-{generate_item_id()}"
+                                                yield {
+                                                    "type": "response.output_item.added",
+                                                    "item": {
+                                                        "type": "reasoning",
+                                                        "id": reasoning_item_id,
+                                                        "status": "in_progress",
+                                                    },
+                                                }
+                                            reasoning_text_parts.append(message_reasoning_text)
+                                            reasoning_text_seen = True
+                                            yield {
+                                                "type": "response.reasoning_text.delta",
+                                                "item_id": reasoning_item_id,
+                                                "delta": message_reasoning_text,
+                                            }
 
                                 if annotations:
                                     for raw_ann in annotations:

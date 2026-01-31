@@ -157,6 +157,22 @@ class NonStreamingAdapter:
                             reasoning_summary_text = summary.strip()
                             yield {"type": "response.reasoning_summary_text.done", "item_id": reasoning_item_id, "text": reasoning_summary_text}
 
+            message_reasoning_text = None
+            for key in ("reasoning", "reasoning_content"):
+                candidate = message_obj.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    message_reasoning_text = candidate
+                    break
+            if message_reasoning_text and not reasoning_text_parts:
+                if reasoning_item_id is None:
+                    reasoning_item_id = f"reasoning-{generate_item_id()}"
+                    yield {
+                        "type": "response.output_item.added",
+                        "item": {"type": "reasoning", "id": reasoning_item_id, "status": "in_progress"},
+                    }
+                reasoning_text_parts.append(message_reasoning_text)
+                yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": message_reasoning_text}
+
             annotations = message_obj.get("annotations")
             if isinstance(annotations, list) and annotations:
                 seen_urls: set[str] = set()
