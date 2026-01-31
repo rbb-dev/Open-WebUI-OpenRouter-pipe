@@ -1,7 +1,7 @@
 # Open WebUI → OpenRouter Pipe
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-2.0.6-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-2.0.7-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.7.0%2B-green.svg)](https://openwebui.com/)
 
 **Access 350+ AI models through one interface.**
