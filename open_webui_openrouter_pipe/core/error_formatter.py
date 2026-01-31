@@ -33,7 +33,7 @@ The model provider returned an error:
 **Error ID**: {error_id}
 """
 
-_DEFAULT_USAGE_STATUS_ICONS = (
+_DEFAULT_USAGE_STATUS_ICONS: tuple[str, ...] = (
     "⧗",  # time
     "$",  # cost
     "⇅",  # total tokens
@@ -310,7 +310,7 @@ class ErrorFormatter:
 
         status_style = (getattr(valves, "FINAL_USAGE_STATUS_STYLE", "text") or "text").strip().lower()
         use_icons = status_style == "icons"
-        icons = list(_DEFAULT_USAGE_STATUS_ICONS)
+        icons: list[str] = list(_DEFAULT_USAGE_STATUS_ICONS)
         if use_icons:
             raw_icon_set = (getattr(valves, "USAGE_STATUS_ICON_SET", "") or "").strip()
             if raw_icon_set:
