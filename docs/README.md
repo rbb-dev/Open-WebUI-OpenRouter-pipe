@@ -87,6 +87,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 
 ### Security and compliance guidance (admins)
 - [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls (HTTPS-only by default), and hardening guidance.
+- [Zero Data Retention (ZDR)](openrouter_zdr.md) — ZDR model filtering and enforcement controls.
 - [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) — what is persisted, how retention works, and operational considerations.
 - [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md) — multi-user identifiers and privacy guidance.
 - [Session Log Storage](session_log_storage.md) — optional encrypted, per-request archives for incident response.

@@ -42,6 +42,9 @@ Drop in images, PDFs, documents. The pipe figures out what each model supports a
 🔧 **Tools & Web Search**
 Your Open WebUI tools work seamlessly. OpenRouter's native web search is one toggle away.
 
+🛡️ **Zero Data Retention (ZDR) Controls**
+Filter to ZDR‑only models and enforce ZDR routing when privacy requirements demand it.
+
 🎨 **Complete Integration**
 Model icons and descriptions sync automatically. Capabilities show up in the UI. It feels native because it is.
 
@@ -145,6 +148,7 @@ Everything else lives in [`docs/`](docs/README.md):
 - [Security Guide](docs/security_and_encryption.md) — production hardening
 - [Tool Integration](docs/tooling_and_integrations.md) — extending with tools
 - [Cost & Attribution](docs/openrouter_integrations_and_telemetry.md) — billing and tracking
+- [Zero Data Retention (ZDR)](docs/openrouter_zdr.md) — ZDR model filtering and enforcement
 - [Troubleshooting](docs/error_handling_and_user_experience.md) — when things go sideways
 
 ---
