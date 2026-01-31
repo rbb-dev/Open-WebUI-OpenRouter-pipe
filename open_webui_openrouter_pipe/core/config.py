@@ -1365,6 +1365,18 @@ class Valves(BaseModel):
         default=True,
         description="When True, the final status message includes elapsed time, cost, and token usage.",
     )
+    FINAL_USAGE_STATUS_STYLE: Literal["text", "icons"] = Field(
+        default="text",
+        description="Choose text labels or icons for the final usage status line.",
+    )
+    USAGE_STATUS_ICON_SET: str = Field(
+        default="⧗,$,⇅,▲,▼,↺,▽",
+        description=(
+            "CSV of icons for the final usage status fields "
+            "(time,cost,total,input,output,cached,reasoning). "
+            "Only used when FINAL_USAGE_STATUS_STYLE is set to 'icons'."
+        ),
+    )
     ENABLE_STATUS_CSS_PATCH: bool = Field(
         default=True,
         description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",

@@ -1867,3 +1867,30 @@ def test_format_final_status_description_respects_disabled_flag(pipe_instance):
     )
 
     assert description == "Thought for 4.5 seconds"
+
+
+def test_format_final_status_description_with_icons(pipe_instance):
+    pipe = pipe_instance
+    valves = pipe.Valves(
+        FINAL_USAGE_STATUS_STYLE="icons",
+        USAGE_STATUS_ICON_SET="T,$,TOT,IN,OUT,CACHE,REASON",
+    )
+    usage = {
+        "cost": 0.012345,
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "input_tokens_details": {"cached_tokens": 20},
+        "output_tokens_details": {"reasoning_tokens": 5},
+    }
+
+    description = pipe._format_final_status_description(
+        elapsed=3.21,
+        total_usage=usage,
+        valves=valves,
+        stream_duration=2.0,
+    )
+
+    assert (
+        description
+        == "T 3.21s  20.0 tps | $0.012345 | TOT 160 (IN 120, OUT 40, CACHE 20, REASON 5)"
+    )

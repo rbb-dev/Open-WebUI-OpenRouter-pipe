@@ -234,7 +234,13 @@ Each generated provider routing filter has these valves (admin and/or user depen
 | --- | --- | --- | --- |
 | `USE_MODEL_MAX_OUTPUT_TOKENS` | `bool` | `False` | When enabled, forwards provider-advertised `max_output_tokens` automatically. |
 | `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing/cost/tokens in the final status message. |
+| `FINAL_USAGE_STATUS_STYLE` | `Literal["text","icons"]` | `text` | Choose text labels or icons for the final usage status line. |
+| `USAGE_STATUS_ICON_SET` | `str` | `⧗,$,⇅,▲,▼,↺,▽` | CSV icon set for final usage status fields (time,cost,total,input,output,cached,reasoning). Used only when `FINAL_USAGE_STATUS_STYLE="icons"`. |
 | `ENABLE_STATUS_CSS_PATCH` | `bool` | `True` | Injects a CSS helper so multi-line statuses render cleanly in the Open WebUI UI. |
+
+Notes:
+- `FINAL_USAGE_STATUS_STYLE="text"` uses labels like “Time”, “Cost”, and “Total tokens”.
+- `FINAL_USAGE_STATUS_STYLE="icons"` swaps those labels for the icon set. You can also pass **words** as the CSV entries if you want custom labels (e.g., `Time,Cost,Total,Input,Output,Cached,Reasoning`).
 | `SEND_END_USER_ID` | `bool` | `False` | When enabled, sends the OpenRouter top-level `user` field using the Open WebUI user ID, and also adds `metadata.user_id`. See [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md). |
 | `SEND_SESSION_ID` | `bool` | `False` | When enabled, sends OpenRouter `session_id` using Open WebUI `__metadata__[\"session_id\"]` (if present) and adds `metadata.session_id`. |
 | `SEND_CHAT_ID` | `bool` | `False` | When enabled, adds `metadata.chat_id` using Open WebUI `__metadata__[\"chat_id\"]`. |

@@ -33,6 +33,17 @@ The model provider returned an error:
 **Error ID**: {error_id}
 """
 
+_DEFAULT_USAGE_STATUS_ICONS = (
+    "⧗",  # time
+    "$",  # cost
+    "⇅",  # total tokens
+    "▲",  # input tokens
+    "▼",  # output tokens
+    "↺",  # cached tokens
+    "▽",  # reasoning tokens
+)
+_USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "reasoning")
+
 
 class ErrorFormatter:
     """Handles error formatting, template selection, and emission."""
@@ -297,15 +308,37 @@ class ErrorFormatter:
         if not valves.SHOW_FINAL_USAGE_STATUS:
             return default_description
 
+        status_style = (getattr(valves, "FINAL_USAGE_STATUS_STYLE", "text") or "text").strip().lower()
+        use_icons = status_style == "icons"
+        icons = list(_DEFAULT_USAGE_STATUS_ICONS)
+        if use_icons:
+            raw_icon_set = (getattr(valves, "USAGE_STATUS_ICON_SET", "") or "").strip()
+            if raw_icon_set:
+                provided = [item.strip() for item in raw_icon_set.split(",")]
+                for idx, icon in enumerate(provided[: len(icons)]):
+                    if icon:
+                        icons[idx] = icon
+
+        icon_time, icon_cost, icon_total, icon_input, icon_output, icon_cached, icon_reasoning = icons
+
         usage = total_usage or {}
-        time_segment = f"Time: {elapsed:.2f}s"
+        if use_icons and icon_time:
+            time_segment = f"{icon_time} {elapsed:.2f}s"
+        else:
+            time_segment = f"Time: {elapsed:.2f}s"
         tokens_for_tps: Optional[int] = None
         segments: list[str] = []
 
         cost = usage.get("cost")
         if isinstance(cost, (int, float)) and cost > 0:
             cost_str = f"{cost:.6f}".rstrip("0").rstrip(".")
-            segments.append(f"Cost ${cost_str}")
+            if use_icons and icon_cost:
+                if icon_cost == "$":
+                    segments.append(f"{icon_cost}{cost_str}")
+                else:
+                    segments.append(f"{icon_cost} {cost_str}")
+            else:
+                segments.append(f"Cost ${cost_str}")
 
         @timed
         def _to_int(value: Any) -> Optional[int]:
@@ -337,23 +370,34 @@ class ErrorFormatter:
             (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
         )
 
+        def _token_detail(label: str, icon: str, value: int) -> str:
+            if use_icons and icon:
+                return f"{icon} {value}"
+            return f"{label}: {value}"
+
         token_details: list[str] = []
         if input_tokens is not None:
-            token_details.append(f"Input: {input_tokens}")
+            token_details.append(_token_detail("Input", icon_input, input_tokens))
         if output_tokens is not None:
-            token_details.append(f"Output: {output_tokens}")
+            token_details.append(_token_detail("Output", icon_output, output_tokens))
         if cached_tokens is not None and cached_tokens > 0:
-            token_details.append(f"Cached: {cached_tokens}")
+            token_details.append(_token_detail("Cached", icon_cached, cached_tokens))
         if reasoning_tokens is not None and reasoning_tokens > 0:
-            token_details.append(f"Reasoning: {reasoning_tokens}")
+            token_details.append(_token_detail("Reasoning", icon_reasoning, reasoning_tokens))
 
         if total_tokens is not None:
-            token_segment = f"Total tokens: {total_tokens}"
+            if use_icons and icon_total:
+                token_segment = f"{icon_total} {total_tokens}"
+            else:
+                token_segment = f"Total tokens: {total_tokens}"
             if token_details:
                 token_segment += f" ({', '.join(token_details)})"
             segments.append(token_segment)
         elif token_details:
-            segments.append("Tokens: " + ", ".join(token_details))
+            if use_icons and icon_total:
+                segments.append(f"{icon_total} " + ", ".join(token_details))
+            else:
+                segments.append("Tokens: " + ", ".join(token_details))
 
         if (
             tokens_for_tps is not None
