@@ -264,6 +264,22 @@ _PROVIDER_SLUG_PATTERN = re.compile(r"^[a-z0-9-]+(?:/[a-z0-9-]+)?$")
 # Security: Quantization level validation (alphanumeric + underscore/hyphen)
 # Used for validating quantization values like "int4", "int8", "fp16", "bf16"
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_PRICING_CATEGORY_KEYS = {
+    "prompt",
+    "completion",
+    "request",
+    "image",
+    "image_token",
+    "image_output",
+    "audio",
+    "audio_output",
+    "input_audio_cache",
+    "web_search",
+    "internal_reasoning",
+    "input_cache_read",
+    "input_cache_write",
+}
+_PRICING_VALUE_KEYS = ("price", "amount", "value", "usd", "cost", "rate")
 
 
 # -----------------------------------------------------------------------------
@@ -3141,7 +3157,29 @@ class Filter:
         count = 0
 
         if isinstance(node, dict):
-            for value in node.values():
+            keys = set(node.keys())
+            if keys & _PRICING_CATEGORY_KEYS:
+                for key, value in node.items():
+                    if key == "discount":
+                        continue
+                    child_total, child_count = Pipe._sum_pricing_values(value)
+                    total += child_total
+                    count += child_count
+                return total, count
+
+            found_value_key = False
+            for key in _PRICING_VALUE_KEYS:
+                if key in node:
+                    found_value_key = True
+                    child_total, child_count = Pipe._sum_pricing_values(node[key])
+                    total += child_total
+                    count += child_count
+            if found_value_key:
+                return total, count
+
+            for key, value in node.items():
+                if key == "discount":
+                    continue
                 child_total, child_count = Pipe._sum_pricing_values(value)
                 total += child_total
                 count += child_count

@@ -249,6 +249,9 @@ def test_registry_feature_and_capability_derivation():
     assert {"function_calling", "reasoning_summary", "web_search_tool", "vision", "image_gen_tool"}.issubset(features)
 
     assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": "0.01"}) is True
+    assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": {"price": "0.02"}}) is True
+    assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": {"price": "0"}}) is False
+    assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": {"unit": "per_1m"}}) is False
 
     capabilities = ow.OpenRouterModelRegistry._derive_capabilities(
         architecture={"input_modalities": ["FILE", "IMAGE"], "output_modalities": ["IMAGE"]},

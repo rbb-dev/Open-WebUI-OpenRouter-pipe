@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, cast
 from urllib.parse import quote
@@ -426,17 +427,46 @@ class OpenRouterModelRegistry:
 
     @staticmethod
     @timed
+    def _coerce_pricing_number(value: Any) -> Optional[Decimal]:
+        """Return a numeric pricing value when possible."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float, Decimal)):
+            try:
+                return Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                return None
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                return Decimal(raw)
+            except (InvalidOperation, ValueError):
+                return None
+        if isinstance(value, dict):
+            for key in ("price", "amount", "value", "usd", "cost", "rate"):
+                if key in value:
+                    return OpenRouterModelRegistry._coerce_pricing_number(value.get(key))
+            return None
+        if isinstance(value, (list, tuple, set)):
+            candidates = [
+                OpenRouterModelRegistry._coerce_pricing_number(entry)
+                for entry in value
+            ]
+            numeric = [c for c in candidates if c is not None]
+            return max(numeric) if numeric else None
+        return None
+
+    @staticmethod
+    @timed
     def _supports_web_search(pricing: Dict[str, Any]) -> bool:
         """Return True when the provider exposes paid web-search support."""
         value = pricing.get("web_search")
-        if value is None:
+        amount = OpenRouterModelRegistry._coerce_pricing_number(value)
+        if amount is None:
             return False
-        if isinstance(value, str):
-            value = value.strip() or "0"
-        try:
-            return float(value) > 0.0
-        except (TypeError, ValueError):
-            return False
+        return amount > Decimal(0)
 
     @staticmethod
     @timed

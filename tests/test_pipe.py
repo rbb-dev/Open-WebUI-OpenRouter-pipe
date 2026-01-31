@@ -1403,6 +1403,53 @@ class TestIsFreeModel:
             OpenRouterModelRegistry._specs = original_specs
             pipe.shutdown()
 
+    def test_is_free_model_ignores_discount_for_object_pricing(self):
+        """Object pricing with discount should still detect free models."""
+        pipe = Pipe()
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+
+        try:
+            OpenRouterModelRegistry._specs = {
+                "free.model": {
+                    "pricing": {
+                        "prompt": {"price": "0"},
+                        "completion": {"price": "0"},
+                        "discount": 0.2,
+                    }
+                },
+            }
+
+            result = pipe._is_free_model("free.model")
+            assert result is True
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+    def test_is_free_model_object_pricing_nonzero(self):
+        """Object pricing with nonzero values should not be free."""
+        pipe = Pipe()
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+
+        try:
+            OpenRouterModelRegistry._specs = {
+                "paid.model": {
+                    "pricing": {
+                        "prompt": {"price": "0.001"},
+                        "completion": {"price": "0"},
+                    }
+                },
+            }
+
+            result = pipe._is_free_model("paid.model")
+            assert result is False
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
 
 # =============================================================================
 # CHAT COMPLETION PAYLOAD TESTS
@@ -10416,5 +10463,4 @@ class TestInitArtifactStoreDelegation:
             pipe._init_artifact_store("test_pipe", table_fragment="test")
         finally:
             pipe.shutdown()
-
 
