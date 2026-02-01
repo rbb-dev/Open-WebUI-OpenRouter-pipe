@@ -86,7 +86,7 @@ Pick one:
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled.py
 ```
 
-**Compressed bundle (same behavior, smaller + less clutter in the editor):**
+**Compressed bundle (routine installs; smaller payload, faster upload, same runtime behavior):**
 
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled_compressed.py

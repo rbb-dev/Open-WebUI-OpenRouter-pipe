@@ -2,7 +2,7 @@
 
 This document is the authoritative reference for the pipe’s configuration surface: **Open WebUI valves**.
 
-Defaults and valve names are verified against `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py` and are intended to match current runtime behavior.
+Defaults and valve names are verified against the source code and are intended to match current runtime behavior.
 
 > **Quick navigation:** [Docs Home](README.md) · [Security](security_and_encryption.md) · [Multimodal](multimodal_ingestion_pipeline.md) · [Telemetry](openrouter_integrations_and_telemetry.md) · [Errors](error_handling_and_user_experience.md)
 

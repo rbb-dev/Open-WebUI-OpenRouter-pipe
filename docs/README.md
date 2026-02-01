@@ -25,7 +25,17 @@ Use these docs if you are modifying the pipe, working on tests, or extending the
 
 ### Install (Open WebUI UI)
 1. In Open WebUI, go to **Admin → Functions → New Function**.
-2. Upload the pipe file: `open_webui_openrouter_pipe/open_webui_openrouter_pipe.py`.
+2. Import one of the bundled pipe files and paste a URL:
+
+   **Readable bundle (audits or troubleshooting):**
+   ```
+   https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled.py
+   ```
+
+   **Compressed bundle (routine installs; smaller payload, faster upload, same runtime behavior):**
+   ```
+   https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled_compressed.py
+   ```
 3. Save and enable the function.
 
 ### Dependencies
