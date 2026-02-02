@@ -37,6 +37,7 @@ from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from sqlalchemy.exc import SQLAlchemyError
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 from ..core.timing_logger import timed
+from ..core.utils import _await_if_needed
 
 # Optional dependencies
 try:
@@ -84,7 +85,6 @@ _RedisClient = Any
 # -----------------------------------------------------------------------------
 
 
-@timed
 def _encode_crockford(value: int, length: int) -> str:
     """Encode an integer into a fixed-width Crockford base32 string."""
     if value < 0:
@@ -96,7 +96,6 @@ def _encode_crockford(value: int, length: int) -> str:
     return "".join(chars)
 
 
-@timed
 def generate_item_id() -> str:
     """Generate a 20-char ULID using a 16-char time component + 4-char random tail.
 
@@ -110,7 +109,6 @@ def generate_item_id() -> str:
     return f"{time_component}{random_component}"
 
 
-@timed
 def _sanitize_table_fragment(value: str) -> str:
     """Normalize arbitrary identifiers into safe SQL table suffixes."""
     fragment = re.sub(r"[^a-z0-9_]", "_", (value or "").lower())
@@ -118,26 +116,6 @@ def _sanitize_table_fragment(value: str) -> str:
     if len(fragment) > 62:
         fragment = fragment[:62].rstrip("_") or "pipe"
     return fragment
-
-
-@timed
-async def _wait_for(
-    value: Any,
-    *,
-    timeout: Optional[float] = None,
-) -> Any:
-    """Return value immediately when it's synchronous, otherwise await it.
-
-    Redis' asyncio client returns synchronous fallbacks (bool/str/list) when a
-    pipeline is configured for immediate execution, which caused await to be
-    applied to non-awaitables. This helper centralizes the guard.
-    """
-    import inspect
-    if inspect.isawaitable(value):
-        if timeout is None:
-            return await value
-        return await asyncio.wait_for(value, timeout=timeout)
-    return value
 
 
 # -----------------------------------------------------------------------------
@@ -161,7 +139,6 @@ class ArtifactStore:
     - Background cleanup workers for old artifacts
     """
 
-    @timed
     def __init__(
         self,
         pipe_id: str,
@@ -195,7 +172,6 @@ class ArtifactStore:
         self._initialize_database_state()
         self._initialize_cleanup_state()
 
-    @timed
     def _initialize_encryption_state(self):
         """Initialize encryption and compression state."""
         # Import EncryptedStr locally to avoid circular dependency
@@ -211,7 +187,6 @@ class ArtifactStore:
         self._fernet: Fernet | None = None
         self._lz4_warning_emitted = False
 
-    @timed
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
         breaker_history_size = self.valves.BREAKER_HISTORY_SIZE
@@ -224,7 +199,16 @@ class ArtifactStore:
             lambda: deque(maxlen=breaker_history_size)
         )
 
-    @timed
+    def configure_breaker(self, threshold: int, window_seconds: int) -> None:
+        """Update circuit breaker thresholds.
+
+        Args:
+            threshold: Maximum failures before breaker opens
+            window_seconds: Time window for failure counting
+        """
+        self._breaker_threshold = threshold
+        self._breaker_window_seconds = window_seconds
+
     def _initialize_redis_state(self):
         """Initialize Redis caching state."""
         self._redis_url = (os.getenv("REDIS_URL") or "").strip()
@@ -275,7 +259,6 @@ class ArtifactStore:
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
         self._redis_ttl = self.valves.REDIS_CACHE_TTL_SECONDS
 
-    @timed
     def _initialize_database_state(self):
         """Initialize SQLAlchemy state."""
         self._engine: Engine | None = None
@@ -285,7 +268,6 @@ class ArtifactStore:
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
 
-    @timed
     def _initialize_cleanup_state(self):
         """Initialize cleanup worker state."""
         self._cleanup_task: asyncio.Task | None = None
@@ -552,7 +534,6 @@ class ArtifactStore:
         self.logger.debug("Artifact table ready: %s", table_name)
 
     @staticmethod
-    @timed
     def _quote_identifier(identifier: str) -> str:
         """Return a double-quoted identifier safe for direct SQL execution."""
         value = (identifier or "").replace('"', '""')
@@ -638,7 +619,6 @@ class ArtifactStore:
     # 2. ENCRYPTION/COMPRESSION (9 methods)
     # -----------------------------------------------------------------------------
 
-    @timed
     def _get_fernet(self) -> Fernet | None:
         """Return (and cache) the Fernet helper derived from the encryption key."""
         if not self._encryption_key:
@@ -649,7 +629,6 @@ class ArtifactStore:
             self._fernet = Fernet(key)
         return self._fernet
 
-    @timed
     def _should_encrypt(self, item_type: str) -> bool:
         """Determine whether a payload of ``item_type`` must be encrypted."""
         if not self._encryption_key:
@@ -658,12 +637,10 @@ class ArtifactStore:
             return True
         return (item_type or "").lower() == "reasoning"
 
-    @timed
     def _serialize_payload_bytes(self, payload: dict[str, Any]) -> bytes:
         """Return compact JSON bytes for ``payload``."""
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
-    @timed
     def _maybe_compress_payload(self, serialized: bytes) -> tuple[bytes, bool]:
         """Compress serialized bytes when LZ4 is available and thresholds are met."""
         if not serialized:
@@ -684,7 +661,6 @@ class ArtifactStore:
             return serialized, False
         return compressed, True
 
-    @timed
     def _encode_payload_bytes(self, payload: dict[str, Any]) -> bytes:
         """Serialize payload bytes and prepend a compression flag header."""
         serialized = self._serialize_payload_bytes(payload)
@@ -692,7 +668,6 @@ class ArtifactStore:
         flag = _PAYLOAD_FLAG_LZ4 if compressed else _PAYLOAD_FLAG_PLAIN
         return bytes([flag]) + data
 
-    @timed
     def _decode_payload_bytes(self, payload_bytes: bytes) -> dict[str, Any]:
         """Decode stored payload bytes into dictionaries."""
         if not payload_bytes:
@@ -711,7 +686,6 @@ class ArtifactStore:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("Unable to decode persisted artifact payload.") from exc
 
-    @timed
     def _lz4_decompress(self, data: bytes) -> bytes:
         """Decompress LZ4 payloads or raise descriptive errors."""
         if not data:
@@ -725,7 +699,6 @@ class ArtifactStore:
         except Exception as exc:  # pragma: no cover - depends on native lib
             raise ValueError("Failed to decompress persisted artifact payload.") from exc
 
-    @timed
     def _encrypt_payload(self, payload: dict[str, Any]) -> str:
         """Encrypt payload bytes using the configured Fernet helper."""
         fernet = self._get_fernet()
@@ -734,7 +707,6 @@ class ArtifactStore:
         encoded = self._encode_payload_bytes(payload)
         return fernet.encrypt(encoded).decode("utf-8")
 
-    @timed
     def _decrypt_payload(self, ciphertext: str) -> dict[str, Any]:
         """Decrypt ciphertext previously produced by :meth:`_encrypt_payload`."""
         fernet = self._get_fernet()
@@ -746,7 +718,6 @@ class ArtifactStore:
             raise ValueError("Unable to decrypt payload (invalid token).") from exc
         return self._decode_payload_bytes(plaintext)
 
-    @timed
     def _encrypt_if_needed(self, item_type: str, payload: dict[str, Any]) -> tuple[Any, bool]:
         """Optionally encrypt ``payload`` depending on the item type."""
         if not self._should_encrypt(item_type):
@@ -758,7 +729,6 @@ class ArtifactStore:
     # 3. DATABASE OPERATIONS (11 methods)
     # -----------------------------------------------------------------------------
 
-    @timed
     def _prepare_rows_for_storage(self, rows: Iterable[dict[str, Any]]) -> None:
         """Normalize row payloads so Redis/DB always receive the stored schema."""
         if not rows:
@@ -780,7 +750,6 @@ class ArtifactStore:
             row["payload"] = stored_payload
             row["is_encrypted"] = is_encrypted
 
-    @timed
     def _make_db_row(
         self,
         chat_id: Optional[str],
@@ -1061,7 +1030,6 @@ class ArtifactStore:
                 return ulids
         return []
 
-    @timed
     def _is_duplicate_key_error(self, exc: Exception) -> bool:
         if isinstance(exc, SQLAlchemyError):
             messages = [str(exc)]
@@ -1272,7 +1240,7 @@ class ArtifactStore:
             keys = [self._redis_cache_key(chat_id, artifact_id) for chat_id, artifact_id in refs]
             keys = [key for key in keys if key]
             if keys:
-                await _wait_for(self._redis_client.delete(*keys))
+                await _await_if_needed(self._redis_client.delete(*keys))
 
     # -----------------------------------------------------------------------------
     # 4. REDIS CACHE (8 methods)
@@ -1308,7 +1276,7 @@ class ArtifactStore:
                 if not self._redis_client:
                     break
 
-                queue_depth = await _wait_for(
+                queue_depth = await _await_if_needed(
                     self._redis_client.llen(self._redis_pending_key)
                 )
                 if queue_depth > warn_threshold:
@@ -1340,7 +1308,7 @@ class ArtifactStore:
         lock_acquired = False
         try:
             lock_acquired = bool(
-                await _wait_for(
+                await _await_if_needed(
                     self._redis_client.set(
                         self._redis_flush_lock_key,
                         lock_token,
@@ -1357,7 +1325,7 @@ class ArtifactStore:
             raw_entries: list[str] = []
             batch_size = self.valves.DB_BATCH_SIZE
             while len(rows) < batch_size:
-                data = await _wait_for(self._redis_client.lpop(self._redis_pending_key))
+                data = await _await_if_needed(self._redis_client.lpop(self._redis_pending_key))
                 if data is None:
                     break
                 entry: str | None = None
@@ -1406,7 +1374,7 @@ class ArtifactStore:
                     "else return 0 end"
                 )
                 try:
-                    released = await _wait_for(
+                    released = await _await_if_needed(
                         self._redis_client.eval(
                             release_script,
                             1,
@@ -1428,7 +1396,6 @@ class ArtifactStore:
                     # Redis errors during lock release are non-fatal - continue pipe operation
                     self.logger.debug("Failed to release Redis flush lock", exc_info=self.logger.isEnabledFor(logging.DEBUG))
 
-    @timed
     def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
         if not (chat_id and row_id):
             return None
@@ -1451,10 +1418,10 @@ class ArtifactStore:
             for row in rows:
                 serialized = json.dumps(row, ensure_ascii=False)
                 pipe.rpush(self._redis_pending_key, serialized)
-            await _wait_for(pipe.execute())
+            await _await_if_needed(pipe.execute())
 
             await self._redis_cache_rows(rows)
-            await _wait_for(self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
+            await _await_if_needed(self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
 
             self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
             return [row["id"] for row in rows]
@@ -1473,7 +1440,7 @@ class ArtifactStore:
             if not cache_key:
                 continue
             pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
-        await _wait_for(pipe.execute())
+        await _await_if_needed(pipe.execute())
 
     @timed
     async def _redis_requeue_entries(self, entries: list[str]) -> None:
@@ -1484,7 +1451,7 @@ class ArtifactStore:
         for payload in reversed(entries):
             pipe.lpush(self._redis_pending_key, payload)
         pipe.expire(self._redis_pending_key, max(self._redis_ttl, 60))
-        await _wait_for(pipe.execute())
+        await _await_if_needed(pipe.execute())
 
     @timed
     async def _redis_fetch_rows(
@@ -1503,7 +1470,7 @@ class ArtifactStore:
                 id_lookup.append(item_id)
         if not keys:
             return {}
-        values = await _wait_for(self._redis_client.mget(keys))
+        values = await _await_if_needed(self._redis_client.mget(keys))
         cached: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
             if not raw:
@@ -1587,7 +1554,6 @@ class ArtifactStore:
     # 6. CIRCUIT BREAKERS (3 methods)
     # -----------------------------------------------------------------------------
 
-    @timed
     def _db_breaker_allows(self, user_id: str) -> bool:
         if not user_id:
             return True
@@ -1597,17 +1563,14 @@ class ArtifactStore:
             window.popleft()
         return len(window) < self._breaker_threshold
 
-    @timed
     def _record_db_failure(self, user_id: str) -> None:
         if user_id:
             self._db_breakers[user_id].append(time.time())
 
-    @timed
     def _reset_db_failure(self, user_id: str) -> None:
         if user_id and user_id in self._db_breakers:
             self._db_breakers[user_id].clear()
 
-    @timed
     def _record_failure(self, user_id: str) -> None:
         """Record a generic failure (fallback for compatibility)."""
         if not user_id:
@@ -1618,9 +1581,8 @@ class ArtifactStore:
     # 7. LIFECYCLE MANAGEMENT
     # -----------------------------------------------------------------------------
 
-    @timed
-    def shutdown(self) -> None:
-        """Shutdown background resources cleanly."""
+    def close(self) -> None:
+        """Close background resources cleanly (formerly 'shutdown')."""
         executor = self._db_executor
         self._db_executor = None
         if executor:
@@ -1639,7 +1601,6 @@ class ArtifactStore:
 # Helper Functions
 # -----------------------------------------------------------------------------
 
-@timed
 def _normalize_persisted_item(item: Optional[Dict[str, Any]], generate_item_id: Callable[[], str]) -> Optional[Dict[str, Any]]:
     """
     Ensure persisted response artifacts match the schema expected by the
@@ -1658,7 +1619,6 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]], generate_item_id: 
 
     normalized = dict(item)
 
-    @timed
     def _ensure_identity(status_default: str = "completed") -> None:
         """Guarantee persisted artifacts include ``id`` and ``status`` fields."""
         normalized.setdefault("id", generate_item_id())
@@ -1721,7 +1681,6 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]], generate_item_id: 
     return item
 
 
-@timed
 def normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Convenience wrapper for _normalize_persisted_item using the module's generate_item_id.
 

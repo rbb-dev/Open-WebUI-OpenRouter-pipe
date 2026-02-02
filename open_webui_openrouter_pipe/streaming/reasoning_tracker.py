@@ -44,7 +44,6 @@ class ReasoningTracker:
     streaming protocols that emit reasoning events.
     """
 
-    @timed
     def __init__(
         self,
         pipe: "Pipe",
@@ -58,19 +57,6 @@ class ReasoningTracker:
         message_id: Optional[str] = None,
         user_id: str = "",
     ):
-        """Initialize the ReasoningTracker.
-
-        Args:
-            pipe: Reference to parent Pipe instance
-            valves: Valve configuration object
-            event_emitter: Optional callback to emit events to Open WebUI
-            logger: Logger instance for diagnostic output
-            request_context: Optional request context for storage operations
-            user_obj: Optional user object for storage operations
-            chat_id: Optional chat ID for associating uploaded images
-            message_id: Optional message ID for associating uploaded images
-            user_id: User ID for storage permissions
-        """
         self._pipe = pipe
         self.valves = valves
         self._event_emitter = event_emitter
@@ -103,11 +89,10 @@ class ReasoningTracker:
         # Storage context cache
         self._storage_context_cache: Optional[tuple[Optional[Any], Optional[Any]]] = None
 
-    @timed
     async def _get_storage_context(self) -> tuple[Optional[Any], Optional[Any]]:
         """Get request and user context for storage operations (cached)."""
         if self._storage_context_cache is None:
-            self._storage_context_cache = await self._pipe._resolve_storage_context(
+            self._storage_context_cache = await self._pipe._multimodal_handler._resolve_storage_context(
                 self._request_context, self._user_obj
             )
         return self._storage_context_cache or (None, None)
@@ -126,7 +111,7 @@ class ReasoningTracker:
             ext = "jpeg"
 
         filename = f"generated-image-{uuid.uuid4().hex}.{ext}"
-        return await self._pipe._upload_to_owui_storage(
+        return await self._pipe._multimodal_handler._upload_to_owui_storage(
             request=upload_request,
             user=upload_user,
             file_data=data,
@@ -138,13 +123,6 @@ class ReasoningTracker:
         )
 
     @timed
-    def _validate_base64_size(self, b64_string: str) -> bool:
-        """Check if base64 string is within reasonable size limits."""
-        # Rough estimate: 4 base64 chars = 3 bytes, limit to ~10MB
-        max_chars = (10 * 1024 * 1024 * 4) // 3
-        return len(b64_string) <= max_chars
-
-    @timed
     async def _materialize_image_from_str(self, data_str: str) -> Optional[str]:
         """Convert image string (data URL or base64) to persistent storage URL."""
         text = (data_str or "").strip()
@@ -153,13 +131,13 @@ class ReasoningTracker:
 
         # Handle data URLs
         if text.startswith("data:"):
-            parsed = self._pipe._parse_data_url(text)
+            parsed = self._pipe._multimodal_handler._parse_data_url(text)
             if parsed:
                 stored = await self._persist_generated_image(parsed["data"], parsed["mime_type"])
                 if stored:
                     if self._event_emitter:
                         from ..core.errors import StatusMessages
-                        await self._pipe._emit_status(
+                        await self._pipe._event_emitter_handler._emit_status(
                             self._event_emitter,
                             StatusMessages.IMAGE_BASE64_SAVED,
                             done=False,
@@ -180,7 +158,7 @@ class ReasoningTracker:
         if not cleaned:
             return None
 
-        if not self._validate_base64_size(cleaned):
+        if not self._pipe._multimodal_handler._validate_base64_size(cleaned):
             return None
 
         try:
@@ -193,7 +171,7 @@ class ReasoningTracker:
         if stored:
             if self._event_emitter:
                 from ..core.errors import StatusMessages
-                await self._pipe._emit_status(
+                await self._pipe._event_emitter_handler._emit_status(
                     self._event_emitter,
                     StatusMessages.IMAGE_BASE64_SAVED,
                     done=False,
@@ -226,7 +204,7 @@ class ReasoningTracker:
                 b64_val = entry.get(key)
                 if isinstance(b64_val, str) and b64_val.strip():
                     cleaned = b64_val.strip()
-                    if not self._validate_base64_size(cleaned):
+                    if not self._pipe._multimodal_handler._validate_base64_size(cleaned):
                         continue
                     try:
                         decoded = base64.b64decode(cleaned, validate=True)
@@ -243,7 +221,7 @@ class ReasoningTracker:
                     if stored:
                         if self._event_emitter:
                             from ..core.errors import StatusMessages
-                            await self._pipe._emit_status(
+                            await self._pipe._event_emitter_handler._emit_status(
                                 self._event_emitter,
                                 StatusMessages.IMAGE_BASE64_SAVED,
                                 done=False,
@@ -296,7 +274,6 @@ class ReasoningTracker:
 
         return materialized
 
-    @timed
     def _extract_reasoning_text(self, event: dict[str, Any]) -> str:
         """Extract reasoning text from various event payload structures."""
         if not isinstance(event, dict):
@@ -331,7 +308,6 @@ class ReasoningTracker:
 
         return ""
 
-    @timed
     def _reasoning_stream_key(self, event: dict[str, Any], etype: Optional[str]) -> str:
         """Get a stable key to associate reasoning deltas with upstream items."""
         item_id = event.get("item_id")
@@ -350,7 +326,6 @@ class ReasoningTracker:
 
         return "__reasoning__"
 
-    @timed
     def _append_reasoning_text(self, key: str, incoming: str, *, allow_misaligned: bool) -> str:
         """Deduplicate and append reasoning text to buffer.
 
@@ -443,7 +418,6 @@ class ReasoningTracker:
         self.reasoning_status_buffer = ""
         self.reasoning_status_last_emit = now
 
-    @timed
     def _is_reasoning_event(self, etype: str, event: dict[str, Any]) -> bool:
         """Check if event contains reasoning content."""
         # Direct reasoning events
@@ -581,14 +555,13 @@ class ReasoningTracker:
 
         if self._event_emitter:
             try:
-                await self._pipe._emit_citation(self._event_emitter, citation)
+                await self._pipe._event_emitter_handler._emit_citation(self._event_emitter, citation)
             except Exception as exc:
                 self._pipe.logger.debug("Failed to emit reasoning citation: %s", exc)
 
         self.emitted_citations.append(citation)
         return citation
 
-    @timed
     def track_reasoning_item(self, event: dict[str, Any]) -> None:
         """Track active reasoning item ID from output_item.added events."""
         item_raw = event.get("item")
@@ -600,23 +573,19 @@ class ReasoningTracker:
             if isinstance(iid, str) and iid:
                 self.active_reasoning_item_id = iid
 
-    @timed
     def get_final_reasoning_buffer(self) -> str:
         """Get accumulated reasoning content."""
         return self.reasoning_buffer
 
-    @timed
     def get_citations(self) -> list[dict]:
         """Get all extracted citations."""
         return self.emitted_citations
 
-    @timed
     def should_persist_reasoning(self) -> bool:
         """Check if reasoning tokens should be persisted to conversation history."""
         persist_mode = getattr(self.valves, "PERSIST_REASONING_TOKENS", "never")
         return persist_mode in {"next_reply", "conversation"}
 
-    @timed
     def is_reasoning_active(self) -> bool:
         """Check if reasoning stream is currently active."""
         return self.reasoning_stream_active

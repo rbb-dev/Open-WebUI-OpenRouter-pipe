@@ -21,6 +21,7 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.multimodal import (
     _extract_internal_file_id,
     _extract_openrouter_og_image,
@@ -371,7 +372,7 @@ class TestGetFileById:
         original_files = multimodal_module.Files
         try:
             multimodal_module.Files = None
-            result = await pipe_instance_async._get_file_by_id("test-file-id")
+            result = await pipe_instance_async._multimodal_handler._get_file_by_id("test-file-id")
             assert result is None
         finally:
             multimodal_module.Files = original_files
@@ -387,7 +388,7 @@ class TestGetFileById:
         original_files = multimodal_module.Files
         try:
             multimodal_module.Files = mock_files
-            result = await pipe_instance_async._get_file_by_id("test-file-id")
+            result = await pipe_instance_async._multimodal_handler._get_file_by_id("test-file-id")
             assert result is None
         finally:
             multimodal_module.Files = original_files
@@ -404,25 +405,25 @@ class TestInferFileMimeType:
     def test_normalizes_image_jpg_to_jpeg(self, pipe_instance):
         """Should normalize image/jpg to image/jpeg."""
         file_obj = SimpleNamespace(mime_type="image/jpg")
-        result = pipe_instance._infer_file_mime_type(file_obj)
+        result = pipe_instance._multimodal_handler._infer_file_mime_type(file_obj)
         assert result == "image/jpeg"
 
     def test_returns_application_octet_stream_as_default(self, pipe_instance):
         """Should return application/octet-stream when no MIME type found."""
         file_obj = SimpleNamespace()
-        result = pipe_instance._infer_file_mime_type(file_obj)
+        result = pipe_instance._multimodal_handler._infer_file_mime_type(file_obj)
         assert result == "application/octet-stream"
 
     def test_uses_meta_dict_content_type(self, pipe_instance):
         """Should extract content_type from meta dict."""
         file_obj = SimpleNamespace(meta={"content_type": "application/pdf"})
-        result = pipe_instance._infer_file_mime_type(file_obj)
+        result = pipe_instance._multimodal_handler._infer_file_mime_type(file_obj)
         assert result == "application/pdf"
 
     def test_uses_meta_dict_mimeType(self, pipe_instance):
         """Should extract mimeType from meta dict."""
         file_obj = SimpleNamespace(meta={"mimeType": "text/plain"})
-        result = pipe_instance._infer_file_mime_type(file_obj)
+        result = pipe_instance._multimodal_handler._infer_file_mime_type(file_obj)
         assert result == "text/plain"
 
     def test_prefers_direct_mime_type_attribute(self, pipe_instance):
@@ -431,7 +432,7 @@ class TestInferFileMimeType:
             mime_type="image/png",
             meta={"content_type": "image/jpeg"},
         )
-        result = pipe_instance._infer_file_mime_type(file_obj)
+        result = pipe_instance._multimodal_handler._infer_file_mime_type(file_obj)
         assert result == "image/png"
 
 
@@ -448,7 +449,7 @@ class TestReadFileRecordBase64:
         """Should raise ValueError when max_bytes is zero."""
         file_obj = SimpleNamespace()
         with pytest.raises(ValueError, match="BASE64_MAX_SIZE_MB must be greater than zero"):
-            await pipe_instance_async._read_file_record_base64(
+            await pipe_instance_async._multimodal_handler._read_file_record_base64(
                 file_obj, chunk_size=1024, max_bytes=0
             )
 
@@ -457,7 +458,7 @@ class TestReadFileRecordBase64:
         """Should read b64 from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"b64": b64_content})
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == b64_content
@@ -467,7 +468,7 @@ class TestReadFileRecordBase64:
         """Should read base64 key from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"base64": b64_content})
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == b64_content
@@ -477,7 +478,7 @@ class TestReadFileRecordBase64:
         """Should read data key from data dict."""
         b64_content = base64.b64encode(b"test content").decode("ascii")
         file_obj = SimpleNamespace(data={"data": b64_content})
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == b64_content
@@ -487,7 +488,7 @@ class TestReadFileRecordBase64:
         """Should read bytes from data dict and encode."""
         raw_bytes = b"raw byte content"
         file_obj = SimpleNamespace(data={"bytes": raw_bytes})
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(raw_bytes).decode("ascii")
@@ -497,7 +498,7 @@ class TestReadFileRecordBase64:
         """Should read bytearray from data dict and encode."""
         raw_bytes = bytearray(b"raw byte content")
         file_obj = SimpleNamespace(data={"bytes": raw_bytes})
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(bytes(raw_bytes)).decode("ascii")
@@ -510,7 +511,7 @@ class TestReadFileRecordBase64:
         file_obj = SimpleNamespace(data={"b64": large_b64})
 
         with pytest.raises(ValueError, match="Stored base64 payload exceeds configured limit"):
-            await pipe_instance_async._read_file_record_base64(
+            await pipe_instance_async._multimodal_handler._read_file_record_base64(
                 file_obj, chunk_size=1024, max_bytes=1024 * 1024
             )
 
@@ -522,7 +523,7 @@ class TestReadFileRecordBase64:
         test_file.write_bytes(test_content)
 
         file_obj = SimpleNamespace(path=str(test_file))
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(test_content).decode("ascii")
@@ -535,7 +536,7 @@ class TestReadFileRecordBase64:
         test_file.write_bytes(test_content)
 
         file_obj = SimpleNamespace(file_path=str(test_file))
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(test_content).decode("ascii")
@@ -545,7 +546,7 @@ class TestReadFileRecordBase64:
         """Should read from content attribute as bytes."""
         raw_bytes = b"content attribute bytes"
         file_obj = SimpleNamespace(content=raw_bytes)
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(raw_bytes).decode("ascii")
@@ -555,7 +556,7 @@ class TestReadFileRecordBase64:
         """Should read from blob attribute as bytes."""
         raw_bytes = b"blob attribute bytes"
         file_obj = SimpleNamespace(blob=raw_bytes)
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(raw_bytes).decode("ascii")
@@ -564,7 +565,7 @@ class TestReadFileRecordBase64:
     async def test_returns_none_when_no_data_source(self, pipe_instance_async):
         """Should return None when file_obj has no readable data."""
         file_obj = SimpleNamespace()
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
@@ -576,7 +577,7 @@ class TestReadFileRecordBase64:
         file_obj = SimpleNamespace(content=raw_bytes)
 
         with pytest.raises(ValueError, match="File exceeds BASE64_MAX_SIZE_MB limit"):
-            await pipe_instance_async._read_file_record_base64(
+            await pipe_instance_async._multimodal_handler._read_file_record_base64(
                 file_obj, chunk_size=1024, max_bytes=100
             )
 
@@ -587,7 +588,7 @@ class TestReadFileRecordBase64:
             path="/nonexistent/path/file.bin",
             content=b"fallback content"
         )
-        result = await pipe_instance_async._read_file_record_base64(
+        result = await pipe_instance_async._multimodal_handler._read_file_record_base64(
             file_obj, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result == base64.b64encode(b"fallback content").decode("ascii")
@@ -608,7 +609,7 @@ class TestEncodeFilePathBase64:
         test_file.write_bytes(b"X" * 1000)
 
         with pytest.raises(ValueError, match="File exceeds BASE64_MAX_SIZE_MB limit"):
-            await pipe_instance_async._encode_file_path_base64(
+            await pipe_instance_async._multimodal_handler._encode_file_path_base64(
                 test_file, chunk_size=64, max_bytes=100
             )
 
@@ -624,7 +625,7 @@ class TestInlineOwuiFileId:
     @pytest.mark.asyncio
     async def test_returns_none_for_empty_file_id(self, pipe_instance_async):
         """Should return None for empty file ID."""
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "", chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
@@ -632,7 +633,7 @@ class TestInlineOwuiFileId:
     @pytest.mark.asyncio
     async def test_returns_none_for_whitespace_file_id(self, pipe_instance_async):
         """Should return None for whitespace-only file ID."""
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "   ", chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
@@ -641,7 +642,7 @@ class TestInlineOwuiFileId:
     async def test_returns_none_when_file_not_found(self, pipe_instance_async):
         """Should return None when file lookup returns None."""
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=None)
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "nonexistent", chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
@@ -659,7 +660,7 @@ class TestInlineOwuiFileId:
         )
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "file123", chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -675,7 +676,7 @@ class TestInlineOwuiFileId:
         )
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "file123", chunk_size=1024, max_bytes=10
         )
         assert result is None
@@ -686,7 +687,7 @@ class TestInlineOwuiFileId:
         file_obj = SimpleNamespace(meta={"content_type": "image/png"})
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
-        result = await pipe_instance_async._inline_owui_file_id(
+        result = await pipe_instance_async._multimodal_handler._inline_owui_file_id(
             "file123", chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
@@ -703,7 +704,7 @@ class TestInlineInternalFileUrl:
     @pytest.mark.asyncio
     async def test_returns_none_for_non_internal_url(self, pipe_instance_async):
         """Should return None for external URLs."""
-        result = await pipe_instance_async._inline_internal_file_url(
+        result = await pipe_instance_async._multimodal_handler._inline_internal_file_url(
             "https://example.com/image.png",
             chunk_size=1024,
             max_bytes=1024 * 1024,
@@ -723,7 +724,7 @@ class TestInlineInternalFileUrl:
         )
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
-        result = await pipe_instance_async._inline_internal_file_url(
+        result = await pipe_instance_async._multimodal_handler._inline_internal_file_url(
             "http://localhost/api/v1/files/abc123/content",
             chunk_size=1024,
             max_bytes=1024 * 1024,
@@ -745,7 +746,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_does_nothing_for_empty_input(self, pipe_instance_async):
         """Should do nothing when input is empty."""
         body = {"input": []}
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": []}
@@ -754,7 +755,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_does_nothing_for_non_list_input(self, pipe_instance_async):
         """Should do nothing when input is not a list."""
         body = {"input": "not a list"}
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": "not a list"}
@@ -763,7 +764,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_skips_non_dict_items(self, pipe_instance_async):
         """Should skip non-dict items in input."""
         body = {"input": ["string item", 123]}
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": ["string item", 123]}
@@ -772,7 +773,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_skips_items_without_content(self, pipe_instance_async):
         """Should skip items without content."""
         body = {"input": [{"role": "user"}]}
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": [{"role": "user"}]}
@@ -785,7 +786,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": [{"type": "text", "text": "hello"}]
             }]
         }
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"][0]["type"] == "text"
@@ -801,7 +802,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 }]
             }]
         }
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"][0]["file_id"] == "file-abc123"
@@ -818,7 +819,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -846,7 +847,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -879,7 +880,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -908,7 +909,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -931,7 +932,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         with pytest.raises(ValueError, match="Failed to inline Open WebUI file id"):
-            await pipe_instance_async._inline_internal_responses_input_files_inplace(
+            await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
                 body, chunk_size=1024, max_bytes=1024 * 1024
             )
 
@@ -943,7 +944,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": "not a list"
             }]
         }
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"] == "not a list"
@@ -956,7 +957,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": ["string block", 123, None]
             }]
         }
-        await pipe_instance_async._inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._multimodal_handler._inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"] == ["string block", 123, None]
@@ -972,7 +973,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_non_string_chat_id(self, pipe_instance):
         """Should return False for non-string chat_id."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id=123,
             message_id="msg-1",
             file_id="file-1",
@@ -982,7 +983,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_empty_chat_id(self, pipe_instance):
         """Should return False for empty chat_id."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id="",
             message_id="msg-1",
             file_id="file-1",
@@ -992,7 +993,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_local_chat_id(self, pipe_instance):
         """Should return False for chat_id starting with 'local:'."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id="local:temp-chat",
             message_id="msg-1",
             file_id="file-1",
@@ -1002,7 +1003,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_empty_file_id(self, pipe_instance):
         """Should return False for empty file_id."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="",
@@ -1012,7 +1013,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_non_string_user_id(self, pipe_instance):
         """Should return False for non-string user_id."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="file-1",
@@ -1022,7 +1023,7 @@ class TestTryLinkFileToChat:
 
     def test_returns_false_for_empty_user_id(self, pipe_instance):
         """Should return False for empty user_id."""
-        result = pipe_instance._try_link_file_to_chat(
+        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="file-1",
@@ -1039,7 +1040,7 @@ class TestTryLinkFileToChat:
                 del sys.modules["open_webui.models.chats"]
 
             with patch.dict(sys.modules, {"open_webui.models.chats": None}):
-                pipe_instance._try_link_file_to_chat(
+                pipe_instance._multimodal_handler._try_link_file_to_chat(
                     chat_id="chat-123",
                     message_id="msg-456",
                     file_id="file-789",
@@ -1069,7 +1070,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1102,7 +1103,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1123,7 +1124,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1145,7 +1146,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1175,7 +1176,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id=None,
                 file_id="file-789",
@@ -1200,7 +1201,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._try_link_file_to_chat(
+            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1222,7 +1223,7 @@ class TestResolveStorageContext:
     @pytest.mark.asyncio
     async def test_returns_none_when_request_is_none(self, pipe_instance_async, mock_user):
         """Should return (None, None) when request is None."""
-        request, user = await pipe_instance_async._resolve_storage_context(None, mock_user)
+        request, user = await pipe_instance_async._multimodal_handler._resolve_storage_context(None, mock_user)
         assert request is None
         assert user is None
 
@@ -1231,7 +1232,7 @@ class TestResolveStorageContext:
         self, pipe_instance_async, mock_request, mock_user
     ):
         """Should return provided user when available."""
-        request, user = await pipe_instance_async._resolve_storage_context(
+        request, user = await pipe_instance_async._multimodal_handler._resolve_storage_context(
             mock_request, mock_user
         )
         assert request is mock_request
@@ -1242,7 +1243,7 @@ class TestResolveStorageContext:
         """Should return (None, None) when fallback user creation fails."""
         pipe_instance_async._multimodal_handler._ensure_storage_user = AsyncMock(return_value=None)
 
-        request, user = await pipe_instance_async._resolve_storage_context(mock_request, None)
+        request, user = await pipe_instance_async._multimodal_handler._resolve_storage_context(mock_request, None)
         assert request is None
         assert user is None
 
@@ -1258,7 +1259,7 @@ class TestResolveStorageContext:
             return_value=fallback_user
         )
 
-        request, user = await pipe_instance_async._resolve_storage_context(
+        request, user = await pipe_instance_async._multimodal_handler._resolve_storage_context(
             mock_request, None
         )
 
@@ -1282,7 +1283,7 @@ class TestEnsureStorageUser:
         original_users = multimodal_module.Users
         try:
             multimodal_module.Users = None
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is None
         finally:
             multimodal_module.Users = original_users
@@ -1294,7 +1295,7 @@ class TestEnsureStorageUser:
         cached_user.email = "cached@example.com"
         pipe_instance_async._multimodal_handler._storage_user_cache = cached_user
 
-        result = await pipe_instance_async._ensure_storage_user()
+        result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
         assert result is cached_user
 
     @pytest.mark.asyncio
@@ -1314,7 +1315,7 @@ class TestEnsureStorageUser:
             pipe_instance_async.valves.FALLBACK_STORAGE_ROLE = "admin"
 
             with caplog.at_level(logging.WARNING):
-                await pipe_instance_async._ensure_storage_user()
+                await pipe_instance_async._multimodal_handler._ensure_storage_user()
 
             assert "highly privileged" in caplog.text
         finally:
@@ -1342,7 +1343,7 @@ class TestEnsureStorageUser:
 
             await set_cache_during_wait()
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
 
             assert result is cached_user
         finally:
@@ -1368,7 +1369,7 @@ class TestEnsureStorageUser:
             pipe_instance_async._multimodal_handler._storage_user_cache = None
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
 
             assert result is created_user
             mock_users.insert_new_user.assert_called_once()
@@ -1398,7 +1399,7 @@ class TestEnsureStorageUser:
             pipe_instance_async._multimodal_handler._storage_user_cache = None
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is created_user
         finally:
             multimodal_module.Users = original_users
@@ -1426,7 +1427,7 @@ class TestEnsureStorageUser:
             pipe_instance_async._multimodal_handler._storage_user_cache = None
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is created_user
         finally:
             multimodal_module.Users = original_users
@@ -1444,7 +1445,7 @@ class TestEnsureStorageUser:
             multimodal_module.Users = mock_users
             pipe_instance_async._multimodal_handler._storage_user_cache = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is None
         finally:
             multimodal_module.Users = original_users
@@ -1464,7 +1465,7 @@ class TestEnsureStorageUser:
             pipe_instance_async._multimodal_handler._storage_user_cache = None
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is None
         finally:
             multimodal_module.Users = original_users
@@ -1496,7 +1497,7 @@ class TestEnsureStorageUser:
             pipe_instance_async._multimodal_handler._storage_user_cache = None
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
-            result = await pipe_instance_async._ensure_storage_user()
+            result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result is created_user
         finally:
             multimodal_module.Users = original_users
@@ -1513,7 +1514,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_uses_default_timeout_when_none(self, pipe_instance_async):
         """Should use default timeout when timeout_seconds is None and valve is None."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.HTTP_CONNECT_TIMEOUT_SECONDS = None
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1533,26 +1534,26 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            await pipe_instance_async._download_remote_url(
+            await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/file.txt"
             )
 
     @pytest.mark.asyncio
     async def test_returns_none_for_ftp_url(self, pipe_instance_async):
         """Should return None for FTP URLs."""
-        result = await pipe_instance_async._download_remote_url("ftp://example.com/file.txt")
+        result = await pipe_instance_async._multimodal_handler._download_remote_url("ftp://example.com/file.txt")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_none_for_file_url(self, pipe_instance_async):
         """Should return None for file:// URLs."""
-        result = await pipe_instance_async._download_remote_url("file:///etc/passwd")
+        result = await pipe_instance_async._multimodal_handler._download_remote_url("file:///etc/passwd")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_none_for_empty_url(self, pipe_instance_async):
         """Should return None for empty URL."""
-        result = await pipe_instance_async._download_remote_url("")
+        result = await pipe_instance_async._multimodal_handler._download_remote_url("")
         assert result is None
 
     @pytest.mark.asyncio
@@ -1560,14 +1561,14 @@ class TestDownloadRemoteUrl:
         """Should return None when SSRF protection blocks the URL."""
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
 
-        result = await pipe_instance_async._download_remote_url("https://127.0.0.1/file")
+        result = await pipe_instance_async._multimodal_handler._download_remote_url("https://127.0.0.1/file")
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_normalizes_image_jpg_to_jpeg(self, pipe_instance_async):
         """Should normalize image/jpg to image/jpeg."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1589,7 +1590,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -1599,7 +1600,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_rejects_content_length_exceeding_limit(self, pipe_instance_async):
         """Should reject files when Content-Length exceeds limit."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1620,7 +1621,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/large-file.bin"
             )
 
@@ -1629,7 +1630,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_handles_invalid_content_length(self, pipe_instance_async):
         """Should handle non-integer Content-Length gracefully."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1654,7 +1655,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/file.txt"
             )
 
@@ -1664,7 +1665,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_skips_empty_chunks(self, pipe_instance_async):
         """Should skip empty chunks during streaming."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1688,7 +1689,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/file.txt"
             )
 
@@ -1698,7 +1699,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_aborts_when_streaming_exceeds_limit(self, pipe_instance_async):
         """Should abort download when streaming data exceeds size limit."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 0.001
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1723,7 +1724,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/large-file.bin"
             )
 
@@ -1732,7 +1733,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_returns_none_on_final_exception(self, pipe_instance_async):
         """Should return None and log error on unrecoverable exception."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
@@ -1740,7 +1741,7 @@ class TestDownloadRemoteUrl:
             )
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/file.txt"
             )
 
@@ -1749,7 +1750,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_handles_http_404_error(self, pipe_instance_async):
         """Should return None on non-retryable HTTP errors like 404."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1772,7 +1773,7 @@ class TestDownloadRemoteUrl:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/missing.txt"
             )
 
@@ -1789,32 +1790,32 @@ class TestIsSafeUrlBlocking:
 
     def test_returns_false_for_empty_hostname(self, pipe_instance):
         """Should return False for URL with no hostname."""
-        result = pipe_instance._is_safe_url_blocking("file:///local/path")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("file:///local/path")
         assert result is False
 
     def test_blocks_loopback_ip(self, pipe_instance):
         """Should block loopback IP addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://127.0.0.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
         assert result is False
 
     def test_blocks_link_local_ip(self, pipe_instance):
         """Should block link-local IP addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://169.254.1.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://169.254.1.1/file")
         assert result is False
 
     def test_blocks_multicast_ip(self, pipe_instance):
         """Should block multicast IP addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://224.0.0.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://224.0.0.1/file")
         assert result is False
 
     def test_blocks_reserved_ipv6(self, pipe_instance):
         """Should block reserved IPv6 addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://[::1]/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://[::1]/file")
         assert result is False
 
     def test_blocks_unspecified_ipv6(self, pipe_instance):
         """Should block unspecified address ::."""
-        result = pipe_instance._is_safe_url_blocking("https://[::]/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://[::]/file")
         assert result is False
 
     def test_returns_false_on_dns_failure(self, pipe_instance, monkeypatch):
@@ -1823,7 +1824,7 @@ class TestIsSafeUrlBlocking:
             raise socket.gaierror("DNS error")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://nonexistent.invalid/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://nonexistent.invalid/file")
         assert result is False
 
     def test_returns_false_on_unicode_error(self, pipe_instance, monkeypatch):
@@ -1832,7 +1833,7 @@ class TestIsSafeUrlBlocking:
             raise UnicodeError("Invalid hostname encoding")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
     def test_returns_false_when_no_ips_resolved(self, pipe_instance, monkeypatch):
@@ -1841,7 +1842,7 @@ class TestIsSafeUrlBlocking:
             return []
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
     def test_returns_false_for_invalid_ip_in_response(self, pipe_instance, monkeypatch):
@@ -1850,7 +1851,7 @@ class TestIsSafeUrlBlocking:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("not-an-ip", 80))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
     def test_handles_empty_sockaddr(self, pipe_instance, monkeypatch):
@@ -1862,17 +1863,17 @@ class TestIsSafeUrlBlocking:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is True
 
     def test_blocks_private_ipv4(self, pipe_instance):
         """Should block private IPv4 addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://10.0.0.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://10.0.0.1/file")
         assert result is False
 
     def test_blocks_private_192_168(self, pipe_instance):
         """Should block 192.168.x.x private addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://192.168.1.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://192.168.1.1/file")
         assert result is False
 
     def test_returns_false_on_unexpected_exception(self, pipe_instance, monkeypatch):
@@ -1881,7 +1882,7 @@ class TestIsSafeUrlBlocking:
             raise Exception("Unexpected error")
 
         with patch("ipaddress.ip_address", side_effect=raise_exception):
-            pipe_instance._is_safe_url_blocking("https://example.com/file")
+            pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
 
     def test_blocks_reserved_ip(self, pipe_instance, monkeypatch):
         """Should block reserved IP addresses (240.0.0.0/4 class E)."""
@@ -1889,7 +1890,7 @@ class TestIsSafeUrlBlocking:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("240.0.0.1", 80))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
 
@@ -1903,27 +1904,27 @@ class TestIsYoutubeUrl:
 
     def test_detects_standard_youtube_url(self, pipe_instance):
         """Should detect standard YouTube watch URL."""
-        assert pipe_instance._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert pipe_instance._multimodal_handler._is_youtube_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     def test_detects_short_youtube_url(self, pipe_instance):
         """Should detect short youtu.be URL."""
-        assert pipe_instance._is_youtube_url("https://youtu.be/dQw4w9WgXcQ")
+        assert pipe_instance._multimodal_handler._is_youtube_url("https://youtu.be/dQw4w9WgXcQ")
 
     def test_detects_http_youtube_url(self, pipe_instance):
         """Should detect HTTP YouTube URL."""
-        assert pipe_instance._is_youtube_url("http://youtube.com/watch?v=abc123")
+        assert pipe_instance._multimodal_handler._is_youtube_url("http://youtube.com/watch?v=abc123")
 
     def test_returns_false_for_empty(self, pipe_instance):
         """Should return False for empty string."""
-        assert pipe_instance._is_youtube_url("") is False
+        assert pipe_instance._multimodal_handler._is_youtube_url("") is False
 
     def test_returns_false_for_none(self, pipe_instance):
         """Should return False for None."""
-        assert pipe_instance._is_youtube_url(None) is False
+        assert pipe_instance._multimodal_handler._is_youtube_url(None) is False
 
     def test_returns_false_for_non_youtube(self, pipe_instance):
         """Should return False for non-YouTube URLs."""
-        assert pipe_instance._is_youtube_url("https://vimeo.com/123456") is False
+        assert pipe_instance._multimodal_handler._is_youtube_url("https://vimeo.com/123456") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1936,18 +1937,18 @@ class TestValidateBase64Size:
 
     def test_returns_true_for_empty_string(self, pipe_instance):
         """Should return True for empty string."""
-        assert pipe_instance._validate_base64_size("") is True
+        assert pipe_instance._multimodal_handler._validate_base64_size("") is True
 
     def test_returns_true_for_small_data(self, pipe_instance):
         """Should return True for data within limits."""
         small_b64 = base64.b64encode(b"small data").decode("ascii")
-        assert pipe_instance._validate_base64_size(small_b64) is True
+        assert pipe_instance._multimodal_handler._validate_base64_size(small_b64) is True
 
     def test_returns_false_for_large_data(self, pipe_instance):
         """Should return False for data exceeding limits."""
         pipe_instance.valves.BASE64_MAX_SIZE_MB = 0.00001
         large_b64 = "A" * 100000
-        assert pipe_instance._validate_base64_size(large_b64) is False
+        assert pipe_instance._multimodal_handler._validate_base64_size(large_b64) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1963,28 +1964,28 @@ class TestParseDataUrl:
         pipe_instance.valves.BASE64_MAX_SIZE_MB = 0.00001
         large_b64 = "A" * 100000
         data_url = f"data:image/png;base64,{large_b64}"
-        result = pipe_instance._parse_data_url(data_url)
+        result = pipe_instance._multimodal_handler._parse_data_url(data_url)
         assert result is None
 
     def test_returns_none_for_none_input(self, pipe_instance):
         """Should return None for None input."""
-        result = pipe_instance._parse_data_url(None)
+        result = pipe_instance._multimodal_handler._parse_data_url(None)
         assert result is None
 
     def test_returns_none_for_non_data_url(self, pipe_instance):
         """Should return None for non-data URLs."""
-        result = pipe_instance._parse_data_url("https://example.com/image.png")
+        result = pipe_instance._multimodal_handler._parse_data_url("https://example.com/image.png")
         assert result is None
 
     def test_returns_none_for_missing_base64_separator(self, pipe_instance):
         """Should return None when ;base64, separator is missing."""
-        result = pipe_instance._parse_data_url("data:image/png,nobase64separator")
+        result = pipe_instance._multimodal_handler._parse_data_url("data:image/png,nobase64separator")
         assert result is None
 
     def test_normalizes_image_jpg_in_data_url(self, pipe_instance):
         """Should normalize image/jpg to image/jpeg in data URLs."""
         b64 = base64.b64encode(b"test data").decode("ascii")
-        result = pipe_instance._parse_data_url(f"data:image/jpg;base64,{b64}")
+        result = pipe_instance._multimodal_handler._parse_data_url(f"data:image/jpg;base64,{b64}")
 
         assert result is not None
         assert result["mime_type"] == "image/jpeg"
@@ -1993,7 +1994,7 @@ class TestParseDataUrl:
         """Should decode valid base64 data."""
         original_data = b"hello world"
         b64 = base64.b64encode(original_data).decode("ascii")
-        result = pipe_instance._parse_data_url(f"data:text/plain;base64,{b64}")
+        result = pipe_instance._multimodal_handler._parse_data_url(f"data:text/plain;base64,{b64}")
 
         assert result is not None
         assert result["data"] == original_data
@@ -2002,7 +2003,7 @@ class TestParseDataUrl:
 
     def test_returns_none_for_invalid_base64(self, pipe_instance):
         """Should return None for invalid base64 data."""
-        result = pipe_instance._parse_data_url("data:image/png;base64,!!!invalid!!!")
+        result = pipe_instance._multimodal_handler._parse_data_url("data:image/png;base64,!!!invalid!!!")
         assert result is None
 
 
@@ -2018,7 +2019,7 @@ class TestFetchImageAsDataUrl:
     async def test_returns_none_for_empty_url(self, pipe_instance_async):
         """Should return None for empty URL."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_image_as_data_url(session, "")
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(session, "")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2026,14 +2027,14 @@ class TestFetchImageAsDataUrl:
         """Should return existing data URL as-is."""
         async with aiohttp.ClientSession() as session:
             data_url = "data:image/png;base64,AAAA"
-            result = await pipe_instance_async._fetch_image_as_data_url(session, data_url)
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(session, data_url)
             assert result == data_url
 
     @pytest.mark.asyncio
     async def test_prepends_https_for_protocol_relative_url(self, pipe_instance_async):
         """Should prepend https: for protocol-relative URLs."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_image_as_data_url(
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                 session, "//nonexistent.example.com/img.png"
             )
             assert result is None
@@ -2042,7 +2043,7 @@ class TestFetchImageAsDataUrl:
     async def test_prepends_site_url_for_relative_path(self, pipe_instance_async):
         """Should prepend site URL for relative paths starting with /."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_image_as_data_url(
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                 session, "/some/path/icon.png"
             )
             assert result is None
@@ -2051,7 +2052,7 @@ class TestFetchImageAsDataUrl:
     async def test_prepends_site_url_for_bare_path(self, pipe_instance_async):
         """Should prepend site URL for paths without leading slash."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_image_as_data_url(
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                 session, "path/to/icon.png"
             )
             assert result is None
@@ -2073,7 +2074,7 @@ class TestFetchImageAsDataUrl:
 
                 with patch.dict(sys.modules, {"cairosvg": None}):
                     with patch("builtins.__import__", side_effect=ImportError("No cairosvg")):
-                        result = await pipe_instance_async._fetch_image_as_data_url(
+                        result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                             session, "https://openrouter.ai/icon.svg"
                         )
 
@@ -2098,7 +2099,7 @@ class TestFetchImageAsDataUrl:
                 mock_cairosvg.svg2png = Mock(side_effect=Exception("Rasterization failed"))
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
-                    result = await pipe_instance_async._fetch_image_as_data_url(
+                    result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                         session, "https://openrouter.ai/bad-icon.svg"
                     )
 
@@ -2126,7 +2127,7 @@ class TestFetchImageAsDataUrl:
                     sys.modules["PIL"] = None
                     sys.modules["PIL.Image"] = None
 
-                    result = await pipe_instance_async._fetch_image_as_data_url(
+                    result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                         session, "https://openrouter.ai/photo.jpg"
                     )
                 finally:
@@ -2152,7 +2153,7 @@ class TestFetchImageAsDataUrl:
                     headers={"Content-Type": "image/gif"}
                 )
 
-                result = await pipe_instance_async._fetch_image_as_data_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                     session, "https://openrouter.ai/icon.gif"
                 )
 
@@ -2173,7 +2174,7 @@ class TestFetchImageAsDataUrl:
                     headers={"Content-Type": "image/png"}
                 )
 
-                result = await pipe_instance_async._fetch_image_as_data_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                     session, "https://openrouter.ai/test-icon.png"
                 )
 
@@ -2194,7 +2195,7 @@ class TestFetchImageAsDataUrl:
                     headers={"Content-Type": "image/png"}
                 )
 
-                result = await pipe_instance_async._fetch_image_as_data_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                     session, "https://openrouter.ai/large-icon.png"
                 )
 
@@ -2213,7 +2214,7 @@ class TestFetchImageAsDataUrl:
                     headers={"Content-Type": "application/pdf"}
                 )
 
-                result = await pipe_instance_async._fetch_image_as_data_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                     session, "https://openrouter.ai/document.pdf"
                 )
 
@@ -2231,7 +2232,7 @@ class TestFetchImageAsDataUrl:
                     status=404
                 )
 
-                result = await pipe_instance_async._fetch_image_as_data_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                     session, "https://openrouter.ai/missing.png"
                 )
 
@@ -2250,14 +2251,14 @@ class TestFetchMakerProfileImageUrl:
     async def test_returns_none_for_empty_maker_id(self, pipe_instance_async):
         """Should return None for empty maker ID."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_maker_profile_image_url(session, "")
+            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(session, "")
             assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_none_for_whitespace_maker_id(self, pipe_instance_async):
         """Should return None for whitespace-only maker ID."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._fetch_maker_profile_image_url(session, "   ")
+            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(session, "   ")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2273,7 +2274,7 @@ class TestFetchMakerProfileImageUrl:
                     headers={"Content-Type": "text/html"}
                 )
 
-                result = await pipe_instance_async._fetch_maker_profile_image_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
                     session, "test-maker"
                 )
 
@@ -2301,7 +2302,7 @@ class TestFetchMakerProfileImageUrl:
                     headers={"Content-Type": "text/html"}
                 )
 
-                result = await pipe_instance_async._fetch_maker_profile_image_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
                     session, "test-maker"
                 )
 
@@ -2319,7 +2320,7 @@ class TestFetchMakerProfileImageUrl:
                     status=404
                 )
 
-                result = await pipe_instance_async._fetch_maker_profile_image_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
                     session, "nonexistent-maker"
                 )
 
@@ -2340,7 +2341,7 @@ class TestFetchMakerProfileImageUrl:
                     headers={"Content-Type": "text/html"}
                 )
 
-                result = await pipe_instance_async._fetch_maker_profile_image_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
                     session, "maker-no-image"
                 )
 
@@ -2359,14 +2360,14 @@ class TestIsSafeUrlAsync:
     async def test_bypasses_when_ssrf_protection_disabled(self, pipe_instance_async):
         """Should return True immediately when SSRF protection is disabled."""
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = False
-        result = await pipe_instance_async._is_safe_url("https://127.0.0.1/file")
+        result = await pipe_instance_async._multimodal_handler._is_safe_url("https://127.0.0.1/file")
         assert result is True
 
     @pytest.mark.asyncio
     async def test_delegates_to_blocking_when_enabled(self, pipe_instance_async):
         """Should delegate to blocking implementation when enabled."""
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
-        result = await pipe_instance_async._is_safe_url("https://127.0.0.1/file")
+        result = await pipe_instance_async._multimodal_handler._is_safe_url("https://127.0.0.1/file")
         assert result is False
 
 
@@ -2386,7 +2387,7 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(False, None)
         ):
-            result = pipe_instance._get_effective_remote_file_limit_mb()
+            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 100
 
     def test_returns_rag_limit_when_lower(self, pipe_instance):
@@ -2397,7 +2398,7 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 50)
         ):
-            result = pipe_instance._get_effective_remote_file_limit_mb()
+            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 50
 
     def test_upgrades_default_to_rag_limit(self, pipe_instance):
@@ -2410,7 +2411,7 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 200)
         ):
-            result = pipe_instance._get_effective_remote_file_limit_mb()
+            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 200
 
     def test_returns_base_limit_when_non_default_and_lower_than_rag(self, pipe_instance):
@@ -2421,7 +2422,7 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 100)
         ):
-            result = pipe_instance._get_effective_remote_file_limit_mb()
+            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 30
 
 
@@ -2444,7 +2445,7 @@ class TestUploadToOwuiStorage:
         original_threadpool = multimodal_module.run_in_threadpool
         try:
             multimodal_module.upload_file_handler = None
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result is None
@@ -2463,7 +2464,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result == "dict-file-id"
@@ -2481,7 +2482,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result == "object-file-id"
@@ -2499,7 +2500,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result is None
@@ -2523,7 +2524,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            await pipe_instance_async._upload_to_owui_storage(
+            await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain",
                 chat_id="local:temp-chat"
             )
@@ -2543,7 +2544,7 @@ class TestUploadToOwuiStorage:
 
         original_handler = multimodal_module.upload_file_handler
 
-        original_link = pipe_instance_async._try_link_file_to_chat
+        original_link = pipe_instance_async._multimodal_handler._try_link_file_to_chat
 
         def capture_link(*, chat_id, message_id, file_id, user_id):
             nonlocal captured_user_id
@@ -2554,7 +2555,7 @@ class TestUploadToOwuiStorage:
             multimodal_module.upload_file_handler = mock_upload_handler
             pipe_instance_async._multimodal_handler._try_link_file_to_chat = capture_link
 
-            await pipe_instance_async._upload_to_owui_storage(
+            await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain",
                 chat_id="chat-123",
                 owui_user_id="override-user-id"
@@ -2577,13 +2578,13 @@ class TestUploadToOwuiStorage:
             raise RuntimeError("Link failed!")
 
         original_handler = multimodal_module.upload_file_handler
-        original_link = pipe_instance_async._try_link_file_to_chat
+        original_link = pipe_instance_async._multimodal_handler._try_link_file_to_chat
 
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
             pipe_instance_async._multimodal_handler._try_link_file_to_chat = mock_link_raises
 
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain",
                 chat_id="chat-123"
             )
@@ -2604,7 +2605,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result is None
@@ -2624,7 +2625,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._upload_to_owui_storage(
+            result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain"
             )
             assert result is None
@@ -2648,7 +2649,7 @@ class TestUploadToOwuiStorage:
         original_handler = multimodal_module.upload_file_handler
         try:
             multimodal_module.upload_file_handler = mock_upload_handler
-            await pipe_instance_async._upload_to_owui_storage(
+            await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
                 mock_request, mock_user, b"test data", "test.txt", "text/plain",
                 chat_id="chat-123",
                 message_id="msg-456"
@@ -2707,7 +2708,7 @@ async def _transform_single_block(
             "content": [block],
         }
     ]
-    transformed = await pipe_instance.transform_messages_to_input(
+    transformed = await transform_messages_to_input(pipe_instance,
         messages,
         __request__=mock_request,
         user_obj=mock_user,
@@ -2754,7 +2755,7 @@ class TestDataURLParsing:
     def test_parse_valid_image_data_url(self, pipe_instance, sample_image_base64):
         """Should parse valid image data URL correctly."""
         data_url = f"data:image/png;base64,{sample_image_base64}"
-        result = pipe_instance._parse_data_url(data_url)
+        result = pipe_instance._multimodal_handler._parse_data_url(data_url)
 
         assert result is not None
         assert result["mime_type"] == "image/png"
@@ -2764,7 +2765,7 @@ class TestDataURLParsing:
     def test_parse_normalizes_image_jpg_to_jpeg(self, pipe_instance):
         """Should normalize image/jpg to image/jpeg."""
         data_url = "data:image/jpg;base64,AAAA"
-        result = pipe_instance._parse_data_url(data_url)
+        result = pipe_instance._multimodal_handler._parse_data_url(data_url)
 
         assert result is not None
         assert result["mime_type"] == "image/jpeg"
@@ -2772,7 +2773,7 @@ class TestDataURLParsing:
     def test_parse_audio_data_url(self, pipe_instance, sample_audio_base64):
         """Should parse audio data URL correctly."""
         data_url = f"data:audio/mp3;base64,{sample_audio_base64}"
-        result = pipe_instance._parse_data_url(data_url)
+        result = pipe_instance._multimodal_handler._parse_data_url(data_url)
 
         assert result is not None
         assert result["mime_type"] == "audio/mp3"
@@ -2780,15 +2781,15 @@ class TestDataURLParsing:
 
     def test_parse_invalid_data_url_returns_none(self, pipe_instance):
         """Should return None for invalid data URLs."""
-        assert pipe_instance._parse_data_url("not a data url") is None
-        assert pipe_instance._parse_data_url("data:image/png,missing_base64") is None
-        assert pipe_instance._parse_data_url("") is None
-        assert pipe_instance._parse_data_url(None) is None
+        assert pipe_instance._multimodal_handler._parse_data_url("not a data url") is None
+        assert pipe_instance._multimodal_handler._parse_data_url("data:image/png,missing_base64") is None
+        assert pipe_instance._multimodal_handler._parse_data_url("") is None
+        assert pipe_instance._multimodal_handler._parse_data_url(None) is None
 
     def test_parse_invalid_base64_returns_none(self, pipe_instance):
         """Should return None for invalid base64 data."""
         data_url = "data:image/png;base64,INVALID!!!BASE64"
-        result = pipe_instance._parse_data_url(data_url)
+        result = pipe_instance._multimodal_handler._parse_data_url(data_url)
         assert result is None
 
 
@@ -2801,17 +2802,17 @@ class TestImageTransformations:
     ):
         """Remote images should be re-hosted and then inlined for provider delivery."""
 
-        pipe_instance._download_remote_url = AsyncMock(
+        pipe_instance._multimodal_handler._download_remote_url = AsyncMock(
             return_value={
                 "data": base64.b64decode(sample_image_base64),
                 "mime_type": "image/png",
                 "url": "https://example.com/cat.png",
             }
         )
-        pipe_instance._upload_to_owui_storage = AsyncMock(
+        pipe_instance._multimodal_handler._upload_to_owui_storage = AsyncMock(
             return_value="cat123"
         )
-        pipe_instance._inline_owui_file_id = AsyncMock(
+        pipe_instance._multimodal_handler._inline_owui_file_id = AsyncMock(
             return_value="data:image/png;base64,INLINED=="
         )
 
@@ -2830,10 +2831,10 @@ class TestImageTransformations:
         assert transformed is not None
         assert transformed["type"] == "input_image"
         assert transformed["image_url"] == "data:image/png;base64,INLINED=="
-        pipe_instance._download_remote_url.assert_awaited_once()
-        pipe_instance._upload_to_owui_storage.assert_awaited_once()
-        pipe_instance._inline_owui_file_id.assert_awaited_once()
-        inline_args = pipe_instance._inline_owui_file_id.await_args
+        pipe_instance._multimodal_handler._download_remote_url.assert_awaited_once()
+        pipe_instance._multimodal_handler._upload_to_owui_storage.assert_awaited_once()
+        pipe_instance._multimodal_handler._inline_owui_file_id.assert_awaited_once()
+        inline_args = pipe_instance._multimodal_handler._inline_owui_file_id.await_args
         assert inline_args is not None
         assert inline_args.args[0] == "cat123"
 
@@ -2852,7 +2853,7 @@ class TestFileEncoding:
         file_path.write_bytes(data)
 
         expected = base64.b64encode(data).decode("ascii")
-        result = await pipe_instance._encode_file_path_base64(
+        result = await pipe_instance._multimodal_handler._encode_file_path_base64(
             file_path,
             chunk_size=64 * 1024,
             max_bytes=len(data) + 1024,
@@ -2867,7 +2868,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_successful(self, pipe_instance_async):
         """Should download remote file successfully."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         test_content = b"fake image data"
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -2878,7 +2879,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -2890,7 +2891,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_normalizes_mime_type(self, pipe_instance_async):
         """Should normalize image/jpg to image/jpeg."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.headers = {"content-type": "image/jpg; charset=utf-8"}
@@ -2899,7 +2900,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -2908,9 +2909,9 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_rejects_files_over_default_limit(self, pipe_instance_async):
         """Should reject files larger than the configured limit (default 50MB)."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
-        limit_bytes = pipe_instance_async._get_effective_remote_file_limit_mb() * 1024 * 1024
+        limit_bytes = pipe_instance_async._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -2923,7 +2924,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/huge.jpg"
             )
 
@@ -2932,14 +2933,14 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_invalid_url_returns_none(self, pipe_instance_async):
         """Should return None for non-HTTP URLs."""
-        assert await pipe_instance_async._download_remote_url("file:///local/path") is None
-        assert await pipe_instance_async._download_remote_url("ftp://example.com/file") is None
-        assert await pipe_instance_async._download_remote_url("") is None
+        assert await pipe_instance_async._multimodal_handler._download_remote_url("file:///local/path") is None
+        assert await pipe_instance_async._multimodal_handler._download_remote_url("ftp://example.com/file") is None
+        assert await pipe_instance_async._multimodal_handler._download_remote_url("") is None
 
     @pytest.mark.asyncio
     async def test_download_network_error_returns_none(self, pipe_instance_async):
         """Should retry on network errors and return None when exhausted."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
@@ -2947,7 +2948,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(side_effect=httpx.NetworkError("Network error"))
 
-            result = await pipe_instance_async._download_remote_url(
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(
                 "https://example.com/image.jpg"
             )
 
@@ -2957,7 +2958,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_does_not_retry_on_client_errors(self, pipe_instance_async):
         """Should not retry on non-429 HTTP 4xx errors."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         url = "https://example.com/forbidden.png"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=403, request=request)
@@ -2971,7 +2972,7 @@ class TestRemoteURLDownloading:
             client_ctx = mock_client.return_value.__aenter__.return_value
             client_ctx.stream = Mock(return_value=_make_stream_context(response=mock_response))
 
-            result = await pipe_instance_async._download_remote_url(url)
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
 
             assert result is None
             assert client_ctx.stream.call_count == 1
@@ -2982,14 +2983,14 @@ class TestRemoteURLDownloading:
         pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient") as mock_client:
-            result = await pipe_instance_async._download_remote_url("https://example.com/image.jpg")
+            result = await pipe_instance_async._multimodal_handler._download_remote_url("https://example.com/image.jpg")
             assert result is None
             mock_client.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_download_retries_on_429_then_succeeds(self, pipe_instance_async):
         """HTTP 429 should trigger a retry and succeed on a later attempt."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
@@ -3018,7 +3019,7 @@ class TestRemoteURLDownloading:
                 ]
             )
 
-            result = await pipe_instance_async._download_remote_url(url)
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
 
             assert result is not None
             assert result["data"] == b"ok"
@@ -3033,11 +3034,11 @@ class TestSSRFIPv6Validation:
 
     async def test_blocks_private_ipv6_literal(self, pipe_instance_async):
         """IPv6 literals in unique-local ranges should be rejected."""
-        assert await pipe_instance_async._is_safe_url("https://[fd00::1]/") is False
+        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://[fd00::1]/") is False
 
     async def test_allows_global_ipv6_literal(self, pipe_instance_async):
         """Public IPv6 literals should be considered safe."""
-        assert await pipe_instance_async._is_safe_url("https://[2001:4860:4860::8888]/foo")
+        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://[2001:4860:4860::8888]/foo")
 
     async def test_blocks_domain_with_private_ipv6_record(self, pipe_instance_async, monkeypatch):
         """Hosts resolving to any private IPv6 addresses are rejected."""
@@ -3049,7 +3050,7 @@ class TestSSRFIPv6Validation:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert await pipe_instance_async._is_safe_url("https://example.com/resource") is False
+        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://example.com/resource") is False
 
     async def test_allows_domain_with_public_ips_only(self, pipe_instance_async, monkeypatch):
         """Hosts resolving exclusively to public IPv4/IPv6 addresses pass the guard."""
@@ -3061,7 +3062,7 @@ class TestSSRFIPv6Validation:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert await pipe_instance_async._is_safe_url("https://example.com/resource")
+        assert await pipe_instance_async._multimodal_handler._is_safe_url("https://example.com/resource")
 
 
 class TestRemoteFileLimitResolution:
@@ -3083,7 +3084,7 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 200, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 60
 
-        assert pipe_instance._get_effective_remote_file_limit_mb() == 60
+        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 60
 
     def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):
         config = self._prepare_config(monkeypatch)
@@ -3091,7 +3092,7 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 25, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
 
-        assert pipe_instance._get_effective_remote_file_limit_mb() == 25
+        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 25
 
     def test_adopts_rag_when_default_and_larger(self, pipe_instance, monkeypatch):
         config = self._prepare_config(monkeypatch)
@@ -3099,7 +3100,7 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 120, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
 
-        assert pipe_instance._get_effective_remote_file_limit_mb() == 120
+        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 120
 
     def test_respects_custom_limit_when_lower_than_rag(self, pipe_instance, monkeypatch):
         config = self._prepare_config(monkeypatch)
@@ -3107,7 +3108,7 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 150, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 80
 
-        assert pipe_instance._get_effective_remote_file_limit_mb() == 80
+        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 80
 
     def test_falls_back_to_file_max_size_when_rag_missing(self, pipe_instance, monkeypatch):
         config = self._prepare_config(monkeypatch)
@@ -3116,7 +3117,7 @@ class TestRemoteFileLimitResolution:
         monkeypatch.setattr(config.FILE_MAX_SIZE, "value", 180, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
 
-        assert pipe_instance._get_effective_remote_file_limit_mb() == 180
+        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 180
 
 
 class TestRetryHelpers:
@@ -3176,7 +3177,7 @@ class TestStorageContext:
         mock_request,
         mock_user,
     ):
-        request, user = await pipe_instance._resolve_storage_context(
+        request, user = await pipe_instance._multimodal_handler._resolve_storage_context(
             mock_request,
             mock_user,
         )
@@ -3194,7 +3195,7 @@ class TestStorageContext:
         # Mock the handler's method directly (not the pipe's delegation method)
         pipe_instance._multimodal_handler._ensure_storage_user = AsyncMock(return_value=fallback_user)
 
-        request, user = await pipe_instance._resolve_storage_context(mock_request, None)
+        request, user = await pipe_instance._multimodal_handler._resolve_storage_context(mock_request, None)
         assert request is mock_request
         assert user is fallback_user
         pipe_instance._multimodal_handler._ensure_storage_user.assert_awaited_once()
@@ -3204,11 +3205,11 @@ class TestStorageContext:
         self,
         pipe_instance,
     ):
-        pipe_instance._ensure_storage_user = AsyncMock()
-        request, user = await pipe_instance._resolve_storage_context(None, None)
+        pipe_instance._multimodal_handler._ensure_storage_user = AsyncMock()
+        request, user = await pipe_instance._multimodal_handler._resolve_storage_context(None, None)
         assert request is None
         assert user is None
-        pipe_instance._ensure_storage_user.assert_not_called()
+        pipe_instance._multimodal_handler._ensure_storage_user.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3233,9 +3234,9 @@ class TestImageTransformer:
         upload_mock = AsyncMock(return_value=stored_id)
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
 
         block = {
             "type": "image_url",
@@ -3270,10 +3271,10 @@ class TestImageTransformer:
         upload_mock = AsyncMock(return_value=stored_id)
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
         status_mock = AsyncMock()
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
 
         block = {"type": "image_url", "image_url": {"url": remote_url, "detail": "auto"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
@@ -3302,7 +3303,7 @@ class TestImageTransformer:
             assert file_id == "abc"
             return "data:image/png;base64,abc"
 
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", fake_inline)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is not None
@@ -3349,7 +3350,7 @@ class TestImageTransformer:
         async def fake_inline(_file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
             return None
 
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", fake_inline)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/missing/content"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is None
@@ -3364,7 +3365,7 @@ class TestImageTransformer:
     ):
         """Errors while processing images should not leak exceptions."""
         boom = RuntimeError("boom")
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", AsyncMock(side_effect=boom))
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", AsyncMock(side_effect=boom))
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
         assert image_block is not None
@@ -3403,9 +3404,9 @@ class TestFileTransformer:
         upload_mock = AsyncMock(return_value=stored_id)
         status_mock = AsyncMock()
 
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
 
         events: list[dict] = []
 
@@ -3425,7 +3426,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -3464,9 +3465,9 @@ class TestFileTransformer:
         upload_mock = AsyncMock()
         status_mock = AsyncMock()
 
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_status", status_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
 
         messages = [
             {
@@ -3480,7 +3481,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -3508,9 +3509,9 @@ class TestFileTransformer:
         upload_mock = AsyncMock()
         notification_mock = AsyncMock()
 
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_notification", notification_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_notification", notification_mock)
 
         async def event_emitter(_event: dict):
             return
@@ -3528,7 +3529,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -3558,9 +3559,9 @@ class TestFileTransformer:
         upload_mock = AsyncMock()
         notification_mock = AsyncMock()
 
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_emit_notification", notification_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_notification", notification_mock)
 
         async def event_emitter(_event: dict):
             return
@@ -3578,7 +3579,7 @@ class TestFileTransformer:
             }
         ]
 
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -3716,7 +3717,7 @@ class TestAudioTransformer:
     ):
         """Should swallow exceptions and return minimal block."""
         boom = RuntimeError("boom")
-        monkeypatch.setattr(pipe_instance, "_parse_data_url", Mock(side_effect=boom))
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", Mock(side_effect=boom))
         block = {
             "type": "input_audio",
             "input_audio": f"DATA:audio/mp3;base64,{sample_audio_base64}",
@@ -3857,7 +3858,7 @@ class TestConversationRebuild:
             }
         })
 
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             chat_id="chat-1",
             openwebui_model_id="demo-model",
@@ -3903,7 +3904,7 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle message with text, image, and file."""
         pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         remote_file_url = "https://example.com/manual.pdf"
         download_mock = AsyncMock(
@@ -3911,9 +3912,9 @@ class TestMultimodalIntegration:
         )
         upload_mock = AsyncMock(side_effect=["img123", "file123"])
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -3928,7 +3929,7 @@ class TestMultimodalIntegration:
                 ],
             }
         ]
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -3960,8 +3961,8 @@ class TestMultimodalIntegration:
         """Should handle message with text, audio, and image."""
         upload_mock = AsyncMock(return_value="img999")
         inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -3973,7 +3974,7 @@ class TestMultimodalIntegration:
                 ],
             }
         ]
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -4000,8 +4001,8 @@ class TestMultimodalIntegration:
         """Should handle multiple images in single message."""
         upload_mock = AsyncMock(side_effect=["img1", "img2"])
         inline_mock = AsyncMock(side_effect=["data:image/png;base64,img1", "data:image/png;base64,img2"])
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance, "_inline_owui_file_id", inline_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
 
         messages = [
             {
@@ -4013,7 +4014,7 @@ class TestMultimodalIntegration:
                 ],
             }
         ]
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -4038,15 +4039,15 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should process other blocks even if one fails."""
         pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
-        pipe_instance._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         remote_file_url = "https://example.com/manual.pdf"
         download_mock = AsyncMock(
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
         upload_mock = AsyncMock(side_effect=[RuntimeError("boom"), "file-ok"])
-        monkeypatch.setattr(pipe_instance, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance, "_upload_to_owui_storage", upload_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
 
         messages = [
             {
@@ -4057,7 +4058,7 @@ class TestMultimodalIntegration:
                 ],
             }
         ]
-        transformed = await pipe_instance.transform_messages_to_input(
+        transformed = await transform_messages_to_input(pipe_instance,
             messages,
             __request__=mock_request,
             user_obj=mock_user,
@@ -4083,12 +4084,12 @@ class TestSSRFBlockingSpecificIPTypes:
 
     def test_blocks_loopback_ipv4_directly(self, pipe_instance):
         """Should block loopback 127.x.x.x addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://127.0.0.1/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
         assert result is False
 
     def test_blocks_link_local_ipv4_directly(self, pipe_instance):
         """Should block link-local 169.254.x.x addresses."""
-        result = pipe_instance._is_safe_url_blocking("https://169.254.169.254/metadata")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://169.254.169.254/metadata")
         assert result is False
 
     def test_blocks_reserved_class_e_ipv4(self, pipe_instance, monkeypatch):
@@ -4096,7 +4097,7 @@ class TestSSRFBlockingSpecificIPTypes:
         def fake_getaddrinfo(*args, **kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("240.0.0.1", 80))]
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
     def test_blocks_unspecified_ipv4(self, pipe_instance, monkeypatch):
@@ -4104,7 +4105,7 @@ class TestSSRFBlockingSpecificIPTypes:
         def fake_getaddrinfo(*args, **kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("0.0.0.0", 80))]
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._is_safe_url_blocking("https://example.com/file")
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
         assert result is False
 
 
@@ -4114,7 +4115,7 @@ class TestDownloadRetryTimeoutExceeded:
     @pytest.mark.asyncio
     async def test_download_retry_timeout_exceeded(self, pipe_instance_async):
         """Should return None when retry timeout is exceeded."""
-        pipe_instance_async._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
         # Set very short timeout so it expires quickly
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 3
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0.01
@@ -4149,7 +4150,7 @@ class TestDownloadRetryTimeoutExceeded:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await pipe_instance_async._download_remote_url(url)
+            result = await pipe_instance_async._multimodal_handler._download_remote_url(url)
             assert result is None
 
 
@@ -4165,7 +4166,7 @@ class TestEnsureStorageUserCacheLock:
         pipe_instance_async._multimodal_handler._storage_user_cache = cached_user
 
         # Should return cached user without going to DB
-        result = await pipe_instance_async._ensure_storage_user()
+        result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
         assert result is cached_user
 
 
@@ -4205,7 +4206,7 @@ class TestSignatureInspectionException:
             pipe_instance_async._multimodal_handler._user_insert_param_names = None
 
             with patch.object(inspect, "signature", mock_signature):
-                result = await pipe_instance_async._ensure_storage_user()
+                result = await pipe_instance_async._multimodal_handler._ensure_storage_user()
 
             # Should still create user even if signature inspection failed
             assert result is created_user
@@ -4236,7 +4237,7 @@ class TestFetchImageSVGEdgeCases:
                 mock_cairosvg.svg2png = Mock(return_value="not bytes")
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
-                    result = await pipe_instance_async._fetch_image_as_data_url(
+                    result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                         session, "https://openrouter.ai/bad-svg.svg"
                     )
 
@@ -4262,7 +4263,7 @@ class TestFetchImageSVGEdgeCases:
                 mock_cairosvg.svg2png = Mock(return_value=small_png)
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
-                    result = await pipe_instance_async._fetch_image_as_data_url(
+                    result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                         session, "https://openrouter.ai/good-svg.svg"
                     )
 
@@ -4291,7 +4292,7 @@ class TestFetchImageSVGEdgeCases:
                 mock_cairosvg.svg2png = Mock(return_value=large_png)
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
-                    result = await pipe_instance_async._fetch_image_as_data_url(
+                    result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
                         session, "https://openrouter.ai/huge-svg.svg"
                     )
 
@@ -4333,7 +4334,7 @@ class TestFetchMakerProfileNonStringHTML:
             original_get = session.get
             session.get = mock_get
             try:
-                result = await pipe_instance_async._fetch_maker_profile_image_url(
+                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
                     session, "test-maker-bytes"
                 )
                 assert result is None
@@ -4367,7 +4368,7 @@ class TestEnsureStorageUserCacheInsideLock:
             handler._storage_user_lock = asyncio.Lock()
 
             # First call will populate the cache
-            result1 = await pipe_instance_async._ensure_storage_user()
+            result1 = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result1 is existing_user
             assert handler._storage_user_cache is existing_user
 
@@ -4378,7 +4379,7 @@ class TestEnsureStorageUserCacheInsideLock:
             # Actually, line 760 can only be hit in a true race condition.
             # For testing purposes, we verify that once cache is set,
             # subsequent calls return the cached value (line 752-753)
-            result2 = await pipe_instance_async._ensure_storage_user()
+            result2 = await pipe_instance_async._multimodal_handler._ensure_storage_user()
             assert result2 is existing_user
 
         finally:

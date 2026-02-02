@@ -31,7 +31,7 @@ def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_instance)
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -73,7 +73,7 @@ def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -110,7 +110,7 @@ def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_defaul
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -144,7 +144,7 @@ def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updat
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -174,7 +174,7 @@ def test_disable_openrouter_search_default_on_skips_default_filter_ids(pipe_inst
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,

@@ -17,6 +17,7 @@ from ..core.errors import OpenRouterAPIError
 from ..api.transforms import _apply_identifier_valves_to_payload, _filter_openrouter_request
 from ..models.registry import OpenRouterModelRegistry, ModelFamily
 from ..core.timing_logger import timed
+from ..core.costs import maybe_dump_costs_snapshot
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -29,7 +30,6 @@ class TaskModelAdapter:
     and extracts plain text output from the response.
     """
 
-    @timed
     def __init__(self, pipe: "Pipe", logger: logging.Logger):
         """Initialize TaskModelAdapter.
 
@@ -41,7 +41,6 @@ class TaskModelAdapter:
         self.logger = logger
 
     @staticmethod
-    @timed
     def _extract_task_output_text(response: Dict[str, Any]) -> str:
         """Normalize Responses API payloads into plain text string for task models."""
         if not isinstance(response, dict):
@@ -68,7 +67,6 @@ class TaskModelAdapter:
         return joined
 
     @staticmethod
-    @timed
     def _task_name(task: Any) -> str:
         """Return a stable string task name from OWUI task metadata.
 
@@ -158,7 +156,8 @@ class TaskModelAdapter:
                     )
                     if safe_model_id:
                         try:
-                            await self._pipe._maybe_dump_costs_snapshot(
+                            await maybe_dump_costs_snapshot(
+                                self._pipe,
                                 valves,
                                 user_id=user_id,
                                 model_id=safe_model_id,

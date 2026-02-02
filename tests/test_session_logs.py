@@ -68,7 +68,7 @@ def test_write_session_log_archive_creates_encrypted_zip(tmp_path, pipe_instance
         ],
     )
 
-    pipe._write_session_log_archive(job)
+    pipe._session_log_manager._write_archive(job)
 
     out_path = (
         tmp_path
@@ -116,7 +116,7 @@ def test_write_session_log_archive_preserves_per_event_request_id(tmp_path, pipe
         ],
     )
 
-    pipe._write_session_log_archive(job)
+    pipe._session_log_manager._write_archive(job)
 
     out_path = tmp_path / job.user_id / job.chat_id / f"{job.message_id}.zip"
     with pyzipper.AESZipFile(out_path) as zf:
@@ -142,10 +142,10 @@ def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatc
     def _noop_start() -> None:
         called["started"] = True
 
-    monkeypatch.setattr(pipe, "_maybe_start_session_log_workers", _noop_start)
-    monkeypatch.setattr(pipe, "_session_log_queue", None)
+    monkeypatch.setattr(pipe._session_log_manager, "start_workers", _noop_start)
+    monkeypatch.setattr(pipe._session_log_manager, "_queue", None)
 
-    pipe._enqueue_session_log_archive(
+    pipe._session_log_manager.enqueue_archive(
         valves,
         user_id="",
         session_id="Ix-n1ptqDgmpL-8gAAAp",
@@ -213,7 +213,7 @@ class TestSessionLogArchiveEdgeCases:
         )
 
         # Should not create archive when user_id is missing
-        pipe._write_session_log_archive(job_missing_user)
+        pipe._session_log_manager._write_archive(job_missing_user)
 
         # Verify no archive was created
         out_path = tmp_path / job_missing_user.user_id / job_missing_user.chat_id / f"{job_missing_user.message_id}.zip"
@@ -239,7 +239,7 @@ class TestSessionLogArchiveEdgeCases:
             log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
         )
 
-        pipe._write_session_log_archive(job)
+        pipe._session_log_manager._write_archive(job)
 
         out_path = (
             tmp_path
@@ -285,7 +285,7 @@ class TestSessionLogArchiveEdgeCases:
                 log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
             )
 
-            pipe._write_session_log_archive(job)
+            pipe._session_log_manager._write_archive(job)
 
             out_path = (
                 tmp_path
@@ -327,7 +327,7 @@ class TestSessionLogArchiveEdgeCases:
             log_events=[{"created": old_timestamp, "level": "INFO", "logger": "t", "message": "old"}],
         )
 
-        pipe._write_session_log_archive(old_job)
+        pipe._session_log_manager._write_archive(old_job)
 
         # Create new archive (today)
         new_timestamp = fixed_now
@@ -346,7 +346,7 @@ class TestSessionLogArchiveEdgeCases:
             log_events=[{"created": new_timestamp, "level": "INFO", "logger": "t", "message": "new"}],
         )
 
-        pipe._write_session_log_archive(new_job)
+        pipe._session_log_manager._write_archive(new_job)
 
         # Verify both archives exist
         old_path = tmp_path / "user_old" / old_job.chat_id / f"{old_job.message_id}.zip"
@@ -358,9 +358,9 @@ class TestSessionLogArchiveEdgeCases:
         os.utime(old_path, (old_timestamp, old_timestamp))
         os.utime(new_path, (new_timestamp, new_timestamp))
 
-        pipe._session_log_dirs = {str(tmp_path)}  # type: ignore[attr-defined]
-        pipe._session_log_retention_days = valves.SESSION_LOG_RETENTION_DAYS  # type: ignore[attr-defined]
-        pipe._cleanup_session_log_archives()
+        pipe._session_log_manager._dirs = {str(tmp_path)}
+        pipe._session_log_manager._retention_days = valves.SESSION_LOG_RETENTION_DAYS
+        pipe._session_log_manager.cleanup_archives()
 
         assert not old_path.exists()
         assert new_path.exists()
@@ -387,7 +387,7 @@ class TestSessionLogArchiveEdgeCases:
             log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "test"}],
         )
 
-        pipe._write_session_log_archive(job)
+        pipe._session_log_manager._write_archive(job)
 
         # Verify directory structure exists
         user_dir = tmp_path / job.user_id
@@ -402,10 +402,10 @@ class TestSessionLogArchiveEdgeCases:
         fixed_now = 1_700_000_000.0
         old_timestamp = fixed_now - 10
         os.utime(archive_path, (old_timestamp, old_timestamp))
-        pipe._session_log_dirs = {str(tmp_path)}  # type: ignore[attr-defined]
-        pipe._session_log_retention_days = 0  # type: ignore[attr-defined]
+        pipe._session_log_manager._dirs = {str(tmp_path)}
+        pipe._session_log_manager._retention_days = 0
         monkeypatch.setattr(pipe_module.time, "time", lambda: fixed_now)
-        pipe._cleanup_session_log_archives()
+        pipe._session_log_manager.cleanup_archives()
 
         assert not archive_path.exists()
         assert not chat_dir.exists()
@@ -445,7 +445,7 @@ class TestConvertJsonlToInternal:
             "level": "INFO",
             "message": "test",
         }
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert "created" in result
         assert "ts" not in result  # ts is removed after conversion
@@ -457,7 +457,7 @@ class TestConvertJsonlToInternal:
         """'Z' suffix (Zulu time) is properly handled."""
         pipe = pipe_instance
         evt = {"ts": "2025-01-20T10:30:45.123Z", "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert "created" in result
         assert isinstance(result["created"], float)
@@ -470,7 +470,7 @@ class TestConvertJsonlToInternal:
             "created": 1234567890.0,
             "message": "test",
         }
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         # created should be unchanged, ts should remain
         assert result["created"] == 1234567890.0
@@ -480,7 +480,7 @@ class TestConvertJsonlToInternal:
         """Events without 'ts' field pass through unchanged."""
         pipe = pipe_instance
         evt = {"created": 1234567890.0, "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert result == evt
 
@@ -489,7 +489,7 @@ class TestConvertJsonlToInternal:
         pipe = pipe_instance
         before = time.time()
         evt = {"ts": "not-a-valid-timestamp", "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
         after = time.time()
 
         assert "created" in result
@@ -500,7 +500,7 @@ class TestConvertJsonlToInternal:
         pipe = pipe_instance
         original = {"ts": "2025-01-20T10:30:45.123Z", "message": "test"}
         original_copy = dict(original)
-        pipe._convert_jsonl_to_internal(original)
+        pipe._session_log_manager._convert_jsonl_to_internal(original)
 
         assert original == original_copy
 
@@ -515,7 +515,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 1
         assert result[0]["message"] == "hello"
@@ -527,7 +527,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1001.0, "request_id": "req1", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 2
 
@@ -538,7 +538,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req2", "lineno": 42, "message": "hello"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 2
 
@@ -549,7 +549,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 43, "message": "hello"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 2
 
@@ -560,7 +560,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "hello"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "world"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 2
 
@@ -571,7 +571,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "first", "extra": "A"},
             {"created": 1000.0, "request_id": "req1", "lineno": 42, "message": "first", "extra": "B"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 1
         assert result[0]["extra"] == "A"  # First occurrence kept
@@ -584,7 +584,7 @@ class TestDedupeSessionLogEvents:
             {"created": 1000.0, "message": "no request_id"},
             {"request_id": "req1", "message": "no created"},
         ]
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         # All are unique because of different content
         assert len(result) == 3
@@ -592,7 +592,7 @@ class TestDedupeSessionLogEvents:
     def test_handles_empty_list(self, pipe_instance) -> None:
         """Empty event list returns empty list."""
         pipe = pipe_instance
-        result = pipe._dedupe_session_log_events([])
+        result = pipe._session_log_manager.dedupe_events([])
         assert result == []
 
 
@@ -624,7 +624,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._read_session_log_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             assert len(result) == 2
             # Verify conversion happened
@@ -653,7 +653,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("other.txt", b"not jsonl")
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._read_session_log_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             assert result == []
         finally:
@@ -683,7 +683,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._read_session_log_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             assert len(result) == 2
             assert result[0]["message"] == "valid"
@@ -716,7 +716,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._read_session_log_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             assert len(result) == 2
         finally:
@@ -745,7 +745,7 @@ class TestMergeIntegration:
 
         # Merge them
         merged = existing + new_events
-        merged = pipe._dedupe_session_log_events(merged)
+        merged = pipe._session_log_manager.dedupe_events(merged)
         merged.sort(key=lambda e: e.get("created", 0))
 
         assert len(merged) == 4
@@ -768,7 +768,7 @@ class TestMergeIntegration:
         ]
 
         merged = existing + new_events
-        merged = pipe._dedupe_session_log_events(merged)
+        merged = pipe._session_log_manager.dedupe_events(merged)
         merged.sort(key=lambda e: e.get("created", 0))
 
         assert len(merged) == 2

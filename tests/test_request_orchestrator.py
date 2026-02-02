@@ -825,8 +825,8 @@ async def test_sniff_audio_format_wav():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_wav_like_base64())
 
         async def event_emitter(event):
             pass
@@ -901,8 +901,8 @@ async def test_sniff_audio_format_mp3_id3():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         async def event_emitter(event):
             pass
@@ -977,8 +977,8 @@ async def test_sniff_audio_format_mp3_sync():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp3_sync_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp3_sync_base64())
 
         async def event_emitter(event):
             pass
@@ -1053,8 +1053,8 @@ async def test_sniff_audio_format_m4a():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
 
         async def event_emitter(event):
             pass
@@ -1130,8 +1130,8 @@ async def test_sniff_audio_format_flac():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_flac_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_flac_like_base64())
 
         async def event_emitter(event):
             pass
@@ -1206,8 +1206,8 @@ async def test_sniff_audio_format_ogg():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_ogg_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_ogg_like_base64())
 
         async def event_emitter(event):
             pass
@@ -1282,8 +1282,8 @@ async def test_sniff_audio_format_webm():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_webm_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_webm_like_base64())
 
         async def event_emitter(event):
             pass
@@ -1358,9 +1358,9 @@ async def test_audio_with_explicit_format():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Return generic base64 - sniffing won't find format, but declared format used
-        pipe._read_file_record_base64 = AsyncMock(
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(
             return_value=base64.b64encode(b"some audio data").decode("ascii")
         )
 
@@ -1438,8 +1438,8 @@ async def test_audio_format_allowlist_from_metadata():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(
             return_value=base64.b64encode(b"OggS" + b"\x00" * 28).decode("ascii")
         )
 
@@ -1513,7 +1513,7 @@ async def test_audio_file_not_found_error():
         }
 
         # Mock file not found
-        pipe._get_file_by_id = AsyncMock(return_value=None)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=None)
 
         emitted_events: list[dict] = []
 
@@ -1577,8 +1577,8 @@ async def test_audio_file_encode_error():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "bad_audio"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
 
         emitted_events: list[dict] = []
 
@@ -1641,9 +1641,9 @@ async def test_audio_missing_format_error():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "unknown_audio"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Return data that doesn't match any known signature
-        pipe._read_file_record_base64 = AsyncMock(
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(
             return_value=base64.b64encode(b"random garbage data").decode("ascii")
         )
 
@@ -1716,8 +1716,8 @@ async def test_video_upload_injection():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
         async def event_emitter(event):
             pass
@@ -1783,7 +1783,7 @@ async def test_video_file_not_found_error():
             },
         }
 
-        pipe._get_file_by_id = AsyncMock(return_value=None)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=None)
 
         emitted_events: list[dict] = []
 
@@ -1850,9 +1850,9 @@ async def test_video_infers_mime_type():
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
         mock_file_obj.meta = {"content_type": "video/webm"}
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
-        pipe._infer_file_mime_type = MagicMock(return_value="video/webm")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._multimodal_handler._infer_file_mime_type = MagicMock(return_value="video/webm")
 
         async def event_emitter(event):
             pass
@@ -1919,8 +1919,8 @@ async def test_video_file_encode_error():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "bad_video"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=None)  # Encoding fails
 
         emitted_events: list[dict] = []
 
@@ -2073,8 +2073,8 @@ async def test_endpoint_override_conflict_with_forced_responses():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
         emitted_events: list[dict] = []
 
@@ -3031,9 +3031,9 @@ async def test_decode_base64_prefix_empty_data():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Return empty string - triggers line 147: return b""
-        pipe._read_file_record_base64 = AsyncMock(return_value="")
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="")
 
         emitted_events: list[dict] = []
 
@@ -3096,9 +3096,9 @@ async def test_decode_base64_prefix_invalid_chars():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Return data with invalid characters (Japanese chars have ord > 127)
-        pipe._read_file_record_base64 = AsyncMock(return_value="invalid\u3000base64data")
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="invalid\u3000base64data")
 
         emitted_events: list[dict] = []
 
@@ -3161,10 +3161,10 @@ async def test_decode_base64_prefix_invalid_base64_structure():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Valid base64 chars but structurally wrong (will try fallback decode)
         # Using valid chars but random content that might fail strict decode
-        pipe._read_file_record_base64 = AsyncMock(return_value="AAAA====AAAA")
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="AAAA====AAAA")
 
         emitted_events: list[dict] = []
 
@@ -3233,9 +3233,9 @@ async def test_sniff_audio_format_empty_prefix():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_empty"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # Return None data - this will fail encoding check before sniffing
-        pipe._read_file_record_base64 = AsyncMock(return_value=None)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=None)
 
         emitted_events: list[dict] = []
 
@@ -3387,8 +3387,8 @@ async def test_audio_loop_skips_invalid_file_id():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_audio"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         async def event_emitter(event):
             pass
@@ -3467,8 +3467,8 @@ async def test_video_loop_skips_invalid_file_id():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_video"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
         async def event_emitter(event):
             pass
@@ -3546,8 +3546,8 @@ async def test_csv_set_with_non_string_value():
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         async def event_emitter(event):
             pass
@@ -3623,7 +3623,7 @@ async def test_direct_tool_server_registry_exception():
         def raise_exception(*args, **kwargs):
             raise RuntimeError("Direct tool registry build failed")
 
-        pipe._build_direct_tool_server_registry = raise_exception
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = raise_exception
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -4087,8 +4087,9 @@ async def test_anthropic_prompt_cache_retry():
 
         # Mock both _input_contains_cache_control and _is_anthropic_model_id
         # Using openai/gpt-4o-mini which is in catalog, but mocking it as Anthropic
+        import open_webui_openrouter_pipe.requests.orchestrator as orchestrator_module
         with patch.object(Pipe, "_input_contains_cache_control", return_value=True):
-            with patch.object(Pipe, "_is_anthropic_model_id", return_value=True):
+            with patch.object(orchestrator_module, "_is_anthropic_model_id", return_value=True):
                 with aioresponses() as mock_http:
                     mock_http.post(
                         "https://openrouter.ai/api/v1/responses",
@@ -4197,7 +4198,7 @@ async def test_reasoning_retry_without_reasoning():
                 return True
             return False
 
-        pipe._should_retry_without_reasoning = mock_should_retry
+        pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = mock_should_retry
 
         with aioresponses() as mock_http:
             mock_http.post(

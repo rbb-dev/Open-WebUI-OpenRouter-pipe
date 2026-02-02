@@ -22,6 +22,7 @@ from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -1724,7 +1725,7 @@ async def test_chat_completions_streaming_breaker_open(pipe_instance_async):
     breaker_key = "test_breaker_user"
     # Record enough failures to open the breaker
     for _ in range(10):
-        pipe._record_failure(breaker_key)
+        pipe._circuit_breaker.record_failure(breaker_key)
 
     with aioresponses() as mock_http:
         # Mock won't be called because breaker is open
@@ -2118,7 +2119,7 @@ async def test_chat_completions_nonstreaming_breaker_open(pipe_instance_async):
     breaker_key = "test_ns_breaker"
     # Open the breaker by recording failures
     for _ in range(10):
-        pipe._record_failure(breaker_key)
+        pipe._circuit_breaker.record_failure(breaker_key)
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -3729,8 +3730,8 @@ def test_force_chat_completions_models_matches_slash_glob(pipe_instance) -> None
             "FORCE_CHAT_COMPLETIONS_MODELS": "anthropic/*",
         }
     )
-    assert pipe._select_llm_endpoint("anthropic/claude-sonnet-4.5", valves=valves) == "chat_completions"
-    assert pipe._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "chat_completions"
+    assert pipe._streaming_handler._select_llm_endpoint("anthropic/claude-sonnet-4.5", valves=valves) == "chat_completions"
+    assert pipe._streaming_handler._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "chat_completions"
 
 
 def test_force_responses_models_overrides_force_chat_models(pipe_instance) -> None:
@@ -3742,8 +3743,8 @@ def test_force_responses_models_overrides_force_chat_models(pipe_instance) -> No
             "FORCE_RESPONSES_MODELS": "anthropic/claude-sonnet-4.5",
         }
     )
-    assert pipe._select_llm_endpoint("anthropic/claude-sonnet-4.5", valves=valves) == "responses"
-    assert pipe._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "responses"
+    assert pipe._streaming_handler._select_llm_endpoint("anthropic/claude-sonnet-4.5", valves=valves) == "responses"
+    assert pipe._streaming_handler._select_llm_endpoint("anthropic.claude-sonnet-4.5", valves=valves) == "responses"
 
 
 def test_responses_payload_to_chat_converts_tools_schema() -> None:
@@ -3960,7 +3961,7 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
         assert url == "/api/v1/files/abc123"
         return "data:application/pdf;base64,QUJD"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe._multimodal_handler, "_inline_internal_file_url", fake_inline)
 
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
@@ -4004,7 +4005,7 @@ async def test_transform_messages_to_input_preserves_annotations() -> None:
     when transforming OpenAI format to Responses API input."""
     pipe = Pipe()
     try:
-        out = await pipe.transform_messages_to_input(
+        out = await transform_messages_to_input(pipe,
             [
                 {"role": "user", "content": "hi"},
                 {
@@ -4320,7 +4321,7 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
         assert url == "/api/v1/files/abc123"
         return "data:application/pdf;base64,QUJD"
 
-    monkeypatch.setattr(pipe, "_inline_internal_file_url", fake_inline)
+    monkeypatch.setattr(pipe._multimodal_handler, "_inline_internal_file_url", fake_inline)
 
     # Mock HTTP at boundary
     with aioresponses() as mock_http:

@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 class ModelCatalogManager:
     """Manages model metadata synchronization from OpenRouter to Open WebUI."""
 
-    @timed
     def __init__(
         self,
         *,
@@ -50,13 +49,7 @@ class ModelCatalogManager:
         multimodal_handler: Any,
         logger: logging.Logger,
     ):
-        """Initialize the catalog manager.
-
-        Args:
-            pipe: Reference to parent Pipe instance (for _create_http_session, _ensure_*_filter_function_id)
-            multimodal_handler: Reference to MultimodalHandler (for _fetch_image_as_data_url, _fetch_maker_profile_image_url)
-            logger: Logger instance
-        """
+        self._pipe = pipe
         self._pipe = pipe
         self._multimodal_handler = multimodal_handler
         self.logger = logger
@@ -176,7 +169,6 @@ class ModelCatalogManager:
             if slug in icon_mapping:
                 continue
 
-            @timed
             def _favicon_url(source_url: str) -> str | None:
                 source_url = (source_url or "").strip()
                 if not source_url.startswith(("http://", "https://")):
@@ -433,10 +425,9 @@ class ModelCatalogManager:
         semaphore = asyncio.Semaphore(10)
         results: dict[str, str] = {}
 
-        @timed
         async def _fetch_maker_profile_image(maker_id: str) -> None:
             async with semaphore:
-                image_url = await self._pipe._fetch_maker_profile_image_url(session, maker_id)
+                image_url = await self._pipe._multimodal_handler._fetch_maker_profile_image_url(session, maker_id)
                 if image_url:
                     results[maker_id] = image_url
 
@@ -568,10 +559,9 @@ class ModelCatalogManager:
                     url_to_data: dict[str, str] = {}
                     fetch_semaphore = asyncio.Semaphore(10)
 
-                    @timed
                     async def _fetch_image_data_url(url: str) -> None:
                         async with fetch_semaphore:
-                            data_url = await self._pipe._fetch_image_as_data_url(session, url)
+                            data_url = await self._pipe._multimodal_handler._fetch_image_as_data_url(session, url)
                             if data_url:
                                 url_to_data[url] = data_url
 
@@ -596,7 +586,7 @@ class ModelCatalogManager:
             ors_filter_function_id: str | None = None
             if valves.AUTO_ATTACH_ORS_FILTER or valves.AUTO_INSTALL_ORS_FILTER:
                 try:
-                    ors_filter_function_id = await run_in_threadpool(self._pipe._ensure_ors_filter_function_id)
+                    ors_filter_function_id = await run_in_threadpool(self._pipe._ensure_filter_manager().ensure_ors_filter_function_id)
                 except Exception as exc:
                     self.logger.debug("OpenRouter Search filter ensure failed: %s", exc)
                     ors_filter_function_id = None
@@ -608,7 +598,7 @@ class ModelCatalogManager:
             ):
                 try:
                     direct_uploads_filter_function_id = await run_in_threadpool(
-                        self._pipe._ensure_direct_uploads_filter_function_id
+                        self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id
                     )
                 except Exception as exc:
                     self.logger.debug("OpenRouter Direct Uploads filter ensure failed: %s", exc)
@@ -675,7 +665,7 @@ class ModelCatalogManager:
                 if provider_map:
                     try:
                         provider_routing_filter_map = await run_in_threadpool(
-                            self._pipe._ensure_provider_routing_filters,
+                            self._pipe._ensure_filter_manager().ensure_provider_routing_filters,
                             admin_routing_models,
                             user_routing_models,
                             provider_map,
@@ -700,7 +690,6 @@ class ModelCatalogManager:
                         ", ".join(sorted(provider_routing_filter_map.keys())),
                     )
 
-            @timed
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
                 name = model.get("name")
@@ -711,7 +700,6 @@ class ModelCatalogManager:
 
                 openwebui_model_id = f"{pipe_identifier}.{openrouter_id}"
 
-                @timed
                 def _safe_supports(feature: str) -> bool:
                     try:
                         return bool(ModelFamily.supports(feature, openrouter_id))
@@ -906,7 +894,6 @@ class ModelCatalogManager:
         if disable_description_updates:
             update_descriptions = False
 
-        @timed
         def _ensure_pipe_meta(meta_dict: dict) -> dict:
             pipe_meta = meta_dict.get("openrouter_pipe")
             if isinstance(pipe_meta, dict):
@@ -915,7 +902,6 @@ class ModelCatalogManager:
             meta_dict["openrouter_pipe"] = pipe_meta
             return pipe_meta
 
-        @timed
         def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
             current = meta_dict.get(key, [])
             if not isinstance(current, list):
@@ -926,7 +912,6 @@ class ModelCatalogManager:
                     normalized.append(entry)
             return normalized
 
-        @timed
         def _dedupe_preserve_order(entries: list[str]) -> list[str]:
             seen: set[str] = set()
             deduped: list[str] = []
@@ -937,7 +922,6 @@ class ModelCatalogManager:
                 deduped.append(entry)
             return deduped
 
-        @timed
         def _apply_filter_ids(meta_dict: dict) -> bool:
             if not auto_attach_filter or not filter_function_id:
                 return False
@@ -965,7 +949,6 @@ class ModelCatalogManager:
             meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
             return True
 
-        @timed
         def _apply_direct_uploads_filter_ids(meta_dict: dict) -> bool:
             if not auto_attach_direct_uploads_filter or not direct_uploads_filter_function_id:
                 return False
@@ -996,7 +979,6 @@ class ModelCatalogManager:
             meta_dict["openrouter_pipe"] = pipe_meta
             return True
 
-        @timed
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
             if not auto_default_filter or not filter_function_id or not filter_supported:
                 return False
@@ -1043,7 +1025,6 @@ class ModelCatalogManager:
             meta_dict["openrouter_pipe"] = pipe_meta
             return True
 
-        @timed
         def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
             """Attach provider routing filter to model if configured."""
             # DEBUG: Log entry into attachment function
