@@ -166,14 +166,14 @@ class TestEndpointSelection:
     def test_select_llm_endpoint_default_responses(self, pipe_instance):
         """Test default endpoint selection returns responses."""
         pipe = pipe_instance
-        result = pipe._select_llm_endpoint("openai/gpt-4o", valves=pipe.valves)
+        result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=pipe.valves)
         assert result == "responses"
 
     def test_select_llm_endpoint_force_chat_completions(self, pipe_instance):
         """Test endpoint selection with FORCE_CHAT_COMPLETIONS_MODELS."""
         pipe = pipe_instance
         valves = pipe.valves.model_copy(update={"FORCE_CHAT_COMPLETIONS_MODELS": "openai/gpt*"})
-        result = pipe._select_llm_endpoint("openai/gpt-4o", valves=valves)
+        result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=valves)
         assert result == "chat_completions"
 
     def test_select_llm_endpoint_force_responses(self, pipe_instance):
@@ -183,25 +183,25 @@ class TestEndpointSelection:
             "FORCE_RESPONSES_MODELS": "anthropic/*",
             "DEFAULT_LLM_ENDPOINT": "chat_completions",
         })
-        result = pipe._select_llm_endpoint("anthropic/claude-3", valves=valves)
+        result = pipe._streaming_handler._select_llm_endpoint("anthropic/claude-3", valves=valves)
         assert result == "responses"
 
     def test_select_llm_endpoint_with_forced_flag(self, pipe_instance):
         """Test _select_llm_endpoint_with_forced returns forced flag."""
         pipe = pipe_instance
         valves = pipe.valves.model_copy(update={"FORCE_RESPONSES_MODELS": "openai/*"})
-        endpoint, forced = pipe._select_llm_endpoint_with_forced("openai/gpt-4o", valves=valves)
+        endpoint, forced = pipe._streaming_handler._select_llm_endpoint_with_forced("openai/gpt-4o", valves=valves)
         assert endpoint == "responses"
         assert forced is True
 
-        endpoint, forced = pipe._select_llm_endpoint_with_forced("anthropic/claude-3", valves=valves)
+        endpoint, forced = pipe._streaming_handler._select_llm_endpoint_with_forced("anthropic/claude-3", valves=valves)
         assert forced is False
 
     def test_select_llm_endpoint_default_chat_completions(self, pipe_instance):
         """Test endpoint selection with DEFAULT_LLM_ENDPOINT=chat_completions."""
         pipe = pipe_instance
         valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
-        result = pipe._select_llm_endpoint("openai/gpt-4o", valves=valves)
+        result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=valves)
         assert result == "chat_completions"
 
     def test_select_llm_endpoint_debug_logging_responses(self, pipe_instance, caplog):
@@ -210,7 +210,7 @@ class TestEndpointSelection:
         import logging
         with caplog.at_level(logging.DEBUG):
             pipe.logger.setLevel(logging.DEBUG)
-            result = pipe._select_llm_endpoint("openai/gpt-4o", valves=pipe.valves)
+            result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=pipe.valves)
             assert result in ("responses", "chat_completions")
 
     def test_select_llm_endpoint_debug_logging_chat(self, pipe_instance, caplog):
@@ -220,7 +220,7 @@ class TestEndpointSelection:
         import logging
         with caplog.at_level(logging.DEBUG):
             pipe.logger.setLevel(logging.DEBUG)
-            result = pipe._select_llm_endpoint("openai/gpt-4o", valves=valves)
+            result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=valves)
             assert result == "chat_completions"
 
 
@@ -358,7 +358,7 @@ class TestStreamingLoopBasic:
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
         with pytest.raises(RuntimeError, match="HTTP session is required"):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -385,7 +385,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -415,7 +415,7 @@ class TestStreamingLoopBasic:
 
         import logging
         with caplog.at_level(logging.ERROR):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -446,7 +446,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -479,7 +479,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -511,7 +511,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -541,7 +541,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -574,7 +574,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -614,7 +614,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -653,7 +653,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -682,7 +682,7 @@ class TestStreamingLoopBasic:
             emitted.append(event)
 
         with pytest.raises(asyncio.CancelledError):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -713,7 +713,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -746,7 +746,7 @@ class TestStreamingLoopBasic:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -818,7 +818,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -854,7 +854,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -898,7 +898,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -942,7 +942,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -987,7 +987,7 @@ class TestToolPassthrough:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 failing_emitter,
@@ -1044,7 +1044,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1087,7 +1087,7 @@ class TestToolPassthrough:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1139,7 +1139,7 @@ class TestWebSearchStatus:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1181,7 +1181,7 @@ class TestWebSearchStatus:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1223,7 +1223,7 @@ class TestWebSearchStatus:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1272,7 +1272,7 @@ class TestCitationAnnotations:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1319,7 +1319,7 @@ class TestCitationAnnotations:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1366,7 +1366,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1411,7 +1411,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1447,7 +1447,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1485,7 +1485,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1521,7 +1521,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1559,7 +1559,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1603,7 +1603,7 @@ class TestImageGeneration:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1642,7 +1642,7 @@ class TestImageGeneration:
 
         import logging
         with caplog.at_level(logging.ERROR):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -1682,7 +1682,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1725,7 +1725,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1766,7 +1766,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -1798,7 +1798,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1834,7 +1834,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1869,7 +1869,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1901,7 +1901,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1929,7 +1929,7 @@ class TestReasoningThinking:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             None,
@@ -1962,7 +1962,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -1995,7 +1995,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -2030,7 +2030,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -2065,7 +2065,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -2097,7 +2097,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -2140,7 +2140,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -2169,7 +2169,7 @@ class TestReasoningThinking:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2211,7 +2211,7 @@ class TestSurrogatePairHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2243,7 +2243,7 @@ class TestSurrogatePairHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2274,7 +2274,7 @@ class TestSurrogatePairHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2322,7 +2322,7 @@ class TestToolListHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2358,7 +2358,7 @@ class TestToolListHandling:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -2395,7 +2395,7 @@ class TestToolListHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2423,7 +2423,7 @@ class TestNonStreamingLoop:
         body = ResponsesBody(model="test/model", input=[], stream=False)
 
         with pytest.raises(RuntimeError, match="HTTP session is required"):
-            await pipe._run_nonstreaming_loop(
+            await pipe._streaming_handler._run_nonstreaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -2451,7 +2451,7 @@ class TestNonStreamingLoop:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_nonstreaming_loop(
+        result = await pipe._streaming_handler._run_nonstreaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2497,7 +2497,7 @@ class TestNonStreamingLoop:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_nonstreaming_loop(
+        result = await pipe._streaming_handler._run_nonstreaming_loop(
             body,
             valves,
             emitter,
@@ -2538,7 +2538,7 @@ class TestNonStreamingLoop:
 
         monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", _make_fake_nonstream(events))
 
-        result = await pipe._run_nonstreaming_loop(
+        result = await pipe._streaming_handler._run_nonstreaming_loop(
             body,
             valves,
             None,
@@ -2587,7 +2587,7 @@ class TestFunctionCalls:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2623,7 +2623,7 @@ class TestFunctionCalls:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2655,7 +2655,7 @@ class TestFunctionCalls:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -2693,7 +2693,7 @@ class TestFunctionCalls:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2733,7 +2733,7 @@ class TestFunctionCalls:
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -2778,7 +2778,7 @@ class TestOutputItemTypes:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2815,7 +2815,7 @@ class TestOutputItemTypes:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2852,7 +2852,7 @@ class TestOutputItemTypes:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2889,7 +2889,7 @@ class TestOutputItemTypes:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2926,7 +2926,7 @@ class TestOutputItemTypes:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -2985,15 +2985,15 @@ class TestPersistReasoning:
                 "payload": payload,
             }
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
-        monkeypatch.setattr(pipe, "_db_persist", mock_persist)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -3018,9 +3018,9 @@ class TestPersistReasoning:
         async def mock_delete(refs):
             deleted_refs.extend(refs)
 
-        monkeypatch.setattr(pipe, "_delete_artifacts", mock_delete)
+        monkeypatch.setattr(pipe._artifact_store, "_delete_artifacts", mock_delete)
 
-        await pipe._cleanup_replayed_reasoning(body, valves)
+        await pipe._streaming_handler._cleanup_replayed_reasoning(body, valves)
 
         assert deleted_refs == ["ulid-1", "ulid-2"]
         assert body._replayed_reasoning_refs == []  # type: ignore
@@ -3038,9 +3038,9 @@ class TestPersistReasoning:
         async def mock_delete(refs):
             deleted_refs.extend(refs)
 
-        monkeypatch.setattr(pipe, "_delete_artifacts", mock_delete)
+        monkeypatch.setattr(pipe._artifact_store, "_delete_artifacts", mock_delete)
 
-        await pipe._cleanup_replayed_reasoning(body, valves)
+        await pipe._streaming_handler._cleanup_replayed_reasoning(body, valves)
 
         assert deleted_refs == []
 
@@ -3074,7 +3074,7 @@ class TestAPIErrorHandling:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -3134,13 +3134,13 @@ class TestLoopLimitAndFunctionExecution:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -3210,7 +3210,7 @@ class TestLoopLimitAndFunctionExecution:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": '{"result": "sunny"}'}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         persisted_rows: list[dict] = []
         async def mock_persist(rows):
@@ -3228,14 +3228,14 @@ class TestLoopLimitAndFunctionExecution:
                 "payload": payload,
             }
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
-        monkeypatch.setattr(pipe, "_db_persist", mock_persist)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -3261,10 +3261,10 @@ class TestValidateBase64Size:
         pipe = pipe_instance
 
         small_b64 = base64.b64encode(b"small").decode()
-        assert pipe._validate_base64_size(small_b64) is True
+        assert pipe._multimodal_handler._validate_base64_size(small_b64) is True
 
         large_b64 = base64.b64encode(b"x" * 1000).decode()
-        result = pipe._validate_base64_size(large_b64)
+        result = pipe._multimodal_handler._validate_base64_size(large_b64)
         assert isinstance(result, bool)
 
 
@@ -3294,7 +3294,7 @@ class TestFinalStatus:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -3340,7 +3340,7 @@ class TestResponseOutputEdgeCases:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -3382,7 +3382,7 @@ class TestResponseOutputEdgeCases:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -3601,7 +3601,7 @@ async def test_completion_events_preserve_streamed_text(monkeypatch, pipe_instan
     async def emitter(event):
         emitted.append(event)
 
-    output = await pipe._run_streaming_loop(
+    output = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -3648,7 +3648,7 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch, pipe_instan
     async def emitter(event):
         emitted.append(event)
 
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -3777,7 +3777,7 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
     async def emitter(event):
         emitted.append(event)
 
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -3835,7 +3835,7 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
         emitted.append(event)
 
     # Call _run_streaming_loop to test event emission
-    output = await pipe._run_streaming_loop(
+    output = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -3919,7 +3919,7 @@ async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkey
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -3962,7 +3962,7 @@ async def test_thinking_output_mode_status_suppresses_reasoning_events(monkeypat
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4003,7 +4003,7 @@ async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mod
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4072,7 +4072,7 @@ async def test_reasoning_summary_part_done_does_not_replay_after_incremental(mon
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4142,7 +4142,7 @@ async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch, p
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4193,7 +4193,7 @@ async def test_function_call_status_invalid_json_arguments_does_not_crash(monkey
     async def emitter(event):
         emitted.append(event)
 
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4213,7 +4213,7 @@ async def test_legacy_tool_execution_invalid_arguments_returns_failed_output(pip
     calls = [{"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{"}]
     tools = {"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}}
 
-    outputs = await pipe._execute_function_calls_legacy(calls, tools)
+    outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
     assert outputs and outputs[0]["type"] == "function_call_output"
     assert "Invalid arguments" in outputs[0]["output"]
@@ -4295,7 +4295,7 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._run_streaming_loop(
+    await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,
@@ -4376,7 +4376,7 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
         emitted_events.append(event)
 
     # Run streaming loop (exercises real queue handling)
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
@@ -4448,7 +4448,7 @@ async def test_bounded_queue_configuration_affects_streaming(monkeypatch):
         emitted_events.append(event)
 
     # Run streaming loop with bounded queues
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
@@ -4513,7 +4513,7 @@ async def test_event_queue_backlog_warning_triggers_during_streaming(monkeypatch
         emitted_events.append(event)
 
     # Run streaming with potential for backlog
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
@@ -4578,7 +4578,7 @@ async def test_queue_handles_rapid_start_stop_cycles(monkeypatch):
         async def capture_emitter(event):
             emitted_events.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body=ResponsesBody(
                 model="test",
                 input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": f"Cycle {cycle}"}]}],
@@ -4623,7 +4623,7 @@ async def test_try_put_middleware_stream_nowait_does_not_raise_when_full(pipe_in
     stream_queue: asyncio.Queue[dict | str | None] = asyncio.Queue(maxsize=1)
     stream_queue.put_nowait({"event": {"type": "notification", "data": {}}})
 
-    pipe._try_put_middleware_stream_nowait(stream_queue, None)
+    pipe._event_emitter_handler._try_put_middleware_stream_nowait(stream_queue, None)
 
     assert stream_queue.qsize() == 1
 
@@ -4647,7 +4647,7 @@ async def test_put_middleware_stream_item_times_out_when_full(pipe_instance_asyn
     stream_queue.put_nowait({"event": {"type": "notification", "data": {}}})
 
     with pytest.raises(asyncio.TimeoutError):
-        await pipe._put_middleware_stream_item(
+        await pipe._event_emitter_handler._put_middleware_stream_item(
             cast(Any, job),
             stream_queue,
             {"event": {"type": "status"}},
@@ -4688,7 +4688,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -4731,7 +4731,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -4759,9 +4759,9 @@ class TestStreamingCoreAdditionalCoverage:
         def mock_parse_data_url(data_str):
             return {"data": b"test", "mime_type": "image/png"}
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload_to_storage)
-        monkeypatch.setattr(pipe, "_parse_data_url", mock_parse_data_url)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload_to_storage)
+        monkeypatch.setattr(pipe._multimodal_handler, "_parse_data_url", mock_parse_data_url)
 
         data_url = f"data:image/png;base64,{sample_image_base64}"
         events = [
@@ -4778,7 +4778,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -4810,7 +4810,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -4848,7 +4848,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -4872,8 +4872,8 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_upload_to_storage(*args, **kwargs):
             return "stored-file-jpg"
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload_to_storage)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload_to_storage)
 
         events = [
             {
@@ -4894,7 +4894,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -4939,7 +4939,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -4974,7 +4974,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5009,7 +5009,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -5041,7 +5041,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5076,7 +5076,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5120,7 +5120,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5165,7 +5165,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5200,7 +5200,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -5236,7 +5236,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -5275,7 +5275,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5317,7 +5317,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5364,7 +5364,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -5409,7 +5409,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         import logging
         # The test verifies the code path runs without crashing
-        result = await pipe._run_nonstreaming_loop(
+        result = await pipe._streaming_handler._run_nonstreaming_loop(
             body,
             valves,
             None,
@@ -5461,13 +5461,13 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -5502,7 +5502,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_persist_log(*args, **kwargs):
             persisted_logs.append(kwargs)
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_log)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -5510,7 +5510,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         # The CancelledError is re-raised after cleanup
         with pytest.raises(asyncio.CancelledError):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -5539,11 +5539,11 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_persist_log_raising(*args, **kwargs):
             raise Exception("DB error")
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_log_raising)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_log_raising)
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -5590,7 +5590,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -5642,7 +5642,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5698,7 +5698,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5754,7 +5754,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -5847,16 +5847,16 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_execute(calls, registry):
             return [{"type": "unknown_type_for_normalization", "call_id": "call-1", "output": "ok"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         def mock_make_db_row(*args, **kwargs):
             return None  # Always return None to trigger warning
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 None,
@@ -5876,8 +5876,8 @@ class TestStreamingCoreAdditionalCoverage:
         def mock_validate_size(data):
             return False
 
-        # Monkeypatch on streaming_handler using setattr
-        pipe._streaming_handler._validate_base64_size = mock_validate_size
+        # Monkeypatch on multimodal_handler using setattr
+        pipe._multimodal_handler._validate_base64_size = mock_validate_size
 
         events = [
             {
@@ -5897,7 +5897,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5929,7 +5929,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -5971,7 +5971,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        await pipe._run_streaming_loop(
+        await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -6023,7 +6023,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -6063,7 +6063,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -6111,7 +6111,7 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -6176,13 +6176,13 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_persist_log(valves_arg, **kwargs):
             persisted_logs.append(kwargs)
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_log)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6238,13 +6238,13 @@ class TestStreamingCoreAdditionalCoverage:
         async def mock_persist_log(valves_arg, **kwargs):
             persisted_logs.append(kwargs)
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_log)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -6311,7 +6311,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6380,7 +6380,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6434,7 +6434,7 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6641,7 +6641,7 @@ class TestToolPassthroughExceptionHandling:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 failing_emitter,
@@ -6699,7 +6699,7 @@ class TestNonStreamingToolPassthroughException:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_nonstreaming_loop(
+            result = await pipe._streaming_handler._run_nonstreaming_loop(
                 body,
                 valves,
                 None,
@@ -6777,7 +6777,7 @@ class TestPersistToolsNormalizationFailure:
             # Return function_call_output with an unusual type that will fail normalization
             return [{"type": "unknown_unsupported_type", "call_id": "call-1", "output": '{"result": "sunny"}'}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         persisted_rows: list[dict] = []
         async def mock_persist(rows):
@@ -6799,8 +6799,8 @@ class TestPersistToolsNormalizationFailure:
                 "payload": payload,
             }
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
-        monkeypatch.setattr(pipe, "_db_persist", mock_persist)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -6808,7 +6808,7 @@ class TestPersistToolsNormalizationFailure:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -6854,7 +6854,7 @@ class TestImagePersistenceWithStatusMessages:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6894,7 +6894,7 @@ class TestImagePersistenceWithStatusMessages:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6938,7 +6938,7 @@ class TestAppendOutputBlockEmpty:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -6974,7 +6974,7 @@ class TestNormalizeSurrogateEmptyCombined:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -7010,7 +7010,7 @@ class TestExtractReasoningTextNonDict:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7054,7 +7054,7 @@ class TestExtractReasoningTextFromItemNonDict:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7090,7 +7090,7 @@ class TestAppendReasoningTextEmpty:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7126,7 +7126,7 @@ class TestThinkingTasksDelayedStatus:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -7186,7 +7186,7 @@ class TestToolPassthroughStreamingFirstDelta:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7249,7 +7249,7 @@ class TestToolPassthroughNameSent:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7293,7 +7293,7 @@ class TestFunctionCallRawTextConversion:
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -7351,13 +7351,13 @@ class TestMaxFunctionCallLoopsTemplateException:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7391,7 +7391,7 @@ class TestSessionLogSegmentPersistException:
         async def mock_persist_session_log(*args, **kwargs):
             raise RuntimeError("Simulated session log persist failure")
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_session_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_session_log)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -7399,7 +7399,7 @@ class TestSessionLogSegmentPersistException:
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -7437,7 +7437,7 @@ class TestSegmentStatusCancelled:
             emitted.append(event)
 
         with pytest.raises(asyncio.CancelledError):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -7467,7 +7467,7 @@ class TestSegmentStatusError:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -7519,7 +7519,7 @@ class TestReasoningStatusReturnEarly:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7568,7 +7568,7 @@ class TestNonStreamingToolCallsNonDictItem:
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_nonstreaming_loop(
+            result = await pipe._streaming_handler._run_nonstreaming_loop(
                 body,
                 valves,
                 None,
@@ -7619,7 +7619,7 @@ class TestAnnotationsAndReasoningDetailsExtraction:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -7692,7 +7692,7 @@ class TestPersistToolsNormalizationReturnsNone:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": '{"result": "sunny"}'}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         persisted_rows: list[dict] = []
         async def mock_persist(rows):
@@ -7703,8 +7703,8 @@ class TestPersistToolsNormalizationReturnsNone:
         def mock_make_db_row(chat_id, message_id, model_id, payload):
             return None  # Always return None to trigger the warning
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
-        monkeypatch.setattr(pipe, "_db_persist", mock_persist)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -7712,7 +7712,7 @@ class TestPersistToolsNormalizationReturnsNone:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -7786,7 +7786,7 @@ class TestReasoningStatusEmitGuard:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -7841,14 +7841,14 @@ class TestImagePersistenceExtConversion:
             uploaded_files.append({"filename": filename, "mime_type": mime_type})
             return "file-123"
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -7887,7 +7887,7 @@ class TestMaterializeImageFromStr:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -7921,7 +7921,7 @@ class TestMaterializeImageFromStr:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -7963,9 +7963,9 @@ class TestMaterializeImageFromStr:
         async def mock_resolve_storage_context(request_context, user_obj):
             return (None, None)
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -7999,7 +7999,7 @@ class TestMaterializeImageFromStr:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8047,9 +8047,9 @@ class TestMaterializeImageEntry:
         async def mock_resolve_storage_context(request_context, user_obj):
             return (None, None)
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8086,7 +8086,7 @@ class TestMaterializeImageEntry:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8121,7 +8121,7 @@ class TestMaterializeImageEntry:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8156,7 +8156,7 @@ class TestSurrogateNormalization:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -8189,7 +8189,7 @@ class TestExtractReasoningText:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             None,
@@ -8223,7 +8223,7 @@ class TestExtractReasoningTextFromItem:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8260,7 +8260,7 @@ class TestAppendReasoningText:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -8294,7 +8294,7 @@ class TestLaterTimeout:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -8349,13 +8349,13 @@ class TestRawArgumentsFallback:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         tool_registry = {
             "test_tool": {"callable": AsyncMock(return_value="ok"), "spec": {"name": "test_tool"}},
         }
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             None,
@@ -8407,7 +8407,7 @@ class TestToolCallsPayloadNonDict:
             emitted.append(event)
 
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -8463,7 +8463,7 @@ class TestNonStreamingToolCallsException:
         import logging
         with caplog.at_level(logging.WARNING):
             with patch("json.dumps", side_effect=failing_dumps):
-                result = await pipe._run_streaming_loop(
+                result = await pipe._streaming_handler._run_streaming_loop(
                     body,
                     valves,
                     None,
@@ -8537,7 +8537,7 @@ class TestPersistToolsNormalizationNone:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": '{"result": "sunny"}'}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         # Mock normalize to return None
         from open_webui_openrouter_pipe.storage import persistence
@@ -8567,8 +8567,8 @@ class TestPersistToolsNormalizationNone:
                 "payload": payload,
             }
 
-        monkeypatch.setattr(pipe, "_make_db_row", mock_make_db_row)
-        monkeypatch.setattr(pipe, "_db_persist", mock_persist)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -8576,7 +8576,7 @@ class TestPersistToolsNormalizationNone:
 
         import logging
         with caplog.at_level(logging.WARNING):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -8638,7 +8638,7 @@ class TestLoopLimitTemplateException:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         # Make _render_error_template raise an exception on first call to exercise
         # the exception handler at lines 1577-1578
@@ -8663,7 +8663,7 @@ class TestLoopLimitTemplateException:
             emitted.append(event)
 
         # The test should complete without raising, exercising the exception handler
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -8697,7 +8697,7 @@ class TestSessionLogSegmentStatus:
         async def mock_persist_session_log(valves, **kwargs):
             session_logs.append(kwargs)
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_session_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_session_log)
 
         async def cancelling_stream(self, session, request_body, **_kwargs):
             yield {"type": "response.output_text.delta", "delta": "Hello"}
@@ -8711,7 +8711,7 @@ class TestSessionLogSegmentStatus:
 
         # CancelledError should propagate
         with pytest.raises(asyncio.CancelledError):
-            await pipe._run_streaming_loop(
+            await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 emitter,
@@ -8746,9 +8746,9 @@ class TestSessionLogSegmentStatus:
         async def mock_persist_session_log(valves, **kwargs):
             session_logs.append(kwargs)
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", mock_persist_session_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_session_log)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8783,11 +8783,11 @@ class TestSessionLogPersistException:
         async def failing_persist_session_log(valves, **kwargs):
             raise Exception("Simulated DB error")
 
-        monkeypatch.setattr(pipe, "_persist_session_log_segment_to_db", failing_persist_session_log)
+        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", failing_persist_session_log)
 
         import logging
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
                 None,
@@ -8849,15 +8849,15 @@ class TestDataUrlImagePersistence:
         async def mock_emit_status(emitter, msg, done=False):
             status_calls.append((msg, done))
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload)
-        monkeypatch.setattr(pipe, "_emit_status", mock_emit_status)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload)
+        monkeypatch.setattr(pipe._event_emitter_handler, "_emit_status", mock_emit_status)
 
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -8908,10 +8908,10 @@ class TestImagePersistenceFailFallback:
         async def mock_upload_fail(request, user, file_data, filename, mime_type, **kwargs):
             return None  # Upload fails
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload_fail)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload_fail)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -8974,11 +8974,11 @@ class TestImageB64JsonPersistence:
         async def mock_emit_status(emitter, msg, done=False):
             pass
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload)
-        monkeypatch.setattr(pipe, "_emit_status", mock_emit_status)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload)
+        monkeypatch.setattr(pipe._event_emitter_handler, "_emit_status", mock_emit_status)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -9033,11 +9033,11 @@ class TestRawBase64Persistence:
         async def mock_emit_status(emitter, msg, done=False):
             pass
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload)
-        monkeypatch.setattr(pipe, "_emit_status", mock_emit_status)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload)
+        monkeypatch.setattr(pipe._event_emitter_handler, "_emit_status", mock_emit_status)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -9081,9 +9081,9 @@ class TestValidateBase64SizeFails:
         def mock_validate(b64_str):
             return False  # Size validation fails
 
-        monkeypatch.setattr(pipe, "_validate_base64_size", mock_validate)
+        monkeypatch.setattr(pipe._multimodal_handler, "_validate_base64_size", mock_validate)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -9121,7 +9121,7 @@ class TestAppendOutputBlockEmptySnippet:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -9156,7 +9156,7 @@ class TestLaterTimeoutWithDelayedStream:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             emitter,
@@ -9220,7 +9220,7 @@ class TestToolCallsPayloadDebugLogging:
             emitted.append(event)
 
         with caplog.at_level(logging.DEBUG):
-            result = await pipe._run_streaming_loop(
+            result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 valves,
                 emitter,
@@ -9266,7 +9266,7 @@ class TestRawArgumentsNonJsonNonString:
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
 
-        monkeypatch.setattr(pipe, "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         tool_registry = {
             "test_tool": {"callable": AsyncMock(return_value="ok"), "spec": {"name": "test_tool"}},
@@ -9276,7 +9276,7 @@ class TestRawArgumentsNonJsonNonString:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -9333,7 +9333,7 @@ class TestExtractReasoningFromNonDictEvent:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -9373,7 +9373,7 @@ class TestEmptyReasoningDelta:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             valves,
             emitter,
@@ -9406,7 +9406,7 @@ class TestNormalizeSurrogateEmpty:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,
@@ -9459,11 +9459,11 @@ class TestJpgMimeTypeConversion:
         async def mock_emit_status(emitter, msg, done=False):
             pass
 
-        monkeypatch.setattr(pipe, "_resolve_storage_context", mock_resolve_storage_context)
-        monkeypatch.setattr(pipe, "_upload_to_owui_storage", mock_upload)
-        monkeypatch.setattr(pipe, "_emit_status", mock_emit_status)
+        monkeypatch.setattr(pipe._multimodal_handler, "_resolve_storage_context", mock_resolve_storage_context)
+        monkeypatch.setattr(pipe._multimodal_handler, "_upload_to_owui_storage", mock_upload)
+        monkeypatch.setattr(pipe._event_emitter_handler, "_emit_status", mock_emit_status)
 
-        result = await pipe._run_streaming_loop(
+        result = await pipe._streaming_handler._run_streaming_loop(
             body,
             pipe.valves,
             None,

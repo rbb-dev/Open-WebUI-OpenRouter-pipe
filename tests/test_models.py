@@ -22,6 +22,11 @@ import pytest
 from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.storage.multimodal import (
+    _extract_openrouter_og_image,
+    _guess_image_mime_type,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +69,7 @@ def test_build_icon_mapping_with_protocol_relative_url(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "https://cdn.example.com/icon.png"
 
 
@@ -83,7 +88,7 @@ def test_build_icon_mapping_with_bare_path(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "https://openrouter.ai/images/icon.png"
 
 
@@ -102,7 +107,7 @@ def test_build_icon_mapping_with_string_icon(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "https://example.com/icon.png"
 
 
@@ -118,7 +123,7 @@ def test_build_icon_mapping_item_level_icon_fallback(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "https://example.com/fallback.png"
 
 
@@ -134,7 +139,7 @@ def test_build_icon_mapping_item_level_string_icon(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "https://example.com/string-icon.png"
 
 
@@ -153,7 +158,7 @@ def test_build_icon_mapping_favicon_from_base_url(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" in icon_mapping
     assert "gstatic.com/faviconV2" in icon_mapping["test/model"]
     assert "api.provider.com" in icon_mapping["test/model"]
@@ -174,7 +179,7 @@ def test_build_icon_mapping_favicon_from_status_page_url(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" in icon_mapping
     assert "status.provider.com" in icon_mapping["test/model"]
 
@@ -196,7 +201,7 @@ def test_build_icon_mapping_favicon_from_data_policy_urls(pipe_instance) -> None
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" in icon_mapping
 
     # Also test privacy URL
@@ -214,7 +219,7 @@ def test_build_icon_mapping_favicon_from_data_policy_urls(pipe_instance) -> None
             }
         ]
     }
-    icon_mapping2 = pipe._build_icon_mapping(frontend_data2)
+    icon_mapping2 = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data2)
     assert "test/model2" in icon_mapping2
 
 
@@ -234,7 +239,7 @@ def test_build_icon_mapping_skips_invalid_entries(pipe_instance) -> None:
             },
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert len(icon_mapping) == 1
     assert "valid/model" in icon_mapping
 
@@ -254,7 +259,7 @@ def test_build_icon_mapping_data_image_url_passthrough(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["test/model"] == "data:image/png;base64,ABC123"
 
 
@@ -269,7 +274,7 @@ def test_build_icon_mapping_skips_no_icon_or_fallback(pipe_instance) -> None:
             }
         ]
     }
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert "test/model" not in icon_mapping
 
 
@@ -281,10 +286,10 @@ def test_build_icon_mapping_skips_no_icon_or_fallback(pipe_instance) -> None:
 def test_build_web_search_support_mapping_empty_cases(pipe_instance) -> None:
     """Returns empty dict for None, non-dict, or missing data."""
     pipe = pipe_instance
-    assert pipe._build_web_search_support_mapping(None) == {}
-    assert pipe._build_web_search_support_mapping("not a dict") == {}
-    assert pipe._build_web_search_support_mapping({}) == {}
-    assert pipe._build_web_search_support_mapping({"data": "not a list"}) == {}
+    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping(None) == {}
+    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping("not a dict") == {}
+    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping({}) == {}
+    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping({"data": "not a list"}) == {}
 
 
 def test_build_web_search_support_mapping_skips_invalid_entries(pipe_instance) -> None:
@@ -301,7 +306,7 @@ def test_build_web_search_support_mapping_skips_invalid_entries(pipe_instance) -
             {"slug": "non-dict-endpoint", "endpoint": "string"},
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {}
 
 
@@ -320,7 +325,7 @@ def test_build_web_search_support_mapping_web_search_options_parameter(pipe_inst
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"test/model": True}
 
 
@@ -339,7 +344,7 @@ def test_build_web_search_support_mapping_whitespace_handling(pipe_instance) -> 
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"test/model": True}
 
 
@@ -358,7 +363,7 @@ def test_build_web_search_support_mapping_supported_parameters_not_list(pipe_ins
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"test/model": True}
 
 
@@ -377,7 +382,7 @@ def test_build_web_search_support_mapping_non_string_parameter_entries(pipe_inst
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {}
 
 
@@ -396,7 +401,7 @@ def test_build_web_search_support_mapping_features_not_dict(pipe_instance) -> No
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"test/model": True}
 
 
@@ -415,7 +420,7 @@ def test_build_web_search_support_mapping_pricing_not_dict(pipe_instance) -> Non
             }
         ]
     }
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"test/model": True}
 
 
@@ -437,7 +442,7 @@ async def test_fetch_frontend_model_catalog_success(pipe_instance_async) -> None
         )
         session = pipe._create_http_session()
         try:
-            result = await pipe._fetch_frontend_model_catalog(session)
+            result = await pipe._ensure_catalog_manager()._fetch_frontend_model_catalog(session)
             assert result == {"data": [{"slug": "test/model"}]}
         finally:
             await session.close()
@@ -456,7 +461,7 @@ async def test_fetch_frontend_model_catalog_http_error(pipe_instance_async) -> N
         )
         session = pipe._create_http_session()
         try:
-            result = await pipe._fetch_frontend_model_catalog(session)
+            result = await pipe._ensure_catalog_manager()._fetch_frontend_model_catalog(session)
             assert result is None
         finally:
             await session.close()
@@ -476,7 +481,7 @@ async def test_fetch_frontend_model_catalog_invalid_json_type(pipe_instance_asyn
         )
         session = pipe._create_http_session()
         try:
-            result = await pipe._fetch_frontend_model_catalog(session)
+            result = await pipe._ensure_catalog_manager()._fetch_frontend_model_catalog(session)
             assert result is None
         finally:
             await session.close()
@@ -495,7 +500,7 @@ async def test_fetch_frontend_model_catalog_connection_error(pipe_instance_async
         )
         session = pipe._create_http_session()
         try:
-            result = await pipe._fetch_frontend_model_catalog(session)
+            result = await pipe._ensure_catalog_manager()._fetch_frontend_model_catalog(session)
             assert result is None
         finally:
             await session.close()
@@ -514,10 +519,10 @@ async def test_build_maker_profile_image_mapping_empty_input(pipe_instance_async
 
     session = pipe._create_http_session()
     try:
-        result = await pipe._build_maker_profile_image_mapping(session, [])
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(session, [])
         assert result == {}
 
-        result = await pipe._build_maker_profile_image_mapping(session, [None, "", "  "])
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(session, [None, "", "  "])
         assert result == {}
     finally:
         await session.close()
@@ -535,11 +540,11 @@ async def test_build_maker_profile_image_mapping_deduplicates_makers(pipe_instan
         call_count += 1
         return f"https://example.com/{maker_id}.png"
 
-    pipe._fetch_maker_profile_image_url = mock_fetch
+    pipe._multimodal_handler._fetch_maker_profile_image_url = mock_fetch
 
     session = pipe._create_http_session()
     try:
-        result = await pipe._build_maker_profile_image_mapping(
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(
             session, ["openai", "openai", "anthropic", "openai"]
         )
         assert call_count == 2  # Only 2 unique makers
@@ -559,11 +564,11 @@ async def test_build_maker_profile_image_mapping_handles_none_results(pipe_insta
             return None
         return f"https://example.com/{maker_id}.png"
 
-    pipe._fetch_maker_profile_image_url = mock_fetch
+    pipe._multimodal_handler._fetch_maker_profile_image_url = mock_fetch
 
     session = pipe._create_http_session()
     try:
-        result = await pipe._build_maker_profile_image_mapping(
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(
             session, ["openai", "anthropic"]
         )
         assert "openai" in result
@@ -686,7 +691,7 @@ async def test_sync_model_metadata_returns_early_no_valves(pipe_instance_async) 
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
     # Should return early without error
-    await pipe._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="test_pipe")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="test_pipe")
 
 
 @pytest.mark.asyncio
@@ -696,7 +701,7 @@ async def test_sync_model_metadata_returns_early_empty_models(pipe_instance_asyn
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
-    await pipe._sync_model_metadata_to_owui([], pipe_identifier="test_pipe")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([], pipe_identifier="test_pipe")
 
 
 @pytest.mark.asyncio
@@ -706,7 +711,7 @@ async def test_sync_model_metadata_returns_early_no_pipe_identifier(pipe_instanc
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
-    await pipe._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="")
 
 
 @pytest.mark.asyncio
@@ -722,7 +727,7 @@ async def test_sync_model_metadata_skips_model_without_valid_id(pipe_instance_as
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": None}, {"id": ""}, {"id": 123}],
             pipe_identifier="test_pipe",
         )
@@ -747,7 +752,7 @@ async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_as
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "name": None, "capabilities": {"vision": True}}],
             pipe_identifier="test_pipe",
         )
@@ -769,14 +774,16 @@ async def test_sync_model_metadata_ors_filter_warning_not_installed(pipe_instanc
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._ensure_ors_filter_function_id = Mock(return_value=None)
+    # Initialize the filter manager and mock its method
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_ors_filter_function_id = Mock(return_value=None)
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
          patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -797,14 +804,16 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._ensure_direct_uploads_filter_function_id = Mock(return_value=None)
+    # Initialize the filter manager and mock its method
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(return_value=None)
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
          patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -824,8 +833,10 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
     pipe.valves.AUTO_ATTACH_ORS_FILTER = True
     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
 
-    pipe._ensure_ors_filter_function_id = Mock(return_value="openrouter_search")
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={
+    # Initialize the filter manager and mock its method
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_ors_filter_function_id = Mock(return_value="openrouter_search")
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={
         "data": [
             {
                 "slug": "test/model",
@@ -843,7 +854,7 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
          patch.object(pipe._catalog_manager.logger, "info") as mock_info:
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -871,7 +882,7 @@ async def test_sync_model_metadata_handles_update_exception(pipe_instance_async)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
         # Should not raise
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "capabilities": {"vision": True}}],
             pipe_identifier="test_pipe",
         )
@@ -887,14 +898,16 @@ async def test_sync_model_metadata_ensure_filter_exception_handling(pipe_instanc
     pipe.valves.AUTO_ATTACH_ORS_FILTER = True
     pipe.valves.AUTO_INSTALL_ORS_FILTER = True
 
-    pipe._ensure_ors_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
+    # Initialize the filter manager and mock its method to raise
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_ors_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
         # Should not raise, logs debug instead
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -911,7 +924,7 @@ def test_update_or_insert_empty_model_id_returns_early(pipe_instance) -> None:
     pipe._ensure_catalog_manager()
 
     with patch("open_webui.models.models.Models") as mock_models:
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             "",
             "Name",
             None,
@@ -921,7 +934,7 @@ def test_update_or_insert_empty_model_id_returns_early(pipe_instance) -> None:
         )
         mock_models.get_model_by_id.assert_not_called()
 
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             "   ",
             "Name",
             None,
@@ -945,7 +958,7 @@ def test_update_or_insert_uses_model_id_as_name_fallback(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "",
             {"vision": True},
@@ -972,7 +985,7 @@ def test_update_or_insert_new_model_with_capabilities(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True, "web_search": True},
@@ -999,7 +1012,7 @@ def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance) -> Non
 
     with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1025,7 +1038,7 @@ def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1053,7 +1066,7 @@ def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1081,7 +1094,7 @@ def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1113,7 +1126,7 @@ def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True, "web_search": True},
@@ -1145,7 +1158,7 @@ def test_update_existing_model_no_changes_skips_update(pipe_instance) -> None:
 
     with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},  # Same as existing
@@ -1174,7 +1187,7 @@ def test_update_existing_model_updates_profile_image(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1203,7 +1216,7 @@ def test_update_existing_model_updates_openrouter_pipe_capabilities(pipe_instanc
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1239,7 +1252,7 @@ def test_update_existing_model_filter_id_migration(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1276,7 +1289,7 @@ def test_update_existing_model_filter_removal_when_unsupported(pipe_instance) ->
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1315,7 +1328,7 @@ def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe_insta
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1359,7 +1372,7 @@ def test_update_existing_model_default_filter_migration(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1394,7 +1407,7 @@ def test_update_existing_model_default_filter_not_attached_skips(pipe_instance) 
 
     with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1423,7 +1436,7 @@ def test_insert_new_model_with_filters(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1464,7 +1477,7 @@ def test_normalize_filter_ids_handles_non_list(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1499,7 +1512,7 @@ def test_normalize_filter_ids_filters_non_strings(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1537,7 +1550,7 @@ def test_dedupe_preserves_order(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1579,7 +1592,7 @@ def test_existing_model_null_meta_handled(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1608,14 +1621,16 @@ async def test_sync_model_metadata_direct_uploads_logs_supported_count(pipe_inst
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._ensure_direct_uploads_filter_function_id = Mock(return_value="openrouter_direct_uploads")
+    # Initialize the filter manager and mock its method
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(return_value="openrouter_direct_uploads")
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
          patch.object(pipe._catalog_manager.logger, "info") as mock_info:
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -1637,7 +1652,7 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={
         "data": [
             {
                 "slug": "openai/gpt-4",
@@ -1649,8 +1664,8 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
             }
         ]
     })
-    pipe._build_maker_profile_image_mapping = AsyncMock(return_value={})
-    pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ABC123")
+    pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ABC123")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
@@ -1658,7 +1673,7 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "openai.gpt-4", "original_id": "openai/gpt-4", "name": "GPT-4"}],
             pipe_identifier="test_pipe",
         )
@@ -1680,9 +1695,9 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})  # No icon data
-    pipe._build_maker_profile_image_mapping = AsyncMock(return_value={"anthropic": "https://example.com/anthropic.png"})
-    pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ANTHROPIC123")
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})  # No icon data
+    pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={"anthropic": "https://example.com/anthropic.png"})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ANTHROPIC123")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
@@ -1690,7 +1705,7 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "anthropic.claude", "original_id": "anthropic/claude", "name": "Claude"}],
             pipe_identifier="test_pipe",
         )
@@ -1712,9 +1727,9 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
-    pipe._build_maker_profile_image_mapping = AsyncMock(return_value={})
-    pipe._fetch_image_as_data_url = AsyncMock(return_value=None)
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
+    pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value=None)
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
 
@@ -1722,7 +1737,7 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": None, "name": "Test"}],  # No original_id
             pipe_identifier="test_pipe",
         )
@@ -1747,7 +1762,7 @@ def test_update_existing_model_with_description(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1775,7 +1790,7 @@ def test_update_existing_model_description_no_change_skips_update(pipe_instance)
 
     with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1802,7 +1817,7 @@ def test_insert_new_model_with_description(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1832,7 +1847,7 @@ def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance) -> No
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1871,7 +1886,7 @@ def test_update_existing_model_with_existing_params(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"web_search": True},
@@ -1899,7 +1914,7 @@ def test_update_existing_model_same_image_skips_update(pipe_instance) -> None:
 
     with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1930,7 +1945,7 @@ def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instance) -> 
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1970,7 +1985,7 @@ def test_existing_model_with_none_params_handled(pipe_instance) -> None:
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1993,14 +2008,16 @@ async def test_sync_model_metadata_direct_uploads_filter_exception_handling(pipe
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
 
-    pipe._ensure_direct_uploads_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
+    # Initialize the filter manager and mock its method to raise
+    pipe._ensure_filter_manager()
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
 
     async def fake_run_in_threadpool(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
         # Should not raise, logs debug instead
-        await pipe._sync_model_metadata_to_owui(
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
         )
@@ -2050,7 +2067,7 @@ def test_build_icon_mapping_success(pipe_instance):
         ]
     }
 
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
 
     assert len(icon_mapping) == 3
     assert icon_mapping["anthropic/claude-3.5-sonnet"] == "https://example.com/claude.png"
@@ -2061,9 +2078,9 @@ def test_build_icon_mapping_success(pipe_instance):
 def test_build_icon_mapping_empty(pipe_instance):
     pipe = pipe_instance
 
-    assert pipe._build_icon_mapping(None) == {}
-    assert pipe._build_icon_mapping({"data": []}) == {}
-    assert pipe._build_icon_mapping({}) == {}
+    assert pipe._ensure_catalog_manager()._build_icon_mapping(None) == {}
+    assert pipe._ensure_catalog_manager()._build_icon_mapping({"data": []}) == {}
+    assert pipe._ensure_catalog_manager()._build_icon_mapping({}) == {}
 
 
 def test_extract_openrouter_og_image():
@@ -2072,12 +2089,12 @@ def test_extract_openrouter_og_image():
         '<meta property="og:image" content="https://openrouter.ai/openai/opengraph-image-abc123?token=xyz"/>'
         "</head></html>"
     )
-    assert Pipe._extract_openrouter_og_image(html) == "https://openrouter.ai/openai/opengraph-image-abc123?token=xyz"
+    assert _extract_openrouter_og_image(html) == "https://openrouter.ai/openai/opengraph-image-abc123?token=xyz"
 
 
 def test_guess_image_mime_type_svg_and_png():
     assert (
-        Pipe._guess_image_mime_type(
+        _guess_image_mime_type(
             "https://openrouter.ai/images/icons/OpenAI.svg",
             content_type=None,
             data=b"<svg></svg>",
@@ -2085,7 +2102,7 @@ def test_guess_image_mime_type_svg_and_png():
         == "image/svg+xml"
     )
     assert (
-        Pipe._guess_image_mime_type(
+        _guess_image_mime_type(
             "https://openrouter.ai/images/icons/OpenAI",
             content_type="image/svg+xml; charset=utf-8",
             data=b"<svg></svg>",
@@ -2095,7 +2112,7 @@ def test_guess_image_mime_type_svg_and_png():
 
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
     assert (
-        Pipe._guess_image_mime_type(
+        _guess_image_mime_type(
             "https://openrouter.ai/images/icons/OpenAI.png",
             content_type=None,
             data=png_bytes,
@@ -2120,7 +2137,7 @@ def test_build_icon_mapping_uses_first_provider_icon(pipe_instance):
         ]
     }
 
-    icon_mapping = pipe._build_icon_mapping(frontend_data)
+    icon_mapping = pipe._ensure_catalog_manager()._build_icon_mapping(frontend_data)
     assert icon_mapping["dup/model"] == "https://example.com/first.png"
 
 
@@ -2160,7 +2177,7 @@ def test_build_web_search_support_mapping_detects_multiple_signals(pipe_instance
         ]
     }
 
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {
         "x-ai/grok-4": True,
         "openai/gpt-4o": True,
@@ -2188,7 +2205,7 @@ def test_build_web_search_support_mapping_unions_duplicates(pipe_instance):
         ]
     }
 
-    mapping = pipe._build_web_search_support_mapping(frontend_data)
+    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
     assert mapping == {"dup/model": True}
 
 
@@ -2207,7 +2224,7 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
         }
     ]
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(
         return_value={
             "data": [
                 {
@@ -2223,8 +2240,8 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
         }
     )
 
-    pipe._build_maker_profile_image_mapping = AsyncMock(return_value={})
-    pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+    pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
     pipe._ensure_catalog_manager()
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
@@ -2233,7 +2250,7 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2257,7 +2274,7 @@ async def test_sync_model_metadata_sets_web_search_from_frontend(pipe_instance_a
         }
     ]
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(
         return_value={
             "data": [
                 {
@@ -2281,7 +2298,7 @@ async def test_sync_model_metadata_sets_web_search_from_frontend(pipe_instance_a
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2307,9 +2324,9 @@ async def test_sync_model_metadata_falls_back_to_maker_image_mapping(pipe_instan
         }
     ]
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": [{"slug": "openai/gpt-4o"}]})
-    pipe._build_maker_profile_image_mapping = AsyncMock(return_value={"openai": "https://example.com/openai.png"})
-    pipe._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": [{"slug": "openai/gpt-4o"}]})
+    pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={"openai": "https://example.com/openai.png"})
+    pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
     pipe._ensure_catalog_manager()
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
@@ -2318,7 +2335,7 @@ async def test_sync_model_metadata_falls_back_to_maker_image_mapping(pipe_instan
         return fn(*args, **kwargs)
 
     with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2362,7 +2379,7 @@ async def test_sync_model_metadata_includes_description_when_enabled(pipe_instan
         "open_webui_openrouter_pipe.pipe.run_in_threadpool",
         new=fake_run_in_threadpool,
     ):
-        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
@@ -2394,7 +2411,7 @@ async def test_sync_model_metadata_skips_description_when_disabled(pipe_instance
         }
     ]
 
-    pipe._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
     pipe._ensure_catalog_manager()
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
@@ -2406,7 +2423,7 @@ async def test_sync_model_metadata_skips_description_when_disabled(pipe_instance
         "open_webui_openrouter_pipe.pipe.run_in_threadpool",
         new=fake_run_in_threadpool,
     ):
-        await pipe._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
@@ -2663,7 +2680,7 @@ def test_disable_model_metadata_sync_skips_all_updates(pipe_instance) -> None:
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities={"vision": True},
@@ -2696,7 +2713,7 @@ def test_disable_capability_updates_preserves_existing_caps(pipe_instance) -> No
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities={"vision": True},
@@ -2730,7 +2747,7 @@ def test_disable_image_updates_skips_profile_image_changes(pipe_instance) -> Non
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2756,7 +2773,7 @@ def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance) -> N
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2781,7 +2798,7 @@ def test_description_updates_when_enabled(pipe_instance) -> None:
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2812,7 +2829,7 @@ def test_disable_description_updates_prevents_overwrites(pipe_instance) -> None:
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2840,7 +2857,7 @@ def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_i
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2868,7 +2885,7 @@ def test_disable_description_updates_in_custom_params(pipe_instance) -> None:
     with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,

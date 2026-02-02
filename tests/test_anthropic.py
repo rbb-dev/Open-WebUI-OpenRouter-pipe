@@ -22,6 +22,8 @@ from __future__ import annotations
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.integrations.anthropic import _maybe_apply_anthropic_prompt_caching, _is_anthropic_model_id
 
 
 def _get_cache_control_from_block(block: dict) -> dict | None:
@@ -72,7 +74,7 @@ def test_prompt_caching_disabled_returns_early(pipe_instance):
     ]
 
     # Call the function - should return early without modifying
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -110,7 +112,7 @@ def test_skips_non_dict_items_in_input(pipe_instance):
     ]
 
     # Should not raise and should process the valid message
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -153,7 +155,7 @@ def test_skips_non_message_type_items(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -213,7 +215,7 @@ def test_caches_third_user_message_when_more_than_two(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -273,7 +275,7 @@ def test_seen_set_prevents_duplicate_processing(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -322,7 +324,7 @@ def test_skips_messages_with_invalid_content(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -366,7 +368,7 @@ def test_skips_non_dict_blocks_in_content(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -409,7 +411,7 @@ def test_skips_blocks_with_wrong_type(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -455,7 +457,7 @@ def test_skips_blocks_with_invalid_text(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -499,7 +501,7 @@ def test_existing_cache_control_with_ttl_not_overwritten(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -534,7 +536,7 @@ def test_existing_cache_control_without_ttl_gets_ttl_added(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -569,7 +571,7 @@ def test_existing_cache_control_non_dict_is_not_modified(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -603,7 +605,7 @@ def test_non_anthropic_model_skipped(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="openai/gpt-4o",  # Not an Anthropic model
         valves=valves,
@@ -641,7 +643,7 @@ def test_developer_role_treated_as_system(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -676,7 +678,7 @@ def test_empty_ttl_omits_ttl_field(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -706,7 +708,7 @@ def test_non_string_ttl_omits_ttl_field(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -746,7 +748,7 @@ def test_caches_last_input_text_block_in_content(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -782,7 +784,7 @@ def test_anthropic_model_with_dot_prefix(pipe_instance):
         },
     ]
 
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic.claude-3-opus",  # Dot prefix
         valves=valves,
@@ -794,16 +796,16 @@ def test_anthropic_model_with_dot_prefix(pipe_instance):
 
 def test_is_anthropic_model_id_with_non_string(pipe_instance):
     """Test _is_anthropic_model_id returns False for non-string input."""
-    assert Pipe._is_anthropic_model_id(None) is False
-    assert Pipe._is_anthropic_model_id(123) is False
-    assert Pipe._is_anthropic_model_id(["anthropic/claude"]) is False
-    assert Pipe._is_anthropic_model_id({"model": "anthropic/claude"}) is False
+    assert _is_anthropic_model_id(None) is False
+    assert _is_anthropic_model_id(123) is False
+    assert _is_anthropic_model_id(["anthropic/claude"]) is False
+    assert _is_anthropic_model_id({"model": "anthropic/claude"}) is False
 
 
 def test_is_anthropic_model_id_with_whitespace(pipe_instance):
     """Test _is_anthropic_model_id handles whitespace correctly."""
-    assert Pipe._is_anthropic_model_id("  anthropic/claude-sonnet-4.5  ") is True
-    assert Pipe._is_anthropic_model_id("  anthropic.claude-3  ") is True
+    assert _is_anthropic_model_id("  anthropic/claude-sonnet-4.5  ") is True
+    assert _is_anthropic_model_id("  anthropic.claude-3  ") is True
 
 
 # ============================================================================
@@ -840,7 +842,7 @@ def test_message_with_none_role(pipe_instance):
     ]
 
     # Should not raise and should only cache the valid user message
-    pipe._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         input_items,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -877,7 +879,7 @@ async def test_prompt_caching_via_transform_messages(pipe_instance_async):
         {"role": "user", "content": "Third question"},
     ]
 
-    input_items = await pipe.transform_messages_to_input(
+    input_items = await transform_messages_to_input(pipe,
         messages,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -937,7 +939,7 @@ async def test_anthropic_prompt_caching_inserts_breakpoints(pipe_instance_async)
         {"role": "user", "content": "user-2"},
     ]
 
-    input_items = await pipe.transform_messages_to_input(
+    input_items = await transform_messages_to_input(pipe,
         messages,
         model_id="anthropic/claude-sonnet-4.5",
         valves=valves,
@@ -977,7 +979,7 @@ async def test_non_anthropic_models_do_not_insert_cache_control(pipe_instance_as
         {"role": "user", "content": "user-2"},
     ]
 
-    input_items = await pipe.transform_messages_to_input(
+    input_items = await transform_messages_to_input(pipe,
         messages,
         model_id="openai/gpt-5.1",
     )
@@ -1049,7 +1051,7 @@ async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch, p
     async def emitter(event):
         emitted.append(event)
 
-    result = await pipe._run_streaming_loop(
+    result = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
         emitter,

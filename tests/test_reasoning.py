@@ -37,19 +37,24 @@ from open_webui_openrouter_pipe.streaming.reasoning_tracker import ReasoningTrac
 # =============================================================================
 
 
-class _StubPipe:
-    """Minimal stub Pipe for unit tests that don't need full Pipe functionality."""
+class _StubEventEmitterHandler:
+    """Stub EventEmitterHandler for unit tests."""
 
     def __init__(self):
         self._emit_status = AsyncMock()
         self._emit_citation = AsyncMock()
-        self._resolve_storage_context_returns: tuple = (Mock(), Mock())
-        self._upload_to_owui_storage_returns: Optional[str] = "file-123"
+
+
+class _StubMultimodalHandler:
+    """Stub MultimodalHandler for tests."""
+
+    def __init__(self, parent: "_StubPipe"):
+        self._parent = parent
 
     async def _resolve_storage_context(
         self, request: Optional[Any], user_obj: Optional[Any]
     ) -> tuple[Optional[Any], Optional[Any]]:
-        return self._resolve_storage_context_returns
+        return self._parent._resolve_storage_context_returns
 
     async def _upload_to_owui_storage(
         self,
@@ -62,13 +67,12 @@ class _StubPipe:
         message_id: Optional[str] = None,
         owui_user_id: str = "",
     ) -> Optional[str]:
-        return self._upload_to_owui_storage_returns
+        return self._parent._upload_to_owui_storage_returns
 
     def _parse_data_url(self, text: str) -> Optional[dict]:
         """Parse data URL format."""
         if not text.startswith("data:"):
             return None
-        # Simple parser for tests
         try:
             parts = text.split(",", 1)
             if len(parts) != 2:
@@ -79,6 +83,22 @@ class _StubPipe:
             return {"data": data, "mime_type": mime_type}
         except Exception:
             return None
+
+    def _validate_base64_size(self, b64_string: str) -> bool:
+        """Stub validation - allow by default, tests can override."""
+        # ~10MB limit like the old hardcoded value
+        max_chars = (10 * 1024 * 1024 * 4) // 3
+        return len(b64_string) <= max_chars
+
+
+class _StubPipe:
+    """Minimal stub Pipe for unit tests that don't need full Pipe functionality."""
+
+    def __init__(self):
+        self._event_emitter_handler = _StubEventEmitterHandler()
+        self._resolve_storage_context_returns: tuple = (Mock(), Mock())
+        self._upload_to_owui_storage_returns: Optional[str] = "file-123"
+        self._multimodal_handler = _StubMultimodalHandler(self)
 
 
 def _create_tracker(
@@ -199,18 +219,17 @@ async def test_persist_generated_image_handles_invalid_mime():
 # =============================================================================
 
 
-def test_validate_base64_size_accepts_small():
-    """Test that _validate_base64_size accepts small strings."""
-    tracker = _create_tracker()
-    assert tracker._validate_base64_size("small") is True
+def test_validate_base64_size_accepts_small(pipe_instance):
+    """Test that _validate_base64_size accepts small strings via multimodal handler."""
+    assert pipe_instance._multimodal_handler._validate_base64_size("small") is True
 
 
-def test_validate_base64_size_rejects_huge():
-    """Test that _validate_base64_size rejects huge strings (>10MB)."""
-    tracker = _create_tracker()
-    # Create a string larger than 10MB (approx 14M chars = 10MB decoded)
-    huge = "A" * (15 * 1024 * 1024)
-    assert tracker._validate_base64_size(huge) is False
+def test_validate_base64_size_rejects_huge(pipe_instance):
+    """Test that _validate_base64_size rejects huge strings via configurable valve."""
+    pipe_instance.valves.BASE64_MAX_SIZE_MB = 1  # Set to 1MB for faster test
+    # Create a string larger than 1MB (approx 1.4M chars = 1MB decoded)
+    huge = "A" * (2 * 1024 * 1024)
+    assert pipe_instance._multimodal_handler._validate_base64_size(huge) is False
 
 
 # =============================================================================
@@ -271,7 +290,7 @@ async def test_materialize_image_from_str_invalid_data_url():
     """Test invalid data URL returns None (line 169)."""
     pipe = _StubPipe()
     # Make _parse_data_url return None
-    pipe._parse_data_url = lambda x: None
+    pipe._multimodal_handler._parse_data_url = lambda x: None
 
     tracker = _create_tracker(pipe=pipe)
 
@@ -370,7 +389,7 @@ async def test_materialize_image_from_str_raw_base64_emits_status():
     b64 = base64.b64encode(b"test-data").decode()
     result = await tracker._materialize_image_from_str(b64)
     assert result == "/api/v1/files/file-123/content"
-    pipe._emit_status.assert_called_once()
+    pipe._event_emitter_handler._emit_status.assert_called_once()
 
 
 # =============================================================================
@@ -1208,7 +1227,7 @@ async def test_process_citation_event_emits_and_stores():
     })
 
     assert result is not None
-    pipe._emit_citation.assert_called_once()
+    pipe._event_emitter_handler._emit_citation.assert_called_once()
     assert tracker.emitted_citations == [result]
     assert tracker.ordinal_by_url["https://example.com/page"] == 1
 
@@ -1476,7 +1495,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = {"effort": "high"}
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         # Body should be unchanged
         assert body.reasoning == {"effort": "high"}
@@ -1493,7 +1512,7 @@ class TestApplyReasoningPreferences:
         )
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning == {"effort": "medium", "enabled": True}
         assert body.include_reasoning is None
@@ -1510,7 +1529,7 @@ class TestApplyReasoningPreferences:
         )
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning == {"effort": "high", "summary": "auto", "enabled": True}
 
@@ -1527,7 +1546,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = {"effort": "xhigh", "custom_field": True}
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         # Existing effort should be preserved
         assert body.reasoning["effort"] == "xhigh"
@@ -1547,7 +1566,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = {"summary": "auto"}
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         # Existing summary should be preserved
         assert body.reasoning["summary"] == "auto"
@@ -1562,7 +1581,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.include_reasoning = True
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.include_reasoning is None
 
@@ -1577,7 +1596,7 @@ class TestApplyReasoningPreferences:
         )
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
         assert body.include_reasoning is True
@@ -1593,7 +1612,7 @@ class TestApplyReasoningPreferences:
         )
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
         assert body.include_reasoning is False
@@ -1614,7 +1633,7 @@ class TestApplyReasoningPreferences:
         )
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
         assert body.include_reasoning is False
@@ -1629,7 +1648,7 @@ class TestApplyReasoningPreferences:
         body.reasoning = {"effort": "high"}
         body.include_reasoning = True
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
         assert body.include_reasoning is False
@@ -1646,7 +1665,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.include_reasoning = True
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert isinstance(body.reasoning, dict)
         assert body.reasoning["enabled"] is True
@@ -1665,7 +1684,7 @@ class TestApplyReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = "invalid"  # type: ignore
 
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning == {"effort": "low", "enabled": True}
 
@@ -1685,7 +1704,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "")
 
         # Body should be unchanged
         assert body.reasoning is None
@@ -1702,7 +1721,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "   ")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "   ")
 
         # Whitespace becomes empty string effort (not ideal but actual behavior)
         assert body.reasoning == {"effort": "", "enabled": True}
@@ -1714,7 +1733,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "HIGH")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "HIGH")
 
         assert body.reasoning == {"effort": "high", "enabled": True}
         assert body.include_reasoning is None
@@ -1726,7 +1745,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "  Medium  ")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "  Medium  ")
 
         assert body.reasoning["effort"] == "medium"
 
@@ -1738,7 +1757,7 @@ class TestApplyTaskReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = {"effort": "low", "custom": True}
 
-        pipe_instance._apply_task_reasoning_preferences(body, "high")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
 
         assert body.reasoning["effort"] == "high"
         assert body.reasoning["custom"] is True
@@ -1751,7 +1770,7 @@ class TestApplyTaskReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.reasoning = "invalid"  # type: ignore
 
-        pipe_instance._apply_task_reasoning_preferences(body, "high")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
 
         assert body.reasoning == {"effort": "high", "enabled": True}
 
@@ -1763,7 +1782,7 @@ class TestApplyTaskReasoningPreferences:
         body = ResponsesBody(model="test.model", input=[])
         body.include_reasoning = True
 
-        pipe_instance._apply_task_reasoning_preferences(body, "high")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
 
         assert body.include_reasoning is None
 
@@ -1774,7 +1793,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "high")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
 
         assert body.reasoning is None
         assert body.include_reasoning is True
@@ -1786,7 +1805,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "none")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
 
         assert body.include_reasoning is False
 
@@ -1797,7 +1816,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "minimal")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "minimal")
 
         assert body.include_reasoning is False
 
@@ -1808,7 +1827,7 @@ class TestApplyTaskReasoningPreferences:
         })
         body = ResponsesBody(model="test.model", input=[])
 
-        pipe_instance._apply_task_reasoning_preferences(body, "low")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "low")
 
         assert body.include_reasoning is True
 
@@ -1821,7 +1840,7 @@ class TestApplyTaskReasoningPreferences:
         body.reasoning = {"effort": "high"}
         body.include_reasoning = True
 
-        pipe_instance._apply_task_reasoning_preferences(body, "high")
+        pipe_instance._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
 
         assert body.reasoning is None
         assert body.include_reasoning is False
@@ -1844,7 +1863,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="test.model", input=[])
         body.thinking_config = {"include_thoughts": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config is None
 
@@ -1861,7 +1880,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config == {"include_thoughts": True, "thinking_budget": 1024}
         assert body.reasoning is None
@@ -1879,7 +1898,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-pro", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config["thinking_budget"] == 2000
 
@@ -1896,7 +1915,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config["thinking_budget"] == 500
 
@@ -1913,7 +1932,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config["thinking_budget"] == 250
 
@@ -1930,7 +1949,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config["thinking_budget"] == 4000
 
@@ -1947,7 +1966,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config["thinking_budget"] == 0
 
@@ -1980,7 +1999,7 @@ class TestApplyGeminiThinkingConfig:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config is None
         assert body.include_reasoning is False
@@ -2005,7 +2024,7 @@ class TestApplyGeminiThinkingConfig:
         # include_reasoning=True forces reasoning_requested=True despite enabled=False
         body.include_reasoning = True
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         # effort 'none' -> budget is None -> thinking disabled
         assert body.thinking_config is None
@@ -2029,7 +2048,7 @@ class TestShouldRetryWithoutReasoning:
             openrouter_message="Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is False
 
@@ -2043,7 +2062,7 @@ class TestShouldRetryWithoutReasoning:
             openrouter_message="Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
         assert body.include_reasoning is False
@@ -2060,7 +2079,7 @@ class TestShouldRetryWithoutReasoning:
             upstream_message="thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
         assert body.reasoning is None
@@ -2075,7 +2094,7 @@ class TestShouldRetryWithoutReasoning:
             openrouter_message="Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
         assert body.thinking_config is None
@@ -2090,7 +2109,7 @@ class TestShouldRetryWithoutReasoning:
             openrouter_message="Some other provider error message.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is False
         assert body.include_reasoning is True  # Not cleared
@@ -2105,7 +2124,7 @@ class TestShouldRetryWithoutReasoning:
             reason="include_thoughts is only enabled when thinking is enabled",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
 
@@ -2119,7 +2138,7 @@ class TestShouldRetryWithoutReasoning:
             openrouter_message="THINKING_CONFIG.INCLUDE_THOUGHTS IS ONLY ENABLED WHEN THINKING IS ENABLED.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
 
@@ -2137,7 +2156,7 @@ class TestShouldRetryWithoutReasoning:
         # Manually set to test edge case
         error.upstream_message = {"key": "value"}  # type: ignore
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         # Should return False because no string message matches
         assert result is False
@@ -2153,7 +2172,7 @@ class TestShouldRetryWithoutReasoning:
         )
 
         with caplog.at_level(logging.INFO):
-            result = pipe_instance._should_retry_without_reasoning(error, body)
+            result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
         assert any("Retrying without reasoning" in message for message in caplog.messages)
@@ -2218,7 +2237,7 @@ class TestEdgeCases:
         body = ResponsesBody(model="", input=[])
 
         # Should not raise
-        pipe_instance._apply_reasoning_preferences(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
 
         assert body.reasoning is None
 
@@ -2235,7 +2254,7 @@ class TestEdgeCases:
         body = ResponsesBody(model="google/gemini-2.5", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         assert body.thinking_config is not None
         assert "thinking_budget" in body.thinking_config
@@ -2253,7 +2272,7 @@ class TestEdgeCases:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         # Should round to nearest int
         assert body.thinking_config["thinking_budget"] == 250
@@ -2271,7 +2290,7 @@ class TestEdgeCases:
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.reasoning = {"enabled": True}
 
-        pipe_instance._apply_gemini_thinking_config(body, valves)
+        pipe_instance._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
 
         # Should be at least 1
         assert body.thinking_config["thinking_budget"] == 1
@@ -2288,7 +2307,7 @@ class TestEdgeCases:
             openrouter_message="include_thoughts is only enabled when thinking is enabled.",
         )
 
-        result = pipe_instance._should_retry_without_reasoning(error, body)
+        result = pipe_instance._ensure_reasoning_config_manager()._should_retry_without_reasoning(error, body)
 
         assert result is True
         assert body.include_reasoning is False
@@ -2311,12 +2330,25 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.streaming.reasoning_tracker import ReasoningTracker
 
 
-class _StubPipeImageTests:
+class _StubEventEmitterHandlerImageTests:
     def __init__(self) -> None:
         self._emit_status = AsyncMock()
 
+
+class _StubMultimodalHandlerImageTests:
     def _parse_data_url(self, _text: str):
         return {"data": b"image-bytes", "mime_type": "image/png"}
+
+    def _validate_base64_size(self, b64_string: str) -> bool:
+        """Stub validation - allow by default."""
+        max_chars = (10 * 1024 * 1024 * 4) // 3
+        return len(b64_string) <= max_chars
+
+
+class _StubPipeImageTests:
+    def __init__(self) -> None:
+        self._event_emitter_handler = _StubEventEmitterHandlerImageTests()
+        self._multimodal_handler = _StubMultimodalHandlerImageTests()
 
 
 @pytest.mark.asyncio
@@ -2333,7 +2365,7 @@ async def test_materialize_data_url_persists_and_emits_status():
     result = await tracker._materialize_image_from_str("data:image/png;base64,AAA=")
 
     assert result == "/api/v1/files/file-1/content"
-    assert pipe._emit_status.await_count == 1
+    assert pipe._event_emitter_handler._emit_status.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -2353,7 +2385,7 @@ async def test_materialize_image_entry_from_base64_dict():
     result = await tracker._materialize_image_entry(entry)
 
     assert result == "/api/v1/files/file-2/content"
-    assert pipe._emit_status.await_count == 1
+    assert pipe._event_emitter_handler._emit_status.await_count == 1
 
 
 @pytest.mark.asyncio

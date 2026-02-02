@@ -111,9 +111,9 @@ class TestDecodeBase64PrefixEdgeCases:
         }
 
         # Mock file loading to return empty base64
-        pipe._get_file_by_id = AsyncMock(return_value=Mock(id="audio123"))
-        pipe._read_file_record_base64 = AsyncMock(return_value="")
-        pipe._emit_templated_error = AsyncMock()
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=Mock(id="audio123"))
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="")
+        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -137,7 +137,7 @@ class TestDecodeBase64PrefixEdgeCases:
 
         # Should fail because empty b64 for audio
         assert result == ""
-        pipe._emit_templated_error.assert_called()
+        pipe._ensure_error_formatter()._emit_templated_error.assert_called()
 
     @pytest.mark.asyncio
     async def test_invalid_base64_chars_in_prefix(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
@@ -158,19 +158,16 @@ class TestDecodeBase64PrefixEdgeCases:
         }
 
         # Mock file loading to return invalid base64 with special chars
-        pipe._get_file_by_id = AsyncMock(return_value=Mock(id="audio123"))
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=Mock(id="audio123"))
         # This base64 contains invalid characters like unicode - sniff will return ""
-        pipe._read_file_record_base64 = AsyncMock(return_value="AAAA\u0080BBBB")
-        pipe._emit_templated_error = AsyncMock()
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="AAAA\u0080BBBB")
+        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -224,14 +221,11 @@ class TestDirectUploadSkipPaths:
         }
 
         # Setup mocks for successful request after skipping invalid files
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -274,14 +268,11 @@ class TestDirectUploadSkipPaths:
         }
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -324,14 +315,11 @@ class TestDirectUploadSkipPaths:
         }
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -386,17 +374,14 @@ class TestCsvSetNonStringInput:
 
         # Mock file loading
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -442,14 +427,11 @@ class TestExtraToolsExceptionHandling:
                 raise RuntimeError("Simulated extra_tools access error")
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Patch CompletionsBody.model_validate to return object with problematic extra_tools
         with patch("open_webui_openrouter_pipe.requests.orchestrator.CompletionsBody") as mock_completions:
@@ -511,16 +493,13 @@ class TestToolRenameLogging:
         orchestrator.logger.setLevel(logging.DEBUG)
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
 
         # Mock to return tools with renames
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Patch _build_collision_safe_tool_specs_and_registry to return renames
         with patch("open_webui_openrouter_pipe.requests.orchestrator._build_collision_safe_tool_specs_and_registry") as mock_build:
@@ -578,14 +557,11 @@ class TestWebSearchPluginMinimalEffort:
         mock_valves.REASONING_EFFORT = "minimal"
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
 
@@ -628,13 +604,10 @@ class TestWebSearchPluginMinimalEffort:
         mock_valves.WEB_SEARCH_MAX_RESULTS = 10
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         captured_body = None
 
@@ -643,7 +616,7 @@ class TestWebSearchPluginMinimalEffort:
             captured_body = responses_body
             return "Test response"
 
-        pipe._run_streaming_loop = capture_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = capture_streaming_loop
 
         from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
 
@@ -702,13 +675,10 @@ class TestOpenRouterAPIErrorHandling:
         mock_valves.ENABLE_ANTHROPIC_PROMPT_CACHING = True
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
         pipe._is_anthropic_model_id = Mock(return_value=True)
 
         # Track number of calls
@@ -725,7 +695,7 @@ class TestOpenRouterAPIErrorHandling:
                 )
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         # We need to inject Pipe into the orchestrator module's namespace
         # since it only imports under TYPE_CHECKING
@@ -775,13 +745,10 @@ class TestOpenRouterAPIErrorHandling:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         call_count = [0]
 
@@ -803,7 +770,7 @@ class TestOpenRouterAPIErrorHandling:
                 )
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         # Create mock event emitter
         event_emitter = AsyncMock()
@@ -848,14 +815,11 @@ class TestOpenRouterAPIErrorHandling:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._should_retry_without_reasoning = Mock(return_value=True)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=True)
 
         call_count = [0]
 
@@ -871,7 +835,7 @@ class TestOpenRouterAPIErrorHandling:
             # After retry, reasoning should have been removed
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
@@ -911,15 +875,12 @@ class TestOpenRouterAPIErrorHandling:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._should_retry_without_reasoning = Mock(return_value=False)
-        pipe._report_openrouter_error = AsyncMock()
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=False)
+        pipe._ensure_error_formatter()._report_openrouter_error = AsyncMock()
 
         async def mock_streaming_loop(responses_body, *args, **kwargs):
             raise OpenRouterAPIError(
@@ -928,7 +889,7 @@ class TestOpenRouterAPIErrorHandling:
                 openrouter_message="Unrecoverable error",
             )
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
@@ -960,7 +921,7 @@ class TestOpenRouterAPIErrorHandling:
                 )
 
                 assert result == ""
-                pipe._report_openrouter_error.assert_called_once()
+                pipe._ensure_error_formatter()._report_openrouter_error.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_event_emitter_error_caught_on_status_update(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
@@ -968,13 +929,10 @@ class TestOpenRouterAPIErrorHandling:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         call_count = [0]
 
@@ -995,7 +953,7 @@ class TestOpenRouterAPIErrorHandling:
                 )
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         # Create event emitter that raises
         async def failing_event_emitter(event):
@@ -1052,15 +1010,12 @@ class TestNonStreamingPath:
         base_request_body["stream"] = False
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_nonstreaming_loop = AsyncMock(return_value={"result": "complete"})
-        pipe._run_streaming_loop = AsyncMock()  # Should not be called
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_nonstreaming_loop = AsyncMock(return_value={"result": "complete"})
+        pipe._streaming_handler._run_streaming_loop = AsyncMock()  # Should not be called
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/gpt-4o"
@@ -1092,8 +1047,8 @@ class TestNonStreamingPath:
                 )
 
                 assert result == {"result": "complete"}
-                pipe._run_nonstreaming_loop.assert_called_once()
-                pipe._run_streaming_loop.assert_not_called()
+                pipe._streaming_handler._run_nonstreaming_loop.assert_called_once()
+                pipe._streaming_handler._run_streaming_loop.assert_not_called()
 
 
 # -----------------------------------------------------------------------------
@@ -1122,17 +1077,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1174,17 +1126,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1226,17 +1175,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1279,17 +1225,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1332,17 +1275,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1385,17 +1325,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1438,17 +1375,14 @@ class TestAudioFormatSniffing:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1487,14 +1421,11 @@ class TestToolsRegistryAsList:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Provide tools as a list with spec objects
         tools_list = [
@@ -1551,13 +1482,10 @@ class TestReasoningBodyInitialization:
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         call_count = [0]
         captured_body = [None]
@@ -1583,7 +1511,7 @@ class TestReasoningBodyInitialization:
             captured_body[0] = responses_body
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
@@ -1649,9 +1577,9 @@ class TestDecodeBase64EdgeCases:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value="")  # Empty
-        pipe._emit_templated_error = AsyncMock()
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value="")  # Empty
+        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1675,7 +1603,7 @@ class TestDecodeBase64EdgeCases:
 
         # Should fail - no format can be determined
         assert result == ""
-        pipe._emit_templated_error.assert_called()
+        pipe._ensure_error_formatter()._emit_templated_error.assert_called()
 
     @pytest.mark.asyncio
     async def test_base64_with_corrupted_data_fallback_decode(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
@@ -1701,17 +1629,14 @@ class TestDecodeBase64EdgeCases:
         valid_b64 = base64.b64encode(test_data).decode()
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1757,14 +1682,11 @@ class TestAttachmentSkipContinuePaths:
             }
         }
 
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1805,14 +1727,11 @@ class TestAttachmentSkipContinuePaths:
             }
         }
 
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1854,14 +1773,11 @@ class TestAttachmentSkipContinuePaths:
             }
         }
 
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1904,17 +1820,14 @@ class TestAttachmentSkipContinuePaths:
         }
 
         mock_file = Mock(id="audio123")
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file)
-        pipe._read_file_record_base64 = AsyncMock(return_value=valid_b64)
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
-        pipe._run_streaming_loop = AsyncMock(return_value="Test response")
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file)
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=valid_b64)
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1947,13 +1860,10 @@ class TestReasoningEffortNoEventEmitter:
         """Reasoning effort retry should work without event emitter (line 715 path)."""
         orchestrator, pipe = orchestrator_and_pipe
 
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         call_count = [0]
 
@@ -1974,7 +1884,7 @@ class TestReasoningEffortNoEventEmitter:
                 )
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"
@@ -2016,13 +1926,10 @@ class TestReasoningEffortNoEventEmitter:
         """
         orchestrator, pipe = orchestrator_and_pipe
 
-        pipe._get_user_by_id = AsyncMock(return_value=None)
-        pipe._db_fetch = AsyncMock(return_value=None)
-        pipe._sanitize_request_input = Mock()
-        pipe._apply_reasoning_preferences = Mock()
-        pipe._apply_gemini_thinking_config = Mock()
-        pipe._apply_context_transforms = Mock()
-        pipe._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         call_count = [0]
 
@@ -2046,7 +1953,7 @@ class TestReasoningEffortNoEventEmitter:
                 )
             return "Test response after retry"
 
-        pipe._run_streaming_loop = mock_streaming_loop
+        pipe._streaming_handler._run_streaming_loop = mock_streaming_loop
 
         with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
             mock_family.base_model.return_value = "openai/o1"

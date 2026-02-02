@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
 import aiohttp
 
 from ..api.transforms import _filter_openrouter_request
+from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 from ..storage.persistence import generate_item_id
 from ..models.registry import normalize_model_id_dotted
 from ..core.timing_logger import timed
@@ -54,7 +55,7 @@ class NonStreamingAdapter:
         """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = endpoint_override or self._pipe._select_llm_endpoint(str(model_id), valves=effective_valves)
+        endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
 
         @timed
         def _extract_chat_message_text(message: Any) -> str:
@@ -307,7 +308,7 @@ class NonStreamingAdapter:
                 "type": "response.completed",
                 "response": {
                     "output": output,
-                    "usage": self._pipe._chat_usage_to_responses_usage(latest_usage),
+                    "usage": ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage),
                 },
             }
 
@@ -320,7 +321,7 @@ class NonStreamingAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._looks_like_responses_unsupported(exc):
+            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
                 self.logger.info(
                     "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
                     model_id,

@@ -1,18 +1,64 @@
-"""Integration tests for open_webui_openrouter_pipe/api/filters.py
+"""Integration tests for filter template strings from FilterManager.
 
-These tests use real Pipe() instances and Filter instances to verify
-the filter integration works correctly end-to-end. HTTP calls are
-mocked at the boundary using aioresponses.
+These tests load filters from FilterManager.render_*_filter_source() methods
+to ensure we test the ACTUAL code that gets deployed, not static backup copies.
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
+
+from types import ModuleType
+from typing import Any
 
 import pytest
 from aioresponses import aioresponses
 from pydantic import BaseModel
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.api.filters import Filter
+from open_webui_openrouter_pipe.filters import FilterManager
+
+
+def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
+    """Load filter source string as a module.
+
+    This tests the ACTUAL code that FilterManager deploys to Open WebUI,
+    not static backup copies in /filters/.
+    """
+    import sys
+
+    # Mock open_webui.env if not available (test environment)
+    if "open_webui" not in sys.modules:
+        open_webui_mock = ModuleType("open_webui")
+        sys.modules["open_webui"] = open_webui_mock
+
+    if "open_webui.env" not in sys.modules:
+        env_mock = ModuleType("open_webui.env")
+        env_mock.SRC_LOG_LEVELS = {}  # type: ignore
+        sys.modules["open_webui.env"] = env_mock
+
+    # Create a module namespace
+    module = ModuleType(module_name)
+    module.__file__ = f"<{module_name}_rendered_source>"
+
+    # Add to sys.modules so nested imports can resolve
+    sys.modules[module_name] = module
+
+    # Execute the source in the module namespace
+    exec(compile(source, f"<{module_name}>", "exec"), module.__dict__)
+
+    # Rebuild Pydantic models to resolve forward references (Literal types)
+    if hasattr(module, "Filter"):
+        if hasattr(module.Filter, "UserValves"):
+            module.Filter.UserValves.model_rebuild()
+        if hasattr(module.Filter, "Valves"):
+            module.Filter.Valves.model_rebuild()
+
+    return module
+
+
+# Load the Direct Uploads filter from rendered template
+_direct_uploads_source = FilterManager.render_direct_uploads_filter_source()
+_direct_uploads_module = _load_filter_from_source(_direct_uploads_source, "direct_uploads_filter")
+Filter = _direct_uploads_module.Filter
 
 
 # ============================================================================
@@ -41,6 +87,21 @@ def test_filter_user_valves_defaults():
     assert user_valves.DIRECT_FILES is False
     assert user_valves.DIRECT_AUDIO is False
     assert user_valves.DIRECT_VIDEO is False
+
+
+def test_filter_user_valves_has_pdf_parser():
+    """Test Filter UserValves has DIRECT_PDF_PARSER field."""
+    user_valves = Filter.UserValves()
+
+    assert hasattr(user_valves, 'DIRECT_PDF_PARSER')
+    assert user_valves.DIRECT_PDF_PARSER == "Native"
+
+    # Test other values
+    user_valves_pdf = Filter.UserValves(DIRECT_PDF_PARSER="PDF Text")
+    assert user_valves_pdf.DIRECT_PDF_PARSER == "PDF Text"
+
+    user_valves_ocr = Filter.UserValves(DIRECT_PDF_PARSER="Mistral OCR")
+    assert user_valves_ocr.DIRECT_PDF_PARSER == "Mistral OCR"
 
 
 # ============================================================================
@@ -1476,7 +1537,6 @@ def test_inlet_deduplicates_warnings():
 async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
     """Test filter output integrates correctly with Pipe processing."""
     pipe = pipe_instance_async
-    filt = Filter()
 
     # Prepare filter inputs
     files = [
@@ -1506,7 +1566,8 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
         }
     }
 
-    # Apply filter
+    # Create filter and apply
+    filt = Filter()
     filtered_body = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
     # Verify filter worked
@@ -1568,7 +1629,6 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
 async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
     """Test filter warnings are available to pipe processing."""
     pipe = pipe_instance_async
-    filt = Filter()
 
     files = [
         {
@@ -1598,7 +1658,8 @@ async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
         }
     }
 
-    # Apply filter
+    # Create filter and apply
+    filt = Filter()
     filtered_body = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
     # Verify warning was added
@@ -1608,3 +1669,257 @@ async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
 
     # Files should remain (fail-open)
     assert len(filtered_body["files"]) == 1
+
+
+# ============================================================================
+# OpenRouter Search (ORS) Filter Tests
+# ============================================================================
+
+
+class TestORSFilter:
+    """Tests for the OpenRouter Search filter rendered from template."""
+
+    @pytest.fixture
+    def ors_filter_class(self):
+        """Load ORS filter from rendered template."""
+        source = FilterManager.render_ors_filter_source()
+        module = _load_filter_from_source(source, "ors_filter")
+        return module.Filter
+
+    def test_ors_filter_initializes(self, ors_filter_class):
+        """Test ORS filter initializes with proper defaults."""
+        filt = ors_filter_class()
+        assert filt.toggle is True
+        # ORS filter doesn't have valves - just toggle
+
+    def test_ors_filter_has_inlet(self, ors_filter_class):
+        """Test ORS filter has inlet method."""
+        filt = ors_filter_class()
+        assert hasattr(filt, 'inlet')
+        assert callable(filt.inlet)
+
+    def test_ors_filter_inlet_sets_web_search_false(self, ors_filter_class):
+        """Test ORS filter inlet disables web_search in body."""
+        filt = ors_filter_class()
+        body = {"messages": []}
+        metadata = {}
+        result = filt.inlet(body, __metadata__=metadata)
+        # ORS filter sets web_search to False
+        assert result["features"]["web_search"] is False
+
+    def test_ors_filter_inlet_sets_metadata_flag(self, ors_filter_class):
+        """Test ORS filter inlet sets feature flag in metadata."""
+        filt = ors_filter_class()
+        body = {"messages": []}
+        metadata = {}
+        filt.inlet(body, __metadata__=metadata)
+        # ORS filter sets feature flag in metadata
+        assert "features" in metadata
+        assert metadata["features"].get("openrouter_web_search") is True
+
+
+# ============================================================================
+# Provider Routing Filter Tests
+# ============================================================================
+
+
+class TestProviderRoutingFilter:
+    """Tests for Provider Routing filters rendered from template."""
+
+    @pytest.fixture
+    def provider_filter_admin(self):
+        """Load provider routing filter with admin visibility."""
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="openai/gpt-4o",
+            providers=["openai", "azure"],
+            quantizations=["fp16", "int8"],
+            visibility="admin",
+            short_name="GPT-4o",
+            provider_names={"openai": "OpenAI", "azure": "Azure"},
+        )
+        module = _load_filter_from_source(source, "provider_filter_admin")
+        return module.Filter
+
+    @pytest.fixture
+    def provider_filter_user(self):
+        """Load provider routing filter with user visibility."""
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="anthropic/claude-3-opus",
+            providers=["anthropic", "amazon-bedrock"],
+            quantizations=[],
+            visibility="user",
+            short_name="Claude 3 Opus",
+            provider_names={"anthropic": "Anthropic", "amazon-bedrock": "Amazon Bedrock"},
+        )
+        module = _load_filter_from_source(source, "provider_filter_user")
+        return module.Filter
+
+    @pytest.fixture
+    def provider_filter_both(self):
+        """Load provider routing filter with both visibility."""
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="meta-llama/llama-3-70b",
+            providers=["together", "fireworks", "deepinfra"],
+            quantizations=["fp16", "int4", "int8"],
+            visibility="both",
+            short_name="Llama 3 70B",
+        )
+        module = _load_filter_from_source(source, "provider_filter_both")
+        return module.Filter
+
+    def test_provider_filter_admin_initializes(self, provider_filter_admin):
+        """Test admin provider filter initializes correctly."""
+        filt = provider_filter_admin()
+        # Admin visibility means toggle=False (always runs)
+        assert filt.toggle is False
+        # Should have Valves but not UserValves
+        assert hasattr(filt, 'valves')
+        assert not hasattr(filt, 'user_valves')
+
+    def test_provider_filter_admin_valves_has_fields(self, provider_filter_admin):
+        """Test admin Valves has all expected fields."""
+        filt = provider_filter_admin()
+        valves = filt.valves
+
+        # Check field existence
+        assert hasattr(valves, 'ORDER')
+        assert hasattr(valves, 'ALLOW_FALLBACKS')
+        assert hasattr(valves, 'REQUIRE_PARAMETERS')
+        assert hasattr(valves, 'DATA_COLLECTION')
+        assert hasattr(valves, 'ZDR')
+        assert hasattr(valves, 'ONLY')
+        assert hasattr(valves, 'IGNORE')
+        assert hasattr(valves, 'QUANTIZATION')
+        assert hasattr(valves, 'SORT')
+
+        # Check defaults
+        assert valves.ORDER == "(no preference)"
+        assert valves.ALLOW_FALLBACKS is True
+        assert valves.ZDR is False
+
+    def test_provider_filter_user_initializes(self, provider_filter_user):
+        """Test user provider filter initializes correctly."""
+        filt = provider_filter_user()
+        # User visibility means toggle=True (user can disable)
+        assert filt.toggle is True
+        # Should have UserValves but not Valves
+        assert hasattr(filt, 'user_valves')
+        assert not hasattr(filt, 'valves')
+
+    def test_provider_filter_user_valves_has_fields(self, provider_filter_user):
+        """Test user UserValves has all expected fields."""
+        filt = provider_filter_user()
+        user_valves = filt.user_valves
+
+        assert hasattr(user_valves, 'ORDER')
+        assert hasattr(user_valves, 'ONLY')
+        assert hasattr(user_valves, 'IGNORE')
+        assert user_valves.ORDER == "(no preference)"
+
+    def test_provider_filter_both_initializes(self, provider_filter_both):
+        """Test both-visibility provider filter has both valve types."""
+        filt = provider_filter_both()
+        # Both visibility means toggle=True
+        assert filt.toggle is True
+        # Should have both Valves and UserValves
+        assert hasattr(filt, 'valves')
+        assert hasattr(filt, 'user_valves')
+
+    def test_provider_filter_has_inlet(self, provider_filter_admin):
+        """Test provider filter has inlet method."""
+        filt = provider_filter_admin()
+        assert hasattr(filt, 'inlet')
+        assert callable(filt.inlet)
+
+    def test_provider_filter_inlet_returns_body(self, provider_filter_admin):
+        """Test provider filter inlet returns body."""
+        filt = provider_filter_admin()
+        body = {"messages": [], "model": "openai/gpt-4o"}
+        metadata = {}
+        result = filt.inlet(body, __metadata__=metadata)
+        assert result is body
+
+    def test_provider_filter_inlet_sets_provider_routing(self, provider_filter_admin):
+        """Test provider filter inlet sets provider routing in metadata."""
+        filt = provider_filter_admin()
+        # Create new Valves instance with ONLY explicitly set (triggers model_fields_set)
+        filt.valves = filt.Valves(ONLY="OpenAI")
+
+        body = {"messages": [], "model": "openai/gpt-4o"}
+        metadata = {}
+        filt.inlet(body, __metadata__=metadata)
+
+        # Should have provider routing in metadata (key is "provider", not "provider_routing")
+        pipe_meta = metadata.get("openrouter_pipe", {})
+        routing = pipe_meta.get("provider", {})
+        assert routing.get("only") == ["openai"]
+
+    def test_provider_filter_with_quantization(self, provider_filter_admin):
+        """Test provider filter with quantization option."""
+        filt = provider_filter_admin()
+        # Create new Valves instance with QUANTIZATION explicitly set
+        filt.valves = filt.Valves(QUANTIZATION="fp16")
+
+        body = {"messages": []}
+        metadata = {}
+        filt.inlet(body, __metadata__=metadata)
+
+        pipe_meta = metadata.get("openrouter_pipe", {})
+        routing = pipe_meta.get("provider", {})
+        assert routing.get("quantizations") == ["fp16"]
+
+    def test_provider_filter_with_zdr(self, provider_filter_admin):
+        """Test provider filter with ZDR enabled."""
+        filt = provider_filter_admin()
+        # Create new Valves instance with ZDR explicitly set
+        filt.valves = filt.Valves(ZDR=True)
+
+        body = {"messages": []}
+        metadata = {}
+        filt.inlet(body, __metadata__=metadata)
+
+        pipe_meta = metadata.get("openrouter_pipe", {})
+        routing = pipe_meta.get("provider", {})
+        assert routing.get("zdr") is True
+
+    def test_provider_filter_order_mapping(self, provider_filter_both):
+        """Test provider filter ORDER field maps to slug list."""
+        filt = provider_filter_both()
+        # Create new Valves instance with ORDER explicitly set
+        filt.valves = filt.Valves(ORDER="Together > Fireworks > Deepinfra")
+
+        body = {"messages": []}
+        metadata = {}
+        filt.inlet(body, __metadata__=metadata)
+
+        pipe_meta = metadata.get("openrouter_pipe", {})
+        routing = pipe_meta.get("provider", {})
+        # ORDER should be mapped to list of provider slugs
+        order = routing.get("order", [])
+        assert order == ["together", "fireworks", "deepinfra"]
+
+    def test_provider_filter_marker_present(self, provider_filter_admin):
+        """Test provider filter source contains marker."""
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="openai/gpt-4o",
+            providers=["openai"],
+            quantizations=[],
+            visibility="admin",
+        )
+        assert "OWUI_OPENROUTER_PIPE_MARKER" in source
+        assert "openrouter_pipe:provider_routing:" in source
+
+    def test_provider_filter_escapes_model_slug(self):
+        """Test provider filter properly escapes model slugs."""
+        # Test with a slug that might need escaping
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="vendor/model-with-dashes",
+            providers=["provider"],
+            quantizations=[],
+            visibility="admin",
+        )
+        assert "vendor/model-with-dashes" in source
+        # Should not cause syntax errors when compiled
+        module = _load_filter_from_source(source, "provider_filter_escape_test")
+        filt = module.Filter()
+        assert filt is not None

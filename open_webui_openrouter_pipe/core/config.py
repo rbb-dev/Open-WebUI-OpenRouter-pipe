@@ -51,6 +51,7 @@ _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
 _PROVIDER_ROUTING_FILTER_MARKER_PREFIX = "openrouter_pipe:provider_routing:"
 _PROVIDER_ROUTING_FILTER_MARKER_VERSION = "v1"
 _PROVIDER_ROUTING_FILTER_ID_PREFIX = "openrouter_provider_"
+_PROVIDER_SLUG_PATTERN = re.compile(r"^[a-z0-9-]+(?:/[a-z0-9-]+)?$")
 
 _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     {
@@ -459,7 +460,6 @@ class EncryptedStr(str):
     _ENCRYPTION_PREFIX = "encrypted:"
 
     @classmethod
-    @timed
     def _get_encryption_key(cls) -> Optional[bytes]:
         """Return the Fernet key derived from ``WEBUI_SECRET_KEY``.
 
@@ -473,7 +473,6 @@ class EncryptedStr(str):
         return base64.urlsafe_b64encode(hashed_key)
 
     @classmethod
-    @timed
     def encrypt(cls, value: str) -> str:
         """Encrypt ``value`` when an application secret is configured.
 
@@ -493,7 +492,6 @@ class EncryptedStr(str):
         return f"{cls._ENCRYPTION_PREFIX}{encrypted.decode()}"
 
     @classmethod
-    @timed
     def decrypt(cls, value: str) -> str:
         """Decrypt values produced by :meth:`encrypt`.
 
@@ -523,7 +521,6 @@ class EncryptedStr(str):
             return value
 
     @classmethod
-    @timed
     def __get_pydantic_core_schema__(
         cls, _source_type: Any, _handler: GetCoreSchemaHandler
     ) -> core_schema.CoreSchema:
@@ -547,19 +544,16 @@ class EncryptedStr(str):
 _ALLOWED_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
-@timed
 def _default_api_key() -> EncryptedStr:
     """Return the API key env default as EncryptedStr."""
     return EncryptedStr((os.getenv("OPENROUTER_API_KEY") or "").strip())
 
 
-@timed
 def _default_artifact_encryption_key() -> EncryptedStr:
     """Provide an EncryptedStr placeholder for artifact encryption."""
     return EncryptedStr("")
 
 
-@timed
 def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
     """Normalize env-provided log level to the allowed literal set."""
     value = (os.getenv("GLOBAL_LOG_LEVEL") or "INFO").strip().upper()
@@ -568,7 +562,6 @@ def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR",
     return cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], value)
 
 
-@timed
 def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     """Infer the Open WebUI function id from the module name.
 
@@ -1517,7 +1510,6 @@ class UserValves(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    @timed
     def _normalize_inherit(cls, values):
         """Treat the literal string 'inherit' (any case) as an unset value.
 
@@ -1604,7 +1596,6 @@ class UserValves(BaseModel):
     )
 
 
-@timed
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = (getattr(valves, "HTTP_REFERER_OVERRIDE", "") or "").strip()

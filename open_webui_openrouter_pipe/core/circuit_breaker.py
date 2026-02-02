@@ -38,14 +38,7 @@ class CircuitBreaker:
     _AUTH_FAILURE_UNTIL: dict[str, float] = {}
     _AUTH_FAILURE_LOCK = threading.Lock()
 
-    @timed
     def __init__(self, *, threshold: int, window_seconds: float):
-        """Initialize the circuit breaker.
-
-        Args:
-            threshold: Maximum failures allowed within the time window
-            window_seconds: Time window in seconds for counting failures
-        """
         self._threshold = threshold
         self._window_seconds = window_seconds
 
@@ -60,15 +53,12 @@ class CircuitBreaker:
         )
 
     @property
-    @timed
     def threshold(self) -> int:
         """Get the failure threshold."""
         return self._threshold
 
     @threshold.setter
-    @timed
     def threshold(self, value: int) -> None:
-        """Set the failure threshold."""
         new_threshold = max(1, int(value))
         self._threshold = new_threshold
 
@@ -89,22 +79,18 @@ class CircuitBreaker:
         )
 
     @property
-    @timed
     def window_seconds(self) -> float:
         """Get the time window in seconds."""
         return self._window_seconds
 
     @window_seconds.setter
-    @timed
     def window_seconds(self, value: float) -> None:
-        """Set the time window in seconds."""
         self._window_seconds = max(0.1, float(value))
 
     # --------------------------------------------------------------------------
     # Request Circuit Breaker (per-user)
     # --------------------------------------------------------------------------
 
-    @timed
     def allows(self, user_id: str) -> bool:
         """Check if requests are allowed for a user.
 
@@ -128,7 +114,6 @@ class CircuitBreaker:
 
         return len(window) < self._threshold
 
-    @timed
     def record_failure(self, user_id: str) -> None:
         """Record a request failure for a user.
 
@@ -139,7 +124,6 @@ class CircuitBreaker:
             return
         self._breaker_records[user_id].append(time.time())
 
-    @timed
     def reset(self, user_id: str) -> None:
         """Clear all failure records for a user, allowing requests again.
 
@@ -155,7 +139,6 @@ class CircuitBreaker:
     # Tool Circuit Breaker (per-user per-tool-type)
     # --------------------------------------------------------------------------
 
-    @timed
     def tool_allows(self, user_id: str, tool_type: str) -> bool:
         """Check if a specific tool type is allowed for a user.
 
@@ -182,7 +165,6 @@ class CircuitBreaker:
 
         return len(window) < self._threshold
 
-    @timed
     def record_tool_failure(self, user_id: str, tool_type: str) -> None:
         """Record a tool execution failure for a specific tool type.
 
@@ -194,7 +176,6 @@ class CircuitBreaker:
             return
         self._tool_breakers[user_id][tool_type].append(time.time())
 
-    @timed
     def reset_tool(self, user_id: str, tool_type: str) -> None:
         """Clear failure records for a specific tool type.
 
@@ -212,7 +193,6 @@ class CircuitBreaker:
     # --------------------------------------------------------------------------
 
     @classmethod
-    @timed
     def note_auth_failure(cls, scope_key: str, *, ttl_seconds: Optional[int] = None) -> None:
         """Record an authentication failure.
 
@@ -235,7 +215,6 @@ class CircuitBreaker:
             cls._AUTH_FAILURE_UNTIL[scope_key] = until
 
     @classmethod
-    @timed
     def auth_failure_active(cls, scope_key: str) -> bool:
         """Check if an authentication failure is currently active.
 

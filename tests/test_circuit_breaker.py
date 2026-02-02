@@ -469,48 +469,48 @@ class TestRequestBreaker:
     def test_request_breaker_trips_after_threshold(self, monkeypatch, pipe_instance) -> None:
         """N failures in window => breaker blocks."""
         pipe = pipe_instance
-        pipe._breaker_threshold = 3
-        pipe._breaker_window_seconds = 60
+        pipe._circuit_breaker.threshold = 3
+        pipe._circuit_breaker.window_seconds = 60
 
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
 
         user_id = "user-1"
         for _ in range(3):
-            pipe._record_failure(user_id)
+            pipe._circuit_breaker.record_failure(user_id)
 
-        assert pipe._breaker_allows(user_id) is False
+        assert pipe._circuit_breaker.allows(user_id) is False
 
     def test_request_breaker_resets_on_success(self, monkeypatch, pipe_instance) -> None:
         """Reset clears failures so breaker allows again."""
         pipe = pipe_instance
-        pipe._breaker_threshold = 2
-        pipe._breaker_window_seconds = 60
+        pipe._circuit_breaker.threshold = 2
+        pipe._circuit_breaker.window_seconds = 60
 
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
 
         user_id = "user-1"
-        pipe._record_failure(user_id)
-        pipe._record_failure(user_id)
-        assert pipe._breaker_allows(user_id) is False
+        pipe._circuit_breaker.record_failure(user_id)
+        pipe._circuit_breaker.record_failure(user_id)
+        assert pipe._circuit_breaker.allows(user_id) is False
 
-        pipe._reset_failure_counter(user_id)
-        assert pipe._breaker_allows(user_id) is True
+        pipe._circuit_breaker.reset(user_id)
+        assert pipe._circuit_breaker.allows(user_id) is True
 
     def test_breaker_window_sliding(self, monkeypatch, pipe_instance) -> None:
         """Failures outside the window are evicted and do not count."""
         pipe = pipe_instance
-        pipe._breaker_threshold = 2
-        pipe._breaker_window_seconds = 10
+        pipe._circuit_breaker.threshold = 2
+        pipe._circuit_breaker.window_seconds = 10
 
         user_id = "user-1"
         monkeypatch.setattr(pipe_module.time, "time", lambda: 0.0)
-        pipe._record_failure(user_id)
+        pipe._circuit_breaker.record_failure(user_id)
         monkeypatch.setattr(pipe_module.time, "time", lambda: 50.0)
-        pipe._record_failure(user_id)
+        pipe._circuit_breaker.record_failure(user_id)
 
         # Move time forward; both failures are now outside the 10s window.
         monkeypatch.setattr(pipe_module.time, "time", lambda: 100.0)
-        assert pipe._breaker_allows(user_id) is True
+        assert pipe._circuit_breaker.allows(user_id) is True
 
 
 class TestToolBreaker:
@@ -519,18 +519,18 @@ class TestToolBreaker:
     def test_tool_breaker_tracks_failures_by_type(self, monkeypatch, pipe_instance) -> None:
         """Failures are tracked per tool type and threshold blocks that type only."""
         pipe = pipe_instance
-        pipe._breaker_threshold = 2
-        pipe._breaker_window_seconds = 60
+        pipe._circuit_breaker.threshold = 2
+        pipe._circuit_breaker.window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
 
         user_id = "user-1"
         tool_type = "function"
-        pipe._record_tool_failure_type(user_id, tool_type)
-        assert pipe._tool_type_allows(user_id, tool_type) is True
-        pipe._record_tool_failure_type(user_id, tool_type)
-        assert pipe._tool_type_allows(user_id, tool_type) is False
+        pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
+        assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is True
+        pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
+        assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is False
 
-        assert pipe._tool_type_allows(user_id, "other_type") is True
+        assert pipe._circuit_breaker.tool_allows(user_id, "other_type") is True
 
     @pytest.mark.asyncio
     async def test_tool_breaker_skips_failing_tool_type(self, pipe_instance_async) -> None:
@@ -553,7 +553,7 @@ class TestToolBreaker:
             batch_cap=1,
         )
 
-        await pipe._notify_tool_breaker(ctx, "function", "lookup")
+        await pipe._ensure_tool_executor()._notify_tool_breaker(ctx, "function", "lookup")
 
         assert any(e.get("type") == "status" for e in events)
         assert any("Skipping lookup" in e.get("data", {}).get("description", "") for e in events)
@@ -565,27 +565,31 @@ class TestDatabaseBreaker:
     def test_db_breaker_tracks_failures(self, monkeypatch, pipe_instance) -> None:
         """DB failures are tracked and eventually block DB ops."""
         pipe = pipe_instance
-        pipe._breaker_threshold = 2
-        pipe._breaker_window_seconds = 60
+        pipe._circuit_breaker.threshold = 2
+        pipe._circuit_breaker.window_seconds = 60
+        pipe._artifact_store._breaker_threshold = 2
+        pipe._artifact_store._breaker_window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
 
         user_id = "user-1"
-        pipe._record_db_failure(user_id)
-        assert pipe._db_breaker_allows(user_id) is True
-        pipe._record_db_failure(user_id)
-        assert pipe._db_breaker_allows(user_id) is False
+        pipe._artifact_store._record_db_failure(user_id)
+        assert pipe._artifact_store._db_breaker_allows(user_id) is True
+        pipe._artifact_store._record_db_failure(user_id)
+        assert pipe._artifact_store._db_breaker_allows(user_id) is False
 
     @pytest.mark.asyncio
     async def test_db_breaker_suppresses_persistence_on_failure(self, monkeypatch, pipe_instance_async) -> None:
         """When DB breaker is tripped, _db_persist returns [] and emits a warning notification."""
         pipe = pipe_instance_async
-        pipe._breaker_threshold = 1
-        pipe._breaker_window_seconds = 60
+        pipe._circuit_breaker.threshold = 1
+        pipe._circuit_breaker.window_seconds = 60
+        pipe._artifact_store._breaker_threshold = 1
+        pipe._artifact_store._breaker_window_seconds = 60
         monkeypatch.setattr(pipe_module.time, "time", lambda: 1_000.0)
 
         user_id = "user-1"
         # Trip DB breaker.
-        pipe._record_db_failure(user_id)
+        pipe._artifact_store._record_db_failure(user_id)
 
         events: list[dict] = []
 
@@ -607,7 +611,7 @@ class TestDatabaseBreaker:
         tool_token = pipe._TOOL_CONTEXT.set(ctx)
         user_token = SessionLogger.user_id.set(user_id)
         try:
-            result = await pipe._db_persist(
+            result = await pipe._artifact_store._db_persist(
                 [
                     {
                         "chat_id": "chat-1",

@@ -34,7 +34,6 @@ class ReasoningConfigManager:
     - Detects reasoning errors and determines if retry is appropriate
     """
 
-    @timed
     def __init__(self, pipe: "Pipe", logger: logging.Logger):
         """Initialize the ReasoningConfigManager.
 
@@ -46,11 +45,6 @@ class ReasoningConfigManager:
         self.logger = logger
         self.valves = pipe.valves
 
-    # ----------------------------------------------------------------------
-    # _apply_reasoning_preferences (35 lines)
-    # ----------------------------------------------------------------------
-
-    @timed
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
         """Automatically request reasoning traces when supported and enabled."""
         if not valves.ENABLE_REASONING:
@@ -87,11 +81,6 @@ class ReasoningConfigManager:
             setattr(responses_body, "include_reasoning", False)
 
 
-    # ----------------------------------------------------------------------
-    # _apply_task_reasoning_preferences (29 lines)
-    # ----------------------------------------------------------------------
-
-    @timed
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
         """Override reasoning effort for task models."""
         if not effort:
@@ -122,11 +111,6 @@ class ReasoningConfigManager:
             setattr(responses_body, "include_reasoning", False)
 
 
-    # ----------------------------------------------------------------------
-    # _apply_gemini_thinking_config (47 lines)
-    # ----------------------------------------------------------------------
-
-    @timed
     def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
         """Translate reasoning preferences into Vertex thinking_config for Gemini models."""
         # Lazy import to avoid circular dependency
@@ -172,11 +156,6 @@ class ReasoningConfigManager:
         responses_body.reasoning = None
         setattr(responses_body, "include_reasoning", None)
 
-    # ----------------------------------------------------------------------
-    # _should_retry_without_reasoning (38 lines)
-    # ----------------------------------------------------------------------
-
-    @timed
     def _should_retry_without_reasoning(
         self,
         error: OpenRouterAPIError,

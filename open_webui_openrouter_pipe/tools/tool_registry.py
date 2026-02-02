@@ -90,7 +90,6 @@ def build_tools(
     return _dedupe_tools(tools)
 
 
-@timed
 def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """(Internal) Deduplicate a tool list with simple, stable identity keys.
 
@@ -121,7 +120,6 @@ def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
     return list(canonical.values())
 
 
-@timed
 def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Optional[dict[str, Any]]:
     """Return a normalized Responses-style function tool spec, or None when invalid."""
     if not isinstance(tool, dict):
@@ -141,7 +139,6 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Op
     return spec
 
 
-@timed
 def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: bool) -> Optional[dict[str, Any]]:
     """Return a Responses-style function tool spec from an OWUI tool registry entry."""
     if not isinstance(tool_cfg, dict):
@@ -164,7 +161,6 @@ def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: b
     return out
 
 
-@timed
 def _tool_prefix_for_collision(source: str, tool_cfg: dict[str, Any] | None) -> str:
     """Return the prefix to apply when collision renaming is required."""
     if source == "owui_request_tools":
@@ -217,7 +213,6 @@ def _build_collision_safe_tool_specs_and_registry(
         entry for entry in builtin_registry.values() if isinstance(entry, dict)
     ]
 
-    @timed
     def _pick_executor(name: str, *, prefer: str | None = None) -> dict[str, Any] | None:
         if prefer == "builtin":
             for e in builtin_entries:

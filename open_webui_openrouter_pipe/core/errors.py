@@ -60,7 +60,6 @@ LOGGER = logging.getLogger(__name__)
 class _RetryableHTTPStatusError(Exception):
     """Wrapper that marks an HTTPStatusError as retryable."""
 
-    @timed
     def __init__(self, original: httpx.HTTPStatusError, retry_after: Optional[float] = None):
         """Capture the original HTTP error plus optional Retry-After hint."""
         self.original = original
@@ -72,12 +71,10 @@ class _RetryableHTTPStatusError(Exception):
 class _RetryWait:
     """Custom Tenacity wait strategy honoring Retry-After headers."""
 
-    @timed
     def __init__(self, base_wait):
         """Store the wrapped Tenacity wait callable used as a baseline."""
         self._base_wait = base_wait
 
-    @timed
     def __call__(self, retry_state):
         """Return the greater of base delay or Retry-After header guidance."""
         base_delay = self._base_wait(retry_state) if self._base_wait else 0
@@ -514,27 +511,3 @@ def _read_rag_file_constraints() -> tuple[bool, Optional[int]]:
         limit_mb = min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
 
     return rag_enabled, limit_mb
-
-
-# -----------------------------------------------------------------------------
-# Async Helper
-# -----------------------------------------------------------------------------
-
-async def _wait_for(
-    value: Awaitable[_TWait] | _TWait,
-    *,
-    timeout: Optional[float] = None,
-) -> _TWait:
-    """Return ``value`` immediately when it's synchronous, otherwise await it.
-
-    Redis' asyncio client returns synchronous fallbacks (bool/str/list) when a
-    pipeline is configured for immediate execution, which caused ``await`` to be
-    applied to non-awaitables.  This helper centralizes the guard so call sites
-    stay tidy and Pyright no longer reports "X is not awaitable" diagnostics.
-    """
-    if inspect.isawaitable(value):
-        coroutine = cast(Awaitable[_TWait], value)
-        if timeout is None:
-            return cast(_TWait, await coroutine)
-        return cast(_TWait, await asyncio.wait_for(coroutine, timeout=timeout))
-    return cast(_TWait, value)

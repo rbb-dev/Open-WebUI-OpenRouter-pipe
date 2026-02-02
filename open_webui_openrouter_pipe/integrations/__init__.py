@@ -8,8 +8,9 @@ Modules:
     anthropic: Anthropic-specific features like prompt caching
 """
 
-from .anthropic import _maybe_apply_anthropic_prompt_caching
+from .anthropic import _maybe_apply_anthropic_prompt_caching, _is_anthropic_model_id
 
 __all__ = [
     "_maybe_apply_anthropic_prompt_caching",
+    "_is_anthropic_model_id",
 ]

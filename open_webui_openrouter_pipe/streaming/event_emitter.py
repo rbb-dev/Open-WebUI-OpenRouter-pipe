@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 _owui_template_cached: Optional[Callable[..., dict[str, Any]]] = None
 
 
-@timed
 def _stub_chat_chunk_template(
     model: str,
     content: Optional[str] = None,
@@ -69,7 +68,6 @@ def _stub_chat_chunk_template(
 
 
 class _OpenAIChatChunkTemplate(Protocol):
-    @timed
     def __call__(
         self,
         model: str,
@@ -81,7 +79,6 @@ class _OpenAIChatChunkTemplate(Protocol):
         ...
 
 
-@timed
 def openai_chat_chunk_message_template(
     model: str,
     content: Optional[str] = None,
@@ -126,7 +123,6 @@ class EventEmitterHandler:
     _REASONING_STATUS_MIN_CHARS = REASONING_STATUS_MIN_CHARS
     _REASONING_STATUS_IDLE_SECONDS = REASONING_STATUS_IDLE_SECONDS
 
-    @timed
     def __init__(
         self,
         logger: logging.Logger,
@@ -147,7 +143,6 @@ class EventEmitterHandler:
         self._pipe = pipe_instance
         self._event_emitter = event_emitter
 
-    @timed
     async def _emit_status(
         self,
         event_emitter: Optional[Callable[[dict], Awaitable[None]]],
@@ -196,8 +191,7 @@ class EventEmitterHandler:
 
 
 
-    @timed
-    async def _emit_error(
+    async def _emit_error_event(
         self,
         event_emitter: EventEmitter | None,
         error_obj: Exception | str,
@@ -244,8 +238,7 @@ class EventEmitterHandler:
 
 
 
-    @timed
-    async def _emit_templated_error(
+    async def _emit_templated_error_event(
         self,
         event_emitter: EventEmitter | None,
         *,
@@ -271,7 +264,7 @@ class EventEmitterHandler:
             log_message: Technical message for operator logs
             log_level: Logging level (default: ERROR)
         """
-        error_id, context_defaults = self._build_error_context()
+        error_id, context_defaults = self._create_error_context()
         enriched_variables = {**context_defaults, **variables}
 
         # Log with error ID for correlation
@@ -308,8 +301,7 @@ class EventEmitterHandler:
 
 
 
-    @timed
-    def _build_error_context(self) -> tuple[str, dict[str, Any]]:
+    def _create_error_context(self) -> tuple[str, dict[str, Any]]:
         """Return a unique error id plus contextual metadata for templates."""
         error_id = secrets.token_hex(8)
         context = {
@@ -324,7 +316,6 @@ class EventEmitterHandler:
 
 
 
-    @timed
     async def _emit_citation(
         self,
         event_emitter: EventEmitter | None,
@@ -380,7 +371,6 @@ class EventEmitterHandler:
         )
 
 
-    @timed
     async def _emit_files(
         self,
         event_emitter: EventEmitter | None,
@@ -412,7 +402,6 @@ class EventEmitterHandler:
             self.logger.debug("Failed to emit files event: %s", exc)
 
 
-    @timed
     async def _emit_embeds(
         self,
         event_emitter: EventEmitter | None,
@@ -444,7 +433,6 @@ class EventEmitterHandler:
             self.logger.debug("Failed to emit embeds event: %s", exc)
 
 
-    @timed
     async def _emit_completion(
         self,
         event_emitter: EventEmitter | None,
@@ -478,7 +466,6 @@ class EventEmitterHandler:
         )
 
 
-    @timed
     async def _emit_notification(
         self,
         event_emitter: EventEmitter | None,
@@ -498,7 +485,6 @@ class EventEmitterHandler:
         )
 
 
-    @timed
     def _wrap_safe_event_emitter(
         self,
         emitter: EventEmitter | None,
@@ -508,7 +494,6 @@ class EventEmitterHandler:
         if emitter is None:
             return None
 
-        @timed
         async def _guarded(event: dict[str, Any]) -> None:
             try:
                 await emitter(event)
@@ -520,7 +505,6 @@ class EventEmitterHandler:
         return _guarded
 
 
-    @timed
     def _try_put_middleware_stream_nowait(
         self,
         stream_queue: asyncio.Queue[dict[str, Any] | str | None],
@@ -534,7 +518,6 @@ class EventEmitterHandler:
             return
 
 
-    @timed
     async def _put_middleware_stream_item(
         self,
         job: _PipeJob,
@@ -565,7 +548,6 @@ class EventEmitterHandler:
 
 
 
-    @timed
     def _make_middleware_stream_emitter(
         self,
         job: _PipeJob,
@@ -598,7 +580,6 @@ class EventEmitterHandler:
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
 
-        @timed
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit status updates for late-arriving reasoning without spamming the UI."""
             nonlocal reasoning_status_buffer, reasoning_status_last_emit
@@ -638,13 +619,11 @@ class EventEmitterHandler:
             reasoning_status_buffer = ""
             reasoning_status_last_emit = now
 
-        @timed
         async def _flush_reasoning_status() -> None:
             """Flush any buffered reasoning status before stream completion."""
             if thinking_status_enabled and reasoning_status_buffer:
                 await _maybe_emit_reasoning_status("", force=True)
 
-        @timed
         async def _emit(event: dict[str, Any]) -> None:
             nonlocal assistant_sent, answer_started
             if not isinstance(event, dict):
