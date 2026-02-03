@@ -277,9 +277,6 @@ def _apply_source_context_responses_api(
 
     return result
 
-# Tools that produce citations when executed
-CITATION_TOOLS = frozenset({"search_web", "view_knowledge_file", "query_knowledge_files"})
-
 # Type hints for Open WebUI components
 EventEmitter = Any  # Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -1770,8 +1767,6 @@ class StreamingHandler:
                     if get_citation_source_from_tool_result is not None:
                         for call, output in zip(calls, function_outputs):
                             tool_name = (call.get("name") or "").strip()
-                            if tool_name not in CITATION_TOOLS:
-                                continue
                             if output.get("status") != "completed":
                                 continue
                             try:
@@ -1802,16 +1797,16 @@ class StreamingHandler:
                                     exc_info=self.logger.isEnabledFor(logging.DEBUG),
                                 )
 
-                    # Apply source context to messages for RAG-style context injection
-                    # This enables the model to generate inline [1], [2] citations
-                    # Uses adapter pattern: Responses API → Chat Completions → OWUI function → Responses API
+                    # RAG-style source context injection for non-native function calling.
+                    # When function_calling is "native", tool results go via function_call_output
+                    # and RAG injection would duplicate tokens. Only inject when NOT native.
+                    is_native_fc = metadata.get("params", {}).get("function_calling") == "native"
                     self.logger.debug(
-                        "Source context check: collected_sources=%d, owui_fn=%s, request_ctx=%s",
+                        "Source context check: collected_sources=%d, native_fc=%s",
                         len(collected_sources),
-                        _owui_apply_source_context is not None,
-                        request_context is not None,
+                        is_native_fc,
                     )
-                    if collected_sources:
+                    if collected_sources and not is_native_fc:
                         try:
                             # Extract the last user message for context
                             user_message = ""
