@@ -13,9 +13,15 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 
-@timed
+def _is_anthropic_model_id(model_id: Any) -> bool:
+    """Check if a model ID belongs to Anthropic."""
+    if not isinstance(model_id, str):
+        return False
+    normalized = model_id.strip()
+    return normalized.startswith("anthropic/") or normalized.startswith("anthropic.")
+
+
 def _maybe_apply_anthropic_prompt_caching(
-    self,
     input_items: list[dict[str, Any]],
     *,
     model_id: str,
@@ -23,7 +29,7 @@ def _maybe_apply_anthropic_prompt_caching(
 ) -> None:
     """Apply Anthropic prompt caching to input items.
 
-    When enabled via valves, this method adds cache_control markers to appropriate
+    When enabled via valves, this function adds cache_control markers to appropriate
     input_text blocks in the last few system and user messages to enable Anthropic's
     prompt caching feature.
 
@@ -34,7 +40,7 @@ def _maybe_apply_anthropic_prompt_caching(
     """
     if not getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False):
         return
-    if not self._is_anthropic_model_id(model_id):
+    if not _is_anthropic_model_id(model_id):
         return
 
     ttl = getattr(valves, "ANTHROPIC_PROMPT_CACHE_TTL", "5m")

@@ -13,13 +13,18 @@ These utilities have minimal dependencies and can be used by any module.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import re
 import secrets
 import hashlib
 import time
-from typing import Any, Iterator, Literal, Optional, cast
+from typing import Any, Awaitable, Iterator, Literal, Optional, TypeVar, cast
+
+# Generic type variable for _await_if_needed
+_T = TypeVar("_T")
 
 # Import constants needed for template rendering and ULID generation
 from .config import (
@@ -589,3 +594,34 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
 
     spans.sort(key=lambda span: span["start"])
     return spans
+
+
+# -----------------------------------------------------------------------------
+# Async Helper
+# -----------------------------------------------------------------------------
+
+async def _await_if_needed(
+    value: Awaitable[_T] | _T,
+    *,
+    timeout: Optional[float] = None,
+) -> _T:
+    """Return ``value`` immediately when it's synchronous, otherwise await it.
+
+    Redis' asyncio client returns synchronous fallbacks (bool/str/list) when a
+    pipeline is configured for immediate execution, which caused ``await`` to be
+    applied to non-awaitables. This helper centralizes the guard so call sites
+    stay tidy and Pyright no longer reports "X is not awaitable" diagnostics.
+
+    Args:
+        value: Either an awaitable coroutine or a synchronous value.
+        timeout: Optional timeout in seconds for awaiting the coroutine.
+
+    Returns:
+        The resolved value (awaited if necessary).
+    """
+    if inspect.isawaitable(value):
+        coroutine = cast(Awaitable[_T], value)
+        if timeout is None:
+            return cast(_T, await coroutine)
+        return cast(_T, await asyncio.wait_for(coroutine, timeout=timeout))
+    return cast(_T, value)

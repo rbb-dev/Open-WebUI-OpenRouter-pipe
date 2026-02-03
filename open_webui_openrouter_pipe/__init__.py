@@ -425,7 +425,6 @@ def __getattr__(name: str):
         "persistence": ".storage.persistence",
         "multimodal": ".storage.multimodal",
         "transforms": ".api.transforms",
-        "filters": ".api.filters",
         "registry": ".models.registry",
     }
     if name in submodules:

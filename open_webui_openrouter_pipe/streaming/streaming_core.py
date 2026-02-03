@@ -35,6 +35,15 @@ else:
 # Import error classes
 from ..core.errors import OpenRouterAPIError, StatusMessages
 
+# Import costs helper
+from ..core.costs import maybe_dump_costs_snapshot
+
+# Import request sanitizer
+from ..requests.sanitizer import _sanitize_request_input
+
+# Import Anthropic integration
+from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
+
 # Import SessionLogger
 from ..core.logging_system import SessionLogger
 
@@ -294,7 +303,6 @@ class StreamingHandler:
         - Various Pipe methods and utilities
     """
     
-    @timed
     def __init__(
         self,
         logger: logging.Logger,
@@ -411,7 +419,6 @@ class StreamingHandler:
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
 
-        @timed
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit readable status updates for reasoning text without flooding."""
             nonlocal reasoning_status_buffer, reasoning_status_last_emit
@@ -446,11 +453,10 @@ class StreamingHandler:
             reasoning_status_buffer = ""
             reasoning_status_last_emit = now
 
-        @timed
         async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
             nonlocal storage_context_cache
             if storage_context_cache is None:
-                storage_context_cache = await self._pipe._resolve_storage_context(request_context, user_obj)
+                storage_context_cache = await self._pipe._multimodal_handler._resolve_storage_context(request_context, user_obj)
             return storage_context_cache or (None, None)
 
         @timed
@@ -464,7 +470,7 @@ class StreamingHandler:
             if ext == "jpg":
                 ext = "jpeg"
             filename = f"generated-image-{uuid.uuid4().hex}.{ext}"
-            return await self._pipe._upload_to_owui_storage(
+            return await self._pipe._multimodal_handler._upload_to_owui_storage(
                 request=upload_request,
                 user=upload_user,
                 file_data=data,
@@ -481,11 +487,11 @@ class StreamingHandler:
             if not text:
                 return None
             if text.startswith("data:"):
-                parsed = self._pipe._parse_data_url(text)
+                parsed = self._pipe._multimodal_handler._parse_data_url(text)
                 if parsed:
                     stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
                     if stored:
-                        await self._pipe._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                        await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                         return f"/api/v1/files/{stored}/content"
                     return text
                 return None
@@ -497,7 +503,7 @@ class StreamingHandler:
             cleaned = cleaned.strip()
             if not cleaned:
                 return None
-            if not self._validate_base64_size(cleaned):
+            if not self._pipe._multimodal_handler._validate_base64_size(cleaned):
                 return None
             try:
                 decoded = base64.b64decode(cleaned, validate=True)
@@ -506,7 +512,7 @@ class StreamingHandler:
             mime_type = "image/png"
             stored = await _persist_generated_image(decoded, mime_type)
             if stored:
-                await self._pipe._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                 return f"/api/v1/files/{stored}/content"
             return f"data:{mime_type};base64,{cleaned}"
 
@@ -529,7 +535,7 @@ class StreamingHandler:
                     b64_val = entry.get(key)
                     if isinstance(b64_val, str) and b64_val.strip():
                         cleaned = b64_val.strip()
-                        if not self._validate_base64_size(cleaned):
+                        if not self._pipe._multimodal_handler._validate_base64_size(cleaned):
                             continue
                         try:
                             decoded = base64.b64decode(cleaned, validate=True)
@@ -544,7 +550,7 @@ class StreamingHandler:
                             mime_type = "image/jpeg"
                         stored = await _persist_generated_image(decoded, mime_type)
                         if stored:
-                            await self._pipe._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
                         return f"data:{mime_type};base64,{cleaned}"
                 nested_result = entry.get("result")
@@ -552,7 +558,6 @@ class StreamingHandler:
                     return await _materialize_image_entry(nested_result)
             return None
 
-        @timed
         async def _collect_image_output_urls(item: dict[str, Any]) -> list[str]:
             payload = item.get("result")
             urls: list[str] = []
@@ -567,7 +572,6 @@ class StreamingHandler:
                     urls.append(resolved)
             return urls
 
-        @timed
         async def _render_image_markdown(item: dict[str, Any]) -> list[str]:
             nonlocal generated_image_count
             urls = await _collect_image_output_urls(item)
@@ -579,7 +583,6 @@ class StreamingHandler:
                 markdowns.append(f"![{alt_text}]({url})")
             return markdowns
 
-        @timed
         def _append_output_block(current: str, block: str) -> str:
             snippet = (block or "").strip()
             if not snippet:
@@ -591,7 +594,6 @@ class StreamingHandler:
                     current += "\n"
             return f"{current}{snippet}\n"
 
-        @timed
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
             """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
             prev = surrogate_carry.get(bucket, "")
@@ -612,7 +614,6 @@ class StreamingHandler:
             surrogate_carry[bucket] = new_carry
             return normalized
 
-        @timed
         def _extract_reasoning_text(event: dict[str, Any]) -> str:
             """Return best-effort reasoning text from assorted event payloads."""
             if not isinstance(event, dict):
@@ -640,7 +641,6 @@ class StreamingHandler:
                         return "".join(fragments)
             return ""
 
-        @timed
         def _reasoning_stream_key(event: dict[str, Any], etype: Optional[str]) -> str:
             """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
             item_id = event.get("item_id")
@@ -656,7 +656,6 @@ class StreamingHandler:
                 return active_reasoning_item_id
             return "__reasoning__"
 
-        @timed
         def _extract_reasoning_text_from_item(item: dict[str, Any]) -> str:
             """Extract reasoning content/summary from a completed output item."""
             if not isinstance(item, dict):
@@ -680,7 +679,6 @@ class StreamingHandler:
                             fragments.append(text_val)
             return "".join(fragments)
 
-        @timed
         def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
             """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
             nonlocal reasoning_buffer
@@ -715,7 +713,7 @@ class StreamingHandler:
             # to the UI instead of silently retrying.
             pending_items.clear()
             try:
-                ulids = await self._pipe._db_persist(rows)
+                ulids = await self._pipe._artifact_store._db_persist(rows)
             except Exception as exc:  # pragma: no cover - DB errors handled later
                 self.logger.error("Failed to persist response artifacts (%s): %s", reason, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
                 if event_emitter:
@@ -731,7 +729,6 @@ class StreamingHandler:
         thinking_tasks: list[asyncio.Task] = []
         thinking_cancelled = False
         if event_emitter:
-            @timed
             async def _later(delay: float, msg: str) -> None:
                 """Emit a delayed status update to reassure the user during long thoughts."""
                 try:
@@ -757,7 +754,6 @@ class StreamingHandler:
                     asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg))
                 )
 
-        @timed
         def cancel_thinking() -> None:
             """Cancel any scheduled reasoning status updates once the loop completes."""
             nonlocal thinking_cancelled
@@ -767,14 +763,12 @@ class StreamingHandler:
             for t in thinking_tasks:
                 t.cancel()
 
-        @timed
         def note_model_activity() -> None:
             """Mark the stream as active and stop any pending thinking statuses."""
             if not model_started.is_set():
                 model_started.set()
                 cancel_thinking()
 
-        @timed
         def note_generation_activity() -> None:
             """Record when output tokens start/continue streaming."""
             nonlocal generation_started_at, generation_last_event_at
@@ -792,12 +786,12 @@ class StreamingHandler:
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS):
                 final_response: dict[str, Any] | None = None
-                self._pipe._sanitize_request_input(body)
+                _sanitize_request_input(self._pipe, body)
                 api_model_override = getattr(body, "api_model", None)
                 model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
                 items = getattr(body, "input", None)
                 if isinstance(items, list):
-                    self._pipe._maybe_apply_anthropic_prompt_caching(
+                    _maybe_apply_anthropic_prompt_caching(
                         items,
                         model_id=model_for_cache,
                         valves=valves,
@@ -1157,7 +1151,7 @@ class StreamingHandler:
                                 }],
                             }
                             try:
-                                await self._pipe._emit_citation(event_emitter, citation)
+                                await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                             except Exception as exc:
                                 self.logger.debug("Failed to emit annotation citation: %s", exc)
                             emitted_citations.append(citation)
@@ -1231,7 +1225,7 @@ class StreamingHandler:
                         if should_persist:
                             normalized_item = _normalize_persisted_item(item)
                             if normalized_item:
-                                row = self._pipe._make_db_row(
+                                row = self._pipe._artifact_store._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_item
                                 )
                                 if row:
@@ -1409,7 +1403,7 @@ class StreamingHandler:
                                         exc,
                                         exc_info=self.logger.isEnabledFor(logging.DEBUG),
                                     )
-                                    await self._pipe._emit_status(
+                                    await self._pipe._event_emitter_handler._emit_status(
                                         event_emitter,
                                         "⚠️ Unable to process generated image output",
                                         done=False,
@@ -1501,7 +1495,7 @@ class StreamingHandler:
                         1 for i in final_response["output"] if i["type"] == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
-                    await self._pipe._emit_completion(
+                    await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=assistant_message,
                         usage=total_usage,
@@ -1518,7 +1512,8 @@ class StreamingHandler:
                     metadata_model or body.model,
                 )
 
-                await self._pipe._maybe_dump_costs_snapshot(
+                await maybe_dump_costs_snapshot(
+                    self._pipe,
                     valves,
                     user_id=user_id or "",
                     model_id=snapshot_model_id,
@@ -1550,7 +1545,7 @@ class StreamingHandler:
                             body.input.extend(reasoning_items)
                             self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
                         body.input.extend(call_items)
-                        self._pipe._sanitize_request_input(body)
+                        _sanitize_request_input(self._pipe, body)
 
                 calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
                 self.logger.debug("📞 Found %d function_call items in response", len(calls))
@@ -1724,7 +1719,7 @@ class StreamingHandler:
                         except Exception as exc:
                             self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
 
-                    function_outputs = await self._pipe._execute_function_calls(calls, tool_registry)
+                    function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(calls, tool_registry)
 
                     # Emit completed tool cards
                     # 1) chat:message:delta to persist completed cards
@@ -1793,7 +1788,7 @@ class StreamingHandler:
                                     collected_sources.append(source)
                                     # Emit citation only if event_emitter available
                                     if event_emitter:
-                                        await self._pipe._emit_citation(event_emitter, source)
+                                        await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
                                         self.logger.debug(
                                             "Emitted citation from tool=%s: %s",
                                             tool_name,
@@ -1902,7 +1897,7 @@ class StreamingHandler:
                                     len(persist_payloads),
                                     payload_type,
                                 )
-                                row = self._pipe._make_db_row(
+                                row = self._pipe._artifact_store._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_payload
                                 )
                                 if not row:
@@ -1934,13 +1929,13 @@ class StreamingHandler:
                             cancel_thinking()
                         self.logger.debug("Received tool result\n%s", result_text)
                     body.input.extend(function_outputs)
-                    self._pipe._sanitize_request_input(body)
+                    _sanitize_request_input(self._pipe, body)
                 else:
                     break
 
             if loop_limit_reached:
                 limit_value = valves.MAX_FUNCTION_CALL_LOOPS
-                await self._pipe._emit_notification(
+                await self._pipe._event_emitter_handler._emit_notification(
                     event_emitter,
                     f"Tool step limit reached (MAX_FUNCTION_CALL_LOOPS={limit_value}). "
                     "Increase the limit or simplify the request to continue.",
@@ -1977,7 +1972,7 @@ class StreamingHandler:
             session_log_reason = str(exc)
             assistant_message = ""
             cancel_thinking()
-            await self._pipe._report_openrouter_error(
+            await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
                 normalized_model_id=body.model,
@@ -1987,7 +1982,7 @@ class StreamingHandler:
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
             session_log_reason = str(e)
-            await self._pipe._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)
+            await self._pipe._ensure_error_formatter()._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)
 
         finally:
             cancel_thinking()
@@ -2011,7 +2006,7 @@ class StreamingHandler:
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
             if (not error_occurred) and (not was_cancelled):
-                await self._pipe._cleanup_replayed_reasoning(body, valves)
+                await self._cleanup_replayed_reasoning(body, valves)
             if (not error_occurred) and (not was_cancelled) and event_emitter:
                 effective_start = stream_started_at or request_started_at
                 elapsed = max(0.0, perf_counter() - effective_start)
@@ -2021,7 +2016,7 @@ class StreamingHandler:
                     duration = max(0.0, last_generation_stamp - effective_start)
                     if duration > 0:
                         stream_window = duration
-                description = self._pipe._format_final_status_description(
+                description = self._pipe._ensure_error_formatter()._format_final_status_description(
                     elapsed=elapsed,
                     total_usage=total_usage,
                     valves=valves,
@@ -2071,7 +2066,7 @@ class StreamingHandler:
                     # Persist synchronously (shielded) so session logs aren't dropped on
                     # cancellation, generator close, or event loop timing quirks.
                     await asyncio.shield(
-                        self._pipe._persist_session_log_segment_to_db(
+                        self._pipe._session_log_manager.persist_segment_to_db(
                             valves,
                             user_id=resolved_user_id,
                             session_id=resolved_session_id,
@@ -2099,7 +2094,7 @@ class StreamingHandler:
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Emit the final completion frame with the last assistant snapshot so
                 # late-arriving emitters (middleware, other workers) cannot wipe the UI.
-                await self._pipe._emit_completion(
+                await self._pipe._event_emitter_handler._emit_completion(
                     event_emitter,
                     content=assistant_message,
                     usage=total_usage,
@@ -2121,7 +2116,7 @@ class StreamingHandler:
                     )
                 except Exception as exc:
                     self.logger.warning("Failed to persist citations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
-                    await self._pipe._emit_notification(
+                    await self._pipe._event_emitter_handler._emit_notification(
                         event_emitter,
                         "Unable to save citations for this response. Output was delivered successfully.",
                         level="warning",
@@ -2147,7 +2142,7 @@ class StreamingHandler:
                     )
                 except Exception as exc:
                     self.logger.warning("Failed to persist annotations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
-                    await self._pipe._emit_notification(
+                    await self._pipe._event_emitter_handler._emit_notification(
                         event_emitter,
                         "Unable to save file annotations for this response. Output was delivered successfully.",
                         level="warning",
@@ -2179,7 +2174,7 @@ class StreamingHandler:
                         message_id,
                         exc,
                     )
-                    await self._pipe._emit_notification(
+                    await self._pipe._event_emitter_handler._emit_notification(
                         event_emitter,
                         "Unable to save reasoning details for this response. Output was delivered successfully.",
                         level="warning",
@@ -2262,12 +2257,11 @@ class StreamingHandler:
         if not refs:
             return
         setattr(body, "_replayed_reasoning_refs", [])
-        await self._pipe._delete_artifacts(refs)
+        await self._pipe._artifact_store._delete_artifacts(refs)
 
 
 
 
-    @timed
     def _select_llm_endpoint(
         self,
         model_id: str,
@@ -2309,7 +2303,6 @@ class StreamingHandler:
         return selected
 
 
-    @timed
     def _select_llm_endpoint_with_forced(
         self,
         model_id: str,
@@ -2329,7 +2322,6 @@ class StreamingHandler:
 
 
     @staticmethod
-    @timed
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
         """Heuristic: detect 'model doesn't support /responses' so we can retry via /chat/completions."""
         if isinstance(exc, OpenRouterAPIError):
@@ -2378,7 +2370,6 @@ class StreamingHandler:
 
 
 
-@timed
 def _wrap_event_emitter(
     emitter: EventEmitter | None,
     *,
@@ -2393,14 +2384,12 @@ def _wrap_event_emitter(
     events through.
     """
     if emitter is None:
-        @timed
         async def _noop(_event: Dict[str, Any]) -> None:
             """Swallow events when no emitter is provided."""
             return
 
         return _noop
 
-    @timed
     async def _wrapped(event: Dict[str, Any]) -> None:
         """Proxy emitter that suppresses selected event types."""
         etype = (event or {}).get("type")

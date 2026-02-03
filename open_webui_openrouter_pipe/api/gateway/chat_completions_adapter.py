@@ -153,7 +153,7 @@ class ChatCompletionsAdapter:
                     file_value = file_value.strip()
                     if not _is_internal_file_url(file_value):
                         continue
-                    inlined = await self._pipe._inline_internal_file_url(
+                    inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
                         file_value,
                         chunk_size=chunk_size,
                         max_bytes=max_bytes,
@@ -213,7 +213,7 @@ class ChatCompletionsAdapter:
         first_chunk_received = False
         async for attempt in retryer:
             with attempt:
-                if breaker_key and not self._pipe._breaker_allows(breaker_key):
+                if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                     raise RuntimeError("Breaker open for user during stream")
 
                 await _inline_internal_chat_files()
@@ -224,7 +224,7 @@ class ChatCompletionsAdapter:
                     if resp.status >= 400:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
-                            self._pipe._record_failure(breaker_key)
+                            self._pipe._circuit_breaker.record_failure(breaker_key)
                         special_statuses = {400, 401, 402, 403, 404, 408, 429}
                         if resp.status in special_statuses:
                             extra_meta: dict[str, Any] = {}
@@ -609,10 +609,6 @@ class ChatCompletionsAdapter:
         }
 
 
-    # ======================================================================
-    # send_openai_chat_completions_nonstreaming_request (122 lines)
-    # ======================================================================
-
     @timed
     async def send_openai_chat_completions_nonstreaming_request(
         self,
@@ -675,7 +671,7 @@ class ChatCompletionsAdapter:
                     file_value = file_value.strip()
                     if not _is_internal_file_url(file_value):
                         continue
-                    inlined = await self._pipe._inline_internal_file_url(
+                    inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
                         file_value,
                         chunk_size=chunk_size,
                         max_bytes=max_bytes,
@@ -693,7 +689,7 @@ class ChatCompletionsAdapter:
 
         async for attempt in retryer:
             with attempt:
-                if breaker_key and not self._pipe._breaker_allows(breaker_key):
+                if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                     raise RuntimeError("Breaker open for user during request")
 
                 await _inline_internal_chat_files()
@@ -704,7 +700,7 @@ class ChatCompletionsAdapter:
                     if resp.status >= 400:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
-                            self._pipe._record_failure(breaker_key)
+                            self._pipe._circuit_breaker.record_failure(breaker_key)
                         special_statuses = {400, 401, 402, 403, 404, 408, 429}
                         if resp.status in special_statuses:
                             extra_meta: dict[str, Any] = {}
@@ -745,10 +741,6 @@ class ChatCompletionsAdapter:
         return {}
 
 
-    # ======================================================================
-    # send_openrouter_nonstreaming_request_as_events (242 lines)
-    # ======================================================================
-
     @timed
     async def send_openrouter_streaming_request(
         self,
@@ -770,7 +762,7 @@ class ChatCompletionsAdapter:
         """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = endpoint_override or self._pipe._select_llm_endpoint(str(model_id), valves=effective_valves)
+        endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
 
         @timed
         def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
@@ -839,7 +831,7 @@ class ChatCompletionsAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._looks_like_responses_unsupported(exc):
+            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
                 if responses_emitted_user_visible:
                     self.logger.info(
                         "Not falling back to /chat/completions for model=%s: /responses already emitted user-visible output before error: %s",

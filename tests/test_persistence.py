@@ -24,10 +24,10 @@ from open_webui_openrouter_pipe.storage.persistence import (
     generate_item_id,
     normalize_persisted_item,
     _normalize_persisted_item,
-    _wait_for,
     _encode_crockford,
     _sanitize_table_fragment,
 )
+from open_webui_openrouter_pipe.core.utils import _await_if_needed
 
 
 # -----------------------------------------------------------------------------
@@ -245,7 +245,7 @@ def test_discover_schema_from_base_metadata_raises(pipe_instance):
             def metadata(self):
                 raise RuntimeError("metadata access failed")
 
-    engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert schema is None
 
 
@@ -258,7 +258,7 @@ def test_discover_schema_from_metadata_obj_raises(pipe_instance):
         def metadata_obj(self):
             raise RuntimeError("metadata_obj access failed")
 
-    engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert schema is None
 
 
@@ -284,7 +284,7 @@ def test_discover_engine_from_bind_fallback(pipe_instance):
         Base = None
         get_db_context = staticmethod(_ctx)
 
-    discovered_engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    discovered_engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert discovered_engine is engine_obj
     assert details.get("engine_source") == "get_db_context.bind"
 
@@ -294,7 +294,7 @@ def test_discover_engine_unavailable_sets_details(pipe_instance):
     class _DB:
         pass
 
-    engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert engine is None
     assert details.get("engine_source") == "unavailable"
     assert details.get("schema_source") == "unavailable"
@@ -311,7 +311,7 @@ def test_discover_engine_from_context_raises(pipe_instance):
         Base = None
         get_db_context = staticmethod(_ctx)
 
-    engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert engine is None
 
 
@@ -334,7 +334,7 @@ def test_init_artifact_store_dialect_logging_exception(pipe_instance, caplog):
 
     with _install_internal_db(_BrokenEngine()):
         # The exception in dialect logging should be caught and alternative logging used
-        pipe_instance._init_artifact_store(pipe_identifier="test_dialect", table_fragment="test")
+        pipe_instance._artifact_store._init_artifact_store(pipe_identifier="test_dialect", table_fragment="test")
 
 
 # -----------------------------------------------------------------------------
@@ -395,10 +395,10 @@ def test_init_artifact_store_existing_table_removal(pipe_instance):
     engine = _sqlite_engine()
     with _install_internal_db(engine):
         # Initialize once
-        pipe_instance._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
+        pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
         # Initialize again with same table name to trigger removal
         pipe_instance._artifact_store._artifact_store_signature = None
-        pipe_instance._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
+        pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
@@ -418,7 +418,7 @@ def test_init_artifact_store_inspection_error(pipe_instance, monkeypatch):
 
     with _install_internal_db(engine):
         monkeypatch.setattr(persistence_mod, "sa_inspect", _raise_inspection)
-        pipe_instance._init_artifact_store(pipe_identifier="pipe_inspect", table_fragment="pipe_inspect")
+        pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe_inspect", table_fragment="pipe_inspect")
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
@@ -534,7 +534,7 @@ def test_prepare_rows_for_storage_non_dict_payload(pipe_instance):
 def test_db_persist_sync_empty_rows(pipe_instance):
     """Test _db_persist_sync returns empty list for empty rows (line 812)."""
     _install_fake_store(pipe_instance)
-    result = pipe_instance._db_persist_sync([])
+    result = pipe_instance._artifact_store._db_persist_sync([])
     assert result == []
 
 
@@ -542,7 +542,7 @@ def test_db_persist_sync_empty_rows(pipe_instance):
 async def test_db_persist_empty_rows(pipe_instance):
     """Test _db_persist returns empty list for empty rows (line 916)."""
     _install_fake_store(pipe_instance)
-    result = await pipe_instance._db_persist([])
+    result = await pipe_instance._artifact_store._db_persist([])
     assert result == []
 
 
@@ -598,7 +598,7 @@ def test_is_duplicate_key_error_non_sqlalchemy(pipe_instance):
 def test_db_fetch_sync_no_item_ids(pipe_instance):
     """Test _db_fetch_sync returns empty dict for empty item_ids (line 1003)."""
     _install_fake_store(pipe_instance)
-    result = pipe_instance._db_fetch_sync("chat", "msg", [])
+    result = pipe_instance._artifact_store._db_fetch_sync("chat", "msg", [])
     assert result == {}
 
 
@@ -663,10 +663,10 @@ def test_db_fetch_sync_touch_outer_exception(pipe_instance):
 async def test_db_fetch_empty_chat_id(pipe_instance):
     """Test _db_fetch returns empty dict for empty chat_id (line 1085)."""
     _install_fake_store(pipe_instance)
-    result = await pipe_instance._db_fetch("", "msg", ["id-1"])
+    result = await pipe_instance._artifact_store._db_fetch("", "msg", ["id-1"])
     assert result == {}
 
-    result = await pipe_instance._db_fetch(None, "msg", ["id-1"])
+    result = await pipe_instance._artifact_store._db_fetch(None, "msg", ["id-1"])
     assert result == {}
 
 
@@ -935,7 +935,7 @@ async def test_flush_redis_queue_lock_release_non_int(pipe_instance, caplog):
 async def test_redis_enqueue_rows_empty(pipe_instance):
     """Test _redis_enqueue_rows returns empty list for empty rows (line 1359)."""
     _install_fake_store(pipe_instance)
-    result = await pipe_instance._redis_enqueue_rows([])
+    result = await pipe_instance._artifact_store._redis_enqueue_rows([])
     assert result == []
 
 
@@ -1172,14 +1172,14 @@ def test_shutdown_no_executor(pipe_instance):
     """Test shutdown handles no executor gracefully."""
     store = pipe_instance._artifact_store
     store._db_executor = None
-    store.shutdown()
+    store.close()
 
 
 def test_shutdown_with_cancel_futures(pipe_instance):
     """Test shutdown with cancel_futures support."""
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
-    store.shutdown()
+    store.close()
     assert store._db_executor is None
 
 
@@ -1194,39 +1194,39 @@ def test_shutdown_without_cancel_futures(pipe_instance, monkeypatch):
                 raise TypeError("unexpected keyword argument")
 
     store._db_executor = _OldExecutor()
-    store.shutdown()
+    store.close()
     assert store._db_executor is None
 
 
 # -----------------------------------------------------------------------------
-# Tests for _wait_for
+# Tests for _await_if_needed
 # -----------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_wait_for_sync_value():
-    """Test _wait_for returns sync value immediately."""
-    result = await _wait_for(42)
+async def test_await_if_needed_sync_value():
+    """Test _await_if_needed returns sync value immediately."""
+    result = await _await_if_needed(42)
     assert result == 42
 
 
 @pytest.mark.asyncio
-async def test_wait_for_async_without_timeout():
-    """Test _wait_for awaits async value without timeout."""
+async def test_await_if_needed_async_without_timeout():
+    """Test _await_if_needed awaits async value without timeout."""
     async def _coro():
         return "async result"
 
-    result = await _wait_for(_coro())
+    result = await _await_if_needed(_coro())
     assert result == "async result"
 
 
 @pytest.mark.asyncio
-async def test_wait_for_async_with_timeout():
-    """Test _wait_for awaits async value with timeout."""
+async def test_await_if_needed_async_with_timeout():
+    """Test _await_if_needed awaits async value with timeout."""
     async def _coro():
         return "async result"
 
-    result = await _wait_for(_coro(), timeout=5.0)
+    result = await _await_if_needed(_coro(), timeout=5.0)
     assert result == "async result"
 
 

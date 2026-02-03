@@ -16,16 +16,14 @@ if TYPE_CHECKING:
     from ..api.transforms import ResponsesBody
 
 
-@timed
-def _sanitize_request_input(self: "Pipe", body: "ResponsesBody") -> None:
+def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
     if not isinstance(items, list):
         return
-    sanitized = _filter_replayable_input_items(items, logger=self.logger)
+    sanitized = _filter_replayable_input_items(items, logger=pipe.logger)
     removed = len(items) - len(sanitized)
 
-    @timed
     def _strip_tool_item_extras(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """Return a minimal, portable /responses input shape for tool items."""
         changed = False
@@ -84,10 +82,10 @@ def _sanitize_request_input(self: "Pipe", body: "ResponsesBody") -> None:
 
     if removed or stripped_any or (sanitized is not items):
         if removed:
-            self.logger.debug(
+            pipe.logger.debug(
                 "Sanitized provider input: removed %d non-replayable artifact(s).",
                 removed,
             )
         if stripped_any:
-            self.logger.debug("Sanitized provider input: stripped extra tool item fields.")
+            pipe.logger.debug("Sanitized provider input: stripped extra tool item fields.")
         body.input = normalized

@@ -34,7 +34,18 @@ from open_webui_openrouter_pipe import (
     ModelFamily,
     generate_item_id,
 )
+from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.requests.task_model_adapter import TaskModelAdapter
+from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
+from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.integrations.anthropic import _is_anthropic_model_id
+from open_webui_openrouter_pipe.models.registry import (
+    sum_pricing_values,
+    is_free_model,
+    supports_tool_calling,
+)
 
 
 # =============================================================================
@@ -305,78 +316,6 @@ class TestLazyInitialization:
 
 
 # =============================================================================
-# PROPERTY DELEGATION TESTS
-# =============================================================================
-
-
-class TestPropertyDelegation:
-    """Tests for property delegation to subsystems."""
-
-    def test_db_executor_property_delegates_to_artifact_store(self):
-        """Test that _db_executor property delegates to artifact store."""
-        pipe = Pipe()
-        try:
-            # Get value
-            executor = pipe._db_executor
-            assert executor is pipe._artifact_store._db_executor
-
-            # Set value
-            mock_executor = Mock()
-            pipe._db_executor = mock_executor
-            assert pipe._artifact_store._db_executor is mock_executor
-        finally:
-            pipe.shutdown()
-
-    def test_encryption_key_property_delegates_to_artifact_store(self):
-        """Test that _encryption_key property delegates to artifact store."""
-        pipe = Pipe()
-        try:
-            key = pipe._encryption_key
-            assert key == pipe._artifact_store._encryption_key
-
-            pipe._encryption_key = "test-key"
-            assert pipe._artifact_store._encryption_key == "test-key"
-        finally:
-            pipe.shutdown()
-
-    def test_fernet_property_delegates_to_artifact_store(self):
-        """Test that _fernet property delegates to artifact store."""
-        pipe = Pipe()
-        try:
-            fernet = pipe._fernet
-            assert fernet is pipe._artifact_store._fernet
-
-            mock_fernet = Mock()
-            pipe._fernet = mock_fernet
-            assert pipe._artifact_store._fernet is mock_fernet
-        finally:
-            pipe.shutdown()
-
-    def test_breaker_threshold_property_sync(self):
-        """Test that _breaker_threshold property syncs with CircuitBreaker and ArtifactStore."""
-        pipe = Pipe()
-        try:
-            original = pipe._breaker_threshold
-            pipe._breaker_threshold = 10
-
-            assert pipe._circuit_breaker.threshold == 10
-            assert pipe._artifact_store._breaker_threshold == 10
-        finally:
-            pipe.shutdown()
-
-    def test_breaker_window_property_sync(self):
-        """Test that _breaker_window_seconds property syncs with CircuitBreaker and ArtifactStore."""
-        pipe = Pipe()
-        try:
-            pipe._breaker_window_seconds = 120.0
-
-            assert pipe._circuit_breaker.window_seconds == 120.0
-            assert pipe._artifact_store._breaker_window_seconds == 120.0
-        finally:
-            pipe.shutdown()
-
-
-# =============================================================================
 # STATIC/CLASS METHODS TESTS
 # =============================================================================
 
@@ -413,7 +352,7 @@ class TestStaticAndClassMethods:
         )
 
     def test_supports_tool_calling_checks_parameters(self):
-        """Test that _supports_tool_calling checks model supported_parameters."""
+        """Test that supports_tool_calling checks model supported_parameters."""
         # Set up model with tool support
         ModelFamily.set_dynamic_specs({
             "tool-model": {"supported_parameters": ["tools", "tool_choice"]},
@@ -421,14 +360,14 @@ class TestStaticAndClassMethods:
         })
 
         try:
-            assert Pipe._supports_tool_calling("tool-model") is True
-            assert Pipe._supports_tool_calling("no-tool-model") is False
-            assert Pipe._supports_tool_calling("unknown-model") is False
+            assert supports_tool_calling("tool-model") is True
+            assert supports_tool_calling("no-tool-model") is False
+            assert supports_tool_calling("unknown-model") is False
         finally:
             ModelFamily.set_dynamic_specs({})
 
     def test_sum_pricing_values_handles_various_types(self):
-        """Test that _sum_pricing_values handles various input types."""
+        """Test that sum_pricing_values handles various input types."""
         # Dict with nested values
         pricing = {
             "prompt": "0.001",
@@ -438,32 +377,32 @@ class TestStaticAndClassMethods:
                 "image": Decimal("0.005"),
             },
         }
-        total, count = Pipe._sum_pricing_values(pricing)
+        total, count = sum_pricing_values(pricing)
         assert count == 4
         assert total == Decimal("0.018")
 
         # List input
-        total2, count2 = Pipe._sum_pricing_values([1, 2, "3"])
+        total2, count2 = sum_pricing_values([1, 2, "3"])
         assert count2 == 3
         assert total2 == Decimal("6")
 
         # Invalid string
-        total3, count3 = Pipe._sum_pricing_values("invalid")
+        total3, count3 = sum_pricing_values("invalid")
         assert count3 == 0
         assert total3 == Decimal("0")
 
         # Empty dict
-        total4, count4 = Pipe._sum_pricing_values({})
+        total4, count4 = sum_pricing_values({})
         assert count4 == 0
         assert total4 == Decimal("0")
 
     def test_quote_identifier_escapes_properly(self):
         """Test that _quote_identifier escapes SQL identifiers."""
         # Normal identifier
-        assert Pipe._quote_identifier("table_name") == '"table_name"'
+        assert ArtifactStore._quote_identifier("table_name") == '"table_name"'
 
         # With quotes that need escaping
-        assert Pipe._quote_identifier('table"name') == '"table""name"'
+        assert ArtifactStore._quote_identifier('table"name') == '"table""name"'
 
     def test_auth_failure_scope_key_prefers_user(self):
         """Test that _auth_failure_scope_key prefers user_id over session_id."""
@@ -1022,48 +961,36 @@ class TestContextTransforms:
     """Tests for context transforms."""
 
     def test_apply_context_transforms_sets_middle_out(self):
-        """Test that _apply_context_transforms sets middle-out transform."""
-        pipe = Pipe()
-        pipe.valves.AUTO_CONTEXT_TRIMMING = True
+        """Test that apply_context_transforms sets middle-out transform."""
+        from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
-        try:
-            body = ResponsesBody(model="test", input=[])
-            assert body.transforms is None
+        body = ResponsesBody(model="test", input=[])
+        assert body.transforms is None
 
-            pipe._apply_context_transforms(body, pipe.valves)
+        apply_context_transforms(body, auto_context_trimming=True)
 
-            assert body.transforms == ["middle-out"]
-        finally:
-            pipe.shutdown()
+        assert body.transforms == ["middle-out"]
 
     def test_apply_context_transforms_skips_if_disabled(self):
-        """Test that _apply_context_transforms skips if AUTO_CONTEXT_TRIMMING is False."""
-        pipe = Pipe()
-        pipe.valves.AUTO_CONTEXT_TRIMMING = False
+        """Test that apply_context_transforms skips if auto_context_trimming is False."""
+        from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
-        try:
-            body = ResponsesBody(model="test", input=[])
-            pipe._apply_context_transforms(body, pipe.valves)
+        body = ResponsesBody(model="test", input=[])
+        apply_context_transforms(body, auto_context_trimming=False)
 
-            assert body.transforms is None
-        finally:
-            pipe.shutdown()
+        assert body.transforms is None
 
     def test_apply_context_transforms_preserves_existing(self):
-        """Test that _apply_context_transforms preserves existing transforms."""
-        pipe = Pipe()
-        pipe.valves.AUTO_CONTEXT_TRIMMING = True
+        """Test that apply_context_transforms preserves existing transforms."""
+        from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
-        try:
-            body = ResponsesBody(model="test", input=[])
-            body.transforms = ["custom-transform"]
+        body = ResponsesBody(model="test", input=[])
+        body.transforms = ["custom-transform"]
 
-            pipe._apply_context_transforms(body, pipe.valves)
+        apply_context_transforms(body, auto_context_trimming=True)
 
-            # Should not override
-            assert body.transforms == ["custom-transform"]
-        finally:
-            pipe.shutdown()
+        # Should not override
+        assert body.transforms == ["custom-transform"]
 
 
 # =============================================================================
@@ -1086,7 +1013,7 @@ class TestReasoningConfiguration:
             pipe.valves.REASONING_EFFORT = "high"
             body = ResponsesBody(model="basic.model", input=[])
 
-            pipe._apply_reasoning_preferences(body, pipe.valves)
+            pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, pipe.valves)
 
             # Should not set reasoning if not supported
             assert body.reasoning is None
@@ -1108,7 +1035,7 @@ class TestReasoningConfiguration:
 
         try:
             body = ResponsesBody(model="reason.model", input=[])
-            pipe._apply_task_reasoning_preferences(body, "none")
+            pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
 
             # When model supports reasoning, it sets effort to "none" (not None)
             assert body.reasoning == {"effort": "none", "enabled": True}
@@ -1157,7 +1084,7 @@ class TestEventEmitter:
         """Test that _wrap_safe_event_emitter returns None for None input."""
         pipe = Pipe()
         try:
-            result = pipe._wrap_safe_event_emitter(None)
+            result = pipe._event_emitter_handler._wrap_safe_event_emitter(None)
             assert result is None
         finally:
             pipe.shutdown()
@@ -1170,7 +1097,7 @@ class TestEventEmitter:
         async def failing_emitter(event):
             raise RuntimeError("Emitter failed")
 
-        wrapped = pipe._wrap_safe_event_emitter(failing_emitter)
+        wrapped = pipe._event_emitter_handler._wrap_safe_event_emitter(failing_emitter)
 
         with caplog.at_level(logging.DEBUG):
             await wrapped({"type": "test"})
@@ -1181,47 +1108,6 @@ class TestEventEmitter:
         finally:
             await pipe.close()
 
-
-# =============================================================================
-# MULTIMODAL DELEGATION TESTS
-# =============================================================================
-
-
-class TestMultimodalDelegation:
-    """Tests for multimodal handler delegation."""
-
-    def test_infer_file_mime_type_delegates(self):
-        """Test that _infer_file_mime_type delegates to MultimodalHandler."""
-        pipe = Pipe()
-        try:
-            # With None multimodal handler
-            pipe._multimodal_handler = None
-            result = pipe._infer_file_mime_type(None)
-            assert result == "application/octet-stream"
-        finally:
-            pipe.shutdown()
-
-    def test_is_youtube_url_delegates(self):
-        """Test that _is_youtube_url delegates to MultimodalHandler."""
-        pipe = Pipe()
-        try:
-            # With None multimodal handler
-            pipe._multimodal_handler = None
-            result = pipe._is_youtube_url("https://youtube.com/watch?v=abc")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_get_effective_remote_file_limit_mb_delegates(self):
-        """Test that _get_effective_remote_file_limit_mb delegates correctly."""
-        pipe = Pipe()
-        try:
-            # With None multimodal handler
-            pipe._multimodal_handler = None
-            result = pipe._get_effective_remote_file_limit_mb()
-            assert result == 50  # Default
-        finally:
-            pipe.shutdown()
 
 
 # =============================================================================
@@ -1303,20 +1189,20 @@ class TestTaskFallback:
         Note: _task_name accepts strings or dicts, not arbitrary objects.
         """
         # String task name (most common usage)
-        assert Pipe._task_name("title") == "title"
-        assert Pipe._task_name("  tags_generation  ") == "tags_generation"
+        assert TaskModelAdapter._task_name("title") == "title"
+        assert TaskModelAdapter._task_name("  tags_generation  ") == "tags_generation"
 
         # Dict with type
-        assert Pipe._task_name({"type": "title"}) == "title"
+        assert TaskModelAdapter._task_name({"type": "title"}) == "title"
 
         # Dict with task key
-        assert Pipe._task_name({"task": "tags"}) == "tags"
+        assert TaskModelAdapter._task_name({"task": "tags"}) == "tags"
 
         # None returns empty string
-        assert Pipe._task_name(None) == ""
+        assert TaskModelAdapter._task_name(None) == ""
 
         # Integer returns empty string
-        assert Pipe._task_name(123) == ""
+        assert TaskModelAdapter._task_name(123) == ""
 
 
 # =============================================================================
@@ -1436,9 +1322,7 @@ class TestIsFreeModel:
     """Tests for free model detection."""
 
     def test_is_free_model_handles_missing_pricing(self):
-        """Test that _is_free_model handles missing pricing gracefully."""
-        pipe = Pipe()
-
+        """Test that is_free_model handles missing pricing gracefully."""
         from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
         original_specs = OpenRouterModelRegistry._specs.copy()
 
@@ -1447,16 +1331,13 @@ class TestIsFreeModel:
                 "no.pricing": {},
             }
 
-            result = pipe._is_free_model("no.pricing")
+            result = is_free_model("no.pricing")
             assert result is False
         finally:
             OpenRouterModelRegistry._specs = original_specs
-            pipe.shutdown()
 
     def test_is_free_model_ignores_discount_for_object_pricing(self):
         """Object pricing with discount should still detect free models."""
-        pipe = Pipe()
-
         from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
         original_specs = OpenRouterModelRegistry._specs.copy()
 
@@ -1471,16 +1352,13 @@ class TestIsFreeModel:
                 },
             }
 
-            result = pipe._is_free_model("free.model")
+            result = is_free_model("free.model")
             assert result is True
         finally:
             OpenRouterModelRegistry._specs = original_specs
-            pipe.shutdown()
 
     def test_is_free_model_object_pricing_nonzero(self):
         """Object pricing with nonzero values should not be free."""
-        pipe = Pipe()
-
         from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
         original_specs = OpenRouterModelRegistry._specs.copy()
 
@@ -1494,11 +1372,10 @@ class TestIsFreeModel:
                 },
             }
 
-            result = pipe._is_free_model("paid.model")
+            result = is_free_model("paid.model")
             assert result is False
         finally:
             OpenRouterModelRegistry._specs = original_specs
-            pipe.shutdown()
 
 
 # =============================================================================
@@ -1542,17 +1419,17 @@ class TestAnthropicModelDetection:
     def test_is_anthropic_model_id(self):
         """Test that _is_anthropic_model_id correctly identifies Anthropic models."""
         # Anthropic models
-        assert Pipe._is_anthropic_model_id("anthropic/claude-3-opus") is True
-        assert Pipe._is_anthropic_model_id("anthropic/claude-3.5-sonnet") is True
+        assert _is_anthropic_model_id("anthropic/claude-3-opus") is True
+        assert _is_anthropic_model_id("anthropic/claude-3.5-sonnet") is True
 
         # Non-Anthropic models
-        assert Pipe._is_anthropic_model_id("openai/gpt-4") is False
-        assert Pipe._is_anthropic_model_id("google/gemini-pro") is False
+        assert _is_anthropic_model_id("openai/gpt-4") is False
+        assert _is_anthropic_model_id("google/gemini-pro") is False
 
         # Edge cases
-        assert Pipe._is_anthropic_model_id("") is False
-        assert Pipe._is_anthropic_model_id(None) is False
-        assert Pipe._is_anthropic_model_id(123) is False
+        assert _is_anthropic_model_id("") is False
+        assert _is_anthropic_model_id(None) is False
+        assert _is_anthropic_model_id(123) is False
 
 
 # =============================================================================
@@ -1571,17 +1448,17 @@ class TestChatUsageConversion:
             "completion_tokens": 50,
             "total_tokens": 150,
         }
-        result = Pipe._chat_usage_to_responses_usage(chat_usage)
+        result = ChatCompletionsAdapter._chat_usage_to_responses_usage(chat_usage)
         assert result["input_tokens"] == 100
         assert result["output_tokens"] == 50
         assert result["total_tokens"] == 150
 
         # None input
-        result = Pipe._chat_usage_to_responses_usage(None)
+        result = ChatCompletionsAdapter._chat_usage_to_responses_usage(None)
         assert result == {}
 
         # Not a dict
-        result = Pipe._chat_usage_to_responses_usage("invalid")
+        result = ChatCompletionsAdapter._chat_usage_to_responses_usage("invalid")
         assert result == {}
 
 
@@ -1610,7 +1487,7 @@ class TestRedisInitialization:
         """Test that _maybe_start_redis returns early when already enabled."""
         pipe = Pipe()
         pipe._redis_candidate = True
-        pipe._redis_enabled = True
+        pipe._artifact_store._redis_enabled = True
 
         try:
             pipe._maybe_start_redis()
@@ -1623,7 +1500,7 @@ class TestRedisInitialization:
         """Test that _maybe_start_redis returns early when init task is running."""
         pipe = Pipe()
         pipe._redis_candidate = True
-        pipe._redis_enabled = False
+        pipe._artifact_store._redis_enabled = False
 
         try:
             # Create a mock running task
@@ -1643,7 +1520,7 @@ class TestRedisInitialization:
         """Test that _init_redis_client handles missing aioredis."""
         pipe = Pipe()
         pipe._redis_candidate = True
-        pipe._redis_enabled = False
+        pipe._artifact_store._redis_enabled = False
         pipe._redis_url = "redis://localhost:6379"
 
         # Temporarily remove aioredis
@@ -1653,7 +1530,7 @@ class TestRedisInitialization:
 
         try:
             await pipe._init_redis_client()
-            assert pipe._redis_enabled is False
+            assert pipe._artifact_store._redis_enabled is False
         finally:
             pipe_mod.aioredis = original_aioredis
             await pipe.close()
@@ -1663,14 +1540,14 @@ class TestRedisInitialization:
         """Test that _init_redis_client handles connection failures."""
         pipe = Pipe()
         pipe._redis_candidate = True
-        pipe._redis_enabled = False
+        pipe._artifact_store._redis_enabled = False
         pipe._redis_url = "redis://localhost:9999"  # Invalid port
 
         try:
             # This should handle the connection error gracefully
             await pipe._init_redis_client()
             # Should remain disabled after failure
-            assert pipe._redis_enabled is False
+            assert pipe._artifact_store._redis_enabled is False
         finally:
             await pipe.close()
 
@@ -1749,14 +1626,14 @@ class TestSessionLogWorkers:
         pipe = Pipe()
 
         # Ensure workers are None
-        pipe._session_log_stop_event = None
-        pipe._session_log_queue = None
-        pipe._session_log_worker_thread = None
-        pipe._session_log_cleanup_thread = None
-        pipe._session_log_assembler_thread = None
+        pipe._session_log_manager._stop_event = None
+        pipe._session_log_manager._queue = None
+        pipe._session_log_manager._worker_thread = None
+        pipe._session_log_manager._cleanup_thread = None
+        pipe._session_log_manager._assembler_thread = None
 
         # Should not raise
-        pipe._stop_session_log_workers()
+        pipe._session_log_manager.stop_workers()
         pipe.shutdown()
 
     def test_stop_session_log_workers_with_live_threads(self):
@@ -1777,12 +1654,12 @@ class TestSessionLogWorkers:
         thread = threading.Thread(target=worker_loop, daemon=True)
         thread.start()
 
-        pipe._session_log_stop_event = stop_event
-        pipe._session_log_queue = test_queue
-        pipe._session_log_worker_thread = thread
+        pipe._session_log_manager._stop_event = stop_event
+        pipe._session_log_manager._queue = test_queue
+        pipe._session_log_manager._worker_thread = thread
 
         try:
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
 
             # Thread should have been stopped
             assert stop_event.is_set()
@@ -1804,12 +1681,12 @@ class TestSessionLogWorkers:
 
         thread = threading.Thread(target=dummy_worker, daemon=True)
         thread.start()
-        pipe._session_log_worker_thread = thread
+        pipe._session_log_manager._worker_thread = thread
 
         try:
-            pipe._maybe_start_session_log_workers()
+            pipe._session_log_manager.start_workers()
             # Should return early without creating new threads
-            assert pipe._session_log_worker_thread is thread
+            assert pipe._session_log_manager._worker_thread is thread
         finally:
             stop_event.set()
             thread.join(timeout=1.0)
@@ -1830,7 +1707,7 @@ class TestSessionLogArchive:
         pipe.valves.SESSION_LOG_STORE_ENABLED = False
 
         try:
-            pipe._enqueue_session_log_archive(
+            pipe._session_log_manager.enqueue_archive(
                 pipe.valves,
                 user_id="user1",
                 session_id="session1",
@@ -1849,7 +1726,7 @@ class TestSessionLogArchive:
         pipe.valves.SESSION_LOG_STORE_ENABLED = True
 
         try:
-            pipe._enqueue_session_log_archive(
+            pipe._session_log_manager.enqueue_archive(
                 pipe.valves,
                 user_id="",  # Missing
                 session_id="session1",
@@ -1864,17 +1741,17 @@ class TestSessionLogArchive:
 
     def test_enqueue_session_log_archive_no_pyzipper(self, caplog, monkeypatch):
         """Test that _enqueue_session_log_archive handles missing pyzipper."""
-        import open_webui_openrouter_pipe.pipe as pipe_mod
-        original_pyzipper = pipe_mod.pyzipper
-        pipe_mod.pyzipper = None
+        import open_webui_openrouter_pipe.logging.session_log_manager as slm_mod
+        original_pyzipper = slm_mod.pyzipper
+        slm_mod.pyzipper = None
 
         pipe = Pipe()
         pipe.valves.SESSION_LOG_STORE_ENABLED = True
-        pipe._session_log_warning_emitted = False
+        pipe._session_log_manager._warning_emitted = False
 
         try:
             with caplog.at_level(logging.WARNING):
-                pipe._enqueue_session_log_archive(
+                pipe._session_log_manager.enqueue_archive(
                     pipe.valves,
                     user_id="user1",
                     session_id="session1",
@@ -1886,7 +1763,7 @@ class TestSessionLogArchive:
 
             assert any("pyzipper" in msg for msg in caplog.messages)
         finally:
-            pipe_mod.pyzipper = original_pyzipper
+            slm_mod.pyzipper = original_pyzipper
             pipe.shutdown()
 
     def test_enqueue_session_log_archive_empty_dir(self, caplog):
@@ -1894,11 +1771,11 @@ class TestSessionLogArchive:
         pipe = Pipe()
         pipe.valves.SESSION_LOG_STORE_ENABLED = True
         pipe.valves.SESSION_LOG_DIR = ""
-        pipe._session_log_warning_emitted = False
+        pipe._session_log_manager._warning_emitted = False
 
         try:
             with caplog.at_level(logging.WARNING):
-                pipe._enqueue_session_log_archive(
+                pipe._session_log_manager.enqueue_archive(
                     pipe.valves,
                     user_id="user1",
                     session_id="session1",
@@ -1918,11 +1795,11 @@ class TestSessionLogArchive:
         pipe.valves.SESSION_LOG_STORE_ENABLED = True
         pipe.valves.SESSION_LOG_DIR = "/tmp/logs"
         pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
-        pipe._session_log_warning_emitted = False
+        pipe._session_log_manager._warning_emitted = False
 
         try:
             with caplog.at_level(logging.WARNING):
-                pipe._enqueue_session_log_archive(
+                pipe._session_log_manager.enqueue_archive(
                     pipe.valves,
                     user_id="user1",
                     session_id="session1",
@@ -1958,12 +1835,12 @@ class TestSessionLogAssembler:
 
         thread = threading.Thread(target=dummy_worker, daemon=True)
         thread.start()
-        pipe._session_log_assembler_thread = thread
+        pipe._session_log_manager._assembler_thread = thread
 
         try:
-            pipe._maybe_start_session_log_assembler_worker()
+            pipe._session_log_manager.start_assembler_worker()
             # Should return early
-            assert pipe._session_log_assembler_thread is thread
+            assert pipe._session_log_manager._assembler_thread is thread
         finally:
             stop_event.set()
             thread.join(timeout=1.0)
@@ -1975,7 +1852,7 @@ class TestSessionLogAssembler:
         pipe.valves.SESSION_LOG_STORE_ENABLED = False
 
         try:
-            pipe._run_session_log_assembler_once()
+            pipe._session_log_manager.run_assembler_once()
             # Should return early without error
         finally:
             pipe.shutdown()
@@ -1987,7 +1864,7 @@ class TestSessionLogAssembler:
 
         try:
             # Without artifact store properly initialized, should return early
-            pipe._run_session_log_assembler_once()
+            pipe._session_log_manager.run_assembler_once()
         finally:
             pipe.shutdown()
 
@@ -2003,10 +1880,10 @@ class TestCleanupSessionLogArchives:
     def test_cleanup_session_log_archives_no_dirs(self):
         """Test that _cleanup_session_log_archives handles no directories."""
         pipe = Pipe()
-        pipe._session_log_dirs = set()
+        pipe._session_log_manager._dirs = set()
 
         try:
-            pipe._cleanup_session_log_archives()
+            pipe._session_log_manager.cleanup_archives()
             # Should return early without error
         finally:
             pipe.shutdown()
@@ -2014,11 +1891,11 @@ class TestCleanupSessionLogArchives:
     def test_cleanup_session_log_archives_nonexistent_dir(self):
         """Test that _cleanup_session_log_archives handles nonexistent directory."""
         pipe = Pipe()
-        pipe._session_log_dirs = {"/nonexistent/path/that/does/not/exist"}
-        pipe._session_log_retention_days = 7
+        pipe._session_log_manager._dirs = {"/nonexistent/path/that/does/not/exist"}
+        pipe._session_log_manager._retention_days = 7
 
         try:
-            pipe._cleanup_session_log_archives()
+            pipe._session_log_manager.cleanup_archives()
             # Should handle gracefully without error
         finally:
             pipe.shutdown()
@@ -2043,11 +1920,11 @@ class TestCleanupSessionLogArchives:
         old_time = time.time() - (30 * 86400)
         os.utime(old_file, (old_time, old_time))
 
-        pipe._session_log_dirs = {str(log_dir)}
-        pipe._session_log_retention_days = 7
+        pipe._session_log_manager._dirs = {str(log_dir)}
+        pipe._session_log_manager._retention_days = 7
 
         try:
-            pipe._cleanup_session_log_archives()
+            pipe._session_log_manager.cleanup_archives()
 
             # Old file should be deleted
             assert not old_file.exists()
@@ -2189,16 +2066,16 @@ class TestRenderFilterSource:
     """Tests for filter source rendering."""
 
     def test_render_ors_filter_source_contains_marker(self):
-        """Test that _render_ors_filter_source includes required marker."""
-        source = Pipe._render_ors_filter_source()
+        """Test that render_ors_filter_source includes required marker."""
+        source = FilterManager.render_ors_filter_source()
 
         assert "OWUI_OPENROUTER_PIPE_MARKER" in source
         assert "class Filter" in source
         assert "def inlet" in source
 
     def test_render_direct_uploads_filter_source_contains_marker(self):
-        """Test that _render_direct_uploads_filter_source includes required marker."""
-        source = Pipe._render_direct_uploads_filter_source()
+        """Test that render_direct_uploads_filter_source includes required marker."""
+        source = FilterManager.render_direct_uploads_filter_source()
 
         assert "OWUI_OPENROUTER_PIPE_MARKER" in source
         assert "class Filter" in source
@@ -2214,23 +2091,23 @@ class TestFilterFunctions:
     """Tests for filter function management."""
 
     def test_ensure_ors_filter_function_id_no_functions_module(self):
-        """Test that _ensure_ors_filter_function_id returns None when Functions module is unavailable."""
+        """Test that ensure_ors_filter_function_id returns None when Functions module is unavailable."""
         pipe = Pipe()
 
         try:
             # Without the Functions module, should return None
-            result = pipe._ensure_ors_filter_function_id()
+            result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
             # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
             pipe.shutdown()
 
     def test_ensure_direct_uploads_filter_function_id_no_functions_module(self):
-        """Test that _ensure_direct_uploads_filter_function_id returns None when Functions unavailable."""
+        """Test that ensure_direct_uploads_filter_function_id returns None when Functions unavailable."""
         pipe = Pipe()
 
         try:
-            result = pipe._ensure_direct_uploads_filter_function_id()
+            result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
             # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
@@ -2249,7 +2126,7 @@ class TestBreakerMethods:
         """Test that _breaker_allows returns True for healthy users."""
         pipe = Pipe()
         try:
-            assert pipe._breaker_allows("user123") is True
+            assert pipe._circuit_breaker.allows("user123") is True
         finally:
             pipe.shutdown()
 
@@ -2260,15 +2137,15 @@ class TestBreakerMethods:
             user_id = "test_user"
 
             # Record failures up to threshold
-            for _ in range(pipe._breaker_threshold + 1):
-                pipe._record_failure(user_id)
+            for _ in range(pipe._circuit_breaker.threshold + 1):
+                pipe._circuit_breaker.record_failure(user_id)
 
             # Should be blocked
-            assert pipe._breaker_allows(user_id) is False
+            assert pipe._circuit_breaker.allows(user_id) is False
 
             # Reset should clear
-            pipe._reset_failure_counter(user_id)
-            assert pipe._breaker_allows(user_id) is True
+            pipe._circuit_breaker.reset(user_id)
+            assert pipe._circuit_breaker.allows(user_id) is True
         finally:
             pipe.shutdown()
 
@@ -2285,7 +2162,7 @@ class TestToolTypeBreaker:
         """Test that _tool_type_allows returns True for healthy tool types."""
         pipe = Pipe()
         try:
-            assert pipe._tool_type_allows("user123", "search") is True
+            assert pipe._circuit_breaker.tool_allows("user123", "search") is True
         finally:
             pipe.shutdown()
 
@@ -2297,15 +2174,15 @@ class TestToolTypeBreaker:
             tool_type = "calculator"
 
             # Record failures
-            for _ in range(pipe._breaker_threshold + 1):
-                pipe._record_tool_failure_type(user_id, tool_type)
+            for _ in range(pipe._circuit_breaker.threshold + 1):
+                pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
 
             # Should be blocked
-            assert pipe._tool_type_allows(user_id, tool_type) is False
+            assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is False
 
             # Reset should clear
-            pipe._reset_tool_failure_type(user_id, tool_type)
-            assert pipe._tool_type_allows(user_id, tool_type) is True
+            pipe._circuit_breaker.reset_tool(user_id, tool_type)
+            assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is True
         finally:
             pipe.shutdown()
 
@@ -2316,35 +2193,35 @@ class TestToolTypeBreaker:
 
 
 class TestStreamingHandlerDelegation:
-    """Tests for streaming handler delegation."""
+    """Tests for streaming handler access."""
 
     @pytest.mark.asyncio
-    async def test_run_streaming_loop_requires_streaming_handler(self):
-        """Test that _run_streaming_loop requires streaming handler to be initialized."""
+    async def test_streaming_handler_run_streaming_loop_exists(self):
+        """Test that _streaming_handler._run_streaming_loop exists."""
         pipe = Pipe()
 
         try:
             # Verify streaming handler exists
             assert pipe._streaming_handler is not None
 
-            # The method signature requires multiple parameters - test it exists
-            assert hasattr(pipe, "_run_streaming_loop")
-            assert callable(pipe._run_streaming_loop)
+            # The method exists on the handler
+            assert hasattr(pipe._streaming_handler, "_run_streaming_loop")
+            assert callable(pipe._streaming_handler._run_streaming_loop)
         finally:
             await pipe.close()
 
     @pytest.mark.asyncio
-    async def test_run_nonstreaming_loop_requires_streaming_handler(self):
-        """Test that _run_nonstreaming_loop requires streaming handler to be initialized."""
+    async def test_streaming_handler_run_nonstreaming_loop_exists(self):
+        """Test that _streaming_handler._run_nonstreaming_loop exists."""
         pipe = Pipe()
 
         try:
             # Verify streaming handler exists
             assert pipe._streaming_handler is not None
 
-            # The method signature requires multiple parameters - test it exists
-            assert hasattr(pipe, "_run_nonstreaming_loop")
-            assert callable(pipe._run_nonstreaming_loop)
+            # The method exists on the handler
+            assert hasattr(pipe._streaming_handler, "_run_nonstreaming_loop")
+            assert callable(pipe._streaming_handler._run_nonstreaming_loop)
         finally:
             await pipe.close()
 
@@ -2361,7 +2238,7 @@ class TestErrorContext:
         """Test that _build_error_context returns correct structure."""
         pipe = Pipe()
         try:
-            error_id, context = pipe._build_error_context()
+            error_id, context = pipe._ensure_error_formatter()._build_error_context()
 
             assert isinstance(error_id, str)
             assert len(error_id) > 0
@@ -2376,11 +2253,11 @@ class TestErrorContext:
         pipe = Pipe()
         try:
             # Should return template string
-            template = pipe._select_openrouter_template(500)
+            template = pipe._ensure_error_formatter()._select_openrouter_template(500)
             assert isinstance(template, str)
 
             # Different status codes should work
-            template_429 = pipe._select_openrouter_template(429)
+            template_429 = pipe._ensure_error_formatter()._select_openrouter_template(429)
             assert isinstance(template_429, str)
         finally:
             pipe.shutdown()
@@ -2534,8 +2411,8 @@ class TestPipeEntryPointEdgeCases:
         try:
             # Record enough failures to trip the breaker
             user_id = "test_user_blocked"
-            for _ in range(pipe._breaker_threshold + 2):
-                pipe._record_failure(user_id)
+            for _ in range(pipe._circuit_breaker.threshold + 2):
+                pipe._circuit_breaker.record_failure(user_id)
 
             result = await pipe.pipe(
                 body={},
@@ -2735,21 +2612,22 @@ class TestParseToolArguments:
         """Test that _parse_tool_arguments handles JSON string input."""
         pipe = Pipe()
         try:
+            executor = pipe._ensure_tool_executor()
             # JSON string
-            result = pipe._parse_tool_arguments('{"key": "value"}')
+            result = executor._parse_tool_arguments('{"key": "value"}')
             assert result == {"key": "value"}
 
             # Already a dict
-            result = pipe._parse_tool_arguments({"key": "value"})
+            result = executor._parse_tool_arguments({"key": "value"})
             assert result == {"key": "value"}
 
             # Invalid JSON raises ValueError
             with pytest.raises(ValueError, match="Unable to parse tool arguments"):
-                pipe._parse_tool_arguments("not json")
+                executor._parse_tool_arguments("not json")
 
             # None raises ValueError
             with pytest.raises(ValueError, match="Unsupported argument type"):
-                pipe._parse_tool_arguments(None)
+                executor._parse_tool_arguments(None)
         finally:
             pipe.shutdown()
 
@@ -2769,20 +2647,21 @@ class TestIsBatchableToolCall:
         """
         pipe = Pipe()
         try:
+            executor = pipe._ensure_tool_executor()
             # No blocking keys - batchable
-            assert pipe._is_batchable_tool_call({"query": "search"}) is True
+            assert executor._is_batchable_tool_call({"query": "search"}) is True
 
             # With depends_on - not batchable
-            assert pipe._is_batchable_tool_call({"depends_on": "prev_call"}) is False
+            assert executor._is_batchable_tool_call({"depends_on": "prev_call"}) is False
 
             # With _depends_on - not batchable
-            assert pipe._is_batchable_tool_call({"_depends_on": ["call1"]}) is False
+            assert executor._is_batchable_tool_call({"_depends_on": ["call1"]}) is False
 
             # With sequential - not batchable
-            assert pipe._is_batchable_tool_call({"sequential": True}) is False
+            assert executor._is_batchable_tool_call({"sequential": True}) is False
 
             # With no_batch - not batchable
-            assert pipe._is_batchable_tool_call({"no_batch": True}) is False
+            assert executor._is_batchable_tool_call({"no_batch": True}) is False
         finally:
             pipe.shutdown()
 
@@ -3034,8 +2913,8 @@ class TestToolExecution:
             # Trip the breaker for a specific tool type
             user_id = "test_user_tool_blocked"
             tool_type = "blocked_tool"
-            for _ in range(pipe._breaker_threshold + 2):
-                pipe._record_tool_failure_type(user_id, tool_type)
+            for _ in range(pipe._circuit_breaker.threshold + 2):
+                pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
 
             # Create mock item
             item = Mock(spec=_QueuedToolCall)
@@ -3070,19 +2949,20 @@ class TestGetUserById:
 
     @pytest.mark.asyncio
     async def test_get_user_by_id_no_users_module(self):
-        """Test that _get_user_by_id handles missing Users module."""
-        import open_webui_openrouter_pipe.pipe as pipe_mod
-        original_users = pipe_mod.Users
-        pipe_mod.Users = None
+        """Test that get_user_by_id handles missing Users module."""
+        import logging
+        import open_webui_openrouter_pipe.storage.users as users_mod
+        from open_webui_openrouter_pipe.storage.users import get_user_by_id
 
-        pipe = Pipe()
+        original_users = users_mod.Users
+        users_mod.Users = None
+        logger = logging.getLogger("test_user_lookup")
 
         try:
-            result = await pipe._get_user_by_id("test_user")
+            result = await get_user_by_id("test_user", logger)
             assert result is None
         finally:
-            pipe_mod.Users = original_users
-            await pipe.close()
+            users_mod.Users = original_users
 
 
 # =============================================================================
@@ -3285,7 +3165,8 @@ async def test_pipes_returns_cached_models_on_refresh_error(monkeypatch, pipe_in
     monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: [_model_entry("m1")])
     monkeypatch.setattr(pipe, "_select_models", lambda _model_id, models: models)
     monkeypatch.setattr(pipe, "_apply_model_filters", lambda models, _valves: models)
-    monkeypatch.setattr(pipe, "_maybe_schedule_model_metadata_sync", lambda *_args, **_kwargs: None)
+    pipe._ensure_catalog_manager()
+    monkeypatch.setattr(pipe._catalog_manager, "maybe_schedule_model_metadata_sync", lambda *_args, **_kwargs: None)
 
     result = await pipe.pipes()
 
@@ -3327,7 +3208,8 @@ async def test_pipes_auto_install_filters_handles_exceptions(monkeypatch, pipe_i
     monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: [_model_entry("m1")])
     monkeypatch.setattr(pipe, "_select_models", lambda _model_id, models: models)
     monkeypatch.setattr(pipe, "_apply_model_filters", lambda models, _valves: models)
-    monkeypatch.setattr(pipe, "_maybe_schedule_model_metadata_sync", lambda *_args, **_kwargs: None)
+    pipe._ensure_catalog_manager()
+    monkeypatch.setattr(pipe._catalog_manager, "maybe_schedule_model_metadata_sync", lambda *_args, **_kwargs: None)
 
     called: list[str] = []
 
@@ -3339,8 +3221,10 @@ async def test_pipes_auto_install_filters_handles_exceptions(monkeypatch, pipe_i
         called.append("direct")
         return "direct"
 
-    monkeypatch.setattr(pipe, "_ensure_ors_filter_function_id", _fail_ors)
-    monkeypatch.setattr(pipe, "_ensure_direct_uploads_filter_function_id", _ok_direct)
+    # Initialize filter manager and mock its methods
+    pipe._ensure_filter_manager()
+    monkeypatch.setattr(pipe._filter_manager, "ensure_ors_filter_function_id", _fail_ors)
+    monkeypatch.setattr(pipe._filter_manager, "ensure_direct_uploads_filter_function_id", _ok_direct)
 
     result = await pipe.pipes()
 
@@ -3364,7 +3248,7 @@ async def test_pipe_queue_full_returns_503(monkeypatch, pipe_instance_async) -> 
     async def _emit_error(_emitter, error_obj, **_kwargs):
         emitted.append({"error": error_obj})
 
-    monkeypatch.setattr(pipe, "_emit_error", _emit_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
 
     result = await pipe.pipe(
         {"stream": False},
@@ -3388,14 +3272,14 @@ async def test_pipe_breaker_blocks_request(monkeypatch, pipe_instance_async) -> 
         return None
 
     monkeypatch.setattr(pipe, "_ensure_concurrency_controls", _noop)
-    monkeypatch.setattr(pipe, "_breaker_allows", lambda _user_id: False)
+    monkeypatch.setattr(pipe._circuit_breaker, "allows", lambda _user_id: False)
 
     emitted: list[str] = []
 
     async def _emit_notification(_emitter, content, **_kwargs):
         emitted.append(content)
 
-    monkeypatch.setattr(pipe, "_emit_notification", _emit_notification)
+    monkeypatch.setattr(pipe._event_emitter_handler, "_emit_notification", _emit_notification)
 
     result = await pipe.pipe(
         {"stream": False},
@@ -3426,7 +3310,7 @@ async def test_pipe_warmup_failed_emits_error(monkeypatch, pipe_instance_async) 
     async def _emit_error(_emitter, error_obj, **_kwargs):
         emitted.append(str(error_obj))
 
-    monkeypatch.setattr(pipe, "_emit_error", _emit_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
 
     result = await pipe.pipe(
         {"stream": False},
@@ -3495,8 +3379,8 @@ async def test_handle_pipe_call_auth_error_streaming_emits(monkeypatch, pipe_ins
 
     called: list[bool] = []
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: (None, "missing key"))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(pipe, "_emit_templated_error", _emit_templated_error)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_templated_error", _emit_templated_error)
 
     result = await pipe._handle_pipe_call(
         {"stream": True},
@@ -3521,8 +3405,8 @@ async def test_handle_pipe_call_auth_error_nonstreaming_fallback(monkeypatch, pi
     pipe = pipe_instance_async
 
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: (None, "missing key"))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(pipe, "_build_error_context", lambda: ("err-1", {"session_id": "", "user_id": ""}))
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_build_error_context", lambda: ("err-1", {"session_id": "", "user_id": ""}))
     def _raise_template(*_args, **_kwargs):
         raise RuntimeError("boom")
 
@@ -3551,8 +3435,8 @@ async def test_handle_pipe_call_auth_error_task_fallback(monkeypatch, pipe_insta
     pipe = pipe_instance_async
 
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: (None, "missing key"))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(pipe, "_task_name", lambda _task: "title")
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(TaskModelAdapter, "_task_name", staticmethod(lambda _task: "title"))
 
     result = await pipe._handle_pipe_call(
         {"stream": False},
@@ -3575,7 +3459,7 @@ async def test_handle_pipe_call_auth_error_task_fallback(monkeypatch, pipe_insta
 async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
 
     async def _ensure_loaded(*_args, **_kwargs):
         raise RuntimeError("catalog down")
@@ -3588,7 +3472,7 @@ async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe
     async def _emit_error(*_args, **_kwargs):
         calls.append("error")
 
-    monkeypatch.setattr(pipe, "_emit_error", _emit_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
 
     result = await pipe._handle_pipe_call(
         {"stream": False},
@@ -3612,7 +3496,7 @@ async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe
 async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
     async def _ensure_loaded(*_args, **_kwargs):
         return None
 
@@ -3631,7 +3515,7 @@ async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance
         called.append("templated")
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
-    monkeypatch.setattr(pipe, "_emit_templated_error", _emit_templated_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_templated_error", _emit_templated_error)
 
     result = await pipe._handle_pipe_call(
         {"stream": False},
@@ -3655,7 +3539,7 @@ async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance
 async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
     async def _ensure_loaded(*_args, **_kwargs):
         return None
 
@@ -3679,7 +3563,7 @@ async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_
         called.append("reported")
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
-    monkeypatch.setattr(pipe, "_report_openrouter_error", _report_openrouter_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_report_openrouter_error", _report_openrouter_error)
 
     result = await pipe._handle_pipe_call(
         {"stream": False},
@@ -3703,7 +3587,7 @@ async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_
 async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
     async def _ensure_loaded(*_args, **_kwargs):
         return None
 
@@ -3721,7 +3605,7 @@ async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_a
     async def _raise_connect(*_args, **_kwargs):
         raise httpx.ConnectError("connect")
 
-    monkeypatch.setattr(pipe, "_emit_templated_error", _emit_templated_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_templated_error", _emit_templated_error)
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _raise_timeout)
     result_timeout = await pipe._handle_pipe_call(
@@ -3762,7 +3646,7 @@ async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_a
 async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
-    monkeypatch.setattr(pipe, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
     async def _ensure_loaded(*_args, **_kwargs):
         return None
 
@@ -3778,7 +3662,7 @@ async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_i
         called.append("reported")
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
-    monkeypatch.setattr(pipe, "_report_openrouter_error", _report_openrouter_error)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_report_openrouter_error", _report_openrouter_error)
 
     result = await pipe._handle_pipe_call(
         {"stream": False},
@@ -3876,7 +3760,7 @@ def test_ensure_ors_filter_auto_install_off_returns_none(pipe_instance):
     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
 
     with _install_functions_module([]):
-        assert pipe._ensure_ors_filter_function_id() is None
+        assert pipe._ensure_filter_manager().ensure_ors_filter_function_id() is None
 
 
 def test_ensure_ors_filter_auto_install_creates_and_updates(pipe_instance):
@@ -3884,7 +3768,7 @@ def test_ensure_ors_filter_auto_install_creates_and_updates(pipe_instance):
     pipe.valves.AUTO_INSTALL_ORS_FILTER = True
 
     with _install_functions_module([]) as mod:
-        func_id = pipe._ensure_ors_filter_function_id()
+        func_id = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
         assert func_id is not None
         assert mod.Functions.updated
 
@@ -3895,7 +3779,7 @@ def test_ensure_ors_filter_updates_existing(pipe_instance):
 
     existing = _Func(id="openrouter_search", content=f"{_ORS_FILTER_MARKER} old", updated_at=10)
     with _install_functions_module([existing]) as mod:
-        func_id = pipe._ensure_ors_filter_function_id()
+        func_id = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
         assert func_id == "openrouter_search"
         assert mod.Functions.updated
 
@@ -3910,7 +3794,7 @@ def test_ensure_direct_uploads_filter_updates_existing(pipe_instance):
         updated_at=5,
     )
     with _install_functions_module([existing]) as mod:
-        func_id = pipe._ensure_direct_uploads_filter_function_id()
+        func_id = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
         assert func_id == _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID
         assert mod.Functions.updated
 
@@ -3941,7 +3825,7 @@ from open_webui_openrouter_pipe import (
 def test_wrap_safe_event_emitter_returns_none_for_missing():
     pipe = Pipe()
     try:
-        assert pipe._wrap_safe_event_emitter(None) is None
+        assert pipe._event_emitter_handler._wrap_safe_event_emitter(None) is None
     finally:
         pipe.shutdown()
 
@@ -3953,7 +3837,7 @@ async def test_wrap_safe_event_emitter_swallows_transport_errors(caplog):
     async def failing_emitter(_event):
         raise RuntimeError("boom")
 
-    wrapped = pipe._wrap_safe_event_emitter(failing_emitter)
+    wrapped = pipe._event_emitter_handler._wrap_safe_event_emitter(failing_emitter)
     assert wrapped is not None
 
     with caplog.at_level(logging.DEBUG):
@@ -4358,7 +4242,7 @@ def test_apply_task_reasoning_preferences_sets_effort():
 
     try:
         body = ResponsesBody(model="test.model", input=[])
-        pipe._apply_task_reasoning_preferences(body, "high")
+        pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "high")
         assert body.reasoning == {"effort": "high", "enabled": True}
     finally:
         pipe.shutdown()
@@ -4376,12 +4260,12 @@ def test_apply_task_reasoning_preferences_include_only():
 
     try:
         body = ResponsesBody(model="test.model", input=[])
-        pipe._apply_task_reasoning_preferences(body, "minimal")
+        pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "minimal")
         assert body.reasoning is None
         assert body.include_reasoning is False
-        pipe._apply_task_reasoning_preferences(body, "none")
+        pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
         assert body.include_reasoning is False
-        pipe._apply_task_reasoning_preferences(body, "low")
+        pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "low")
         assert body.include_reasoning is True
     finally:
         pipe.shutdown()
@@ -4398,7 +4282,7 @@ def test_retry_without_reasoning_handles_thinking_error():
             reason="Bad Request",
             openrouter_message="Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
-        assert pipe._should_retry_without_reasoning(err, body) is True
+        assert pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(err, body) is True
         assert body.include_reasoning is False
         assert body.reasoning is None
         assert body.thinking_config is None
@@ -4416,7 +4300,7 @@ def test_retry_without_reasoning_ignores_unrelated_errors():
             reason="Bad Request",
             openrouter_message="Some other provider issue",
         )
-        assert pipe._should_retry_without_reasoning(err, body) is False
+        assert pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(err, body) is False
         assert body.include_reasoning is True
     finally:
         pipe.shutdown()
@@ -4435,7 +4319,7 @@ def test_apply_reasoning_preferences_prefers_reasoning_payload():
     try:
         body = ResponsesBody(model="test.model", input=[])
         body.include_reasoning = True
-        pipe._apply_reasoning_preferences(body, pipe.Valves())
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, pipe.Valves())
         assert isinstance(body.reasoning, dict)
         assert body.reasoning.get("enabled") is True
         assert body.include_reasoning is None
@@ -4456,11 +4340,11 @@ def test_apply_reasoning_preferences_legacy_only_sets_flag():
     try:
         body = ResponsesBody(model="test.model", input=[])
         valves = pipe.Valves(REASONING_EFFORT="high")
-        pipe._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
         assert body.reasoning is None
         assert body.include_reasoning is True
         valves = pipe.Valves(REASONING_EFFORT="none")
-        pipe._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
         assert body.include_reasoning is False
     finally:
         pipe.shutdown()
@@ -4476,7 +4360,7 @@ def test_retry_without_reasoning_handles_reasoning_dict():
             reason="Bad Request",
             openrouter_message="Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
-        assert pipe._should_retry_without_reasoning(err, body) is True
+        assert pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(err, body) is True
         assert body.reasoning is None
     finally:
         pipe.shutdown()
@@ -4524,7 +4408,7 @@ async def test_transform_messages_skips_image_generation_artifacts(monkeypatch):
     )
 
     try:
-        result = await pipe.transform_messages_to_input(
+        result = await transform_messages_to_input(pipe,
             messages,
             chat_id="chat-1",
             openwebui_model_id="provider/model",
@@ -4548,8 +4432,8 @@ def test_apply_gemini_thinking_config_sets_budget():
     try:
         valves = pipe.Valves(REASONING_EFFORT="medium", GEMINI_THINKING_BUDGET=512)
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
-        pipe._apply_reasoning_preferences(body, valves)
-        pipe._apply_gemini_thinking_config(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
         assert body.thinking_config == {"include_thoughts": True, "thinking_budget": 512}
     finally:
         pipe.shutdown()
@@ -4782,15 +4666,17 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    async def fake_dump(self, valves, *, user_id, model_id, usage, user_obj, pipe_id):
+    async def fake_dump(pipe, valves, *, user_id, model_id, usage, user_obj, pipe_id):
         captured["user_id"] = user_id
         captured["model_id"] = model_id
         captured["usage"] = usage
         captured["pipe_id"] = pipe_id
 
+    # Patch where the function is used (not where it's defined)
+    import open_webui_openrouter_pipe.requests.task_model_adapter as adapter_module
     monkeypatch.setattr(
-        Pipe,
-        "_maybe_dump_costs_snapshot",
+        adapter_module,
+        "maybe_dump_costs_snapshot",
         fake_dump,
     )
 
@@ -4820,7 +4706,7 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
         try:
             session = pipe._create_http_session(pipe.valves)
 
-            result = await pipe._run_task_model_request(
+            result = await pipe._ensure_task_model_adapter()._run_task_model_request(
                 {"model": "openai.gpt-mini"},
                 pipe.valves,
                 session=session,
@@ -4894,7 +4780,7 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
         try:
             session = pipe._create_http_session(pipe.valves)
 
-            result = await pipe._run_task_model_request(
+            result = await pipe._ensure_task_model_adapter()._run_task_model_request(
                 {"model": "openai.gpt-mini"},
                 pipe.valves,
                 session=session,
@@ -4933,27 +4819,21 @@ def test_sum_pricing_values_walks_all_nodes():
         "image": {"base": "0.5", "modifier": "-1.5"},
         "extra": ["2", "not-a-number", 1],
     }
-    total, numeric_count = Pipe._sum_pricing_values(pricing)
+    total, numeric_count = sum_pricing_values(pricing)
     assert total == Decimal("2.0")
     assert numeric_count == 6
 
 
 def test_free_model_requires_numeric_pricing(monkeypatch):
-    pipe = Pipe()
-    pipe.valves = pipe.Valves(FREE_MODEL_FILTER="only", TOOL_CALLING_FILTER="all")
-
     def fake_spec(cls, model_id: str):
         return {"pricing": {"prompt": "not-a-number", "completion": ""}}
 
     monkeypatch.setattr(
-        "open_webui_openrouter_pipe.registry.OpenRouterModelRegistry.spec",
+        "open_webui_openrouter_pipe.models.registry.OpenRouterModelRegistry.spec",
         classmethod(fake_spec),
     )
 
-    try:
-        assert pipe._is_free_model("weird.model") is False
-    finally:
-        pipe.shutdown()
+    assert is_free_model("weird.model") is False
 
 
 def test_model_filters_respect_free_mode():
@@ -5228,6 +5108,8 @@ async def test_run_tool_with_retries_success_and_missing_callable(pipe_instance)
 
 @pytest.mark.asyncio
 async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
+    from open_webui_openrouter_pipe.core.costs import maybe_dump_costs_snapshot
+
     pipe = pipe_instance
     pipe.valves.COSTS_REDIS_DUMP = True
     pipe.valves.COSTS_REDIS_TTL_SECONDS = 60
@@ -5246,7 +5128,8 @@ async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
     usage = {"prompt_tokens": 1}
     user = {"email": "test@example.com", "name": "Tester"}
 
-    await pipe._maybe_dump_costs_snapshot(
+    await maybe_dump_costs_snapshot(
+        pipe,
         pipe.valves,
         user_id="u1",
         model_id="model",
@@ -5460,37 +5343,37 @@ def _install_fake_store(pipe: Pipe) -> list[_FakeModel]:
 def test_resolve_session_log_archive_settings_disabled(pipe_instance):
     pipe = pipe_instance
     pipe.valves.SESSION_LOG_STORE_ENABLED = False
-    assert pipe._resolve_session_log_archive_settings(pipe.valves) is None
+    assert pipe._session_log_manager.resolve_archive_settings(pipe.valves) is None
 
 
 def test_resolve_session_log_archive_settings_missing_dir_or_password(pipe_instance, monkeypatch, tmp_path):
     pipe = pipe_instance
-    pipe._session_log_warning_emitted = False
+    pipe._session_log_manager._warning_emitted = False
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
     pipe.valves.SESSION_LOG_DIR = ""
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
     monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
 
-    assert pipe._resolve_session_log_archive_settings(pipe.valves) is None
-    assert pipe._session_log_warning_emitted is True
+    assert pipe._session_log_manager.resolve_archive_settings(pipe.valves) is None
+    assert pipe._session_log_manager._warning_emitted is True
 
-    pipe._session_log_warning_emitted = False
+    pipe._session_log_manager._warning_emitted = False
     pipe.valves.SESSION_LOG_DIR = str(tmp_path)
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
-    assert pipe._resolve_session_log_archive_settings(pipe.valves) is None
-    assert pipe._session_log_warning_emitted is True
+    assert pipe._session_log_manager.resolve_archive_settings(pipe.valves) is None
+    assert pipe._session_log_manager._warning_emitted is True
 
 
 def test_resolve_session_log_archive_settings_success(pipe_instance, monkeypatch, tmp_path):
     pipe = pipe_instance
-    pipe._session_log_warning_emitted = False
+    pipe._session_log_manager._warning_emitted = False
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
     pipe.valves.SESSION_LOG_DIR = str(tmp_path)
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
     pipe.valves.SESSION_LOG_ZIP_COMPRESSION = "stored"
     monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
 
-    settings = pipe._resolve_session_log_archive_settings(pipe.valves)
+    settings = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
     assert settings is not None
     base_dir, password, compression, compresslevel = settings
     assert base_dir == str(tmp_path)
@@ -5505,10 +5388,10 @@ def test_enqueue_session_log_archive_queues_job(pipe_instance, monkeypatch, tmp_
     pipe.valves.SESSION_LOG_DIR = str(tmp_path)
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
     monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
-    monkeypatch.setattr(pipe, "_maybe_start_session_log_workers", lambda: None)
+    monkeypatch.setattr(pipe._session_log_manager, "start_workers", lambda: None)
 
-    pipe._session_log_queue = None
-    pipe._enqueue_session_log_archive(
+    pipe._session_log_manager._queue = None
+    pipe._session_log_manager.enqueue_archive(
         pipe.valves,
         user_id="user",
         session_id="sess",
@@ -5518,8 +5401,8 @@ def test_enqueue_session_log_archive_queues_job(pipe_instance, monkeypatch, tmp_
         log_events=[{"message": "hello"}],
     )
 
-    assert pipe._session_log_queue is not None
-    job = pipe._session_log_queue.get_nowait()
+    assert pipe._session_log_manager._queue is not None
+    job = pipe._session_log_manager._queue.get_nowait()
     assert job.user_id == "user"
     assert job.chat_id == "chat"
 
@@ -5530,13 +5413,13 @@ def test_enqueue_session_log_archive_queue_full(pipe_instance, monkeypatch, tmp_
     pipe.valves.SESSION_LOG_DIR = str(tmp_path)
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
     monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
-    monkeypatch.setattr(pipe, "_maybe_start_session_log_workers", lambda: None)
+    monkeypatch.setattr(pipe._session_log_manager, "start_workers", lambda: None)
 
-    pipe._session_log_queue = pipe._session_log_queue or __import__("queue").Queue(maxsize=1)
-    pipe._session_log_queue.put_nowait("filled")
+    pipe._session_log_manager._queue = pipe._session_log_manager._queue or __import__("queue").Queue(maxsize=1)
+    pipe._session_log_manager._queue.put_nowait("filled")
 
     caplog.set_level("WARNING")
-    pipe._enqueue_session_log_archive(
+    pipe._session_log_manager.enqueue_archive(
         pipe.valves,
         user_id="user",
         session_id="sess",
@@ -5578,7 +5461,7 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
         "item_type": "session_log_segment_terminal",
         "payload": payload,
     }
-    pipe._db_persist_sync([row])
+    pipe._artifact_store._db_persist_sync([row])
 
     def _fake_write(job):
         out_dir = Path(job.base_dir) / _sanitize_path_component(job.user_id, fallback="user") / _sanitize_path_component(job.chat_id, fallback="chat")
@@ -5586,10 +5469,10 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
         out_path = out_dir / f"{_sanitize_path_component(job.message_id, fallback='message')}.zip"
         out_path.write_text("zip")
 
-    pipe._write_session_log_archive = _fake_write  # type: ignore[assignment]
+    pipe._session_log_manager._write_archive = _fake_write  # type: ignore[assignment]
 
     settings = (str(tmp_path), b"pass", "stored", None)
-    result = pipe._assemble_and_write_session_log_bundle(
+    result = pipe._session_log_manager._assemble_and_write_bundle(
         chat_id,
         message_id,
         terminal=True,
@@ -5597,7 +5480,7 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
     )
 
     assert result is True
-    remaining = pipe._db_fetch_sync(chat_id, message_id, [row["id"]])
+    remaining = pipe._artifact_store._db_fetch_sync(chat_id, message_id, [row["id"]])
     assert remaining == {}
 
 
@@ -5664,10 +5547,10 @@ def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance
     def _fake_delete(ids):
         deleted.append(ids)
 
-    pipe._assemble_and_write_session_log_bundle = _fake_assemble  # type: ignore[assignment]
-    pipe._delete_artifacts_sync = _fake_delete  # type: ignore[assignment]
+    pipe._session_log_manager._assemble_and_write_bundle = _fake_assemble  # type: ignore[assignment]
+    pipe._artifact_store._delete_artifacts_sync = _fake_delete  # type: ignore[assignment]
 
-    pipe._run_session_log_assembler_once()
+    pipe._session_log_manager.run_assembler_once()
 
     assert ("chat-terminal", "msg-terminal", True) in calls
     assert any(chat_id == "chat-stale" and terminal is False for chat_id, _, terminal in calls)
@@ -5850,7 +5733,7 @@ class _FakeRedisModule:
 async def test_init_redis_client_success(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     pipe._redis_candidate = True
-    pipe._redis_enabled = False
+    pipe._redis_enabled = False  # Pipe's own state (not artifact_store)
     pipe._redis_url = "redis://localhost"
 
     fake_client = _FakeRedis()
@@ -5862,13 +5745,13 @@ async def test_init_redis_client_success(monkeypatch, pipe_instance_async) -> No
     async def _noop_flusher():
         return None
 
-    monkeypatch.setattr(pipe, "_redis_pubsub_listener", _noop_listener)
-    monkeypatch.setattr(pipe, "_redis_periodic_flusher", _noop_flusher)
+    monkeypatch.setattr(pipe._artifact_store, "_redis_pubsub_listener", _noop_listener)
+    monkeypatch.setattr(pipe._artifact_store, "_redis_periodic_flusher", _noop_flusher)
 
     await pipe._init_redis_client()
 
-    assert pipe._redis_enabled is True
-    assert pipe._redis_client is fake_client
+    assert pipe._redis_enabled is True  # Pipe's own state
+    assert pipe._redis_client is fake_client  # Pipe's own state
 
     await pipe._stop_redis()
 
@@ -5877,7 +5760,7 @@ async def test_init_redis_client_success(monkeypatch, pipe_instance_async) -> No
 async def test_init_redis_client_failure_disables_cache(monkeypatch, pipe_instance_async) -> None:
     pipe = pipe_instance_async
     pipe._redis_candidate = True
-    pipe._redis_enabled = False
+    pipe._redis_enabled = False  # Pipe's own state
     pipe._redis_url = "redis://localhost"
 
     fake_client = _FakeRedis(should_fail=True)
@@ -5885,8 +5768,8 @@ async def test_init_redis_client_failure_disables_cache(monkeypatch, pipe_instan
 
     await pipe._init_redis_client()
 
-    assert pipe._redis_enabled is False
-    assert pipe._redis_client is None
+    assert pipe._redis_enabled is False  # Pipe's own state
+    assert pipe._redis_client is None  # Pipe's own state
 
 # ===== From test_metadata_features.py =====
 
@@ -5938,16 +5821,16 @@ async def test_stop_redis_cancels_tasks_and_closes_client(pipe_instance_async) -
     pipe._redis_ready_task = asyncio.create_task(_stuck())
 
     client = FakeRedis()
-    pipe._artifact_store._redis_client = client  # type: ignore[assignment]
-    pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
+    pipe._redis_client = client  # Pipe's own state
+    pipe._redis_enabled = True  # Pipe's own state
 
     await pipe._stop_redis()
 
-    assert pipe._artifact_store._redis_enabled is False  # type: ignore[attr-defined]
+    assert pipe._redis_enabled is False  # Pipe's own state
     assert pipe._redis_listener_task is None
     assert pipe._redis_flush_task is None
     assert pipe._redis_ready_task is None
-    assert pipe._artifact_store._redis_client is None
+    assert pipe._redis_client is None  # Pipe's own state
     assert client.close_calls == 1
 
 
@@ -5960,13 +5843,13 @@ async def test_stop_redis_logs_close_failure(caplog, pipe_instance_async) -> Non
         async def close(self) -> None:
             raise RuntimeError("boom")
 
-    pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[assignment]
-    pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
+    pipe._redis_client = FakeRedis()  # Pipe's own state
+    pipe._redis_enabled = True  # Pipe's own state
 
     caplog.set_level(logging.DEBUG, logger="tests.redis_shutdown")
     await pipe._stop_redis()
 
-    assert pipe._artifact_store._redis_client is None
+    assert pipe._redis_client is None  # Pipe's own state
     assert any("Failed to close Redis client" in r.getMessage() for r in caplog.records)
 
 
@@ -5991,24 +5874,24 @@ def test_maybe_start_session_log_workers_creates_threads(pipe_for_session_log):
     pipe = pipe_for_session_log
 
     # Clear any existing state
-    pipe._session_log_worker_thread = None
-    pipe._session_log_cleanup_thread = None
-    pipe._session_log_queue = None
-    pipe._session_log_stop_event = None
+    pipe._session_log_manager._worker_thread = None
+    pipe._session_log_manager._cleanup_thread = None
+    pipe._session_log_manager._queue = None
+    pipe._session_log_manager._stop_event = None
 
     # Start workers
-    pipe._maybe_start_session_log_workers()
+    pipe._session_log_manager.start_workers()
 
     # Verify threads were created
-    assert pipe._session_log_worker_thread is not None
-    assert pipe._session_log_worker_thread.is_alive()
-    assert pipe._session_log_cleanup_thread is not None
-    assert pipe._session_log_cleanup_thread.is_alive()
-    assert pipe._session_log_queue is not None
-    assert pipe._session_log_stop_event is not None
+    assert pipe._session_log_manager._worker_thread is not None
+    assert pipe._session_log_manager._worker_thread.is_alive()
+    assert pipe._session_log_manager._cleanup_thread is not None
+    assert pipe._session_log_manager._cleanup_thread.is_alive()
+    assert pipe._session_log_manager._queue is not None
+    assert pipe._session_log_manager._stop_event is not None
 
     # Stop workers for cleanup
-    pipe._stop_session_log_workers()
+    pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
 
 
@@ -6016,25 +5899,25 @@ def test_maybe_start_session_log_workers_idempotent(pipe_for_session_log):
     """Test that calling _maybe_start_session_log_workers twice doesn't create new threads."""
     pipe = pipe_for_session_log
 
-    pipe._session_log_worker_thread = None
-    pipe._session_log_cleanup_thread = None
-    pipe._session_log_queue = None
-    pipe._session_log_stop_event = None
+    pipe._session_log_manager._worker_thread = None
+    pipe._session_log_manager._cleanup_thread = None
+    pipe._session_log_manager._queue = None
+    pipe._session_log_manager._stop_event = None
 
     # Start workers first time
-    pipe._maybe_start_session_log_workers()
+    pipe._session_log_manager.start_workers()
 
-    first_worker = pipe._session_log_worker_thread
-    first_cleanup = pipe._session_log_cleanup_thread
+    first_worker = pipe._session_log_manager._worker_thread
+    first_cleanup = pipe._session_log_manager._cleanup_thread
 
     # Start workers second time
-    pipe._maybe_start_session_log_workers()
+    pipe._session_log_manager.start_workers()
 
     # Same threads should be returned
-    assert pipe._session_log_worker_thread is first_worker
-    assert pipe._session_log_cleanup_thread is first_cleanup
+    assert pipe._session_log_manager._worker_thread is first_worker
+    assert pipe._session_log_manager._cleanup_thread is first_cleanup
 
-    pipe._stop_session_log_workers()
+    pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
 
 
@@ -6042,15 +5925,15 @@ def test_maybe_start_session_log_assembler_worker_creates_thread(pipe_for_sessio
     """Test that _maybe_start_session_log_assembler_worker creates assembler thread."""
     pipe = pipe_for_session_log
 
-    pipe._session_log_assembler_thread = None
-    pipe._session_log_stop_event = None
+    pipe._session_log_manager._assembler_thread = None
+    pipe._session_log_manager._stop_event = None
 
-    pipe._maybe_start_session_log_assembler_worker()
+    pipe._session_log_manager.start_assembler_worker()
 
-    assert pipe._session_log_assembler_thread is not None
-    assert pipe._session_log_assembler_thread.is_alive()
+    assert pipe._session_log_manager._assembler_thread is not None
+    assert pipe._session_log_manager._assembler_thread.is_alive()
 
-    pipe._stop_session_log_workers()
+    pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
 
 
@@ -6058,18 +5941,18 @@ def test_maybe_start_session_log_assembler_worker_idempotent(pipe_for_session_lo
     """Test that calling _maybe_start_session_log_assembler_worker twice doesn't create new threads."""
     pipe = pipe_for_session_log
 
-    pipe._session_log_assembler_thread = None
-    pipe._session_log_stop_event = None
+    pipe._session_log_manager._assembler_thread = None
+    pipe._session_log_manager._stop_event = None
 
-    pipe._maybe_start_session_log_assembler_worker()
+    pipe._session_log_manager.start_assembler_worker()
 
-    first_assembler = pipe._session_log_assembler_thread
+    first_assembler = pipe._session_log_manager._assembler_thread
 
-    pipe._maybe_start_session_log_assembler_worker()
+    pipe._session_log_manager.start_assembler_worker()
 
-    assert pipe._session_log_assembler_thread is first_assembler
+    assert pipe._session_log_manager._assembler_thread is first_assembler
 
-    pipe._stop_session_log_workers()
+    pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
 
 
@@ -6081,7 +5964,7 @@ async def test_persist_session_log_segment_skips_when_disabled():
 
     try:
         # This should return early without doing anything
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6104,7 +5987,7 @@ async def test_persist_session_log_segment_skips_when_missing_ids():
 
     try:
         # Missing chat_id
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6127,7 +6010,7 @@ async def test_persist_session_log_segment_skips_when_no_events():
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
 
     try:
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6151,7 +6034,7 @@ async def test_persist_session_log_segment_skips_when_archive_settings_unavailab
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
 
     try:
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6171,7 +6054,7 @@ def test_convert_jsonl_to_internal_converts_ts_to_created():
     pipe = Pipe()
     try:
         evt = {"ts": "2025-01-22T12:00:00Z", "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert "created" in result
         assert "ts" not in result
@@ -6186,7 +6069,7 @@ def test_convert_jsonl_to_internal_preserves_existing_created():
     pipe = Pipe()
     try:
         evt = {"created": 1700000000.0, "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert result["created"] == 1700000000.0
     finally:
@@ -6198,7 +6081,7 @@ def test_convert_jsonl_to_internal_handles_invalid_ts():
     pipe = Pipe()
     try:
         evt = {"ts": "not-a-date", "message": "test"}
-        result = pipe._convert_jsonl_to_internal(evt)
+        result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
         assert "created" in result
         assert isinstance(result["created"], float)
@@ -6216,7 +6099,7 @@ def test_dedupe_session_log_events_removes_duplicates():
             {"created": 2.0, "request_id": "req1", "lineno": 2, "message": "test2"},
         ]
 
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 2
         assert result[0]["message"] == "test1"
@@ -6235,7 +6118,7 @@ def test_dedupe_session_log_events_preserves_order():
             {"created": 3.0, "request_id": "req1", "lineno": 3, "message": "third"},
         ]
 
-        result = pipe._dedupe_session_log_events(events)
+        result = pipe._session_log_manager.dedupe_events(events)
 
         assert len(result) == 3
         assert result[0]["message"] == "first"
@@ -6251,68 +6134,48 @@ def test_dedupe_session_log_events_preserves_order():
 
 
 def test_sum_pricing_values_handles_decimal_type():
-    """Test that _sum_pricing_values handles Decimal values."""
-    pipe = Pipe()
-    try:
-        pricing = Decimal("0.001")
-        total, count = pipe._sum_pricing_values(pricing)
+    """Test that sum_pricing_values handles Decimal values."""
+    pricing = Decimal("0.001")
+    total, count = sum_pricing_values(pricing)
 
-        assert total == Decimal("0.001")
-        assert count == 1
-    finally:
-        pipe.shutdown()
+    assert total == Decimal("0.001")
+    assert count == 1
 
 
 def test_sum_pricing_values_handles_string_type():
-    """Test that _sum_pricing_values handles string values."""
-    pipe = Pipe()
-    try:
-        pricing = "0.002"
-        total, count = pipe._sum_pricing_values(pricing)
+    """Test that sum_pricing_values handles string values."""
+    pricing = "0.002"
+    total, count = sum_pricing_values(pricing)
 
-        assert total == Decimal("0.002")
-        assert count == 1
-    finally:
-        pipe.shutdown()
+    assert total == Decimal("0.002")
+    assert count == 1
 
 
 def test_sum_pricing_values_handles_empty_string():
-    """Test that _sum_pricing_values handles empty string."""
-    pipe = Pipe()
-    try:
-        pricing = ""
-        total, count = pipe._sum_pricing_values(pricing)
+    """Test that sum_pricing_values handles empty string."""
+    pricing = ""
+    total, count = sum_pricing_values(pricing)
 
-        assert total == Decimal(0)
-        assert count == 0
-    finally:
-        pipe.shutdown()
+    assert total == Decimal(0)
+    assert count == 0
 
 
 def test_sum_pricing_values_handles_invalid_string():
-    """Test that _sum_pricing_values handles invalid string."""
-    pipe = Pipe()
-    try:
-        pricing = "not-a-number"
-        total, count = pipe._sum_pricing_values(pricing)
+    """Test that sum_pricing_values handles invalid string."""
+    pricing = "not-a-number"
+    total, count = sum_pricing_values(pricing)
 
-        assert total == Decimal(0)
-        assert count == 0
-    finally:
-        pipe.shutdown()
+    assert total == Decimal(0)
+    assert count == 0
 
 
 def test_sum_pricing_values_handles_non_numeric_non_container():
-    """Test that _sum_pricing_values handles non-numeric non-container values."""
-    pipe = Pipe()
-    try:
-        pricing = object()
-        total, count = pipe._sum_pricing_values(pricing)
+    """Test that sum_pricing_values handles non-numeric non-container values."""
+    pricing = object()
+    total, count = sum_pricing_values(pricing)
 
-        assert total == Decimal(0)
-        assert count == 0
-    finally:
-        pipe.shutdown()
+    assert total == Decimal(0)
+    assert count == 0
 
 
 # =============================================================================
@@ -6329,7 +6192,7 @@ async def test_get_file_by_id_delegates_to_handler():
         mock_result = Mock(id="file123", filename="test.txt")
         pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_result)
 
-        result = await pipe._get_file_by_id("file123")
+        result = await pipe._multimodal_handler._get_file_by_id("file123")
 
         assert result is mock_result
         pipe._multimodal_handler._get_file_by_id.assert_called_once_with("file123")
@@ -6337,18 +6200,6 @@ async def test_get_file_by_id_delegates_to_handler():
         await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_get_file_by_id_returns_none_when_no_handler():
-    """Test that _get_file_by_id returns None when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
-
-        result = await pipe._get_file_by_id("file123")
-
-        assert result is None
-    finally:
-        await pipe.close()
 
 
 def test_infer_file_mime_type_delegates_to_handler():
@@ -6358,302 +6209,23 @@ def test_infer_file_mime_type_delegates_to_handler():
         mock_file = Mock(filename="test.jpg")
         pipe._multimodal_handler._infer_file_mime_type = Mock(return_value="image/jpeg")
 
-        result = pipe._infer_file_mime_type(mock_file)
+        result = pipe._multimodal_handler._infer_file_mime_type(mock_file)
 
         assert result == "image/jpeg"
     finally:
         pipe.shutdown()
 
 
-def test_infer_file_mime_type_returns_octet_stream_when_no_handler():
-    """Test that _infer_file_mime_type returns octet-stream when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
 
-        result = pipe._infer_file_mime_type(Mock())
 
-        assert result == "application/octet-stream"
-    finally:
-        pipe.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_inline_owui_file_id_returns_none_when_no_handler():
-    """Test that _inline_owui_file_id returns None when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
 
-        result = await pipe._inline_owui_file_id("file123", chunk_size=1024, max_bytes=1000000)
 
-        assert result is None
-    finally:
-        await pipe.close()
 
 
-@pytest.mark.asyncio
-async def test_inline_internal_file_url_returns_none_when_no_handler():
-    """Test that _inline_internal_file_url returns None when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
 
-        result = await pipe._inline_internal_file_url(
-            "http://localhost/file.txt",
-            chunk_size=1024,
-            max_bytes=1000000,
-        )
 
-        assert result is None
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_inline_internal_responses_input_files_returns_when_no_handler():
-    """Test that _inline_internal_responses_input_files_inplace returns when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
-
-        request_body = {"input": []}
-        await pipe._inline_internal_responses_input_files_inplace(
-            request_body,
-            chunk_size=1024,
-            max_bytes=1000000,
-        )
-        # Should return without error
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_read_file_record_base64_returns_none_when_no_handler():
-    """Test that _read_file_record_base64 returns None when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
-
-        result = await pipe._read_file_record_base64(Mock(), 1024, 1000000)
-
-        assert result is None
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_encode_file_path_base64_raises_when_no_handler():
-    """Test that _encode_file_path_base64 raises RuntimeError when handler is not initialized."""
-    pipe = Pipe()
-    try:
-        pipe._multimodal_handler = None
-
-        with pytest.raises(RuntimeError, match="MultimodalHandler not initialized"):
-            await pipe._encode_file_path_base64(Path("/test/file.txt"), 1024, 1000000)
-    finally:
-        await pipe.close()
-
-
-# =============================================================================
-# ADDITIONAL COVERAGE TESTS - Artifact Store Delegation
-# =============================================================================
-
-
-def test_maybe_heal_index_conflict_delegates_to_artifact_store():
-    """Test that _maybe_heal_index_conflict delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        mock_engine = Mock()
-        mock_table = Mock()
-        mock_exc = Exception("test error")
-
-        pipe._artifact_store._maybe_heal_index_conflict = Mock(return_value=True)
-
-        result = pipe._maybe_heal_index_conflict(mock_engine, mock_table, mock_exc)
-
-        assert result is True
-        pipe._artifact_store._maybe_heal_index_conflict.assert_called_once_with(
-            mock_engine, mock_table, mock_exc
-        )
-    finally:
-        pipe.shutdown()
-
-
-def test_get_fernet_delegates_to_artifact_store():
-    """Test that _get_fernet delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        mock_fernet = Mock()
-        pipe._artifact_store._get_fernet = Mock(return_value=mock_fernet)
-
-        result = pipe._get_fernet()
-
-        assert result is mock_fernet
-    finally:
-        pipe.shutdown()
-
-
-def test_should_encrypt_delegates_to_artifact_store():
-    """Test that _should_encrypt delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        pipe._artifact_store._should_encrypt = Mock(return_value=True)
-
-        result = pipe._should_encrypt("session_log")
-
-        assert result is True
-        pipe._artifact_store._should_encrypt.assert_called_once_with("session_log")
-    finally:
-        pipe.shutdown()
-
-
-def test_serialize_payload_bytes_delegates_to_artifact_store():
-    """Test that _serialize_payload_bytes delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        payload = {"key": "value"}
-        expected = b'{"key": "value"}'
-        pipe._artifact_store._serialize_payload_bytes = Mock(return_value=expected)
-
-        result = pipe._serialize_payload_bytes(payload)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_maybe_compress_payload_delegates_to_artifact_store():
-    """Test that _maybe_compress_payload delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        data = b"test data"
-        expected = (b"compressed", True)
-        pipe._artifact_store._maybe_compress_payload = Mock(return_value=expected)
-
-        result = pipe._maybe_compress_payload(data)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_encode_payload_bytes_delegates_to_artifact_store():
-    """Test that _encode_payload_bytes delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        payload = {"key": "value"}
-        expected = b"encoded"
-        pipe._artifact_store._encode_payload_bytes = Mock(return_value=expected)
-
-        result = pipe._encode_payload_bytes(payload)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_decode_payload_bytes_delegates_to_artifact_store():
-    """Test that _decode_payload_bytes delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        data = b"encoded"
-        expected = {"key": "value"}
-        pipe._artifact_store._decode_payload_bytes = Mock(return_value=expected)
-
-        result = pipe._decode_payload_bytes(data)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_lz4_decompress_delegates_to_artifact_store():
-    """Test that _lz4_decompress delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        data = b"compressed"
-        expected = b"decompressed"
-        pipe._artifact_store._lz4_decompress = Mock(return_value=expected)
-
-        result = pipe._lz4_decompress(data)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_encrypt_payload_delegates_to_artifact_store():
-    """Test that _encrypt_payload delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        payload = {"key": "value"}
-        expected = "encrypted_string"
-        pipe._artifact_store._encrypt_payload = Mock(return_value=expected)
-
-        result = pipe._encrypt_payload(payload)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_decrypt_payload_delegates_to_artifact_store():
-    """Test that _decrypt_payload delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        ciphertext = "encrypted_string"
-        expected = {"key": "value"}
-        pipe._artifact_store._decrypt_payload = Mock(return_value=expected)
-
-        result = pipe._decrypt_payload(ciphertext)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_encrypt_if_needed_delegates_to_artifact_store():
-    """Test that _encrypt_if_needed delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        payload = {"key": "value"}
-        expected = ({"encrypted": True}, True)
-        pipe._artifact_store._encrypt_if_needed = Mock(return_value=expected)
-
-        result = pipe._encrypt_if_needed("session_log", payload)
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
-
-
-def test_prepare_rows_for_storage_delegates_to_artifact_store():
-    """Test that _prepare_rows_for_storage delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        rows = [{"id": "1", "payload": {}}]
-        pipe._artifact_store._prepare_rows_for_storage = Mock()
-
-        pipe._prepare_rows_for_storage(rows)
-
-        pipe._artifact_store._prepare_rows_for_storage.assert_called_once_with(rows)
-    finally:
-        pipe.shutdown()
-
-
-def test_make_db_row_delegates_to_artifact_store():
-    """Test that _make_db_row delegates to ArtifactStore."""
-    pipe = Pipe()
-    try:
-        expected = {"id": "123", "chat_id": "chat1"}
-        pipe._artifact_store._make_db_row = Mock(return_value=expected)
-
-        result = pipe._make_db_row("chat1", "msg1", "model1", {"key": "value"})
-
-        assert result == expected
-    finally:
-        pipe.shutdown()
 
 
 # =============================================================================
@@ -6798,18 +6370,18 @@ def test_shutdown_stops_all_workers():
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
     pipe.valves.SESSION_LOG_DIR = "/tmp/test"
     pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("test")
-    pipe._maybe_start_session_log_workers()
+    pipe._session_log_manager.start_workers()
 
     # Verify workers started
-    assert pipe._session_log_worker_thread is not None
+    assert pipe._session_log_manager._worker_thread is not None
 
     # Shutdown
     pipe.shutdown()
 
     # Workers should be stopped
     time.sleep(0.1)
-    if pipe._session_log_worker_thread:
-        assert not pipe._session_log_worker_thread.is_alive()
+    if pipe._session_log_manager._worker_thread:
+        assert not pipe._session_log_manager._worker_thread.is_alive()
 
 
 @pytest.mark.asyncio
@@ -6831,13 +6403,13 @@ def test_stop_session_log_workers_handles_missing_threads():
     """Test that _stop_session_log_workers handles missing threads gracefully."""
     pipe = Pipe()
     try:
-        pipe._session_log_worker_thread = None
-        pipe._session_log_cleanup_thread = None
-        pipe._session_log_assembler_thread = None
-        pipe._session_log_stop_event = None
+        pipe._session_log_manager._worker_thread = None
+        pipe._session_log_manager._cleanup_thread = None
+        pipe._session_log_manager._assembler_thread = None
+        pipe._session_log_manager._stop_event = None
 
         # Should not raise
-        pipe._stop_session_log_workers()
+        pipe._session_log_manager.stop_workers()
     finally:
         pipe.shutdown()
 
@@ -6857,12 +6429,12 @@ async def test_persist_session_log_segment_to_db_with_successful_persist():
 
     try:
         # Mock _db_persist to return some IDs
-        pipe._db_persist = AsyncMock(return_value=["id1"])
+        pipe._artifact_store._db_persist = AsyncMock(return_value=["id1"])
         # Mock session log workers
-        pipe._maybe_start_session_log_workers = Mock()
-        pipe._maybe_start_session_log_assembler_worker = Mock()
+        pipe._session_log_manager.start_workers = Mock()
+        pipe._session_log_manager.start_assembler_worker = Mock()
 
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6875,7 +6447,7 @@ async def test_persist_session_log_segment_to_db_with_successful_persist():
         )
 
         # Should have called _db_persist
-        pipe._db_persist.assert_called_once()
+        pipe._artifact_store._db_persist.assert_called_once()
     finally:
         await pipe.close()
 
@@ -6890,12 +6462,12 @@ async def test_persist_session_log_segment_to_db_handles_exception():
 
     try:
         # Mock _db_persist to raise exception
-        pipe._db_persist = AsyncMock(side_effect=RuntimeError("DB error"))
-        pipe._maybe_start_session_log_workers = Mock()
-        pipe._maybe_start_session_log_assembler_worker = Mock()
+        pipe._artifact_store._db_persist = AsyncMock(side_effect=RuntimeError("DB error"))
+        pipe._session_log_manager.start_workers = Mock()
+        pipe._session_log_manager.start_assembler_worker = Mock()
 
         # Should not raise, just log and continue
-        await pipe._persist_session_log_segment_to_db(
+        await pipe._session_log_manager.persist_segment_to_db(
             valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
@@ -6924,18 +6496,18 @@ def test_tool_type_allows_returns_false_after_many_failures():
         tool_type = "function"
 
         # Initially should allow
-        assert pipe._tool_type_allows(user_id, tool_type) is True
+        assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is True
 
         # Record many failures
         for _ in range(15):
-            pipe._record_tool_failure_type(user_id, tool_type)
+            pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
 
         # Now should block
-        assert pipe._tool_type_allows(user_id, tool_type) is False
+        assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is False
 
         # Reset should allow again
-        pipe._reset_tool_failure_type(user_id, tool_type)
-        assert pipe._tool_type_allows(user_id, tool_type) is True
+        pipe._circuit_breaker.reset_tool(user_id, tool_type)
+        assert pipe._circuit_breaker.tool_allows(user_id, tool_type) is True
     finally:
         pipe.shutdown()
 
@@ -6947,11 +6519,11 @@ def test_breaker_records_multiple_failures():
         scope_key = "test_scope"
 
         # Initially should allow
-        assert pipe._breaker_allows(scope_key) is True
+        assert pipe._circuit_breaker.allows(scope_key) is True
 
         # Record failures (may or may not trip the breaker based on threshold)
         for _ in range(5):
-            pipe._record_failure(scope_key)
+            pipe._circuit_breaker.record_failure(scope_key)
 
         # The breaker state depends on configuration
         # Just verify no exception is raised
@@ -7024,7 +6596,7 @@ class TestFilterAutoInstall:
             mock_functions_mod.Functions = mock_Functions
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return None since auto-install is disabled
                 assert result is None
@@ -7052,7 +6624,7 @@ class TestFilterAutoInstall:
             mock_functions_mod.FunctionMeta = Mock(return_value={})
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 # Result may be the installed filter ID or None
                 # Just verify no crash occurs
         finally:
@@ -7078,7 +6650,7 @@ class TestFilterAutoInstall:
             mock_functions_mod.FunctionMeta = Mock(return_value={})
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return None after hitting suffix limit
                 assert result is None
@@ -7110,7 +6682,7 @@ class TestFilterAutoInstall:
             mock_functions_mod.Functions = mock_Functions
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return the existing filter's ID
                 assert result == "test_filter"
@@ -7138,7 +6710,7 @@ class TestGenericExceptionHandler:
                 events_received.append(event)
 
             # Test the _emit_templated_error method directly
-            await pipe._emit_templated_error(
+            await pipe._ensure_error_formatter()._emit_templated_error(
                 mock_emitter,
                 template=pipe.valves.INTERNAL_ERROR_TEMPLATE,
                 variables={
@@ -7159,7 +6731,7 @@ class TestGenericExceptionHandler:
 
         try:
             # Should not crash with None emitter
-            await pipe._emit_templated_error(
+            await pipe._ensure_error_formatter()._emit_templated_error(
                 None,
                 template=pipe.valves.INTERNAL_ERROR_TEMPLATE,
                 variables={
@@ -7448,7 +7020,7 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._read_session_log_archive_events(zip_path, settings)
+            events = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             assert len(events) == 2
             assert events[0].get("event") == "test"
@@ -7475,7 +7047,7 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._read_session_log_archive_events(zip_path, settings)
+            events = pipe._session_log_manager.read_archive_events(zip_path, settings)
 
             # Should have 2 valid events, skipping the malformed line
             assert len(events) == 2
@@ -7503,17 +7075,17 @@ class TestSessionLogAssemblerWorker:
             pipe.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS = 0
 
             # Start the assembler worker
-            pipe._maybe_start_session_log_assembler_worker()
+            pipe._session_log_manager.start_assembler_worker()
 
             # Give thread time to start
             time.sleep(0.1)
 
             # Worker should be started
-            assert pipe._session_log_assembler_thread is not None
-            assert pipe._session_log_assembler_thread.is_alive()
+            assert pipe._session_log_manager._assembler_thread is not None
+            assert pipe._session_log_manager._assembler_thread.is_alive()
 
             # Stop workers
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
         finally:
             pipe.shutdown()
 
@@ -7528,19 +7100,19 @@ class TestSessionLogAssemblerWorker:
             pipe.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS = 0.1
             pipe.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS = 0
 
-            # Mock _run_session_log_assembler_once to raise an exception
-            with patch.object(pipe, "_run_session_log_assembler_once", side_effect=RuntimeError("Test error")):
-                pipe._maybe_start_session_log_assembler_worker()
+            # Mock run_assembler_once to raise an exception
+            with patch.object(pipe._session_log_manager, "run_assembler_once", side_effect=RuntimeError("Test error")):
+                pipe._session_log_manager.start_assembler_worker()
 
                 # Let it run a few iterations
                 time.sleep(0.3)
 
                 # Worker should still be alive (exception shouldn't crash it)
-                if pipe._session_log_assembler_thread:
+                if pipe._session_log_manager._assembler_thread:
                     # It may have stopped due to the exception, which is OK
                     pass
 
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
         finally:
             pipe.shutdown()
 
@@ -7563,16 +7135,16 @@ class TestSessionLogDbFallback:
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
 
             # Start workers
-            pipe._maybe_start_session_log_workers()
+            pipe._session_log_manager.start_workers()
 
             # Let it run briefly to hit the queue.Empty path
             time.sleep(0.6)
 
             # Worker should still be running
-            if pipe._session_log_worker_thread:
-                assert pipe._session_log_worker_thread.is_alive()
+            if pipe._session_log_manager._worker_thread:
+                assert pipe._session_log_manager._worker_thread.is_alive()
 
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
         finally:
             pipe.shutdown()
 
@@ -7586,14 +7158,14 @@ class TestSessionLogDbFallback:
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
 
             # Start workers
-            pipe._maybe_start_session_log_workers()
+            pipe._session_log_manager.start_workers()
 
-            # Mock _write_session_log_archive to raise an exception
-            with patch.object(pipe, "_write_session_log_archive", side_effect=RuntimeError("Write error")):
+            # Mock _write_archive to raise an exception
+            with patch.object(pipe._session_log_manager, "_write_archive", side_effect=RuntimeError("Write error")):
                 # Enqueue a job
                 from open_webui_openrouter_pipe.core.logging_system import _SessionLogArchiveJob
 
-                if pipe._session_log_queue:
+                if pipe._session_log_manager._queue:
                     job = _SessionLogArchiveJob(
                         base_dir="/tmp/test_logs",
                         zip_password=b"password123",
@@ -7608,12 +7180,12 @@ class TestSessionLogDbFallback:
                         log_format="jsonl",
                         log_events=[{"event": "test"}],
                     )
-                    pipe._session_log_queue.put_nowait(job)
+                    pipe._session_log_manager._queue.put_nowait(job)
 
                 # Let it process
                 time.sleep(0.2)
 
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
         finally:
             pipe.shutdown()
 
@@ -7867,7 +7439,7 @@ class TestSessionLogArchiveSettings:
 
         try:
             pipe.valves.SESSION_LOG_STORE_ENABLED = True
-            pipe._session_log_warning_emitted = False
+            pipe._session_log_manager._warning_emitted = False
 
             import open_webui_openrouter_pipe.pipe as pipe_mod
             original_pyzipper = pipe_mod.pyzipper
@@ -7875,7 +7447,7 @@ class TestSessionLogArchiveSettings:
 
             try:
                 with caplog.at_level(logging.WARNING):
-                    result = pipe._resolve_session_log_archive_settings(pipe.valves)
+                    result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
 
                 assert result is None
             finally:
@@ -7890,10 +7462,10 @@ class TestSessionLogArchiveSettings:
         try:
             pipe.valves.SESSION_LOG_STORE_ENABLED = True
             pipe.valves.SESSION_LOG_DIR = ""
-            pipe._session_log_warning_emitted = False
+            pipe._session_log_manager._warning_emitted = False
 
             with caplog.at_level(logging.WARNING):
-                result = pipe._resolve_session_log_archive_settings(pipe.valves)
+                result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
 
             assert result is None
         finally:
@@ -7907,10 +7479,10 @@ class TestSessionLogArchiveSettings:
             pipe.valves.SESSION_LOG_STORE_ENABLED = True
             pipe.valves.SESSION_LOG_DIR = "/tmp/logs"
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
-            pipe._session_log_warning_emitted = False
+            pipe._session_log_manager._warning_emitted = False
 
             with caplog.at_level(logging.WARNING):
-                result = pipe._resolve_session_log_archive_settings(pipe.valves)
+                result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
 
             assert result is None
         finally:
@@ -7927,7 +7499,7 @@ class TestSessionLogArchiveSettings:
             pipe.valves.SESSION_LOG_ZIP_COMPRESSION = "stored"
             pipe.valves.SESSION_LOG_ZIP_COMPRESSLEVEL = 6
 
-            result = pipe._resolve_session_log_archive_settings(pipe.valves)
+            result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
 
             assert result is not None
             base_dir, password, compression, compresslevel = result
@@ -7947,7 +7519,7 @@ class TestSessionLogArchiveSettings:
             pipe.valves.SESSION_LOG_ZIP_COMPRESSION = "lzma"
             pipe.valves.SESSION_LOG_ZIP_COMPRESSLEVEL = 9
 
-            result = pipe._resolve_session_log_archive_settings(pipe.valves)
+            result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
 
             assert result is not None
             base_dir, password, compression, compresslevel = result
@@ -7976,13 +7548,13 @@ class TestPersistSessionLogDbFallback:
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
 
             # Mock _db_persist to return empty list (simulating failure)
-            pipe._db_persist = AsyncMock(return_value=[])
-            pipe._maybe_start_session_log_workers = Mock()
-            pipe._maybe_start_session_log_assembler_worker = Mock()
+            pipe._artifact_store._db_persist = AsyncMock(return_value=[])
+            pipe._session_log_manager.start_workers = Mock()
+            pipe._session_log_manager.start_assembler_worker = Mock()
 
             # Mock write_session_log_archive
             with patch("open_webui_openrouter_pipe.core.logging_system.write_session_log_archive") as mock_write:
-                await pipe._persist_session_log_segment_to_db(
+                await pipe._session_log_manager.persist_segment_to_db(
                     valves=pipe.valves,
                     user_id="user1",
                     session_id="sess1",
@@ -8015,7 +7587,7 @@ class TestConvertJsonlToInternal:
         try:
             evt = {"ts": "2024-01-15T10:30:00Z", "event": "test"}
 
-            internal = pipe._convert_jsonl_to_internal(evt)
+            internal = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
             assert "created" in internal
             assert "ts" not in internal
@@ -8030,7 +7602,7 @@ class TestConvertJsonlToInternal:
         try:
             evt = {"event": "test", "created": 1705315800.0}
 
-            internal = pipe._convert_jsonl_to_internal(evt)
+            internal = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
             assert internal["created"] == 1705315800.0
             assert internal["event"] == "test"
@@ -8044,7 +7616,7 @@ class TestConvertJsonlToInternal:
         try:
             evt = {"ts": "not-a-valid-timestamp", "event": "test"}
 
-            internal = pipe._convert_jsonl_to_internal(evt)
+            internal = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
             # Should not crash, just skip conversion
             assert internal["event"] == "test"
@@ -8065,10 +7637,10 @@ class TestRunSessionLogAssemblerOnce:
         pipe = Pipe()
 
         try:
-            # Mock _session_log_db_handles to return None
-            with patch.object(pipe, "_session_log_db_handles", return_value=(None, None)):
+            # Mock _db_handles to return None
+            with patch.object(pipe._session_log_manager, "_db_handles", return_value=(None, None)):
                 # Should return without error
-                pipe._run_session_log_assembler_once()
+                pipe._session_log_manager.run_assembler_once()
         finally:
             pipe.shutdown()
 
@@ -8106,7 +7678,7 @@ class TestToolTypeBreaker:
                 batch_cap=10,
             )
 
-            await pipe._notify_tool_breaker(context, "function", "test_tool")
+            await pipe._ensure_tool_executor()._notify_tool_breaker(context, "function", "test_tool")
 
             # Should have emitted a status event
             assert len(events_received) > 0
@@ -8129,7 +7701,7 @@ class TestBuildToolOutput:
         try:
             call = {"name": "test_tool", "call_id": "call123", "id": "id456"}
 
-            output = pipe._build_tool_output(call, "Tool result", status="completed")
+            output = pipe._ensure_tool_executor()._build_tool_output(call, "Tool result", status="completed")
 
             assert output["type"] == "function_call_output"
             assert output["status"] == "completed"
@@ -8149,7 +7721,7 @@ class TestBuildToolOutput:
         try:
             call = {"name": "test_tool", "call_id": "call123"}
 
-            output = pipe._build_tool_output(call, "Error message", status="failed")
+            output = pipe._ensure_tool_executor()._build_tool_output(call, "Error message", status="failed")
 
             # Status is normalized to "completed" for API compatibility
             assert output["status"] == "completed"
@@ -8187,7 +7759,7 @@ class TestMiscCoveragePaths:
             )
 
             # Should not crash with None emitter
-            await pipe._notify_tool_breaker(context, "function", "test_tool")
+            await pipe._ensure_tool_executor()._notify_tool_breaker(context, "function", "test_tool")
         finally:
             await pipe.close()
 
@@ -8196,21 +7768,22 @@ class TestMiscCoveragePaths:
         pipe = Pipe()
 
         try:
+            executor = pipe._ensure_tool_executor()
             # Test with depends_on key
             args_with_depends = {"depends_on": "call123"}
-            assert pipe._is_batchable_tool_call(args_with_depends) is False
+            assert executor._is_batchable_tool_call(args_with_depends) is False
 
             # Test with sequential key
             args_with_sequential = {"sequential": True}
-            assert pipe._is_batchable_tool_call(args_with_sequential) is False
+            assert executor._is_batchable_tool_call(args_with_sequential) is False
 
             # Test with no_batch key
             args_with_no_batch = {"no_batch": True}
-            assert pipe._is_batchable_tool_call(args_with_no_batch) is False
+            assert executor._is_batchable_tool_call(args_with_no_batch) is False
 
             # Test with normal args (should be batchable)
             normal_args = {"arg1": "value1"}
-            assert pipe._is_batchable_tool_call(normal_args) is True
+            assert executor._is_batchable_tool_call(normal_args) is True
         finally:
             pipe.shutdown()
 
@@ -8257,7 +7830,7 @@ class TestToolWorkerIntegration:
             await context.queue.put(None)
 
             # Run worker loop
-            await pipe._tool_worker_loop(context)
+            await pipe._ensure_tool_executor()._tool_worker_loop(context)
 
             # Future should be resolved
             assert future.done()
@@ -8285,7 +7858,7 @@ class TestToolWorkerIntegration:
             )
 
             # Run worker loop - should timeout quickly
-            await pipe._tool_worker_loop(context)
+            await pipe._ensure_tool_executor()._tool_worker_loop(context)
 
             # Should have set timeout error
             assert context.timeout_error is not None
@@ -8319,7 +7892,7 @@ class TestToolCanBatch:
                 allow_batch=True,
             )
 
-            result = pipe._can_batch_tool_calls(first, candidate)
+            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
             assert result is True
         finally:
             pipe.shutdown()
@@ -8347,7 +7920,7 @@ class TestToolCanBatch:
                 allow_batch=True,
             )
 
-            result = pipe._can_batch_tool_calls(first, candidate)
+            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
             assert result is False
         finally:
             pipe.shutdown()
@@ -8375,7 +7948,7 @@ class TestToolCanBatch:
                 allow_batch=True,
             )
 
-            result = pipe._can_batch_tool_calls(first, candidate)
+            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
             assert result is False
         finally:
             pipe.shutdown()
@@ -8401,7 +7974,7 @@ class TestEventEmitterMethods:
             async def mock_emitter(event):
                 events_received.append(event)
 
-            await pipe._emit_status(mock_emitter, "Test status", done=False)
+            await pipe._event_emitter_handler._emit_status(mock_emitter, "Test status", done=False)
 
             assert len(events_received) >= 1
         finally:
@@ -8414,7 +7987,7 @@ class TestEventEmitterMethods:
 
         try:
             # Should not crash with None emitter
-            await pipe._emit_status(None, "Test status", done=False)
+            await pipe._event_emitter_handler._emit_status(None, "Test status", done=False)
         finally:
             await pipe.close()
 
@@ -8429,7 +8002,7 @@ class TestEventEmitterMethods:
             async def mock_emitter(event):
                 events_received.append(event)
 
-            await pipe._emit_error(
+            await pipe._ensure_error_formatter()._emit_error(
                 mock_emitter,
                 "Test error message",
                 show_error_message=True,
@@ -8451,7 +8024,7 @@ class TestEventEmitterMethods:
             async def mock_emitter(event):
                 events_received.append(event)
 
-            await pipe._emit_error(
+            await pipe._ensure_error_formatter()._emit_error(
                 mock_emitter,
                 ValueError("Test exception"),
                 show_error_message=True,
@@ -8471,10 +8044,10 @@ class TestModelCatalogMethods:
         pipe = Pipe()
 
         try:
-            result = pipe._build_icon_mapping(None)
+            result = pipe._ensure_catalog_manager()._build_icon_mapping(None)
             assert isinstance(result, dict)
 
-            result = pipe._build_icon_mapping({})
+            result = pipe._ensure_catalog_manager()._build_icon_mapping({})
             assert isinstance(result, dict)
         finally:
             pipe.shutdown()
@@ -8484,10 +8057,10 @@ class TestModelCatalogMethods:
         pipe = Pipe()
 
         try:
-            result = pipe._build_web_search_support_mapping(None)
+            result = pipe._ensure_catalog_manager()._build_web_search_support_mapping(None)
             assert isinstance(result, dict)
 
-            result = pipe._build_web_search_support_mapping({})
+            result = pipe._ensure_catalog_manager()._build_web_search_support_mapping({})
             assert isinstance(result, dict)
         finally:
             pipe.shutdown()
@@ -8501,7 +8074,7 @@ class TestDedupeSessionLogEvents:
         pipe = Pipe()
 
         try:
-            result = pipe._dedupe_session_log_events([])
+            result = pipe._session_log_manager.dedupe_events([])
             assert result == []
         finally:
             pipe.shutdown()
@@ -8517,7 +8090,7 @@ class TestDedupeSessionLogEvents:
                 {"created": 3.0, "event": "test3"},
             ]
 
-            result = pipe._dedupe_session_log_events(events)
+            result = pipe._session_log_manager.dedupe_events(events)
             assert len(result) == 3
         finally:
             pipe.shutdown()
@@ -8534,11 +8107,11 @@ class TestArgsReferencesCall:
             first_call_id = "call_123"
             args = {"depends_on": "call_123"}
 
-            result = pipe._args_reference_call(args, first_call_id)
+            result = pipe._ensure_tool_executor()._args_reference_call(args, first_call_id)
             assert result is True
 
             args_different = {"depends_on": "call_456"}
-            result = pipe._args_reference_call(args_different, first_call_id)
+            result = pipe._ensure_tool_executor()._args_reference_call(args_different, first_call_id)
             assert result is False
         finally:
             pipe.shutdown()
@@ -8550,7 +8123,7 @@ class TestArgsReferencesCall:
         try:
             args = {"param1": "value1"}
 
-            result = pipe._args_reference_call(args, "call_123")
+            result = pipe._ensure_tool_executor()._args_reference_call(args, "call_123")
             assert result is False
         finally:
             pipe.shutdown()
@@ -8600,7 +8173,7 @@ class TestWriteSessionLogArchive:
                 log_events=[{"event": "test", "created": time.time()}],
             )
 
-            pipe._write_session_log_archive(job)
+            pipe._session_log_manager._write_archive(job)
 
             # Check that the zip file was created
             expected_path = tmp_path / "test_user" / "test_chat" / "test_message.zip"
@@ -8643,19 +8216,19 @@ class TestSessionLogWorkerStop:
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
 
             # Start workers
-            pipe._maybe_start_session_log_workers()
-            pipe._maybe_start_session_log_assembler_worker()
+            pipe._session_log_manager.start_workers()
+            pipe._session_log_manager.start_assembler_worker()
 
             # Give threads time to start
             time.sleep(0.1)
 
             # Stop workers
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
 
             # Workers should be stopped
             # Note: Threads may still be alive briefly, but stop event is set
-            if pipe._session_log_stop_event:
-                assert pipe._session_log_stop_event.is_set()
+            if pipe._session_log_manager._stop_event:
+                assert pipe._session_log_manager._stop_event.is_set()
         finally:
             pipe.shutdown()
 
@@ -8673,10 +8246,10 @@ class TestEnqueueSessionLogArchive:
             pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
 
             # Start workers to initialize the queue
-            pipe._maybe_start_session_log_workers()
+            pipe._session_log_manager.start_workers()
 
             # Enqueue a job using the correct method signature
-            pipe._enqueue_session_log_archive(
+            pipe._session_log_manager.enqueue_archive(
                 valves=pipe.valves,
                 user_id="test_user",
                 session_id="test_session",
@@ -8687,134 +8260,36 @@ class TestEnqueueSessionLogArchive:
             )
 
             # Check that queue is not empty
-            if pipe._session_log_queue:
+            if pipe._session_log_manager._queue:
                 # Queue should have the job (or worker already picked it up)
                 pass
 
-            pipe._stop_session_log_workers()
+            pipe._session_log_manager.stop_workers()
         finally:
             pipe.shutdown()
 
 
-
-# =============================================================================
-# ADDITIONAL COVERAGE TESTS - Delegation Guard Methods
-# =============================================================================
-
-
-class TestDelegationGuardMethods:
-    """Tests for delegation methods with guard clauses."""
-
-    @pytest.mark.asyncio
-    async def test_upload_to_owui_storage_with_no_handler(self):
-        """Test _upload_to_owui_storage returns None when handler is None."""
-        pipe = Pipe()
-
-        try:
-            # Temporarily remove the handler
-            original_handler = pipe._multimodal_handler
-            pipe._multimodal_handler = None
-
-            result = await pipe._upload_to_owui_storage(
-                request=None,
-                user=None,
-                file_data=b"test",
-                filename="test.txt",
-                mime_type="text/plain",
-            )
-
-            assert result is None
-
-            # Restore handler
-            pipe._multimodal_handler = original_handler
-        finally:
-            await pipe.close()
-
-    def test_try_link_file_to_chat_with_no_handler(self):
-        """Test _try_link_file_to_chat returns False when handler is None."""
-        pipe = Pipe()
-
-        try:
-            # Temporarily remove the handler
-            original_handler = pipe._multimodal_handler
-            pipe._multimodal_handler = None
-
-            result = pipe._try_link_file_to_chat(
-                chat_id="chat123",
-                message_id="msg123",
-                file_id="file123",
-                user_id="user123",
-            )
-
-            assert result is False
-
-            # Restore handler
-            pipe._multimodal_handler = original_handler
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_resolve_storage_context_with_no_handler(self):
-        """Test _resolve_storage_context returns None tuple when handler is None."""
-        pipe = Pipe()
-
-        try:
-            # Temporarily remove the handler
-            original_handler = pipe._multimodal_handler
-            pipe._multimodal_handler = None
-
-            result = await pipe._resolve_storage_context(None, None)
-
-            assert result == (None, None)
-
-            # Restore handler
-            pipe._multimodal_handler = original_handler
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_emit_status_with_no_handler(self):
-        """Test _emit_status returns early when handler is None."""
-        pipe = Pipe()
-
-        try:
-            # Temporarily remove the handler
-            original_handler = pipe._event_emitter_handler
-            pipe._event_emitter_handler = None
-
-            # Should not crash - returns early
-            await pipe._emit_status(Mock(), "Test", done=False)
-
-            # Restore handler
-            pipe._event_emitter_handler = original_handler
-        finally:
-            await pipe.close()
 
 
 class TestMoreStreamingDelegationGuards:
     """Tests for streaming delegation methods with guard clauses."""
 
     def test_looks_like_responses_unsupported(self):
-        """Test _looks_like_responses_unsupported."""
-        pipe = Pipe()
+        """Test _looks_like_responses_unsupported via StreamingHandler."""
+        from aiohttp import ClientResponseError
+        from open_webui_openrouter_pipe.streaming.streaming_core import StreamingHandler
 
-        try:
-            # Create a test exception that looks like responses unsupported
-            from aiohttp import ClientResponseError
+        # Mock exception
+        error = ClientResponseError(
+            request_info=Mock(url="https://openrouter.ai"),
+            history=(),
+            status=400,
+            message="Responses API not supported",
+        )
 
-            # Mock exception
-            error = ClientResponseError(
-                request_info=Mock(url="https://openrouter.ai"),
-                history=(),
-                status=400,
-                message="Responses API not supported",
-            )
-
-            result = pipe._looks_like_responses_unsupported(error)
-            # Result depends on error content
-            assert isinstance(result, bool)
-        finally:
-            pipe.shutdown()
+        result = StreamingHandler._looks_like_responses_unsupported(error)
+        # Result depends on error content
+        assert isinstance(result, bool)
 
 
 # =============================================================================
@@ -8889,7 +8364,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -8914,7 +8389,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result == "test_filter"
         finally:
             pipe.shutdown()
@@ -8930,7 +8405,7 @@ class TestFilterAutoInstallationPaths:
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -8960,7 +8435,7 @@ class TestFilterAutoInstallationPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 with caplog.at_level(logging.WARNING):
                     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                    result = pipe._ensure_ors_filter_function_id()
+                    result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                     # Should pick the newer one
                     assert result == "filter2"
                     assert any("Multiple OpenRouter Search filter candidates" in msg for msg in caplog.messages)
@@ -8984,7 +8459,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should eventually create with the base ID (after exception we retry)
         finally:
             pipe.shutdown()
@@ -9005,7 +8480,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should return None after 50+ iterations
                 assert result is None
         finally:
@@ -9027,7 +8502,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9051,7 +8526,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9063,7 +8538,7 @@ class TestFilterAutoInstallationPaths:
             from open_webui_openrouter_pipe.pipe import _ORS_FILTER_MARKER
 
             # Get the desired source
-            desired_source = pipe._render_ors_filter_source().strip() + "\n"
+            desired_source = FilterManager.render_ors_filter_source().strip() + "\n"
 
             mock_filter = MagicMock()
             mock_filter.id = "existing_filter"
@@ -9078,7 +8553,7 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_ors_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should just update metadata, not content
                 assert result == "existing_filter"
                 # Verify update_function_by_id was called
@@ -9101,7 +8576,7 @@ class TestDirectUploadsFilterPaths:
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9131,7 +8606,7 @@ class TestDirectUploadsFilterPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 with caplog.at_level(logging.WARNING):
                     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-                    result = pipe._ensure_direct_uploads_filter_function_id()
+                    result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                     assert result == "filter2"
                     assert any("Multiple OpenRouter Direct Uploads filter candidates" in msg for msg in caplog.messages)
         finally:
@@ -9153,7 +8628,7 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 # Should continue after exception
         finally:
             pipe.shutdown()
@@ -9173,7 +8648,7 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9194,7 +8669,7 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9218,7 +8693,7 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
@@ -9229,7 +8704,7 @@ class TestDirectUploadsFilterPaths:
         try:
             from open_webui_openrouter_pipe.pipe import _DIRECT_UPLOADS_FILTER_MARKER
 
-            desired_source = pipe._render_direct_uploads_filter_source().strip() + "\n"
+            desired_source = FilterManager.render_direct_uploads_filter_source().strip() + "\n"
 
             mock_filter = MagicMock()
             mock_filter.id = "existing"
@@ -9244,7 +8719,7 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_direct_uploads_filter_function_id()
+                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result == "existing"
         finally:
             pipe.shutdown()
@@ -9265,12 +8740,15 @@ class TestPipesMethodExceptionPaths:
             # Mock the model registry
             from open_webui_openrouter_pipe.pipe import OpenRouterModelRegistry
 
+            # Initialize the filter manager so we can patch its method
+            pipe._ensure_filter_manager()
+
             with patch.object(OpenRouterModelRegistry, "ensure_loaded", new_callable=AsyncMock):
                 with patch.object(OpenRouterModelRegistry, "list_models") as mock_list:
                     mock_list.return_value = [{"id": "test/model", "name": "Test Model"}]
 
                     # Make the filter installation fail
-                    with patch.object(pipe, "_ensure_ors_filter_function_id", side_effect=Exception("DB error")):
+                    with patch.object(pipe._filter_manager, "ensure_ors_filter_function_id", side_effect=Exception("DB error")):
                         with caplog.at_level(logging.DEBUG):
                             models = await pipe.pipes()
                             # Should still return models despite filter error
@@ -9290,11 +8768,14 @@ class TestPipesMethodExceptionPaths:
 
             from open_webui_openrouter_pipe.pipe import OpenRouterModelRegistry
 
+            # Initialize the filter manager so we can patch its method
+            pipe._ensure_filter_manager()
+
             with patch.object(OpenRouterModelRegistry, "ensure_loaded", new_callable=AsyncMock):
                 with patch.object(OpenRouterModelRegistry, "list_models") as mock_list:
                     mock_list.return_value = [{"id": "test/model", "name": "Test Model"}]
 
-                    with patch.object(pipe, "_ensure_direct_uploads_filter_function_id", side_effect=Exception("DB error")):
+                    with patch.object(pipe._filter_manager, "ensure_direct_uploads_filter_function_id", side_effect=Exception("DB error")):
                         with caplog.at_level(logging.DEBUG):
                             models = await pipe.pipes()
                             assert len(models) > 0
@@ -9498,509 +8979,6 @@ class TestStartupChecksPath:
         finally:
             pipe.shutdown()
 
-
-class TestDelegationMethodsNoHandler:
-    """Tests for delegation methods when handler is None."""
-
-    @pytest.mark.asyncio
-    async def test_db_persist_delegation(self):
-        """Test _db_persist delegates to artifact store (line 2336)."""
-        pipe = Pipe()
-        try:
-            rows = [{"id": "test", "data": "value"}]
-            with patch.object(pipe._artifact_store, "_db_persist", new_callable=AsyncMock) as mock:
-                mock.return_value = ["test"]
-                result = await pipe._db_persist(rows)
-                mock.assert_called_once_with(rows)
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_db_persist_direct_delegation(self):
-        """Test _db_persist_direct delegates to artifact store (line 2341)."""
-        pipe = Pipe()
-        try:
-            rows = [{"id": "test"}]
-            with patch.object(pipe._artifact_store, "_db_persist_direct", new_callable=AsyncMock) as mock:
-                mock.return_value = ["test"]
-                result = await pipe._db_persist_direct(rows, "user123")
-                mock.assert_called_once_with(rows, "user123")
-        finally:
-            await pipe.close()
-
-    def test_is_duplicate_key_error_delegation(self):
-        """Test _is_duplicate_key_error delegates to artifact store (line 2346)."""
-        pipe = Pipe()
-        try:
-            exc = Exception("duplicate key")
-            with patch.object(pipe._artifact_store, "_is_duplicate_key_error") as mock:
-                mock.return_value = True
-                result = pipe._is_duplicate_key_error(exc)
-                assert result is True
-                mock.assert_called_once_with(exc)
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_db_fetch_delegation(self):
-        """Test _db_fetch delegates to artifact store (line 2366)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_db_fetch", new_callable=AsyncMock) as mock:
-                mock.return_value = {"item1": {"data": "value"}}
-                result = await pipe._db_fetch("chat_id", "msg_id", ["item1"])
-                mock.assert_called_once_with("chat_id", "msg_id", ["item1"])
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_db_fetch_direct_delegation(self):
-        """Test _db_fetch_direct delegates to artifact store (line 2376)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_db_fetch_direct", new_callable=AsyncMock) as mock:
-                mock.return_value = {}
-                result = await pipe._db_fetch_direct("chat_id", "msg_id", [])
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_delete_artifacts_delegation(self):
-        """Test _delete_artifacts delegates to artifact store (line 2386)."""
-        pipe = Pipe()
-        try:
-            refs = [("chat1", "artifact1")]
-            with patch.object(pipe._artifact_store, "_delete_artifacts", new_callable=AsyncMock) as mock:
-                await pipe._delete_artifacts(refs)
-                mock.assert_called_once_with(refs)
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_redis_pubsub_listener_delegation(self):
-        """Test _redis_pubsub_listener delegates to artifact store (line 2393)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_redis_pubsub_listener", new_callable=AsyncMock) as mock:
-                await pipe._redis_pubsub_listener()
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_redis_periodic_flusher_delegation(self):
-        """Test _redis_periodic_flusher delegates to artifact store (line 2398)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_redis_periodic_flusher", new_callable=AsyncMock) as mock:
-                await pipe._redis_periodic_flusher()
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_flush_redis_queue_delegation(self):
-        """Test _flush_redis_queue delegates to artifact store (line 2403)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_flush_redis_queue", new_callable=AsyncMock) as mock:
-                await pipe._flush_redis_queue()
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    def test_redis_cache_key_delegation(self):
-        """Test _redis_cache_key delegates to artifact store (line 2408)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_redis_cache_key") as mock:
-                mock.return_value = "cache_key"
-                result = pipe._redis_cache_key("chat_id", "row_id")
-                assert result == "cache_key"
-                mock.assert_called_once_with("chat_id", "row_id")
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_redis_enqueue_rows_delegation(self):
-        """Test _redis_enqueue_rows delegates to artifact store (line 2413)."""
-        pipe = Pipe()
-        try:
-            rows = [{"id": "test"}]
-            with patch.object(pipe._artifact_store, "_redis_enqueue_rows", new_callable=AsyncMock) as mock:
-                mock.return_value = ["test"]
-                result = await pipe._redis_enqueue_rows(rows)
-                mock.assert_called_once_with(rows)
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_redis_cache_rows_delegation(self):
-        """Test _redis_cache_rows delegates to artifact store (line 2418)."""
-        pipe = Pipe()
-        try:
-            rows = [{"id": "test"}]
-            with patch.object(pipe._artifact_store, "_redis_cache_rows", new_callable=AsyncMock) as mock:
-                await pipe._redis_cache_rows(rows, chat_id="chat1")
-                mock.assert_called_once_with(rows, chat_id="chat1")
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_redis_requeue_entries_delegation(self):
-        """Test _redis_requeue_entries delegates to artifact store (line 2423)."""
-        pipe = Pipe()
-        try:
-            entries = ["entry1"]
-            with patch.object(pipe._artifact_store, "_redis_requeue_entries", new_callable=AsyncMock) as mock:
-                await pipe._redis_requeue_entries(entries)
-                mock.assert_called_once_with(entries)
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_redis_fetch_rows_delegation(self):
-        """Test _redis_fetch_rows delegates to artifact store (line 2432)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_redis_fetch_rows", new_callable=AsyncMock) as mock:
-                mock.return_value = {}
-                result = await pipe._redis_fetch_rows("chat_id", ["item1"])
-                mock.assert_called_once_with("chat_id", ["item1"])
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_artifact_cleanup_worker_delegation(self):
-        """Test _artifact_cleanup_worker delegates to artifact store (line 2439)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_artifact_cleanup_worker", new_callable=AsyncMock) as mock:
-                await pipe._artifact_cleanup_worker()
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_run_cleanup_once_delegation(self):
-        """Test _run_cleanup_once delegates to artifact store (line 2444)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_run_cleanup_once", new_callable=AsyncMock) as mock:
-                await pipe._run_cleanup_once()
-                mock.assert_called_once()
-        finally:
-            await pipe.close()
-
-    def test_cleanup_sync_delegation(self):
-        """Test _cleanup_sync delegates to artifact store (line 2449)."""
-        pipe = Pipe()
-        try:
-            import datetime
-            cutoff = datetime.datetime.now()
-            with patch.object(pipe._artifact_store, "_cleanup_sync") as mock:
-                pipe._cleanup_sync(cutoff)
-                mock.assert_called_once_with(cutoff)
-        finally:
-            pipe.shutdown()
-
-    def test_db_breaker_allows_delegation(self):
-        """Test _db_breaker_allows delegates to artifact store (line 2456)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_db_breaker_allows") as mock:
-                mock.return_value = True
-                result = pipe._db_breaker_allows("user1")
-                assert result is True
-                mock.assert_called_once_with("user1")
-        finally:
-            pipe.shutdown()
-
-    def test_record_db_failure_delegation(self):
-        """Test _record_db_failure delegates to artifact store (line 2461)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_record_db_failure") as mock:
-                pipe._record_db_failure("user1")
-                mock.assert_called_once_with("user1")
-        finally:
-            pipe.shutdown()
-
-    def test_reset_db_failure_delegation(self):
-        """Test _reset_db_failure delegates to artifact store (line 2466)."""
-        pipe = Pipe()
-        try:
-            with patch.object(pipe._artifact_store, "_reset_db_failure") as mock:
-                pipe._reset_db_failure("user1")
-                mock.assert_called_once_with("user1")
-        finally:
-            pipe.shutdown()
-
-
-class TestMultimodalDelegationNoHandler:
-    """Tests for multimodal delegation methods when handler is None."""
-
-    @pytest.mark.asyncio
-    async def test_inline_internal_file_url_no_handler(self):
-        """Test _inline_internal_file_url returns None when handler is None (line 2514-2516)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._inline_internal_file_url("http://test.com", chunk_size=1024, max_bytes=1048576)
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_read_file_record_base64_no_handler(self):
-        """Test _read_file_record_base64 returns None when handler is None (line 2547-2549)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._read_file_record_base64(MagicMock(), 1024, 1048576)
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_encode_file_path_base64_no_handler(self):
-        """Test _encode_file_path_base64 raises when handler is None (line 2563-2565)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            with pytest.raises(RuntimeError, match="MultimodalHandler not initialized"):
-                await pipe._encode_file_path_base64("/path/to/file", 1024, 1048576)
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_upload_to_owui_storage_no_handler(self):
-        """Test _upload_to_owui_storage returns None when handler is None (line 2586-2588)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._upload_to_owui_storage(None, None, b"data", "file.txt", "text/plain")
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    def test_try_link_file_to_chat_no_handler(self):
-        """Test _try_link_file_to_chat returns False when handler is None (line 2609-2611)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._try_link_file_to_chat(chat_id="chat1", message_id="msg1", file_id="file1", user_id="user1")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_resolve_storage_context_no_handler(self):
-        """Test _resolve_storage_context returns (None, None) when handler is None (line 2625-2627)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._resolve_storage_context(None, None)
-            assert result == (None, None)
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_ensure_storage_user_no_handler(self):
-        """Test _ensure_storage_user returns None when handler is None (line 2632-2634)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._ensure_storage_user()
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_download_remote_url_no_handler(self):
-        """Test _download_remote_url returns None when handler is None (line 2645-2647)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._download_remote_url("http://test.com")
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_is_safe_url_no_handler(self):
-        """Test _is_safe_url returns False when handler is None (line 2652-2654)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._is_safe_url("http://test.com")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_is_safe_url_blocking_no_handler(self):
-        """Test _is_safe_url_blocking returns False when handler is None (line 2659-2661)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._is_safe_url_blocking("http://test.com")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_is_youtube_url_no_handler(self):
-        """Test _is_youtube_url returns False when handler is None (line 2666-2668)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._is_youtube_url("https://youtube.com/watch?v=123")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_get_effective_remote_file_limit_mb_no_handler(self):
-        """Test _get_effective_remote_file_limit_mb returns default when handler is None (line 2673-2675)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._get_effective_remote_file_limit_mb()
-            assert result == 50
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_fetch_image_as_data_url_no_handler(self):
-        """Test _fetch_image_as_data_url returns None when handler is None (line 2686-2688)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._fetch_image_as_data_url(MagicMock(), "http://test.com/image.png")
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_fetch_maker_profile_image_url_no_handler(self):
-        """Test _fetch_maker_profile_image_url returns None when handler is None (line 2697-2699)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = await pipe._fetch_maker_profile_image_url(MagicMock(), "maker_id")
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-    def test_validate_base64_size_no_handler(self):
-        """Test _validate_base64_size returns False when handler is None (line 2706-2708)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._validate_base64_size("dGVzdA==")
-            assert result is False
-        finally:
-            pipe.shutdown()
-
-    def test_parse_data_url_no_handler(self):
-        """Test _parse_data_url returns None when handler is None (line 2713-2715)."""
-        pipe = Pipe()
-        try:
-            pipe._multimodal_handler = None
-            result = pipe._parse_data_url("data:text/plain;base64,dGVzdA==")
-            assert result is None
-        finally:
-            pipe.shutdown()
-
-
-class TestStreamingDelegationNoHandler:
-    """Tests for streaming delegation methods when handler is None."""
-
-    @pytest.mark.asyncio
-    async def test_run_streaming_loop_no_handler(self):
-        """Test _run_streaming_loop raises when handler is None (line 2724-2726)."""
-        pipe = Pipe()
-        try:
-            pipe._streaming_handler = None
-            with pytest.raises(RuntimeError, match="StreamingHandler not initialized"):
-                await pipe._run_streaming_loop()
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_run_nonstreaming_loop_no_handler(self):
-        """Test _run_nonstreaming_loop raises when handler is None (line 2731-2733)."""
-        pipe = Pipe()
-        try:
-            pipe._streaming_handler = None
-            with pytest.raises(RuntimeError, match="StreamingHandler not initialized"):
-                await pipe._run_nonstreaming_loop()
-        finally:
-            pipe.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_cleanup_replayed_reasoning_no_handler(self):
-        """Test _cleanup_replayed_reasoning returns when handler is None (line 2738-2739)."""
-        pipe = Pipe()
-        try:
-            pipe._streaming_handler = None
-            await pipe._cleanup_replayed_reasoning(MagicMock(), MagicMock())
-            # Should return without error
-        finally:
-            pipe.shutdown()
-
-    def test_select_llm_endpoint_no_handler(self):
-        """Test _select_llm_endpoint returns 'responses' when handler is None (line 2745-2746)."""
-        pipe = Pipe()
-        try:
-            pipe._streaming_handler = None
-            result = pipe._select_llm_endpoint("test/model", valves=pipe.valves)
-            assert result == "responses"
-        finally:
-            pipe.shutdown()
-
-    def test_select_llm_endpoint_with_forced_no_handler(self):
-        """Test _select_llm_endpoint_with_forced returns default when handler is None (line 2752-2754)."""
-        pipe = Pipe()
-        try:
-            pipe._streaming_handler = None
-            result = pipe._select_llm_endpoint_with_forced("test/model", valves=pipe.valves)
-            assert result == ("responses", False)
-        finally:
-            pipe.shutdown()
-
-
-class TestPropertyDefaultsNoArtifactStore:
-    """Tests for property defaults when artifact store is None."""
-
-    def test_compression_enabled_no_store(self):
-        """Test _compression_enabled returns False when store is None (line 2104)."""
-        pipe = Pipe()
-        try:
-            pipe._artifact_store = None
-            assert pipe._compression_enabled is False
-        finally:
-            # Restore for proper cleanup
-            pass
-
-    def test_compression_min_bytes_no_store(self):
-        """Test _compression_min_bytes returns 0 when store is None (line 2117)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            assert pipe._compression_min_bytes == 0
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-    def test_breaker_window_seconds_getter(self):
-        """Test _breaker_window_seconds getter (line 2144)."""
-        pipe = Pipe()
-        try:
-            result = pipe._breaker_window_seconds
-            assert isinstance(result, (int, float))
-        finally:
-            pipe.shutdown()
 
 
 class TestQualifyModelForPipePaths:
@@ -10236,8 +9214,8 @@ class TestImportFallbackGuards:
 
     def test_users_none_graceful_handling(self):
         """Test that code handles Users being None gracefully."""
-        from open_webui_openrouter_pipe import pipe as pipe_module
-        assert hasattr(pipe_module, "Users") or pipe_module.Users is None
+        from open_webui_openrouter_pipe.storage import users as users_module
+        assert hasattr(users_module, "Users") or users_module.Users is None
 
     def test_aioredis_none_graceful_handling(self):
         """Test that code handles aioredis being None gracefully."""
@@ -10249,34 +9227,6 @@ class TestImportFallbackGuards:
         """Test that code handles pyzipper being None gracefully."""
         from open_webui_openrouter_pipe import pipe as pipe_module
         assert hasattr(pipe_module, "pyzipper") or pipe_module.pyzipper is None
-
-
-class TestEventEmitterHandlerNoHandler:
-    """Tests for event emitter methods when handler is None."""
-
-    @pytest.mark.asyncio
-    async def test_emit_status_no_handler(self):
-        """Test _emit_status returns when handler is None (line 2774-2776)."""
-        pipe = Pipe()
-        try:
-            pipe._event_emitter_handler = None
-            await pipe._emit_status(MagicMock(), "Test message", done=False)
-            # Should return without error
-        finally:
-            pipe.shutdown()
-
-
-class TestBreakdownerThresholdSetters:
-    """Tests for breaker property setters."""
-
-    def test_breaker_window_seconds_setter(self):
-        """Test _breaker_window_seconds setter (line 2148-2152)."""
-        pipe = Pipe()
-        try:
-            pipe._breaker_window_seconds = 120.0
-            assert pipe._breaker_window_seconds == 120.0
-        finally:
-            pipe.shutdown()
 
 
 class TestLogWorkerLoopPaths:
@@ -10331,185 +9281,22 @@ class TestMaybeStartRedisTaskCreation:
             await pipe.close()
 
 
-class TestCompressionPropertySetters:
-    """Tests for compression property setters."""
-
-    def test_compression_enabled_setter(self):
-        """Test _compression_enabled setter (line 2110-2111)."""
-        pipe = Pipe()
-        try:
-            pipe._compression_enabled = True
-            assert pipe._compression_enabled is True
-            pipe._compression_enabled = False
-            assert pipe._compression_enabled is False
-        finally:
-            pipe.shutdown()
-
-    def test_compression_min_bytes_setter(self):
-        """Test _compression_min_bytes setter (line 2123-2124)."""
-        pipe = Pipe()
-        try:
-            pipe._compression_min_bytes = 1024
-            assert pipe._compression_min_bytes == 1024
-        finally:
-            pipe.shutdown()
-
-
-class TestEncryptAllPropertyPaths:
-    """Tests for _encrypt_all property edge cases."""
-
-    def test_encrypt_all_getter_no_store(self):
-        """Test _encrypt_all getter returns False when store is None (line 2065)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            assert pipe._encrypt_all is False
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-    def test_encrypt_all_setter_no_store(self):
-        """Test _encrypt_all setter does nothing when store is None (line 2071-2072)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            # Should not raise
-            pipe._encrypt_all = True
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-    def test_encrypt_all_setter_with_store(self):
-        """Test _encrypt_all setter updates store."""
-        pipe = Pipe()
-        try:
-            pipe._encrypt_all = True
-            assert pipe._encrypt_all is True
-            pipe._encrypt_all = False
-            assert pipe._encrypt_all is False
-        finally:
-            pipe.shutdown()
-
-
-class TestRedisClientPropertyPaths:
-    """Tests for _redis_client property edge cases."""
-
-    def test_redis_client_getter_no_store(self):
-        """Test _redis_client getter returns None when store is None (line 2078)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            assert pipe._redis_client is None
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-    def test_redis_client_setter_no_store(self):
-        """Test _redis_client setter does nothing when store is None (line 2084-2085)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            # Should not raise
-            pipe._redis_client = MagicMock()
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-
-class TestRedisEnabledPropertyPaths:
-    """Tests for _redis_enabled property edge cases."""
-
-    def test_redis_enabled_getter_no_store(self):
-        """Test _redis_enabled getter returns False when store is None (line 2091)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            assert pipe._redis_enabled is False
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-    def test_redis_enabled_setter_no_store(self):
-        """Test _redis_enabled setter does nothing when store is None (line 2097-2098)."""
-        pipe = Pipe()
-        try:
-            original_store = pipe._artifact_store
-            pipe._artifact_store = None
-            # Should not raise
-            pipe._redis_enabled = True
-            pipe._artifact_store = original_store
-        finally:
-            pipe.shutdown()
-
-
 class TestSumPricingValuesPaths:
-    """Tests for _sum_pricing_values edge cases."""
+    """Tests for sum_pricing_values edge cases."""
 
     def test_sum_pricing_values_string_conversion(self):
-        """Test _sum_pricing_values handles string values."""
-        pipe = Pipe()
-        try:
-            result = pipe._sum_pricing_values("10.5")
-            assert result == (Decimal("10.5"), 1)
-        finally:
-            pipe.shutdown()
+        """Test sum_pricing_values handles string values."""
+        result = sum_pricing_values("10.5")
+        assert result == (Decimal("10.5"), 1)
 
     def test_sum_pricing_values_empty_string(self):
-        """Test _sum_pricing_values handles empty string."""
-        pipe = Pipe()
-        try:
-            result = pipe._sum_pricing_values("   ")
-            assert result == (Decimal(0), 0)
-        finally:
-            pipe.shutdown()
+        """Test sum_pricing_values handles empty string."""
+        result = sum_pricing_values("   ")
+        assert result == (Decimal(0), 0)
 
     def test_sum_pricing_values_invalid_string(self):
-        """Test _sum_pricing_values handles invalid string (line 2242-2243)."""
-        pipe = Pipe()
-        try:
-            result = pipe._sum_pricing_values("not_a_number")
-            assert result == (Decimal(0), 0)
-        finally:
-            pipe.shutdown()
+        """Test sum_pricing_values handles invalid string."""
+        result = sum_pricing_values("not_a_number")
+        assert result == (Decimal(0), 0)
 
 
-class TestExtractTaskOutputText:
-    """Tests for _extract_task_output_text delegation."""
-
-    def test_extract_task_output_text(self):
-        """Test _extract_task_output_text delegates properly (line 2251)."""
-        pipe = Pipe()
-        try:
-            # Test with a simple response
-            result = pipe._extract_task_output_text({"output": [{"type": "message", "content": [{"text": "hello"}]}]})
-            assert isinstance(result, str)
-        finally:
-            pipe.shutdown()
-
-
-class TestQuoteIdentifier:
-    """Tests for _quote_identifier delegation."""
-
-    def test_quote_identifier(self):
-        """Test _quote_identifier delegates properly (line 2185)."""
-        result = Pipe._quote_identifier("table_name")
-        assert isinstance(result, str)
-        assert "table_name" in result
-
-
-class TestInitArtifactStoreDelegation:
-    """Tests for _init_artifact_store delegation."""
-
-    def test_init_artifact_store_delegation(self):
-        """Test _init_artifact_store delegates properly (line 2173)."""
-        pipe = Pipe()
-        try:
-            # Call should not raise
-            pipe._init_artifact_store("test_pipe", table_fragment="test")
-        finally:
-            pipe.shutdown()

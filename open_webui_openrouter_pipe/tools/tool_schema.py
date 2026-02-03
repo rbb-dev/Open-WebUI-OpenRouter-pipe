@@ -22,7 +22,6 @@ LOGGER = logging.getLogger(__name__)
 _STRICT_SCHEMA_CACHE_SIZE = 128
 
 @lru_cache(maxsize=_STRICT_SCHEMA_CACHE_SIZE)
-@timed
 def _strictify_schema_cached(serialized_schema: str) -> str:
     """Cached worker that enforces strict schema rules on serialized JSON."""
     schema_dict = json.loads(serialized_schema)
@@ -30,7 +29,6 @@ def _strictify_schema_cached(serialized_schema: str) -> str:
     return json.dumps(strict_schema, ensure_ascii=False)
 
 
-@timed
 def _strictify_schema(schema):
     """
     Minimal, predictable transformer to make a JSON schema strict-compatible.
@@ -53,7 +51,6 @@ def _strictify_schema(schema):
     return json.loads(cached)
 
 
-@timed
 def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
@@ -185,7 +182,6 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-@timed
 def _classify_function_call_artifacts(
     artifacts: Dict[str, Dict[str, Any]]
 ) -> tuple[set[str], set[str], set[str]]:

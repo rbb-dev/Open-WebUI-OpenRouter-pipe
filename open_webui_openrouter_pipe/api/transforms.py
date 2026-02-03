@@ -34,6 +34,7 @@ from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
 from ..core.utils import _coerce_bool, _parse_model_fallback_csv
+from ..requests.transformer import transform_messages_to_input
 
 LOGGER = logging.getLogger(__name__)
 
@@ -113,7 +114,6 @@ class ResponsesBody(BaseModel):
     model_config = ConfigDict(extra="allow")  # allow additional OpenAI parameters automatically
 
     @staticmethod
-    @timed
     def _strip_blank_string(value: Any) -> Any:
         if isinstance(value, str):
             candidate = value.strip()
@@ -132,7 +132,6 @@ class ResponsesBody(BaseModel):
         mode="before",
     )
     @classmethod
-    @timed
     def _coerce_float_fields(cls, value: Any) -> Any:
         return cls._strip_blank_string(value)
 
@@ -145,7 +144,6 @@ class ResponsesBody(BaseModel):
         mode="before",
     )
     @classmethod
-    @timed
     def _coerce_int_fields(cls, value: Any) -> Any:
         value = cls._strip_blank_string(value)
         if value is None:
@@ -165,7 +163,6 @@ class ResponsesBody(BaseModel):
 
     @field_validator("models", mode="before")
     @classmethod
-    @timed
     def _coerce_models_list(cls, value: Any) -> Any:
         value = cls._strip_blank_string(value)
         if value is None:
@@ -186,7 +183,6 @@ class ResponsesBody(BaseModel):
         raise ValueError("models must be an array of strings (or a CSV string).")
 
     @model_validator(mode='after')
-    @timed
     def _normalize_model_id(self) -> "ResponsesBody":
         """Ensure the model name references the canonical base id (prefix/date stripped)."""
         normalized = ModelFamily.base_model(self.model or "")
@@ -228,7 +224,6 @@ class ResponsesBody(BaseModel):
         return tools
 
     @staticmethod
-    @timed
     def _convert_function_call_to_tool_choice(function_call: Any) -> Optional[Any]:
         """
         Translate legacy OpenAI `function_call` payloads into modern `tool_choice` values.
@@ -350,7 +345,8 @@ class ResponsesBody(BaseModel):
                         continue
                     filtered_messages.append(msg)
 
-            sanitized_params["input"] = await transformer_owner.transform_messages_to_input(
+            sanitized_params["input"] = await transform_messages_to_input(
+                transformer_owner,
                 filtered_messages,
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id,
@@ -479,7 +475,6 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
 # Request Filtering
 # -----------------------------------------------------------------------------
 
-@timed
 def _filter_openrouter_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Filter payload to fields accepted by OpenRouter's /chat/completions."""
     if not isinstance(payload, dict):
@@ -492,7 +487,6 @@ def _filter_openrouter_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-@timed
 def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
     """Remove OWUI-local per-model control flags from the outbound provider payload."""
     if not isinstance(payload, dict):
@@ -514,7 +508,6 @@ def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
 # Tool Schema Transforms
 # -----------------------------------------------------------------------------
 
-@timed
 def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
     """Convert Responses API tools -> Chat Completions tools schema."""
     if not isinstance(tools, list):
@@ -540,7 +533,6 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
 
 
 
-@timed
 def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
     """Convert Chat Completions `tools` schema -> Responses API tools schema."""
     if not isinstance(tools, list):
@@ -581,7 +573,6 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
 
 
 
-@timed
 def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
     """Convert Responses API tool_choice -> Chat Completions tool_choice."""
     if value is None:
@@ -606,7 +597,6 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
 # Response Format Transforms
 # -----------------------------------------------------------------------------
 
-@timed
 def _chat_response_format_to_responses_text_format(value: Any) -> Optional[dict[str, Any]]:
     """Convert Chat Completions `response_format` -> Responses `text.format`."""
     if not isinstance(value, dict):
@@ -638,7 +628,6 @@ def _chat_response_format_to_responses_text_format(value: Any) -> Optional[dict[
 
     return None
 
-@timed
 def _responses_text_format_to_chat_response_format(value: Any) -> Optional[dict[str, Any]]:
     """Convert Responses `text.format` -> Chat Completions `response_format`."""
     if not isinstance(value, dict):
@@ -666,7 +655,6 @@ def _responses_text_format_to_chat_response_format(value: Any) -> Optional[dict[
 
     return None
 
-@timed
 def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None:
     """Normalise structured output config for OpenRouter `/responses` requests.
 
@@ -729,7 +717,6 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
 # Message and Input Transforms
 # -----------------------------------------------------------------------------
 
-@timed
 def _responses_input_to_chat_messages(
     input_value: Any,
     *,
@@ -755,7 +742,6 @@ def _responses_input_to_chat_messages(
 
     messages: list[dict[str, Any]] = []
 
-    @timed
     def _to_text_block(text: str, *, cache_control: Any = None) -> dict[str, Any]:
         block: dict[str, Any] = {"type": "text", "text": text}
         if isinstance(cache_control, dict) and cache_control:
@@ -1034,7 +1020,6 @@ def _responses_input_to_chat_messages(
 # Payload Transforms
 # -----------------------------------------------------------------------------
 
-@timed
 def _responses_payload_to_chat_completions_payload(
     responses_payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1084,7 +1069,6 @@ def _responses_payload_to_chat_completions_payload(
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 
-    @timed
     def _coerce_chat_int_param(value: Any) -> Any:
         if value is None:
             return None
@@ -1193,7 +1177,6 @@ def _responses_payload_to_chat_completions_payload(
 # Model Fallback
 # -----------------------------------------------------------------------------
 
-@timed
 def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging.Logger = LOGGER) -> None:
     """Map OWUI custom `model_fallback` (CSV string) to OpenRouter `models` (array).
 
@@ -1238,7 +1221,6 @@ def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging
 # Feature Application to Payloads
 # -----------------------------------------------------------------------------
 
-@timed
 def _apply_disable_native_websearch_to_payload(
     payload: dict[str, Any],
     *,
@@ -1292,7 +1274,6 @@ def _apply_disable_native_websearch_to_payload(
 # Helper Functions
 # -----------------------------------------------------------------------------
 
-@timed
 def _model_params_to_dict(params: Any) -> dict[str, Any]:
     """Best-effort conversion of OWUI ModelParams-like objects to a plain dict."""
     if params is None:
@@ -1308,7 +1289,6 @@ def _model_params_to_dict(params: Any) -> dict[str, Any]:
             return {}
     return {}
 
-@timed
 def _get_disable_param(params: Any, key: str) -> bool:
     """Return True when params[key] is truthy as a bool-ish flag."""
     params_dict = _model_params_to_dict(params)
@@ -1339,7 +1319,6 @@ def _get_disable_param(params: Any, key: str) -> bool:
     coerced = _coerce_bool(raw)
     return bool(coerced) if coerced is not None else False
 
-@timed
 def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
     """Return a validated OpenRouter `metadata` dict or None.
 
@@ -1367,7 +1346,6 @@ def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
 
     return sanitized or None
 
-@timed
 def _apply_identifier_valves_to_payload(
     payload: dict[str, Any],
     *,
@@ -1439,7 +1417,6 @@ def _apply_identifier_valves_to_payload(
 
 
 
-@timed
 def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
@@ -1495,7 +1472,6 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-@timed
 def _filter_replayable_input_items(
     items: Any,
     *,
@@ -1524,3 +1500,21 @@ def _filter_replayable_input_items(
     if len(filtered) != len(items):
         return filtered
     return items
+
+
+def apply_context_transforms(responses_body: "ResponsesBody", *, auto_context_trimming: bool) -> None:
+    """Attach OpenRouter's middle-out transform when auto trimming is enabled.
+
+    Args:
+        responses_body: The responses body to potentially modify
+        auto_context_trimming: Whether auto context trimming is enabled
+
+    Note:
+        Only sets transforms if auto_context_trimming is True AND responses_body.transforms is None.
+        This preserves any explicitly set transforms.
+    """
+    if not auto_context_trimming:
+        return
+    if responses_body.transforms is not None:
+        return
+    responses_body.transforms = ["middle-out"]

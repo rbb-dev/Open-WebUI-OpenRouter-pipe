@@ -73,7 +73,6 @@ LOGGER = logging.getLogger(__name__)
 # Standalone Utility Functions
 # -----------------------------------------------------------------------------
 
-@timed
 def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
     """Guess MIME type for image data by inspecting magic bytes and URL extension.
 
@@ -126,7 +125,6 @@ def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> s
     return None
 
 
-@timed
 def _extract_openrouter_og_image(html: str) -> str | None:
     """Extract OpenGraph or Twitter image URL from HTML meta tags.
 
@@ -151,7 +149,6 @@ def _extract_openrouter_og_image(html: str) -> str | None:
     return None
 
 
-@timed
 def _extract_internal_file_id(url: str) -> Optional[str]:
     """Return the Open WebUI file identifier embedded in a storage URL.
 
@@ -192,7 +189,6 @@ class MultimodalHandler:
     - SSRF protection with IP address validation (HTTP disabled by default)
     """
 
-    @timed
     def __init__(
         self,
         logger: logging.Logger,
@@ -222,11 +218,18 @@ class MultimodalHandler:
         self._storage_role_warning_emitted = False
         self._user_insert_param_names: Optional[tuple] = None
 
+    def set_http_session(self, session: Optional[aiohttp.ClientSession]) -> None:
+        """Set or clear the HTTP session for remote downloads."""
+        self._http_session = session
+
+    def set_artifact_store(self, store: Optional[Any]) -> None:
+        """Set or clear the artifact store reference."""
+        self._artifact_store = store
+
     # -----------------------------------------------------------------
     # 1. FILE OPERATIONS (7 methods)
     # -----------------------------------------------------------------
 
-    @timed
     async def _get_file_by_id(self, file_id: str):
         """Look up file metadata from Open WebUI's file storage.
 
@@ -249,7 +252,6 @@ class MultimodalHandler:
             self.logger.error(f"Failed to load file {file_id}: {exc}")
             return None
 
-    @timed
     def _infer_file_mime_type(self, file_obj: Any) -> str:
         """Return the best-known MIME type for a stored Open WebUI file.
 
@@ -432,7 +434,6 @@ class MultimodalHandler:
         if max_bytes <= 0:
             raise ValueError("BASE64_MAX_SIZE_MB must be greater than zero")
 
-        @timed
         def _from_bytes(raw: bytes) -> str:
             if len(raw) > max_bytes:
                 raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
@@ -498,7 +499,6 @@ class MultimodalHandler:
         """
         chunk_size = max(64 * 1024, min(chunk_size, max_bytes))
 
-        @timed
         def _encode_stream() -> str:
             total = 0
             buffer = io.StringIO()
@@ -710,7 +710,6 @@ class MultimodalHandler:
         except Exception:
             return False
 
-    @timed
     async def _resolve_storage_context(
         self,
         request: Optional[Request],
@@ -1006,7 +1005,6 @@ class MultimodalHandler:
             )
             return None
 
-    @timed
     async def _is_safe_url(self, url: str) -> bool:
         """Async wrapper to validate URLs without blocking the event loop.
 
@@ -1022,7 +1020,6 @@ class MultimodalHandler:
             return True
         return await asyncio.to_thread(self._is_safe_url_blocking, url)
 
-    @timed
     def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, Optional[int]]]:
         """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""
         if not isinstance(raw, str):
@@ -1069,7 +1066,6 @@ class MultimodalHandler:
             allowed.add((host, port))
         return allowed
 
-    @timed
     def _is_insecure_http_allowed(self, url: str) -> bool:
         """Return True when an http:// URL is explicitly allowed by valves."""
         parsed = urlparse(url)
@@ -1112,7 +1108,6 @@ class MultimodalHandler:
         )
         return False
 
-    @timed
     def _is_safe_url_blocking(self, url: str) -> bool:
         """Blocking implementation of the SSRF guard (runs in a thread).
 
@@ -1143,7 +1138,6 @@ class MultimodalHandler:
             ip_objects: list[IPv4Address | IPv6Address] = []
             seen_ips: set[str] = set()
 
-            @timed
             def _record_ip(candidate: IPv4Address | IPv6Address) -> None:
                 comp = candidate.compressed
                 if comp not in seen_ips:
@@ -1210,7 +1204,6 @@ class MultimodalHandler:
             self.logger.error(f"URL safety validation failed for {url}: {exc}")
             return False
 
-    @timed
     def _is_youtube_url(self, url: Optional[str]) -> bool:
         """Check if URL is a valid YouTube video URL.
 
@@ -1249,7 +1242,6 @@ class MultimodalHandler:
 
         return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
-    @timed
     def _get_effective_remote_file_limit_mb(self) -> int:
         """Return the active remote download limit, honoring RAG constraints.
 
@@ -1446,7 +1438,6 @@ class MultimodalHandler:
     # 5. DATA URL HANDLING (2 methods)
     # -----------------------------------------------------------------
 
-    @timed
     def _validate_base64_size(self, b64_data: str) -> bool:
         """Validate base64 data size is within configured limits.
 
@@ -1489,7 +1480,6 @@ class MultimodalHandler:
 
         return True
 
-    @timed
     def _parse_data_url(self, data_url: str) -> Optional[Dict[str, Any]]:
         """Extract base64 data from data URL.
 
@@ -1565,7 +1555,6 @@ class MultimodalHandler:
             return None
 
 
-@timed
 def _is_internal_file_url(url: str) -> bool:
     """Heuristic to detect when a URL references Open WebUI file storage."""
     if not isinstance(url, str):

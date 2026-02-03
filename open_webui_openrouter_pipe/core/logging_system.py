@@ -96,7 +96,6 @@ class SessionLogger:
     _memory_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [user=%(user_id)s] %(message)s")
 
     @staticmethod
-    @timed
     def _classify_event_type(message: str) -> str:
         msg = (message or "").lstrip()
         if msg.startswith("OpenRouter request headers:"):
@@ -110,7 +109,6 @@ class SessionLogger:
         return "pipe"
 
     @classmethod
-    @timed
     def _build_event(cls, record: logging.LogRecord) -> dict[str, Any]:
         """Return a structured session log event extracted from a LogRecord."""
         try:
@@ -147,7 +145,6 @@ class SessionLogger:
         return event
 
     @classmethod
-    @timed
     def format_event_as_text(cls, event: dict[str, Any]) -> str:
         """Best-effort text rendering for debug dumps and optional logs.txt archives."""
         created_raw = event.get("created")
@@ -171,7 +168,6 @@ class SessionLogger:
         return f"{asctime} [{level}] [user={uid}] {message_str}"
 
     @classmethod
-    @timed
     def get_logger(cls, name=__name__):
         """Create a logger wired to the current SessionLogger context.
 
@@ -193,7 +189,6 @@ class SessionLogger:
         logger.propagate = True
 
         # Single combined filter: attach session_id and respect per-session level.
-        @timed
         def filter(record):
             """Attach session metadata and capture the per-request console log level."""
             try:
@@ -216,7 +211,6 @@ class SessionLogger:
 
         async_handler = logging.Handler()
 
-        @timed
         def _emit(record: logging.LogRecord) -> None:
             cls._enqueue(record)
 
@@ -226,16 +220,14 @@ class SessionLogger:
         return logger
 
     @classmethod
-    @timed
     def set_log_queue(cls, queue: asyncio.Queue[logging.LogRecord] | None) -> None:
         cls.log_queue = queue
+
     @classmethod
-    @timed
     def set_main_loop(cls, loop: asyncio.AbstractEventLoop | None) -> None:
         cls._main_loop = loop
 
     @classmethod
-    @timed
     def set_max_lines(cls, value: int) -> None:
         """Set the maximum in-memory lines retained per request (best effort)."""
         try:
@@ -246,7 +238,6 @@ class SessionLogger:
         cls.max_lines = value_int
 
     @classmethod
-    @timed
     def _enqueue(cls, record: logging.LogRecord) -> None:
         queue = cls.log_queue
         if queue is None:
@@ -268,7 +259,6 @@ class SessionLogger:
             cls.process_record(record)
 
     @classmethod
-    @timed
     def _safe_put(cls, queue: asyncio.Queue[logging.LogRecord], record: logging.LogRecord) -> None:
         try:
             queue.put_nowait(record)
@@ -276,7 +266,6 @@ class SessionLogger:
             cls.process_record(record)
 
     @classmethod
-    @timed
     def process_record(cls, record: logging.LogRecord) -> None:
         try:
             session_log_level = getattr(record, "session_log_level", logging.INFO)
@@ -320,7 +309,6 @@ class SessionLogger:
             return
 
     @classmethod
-    @timed
     def cleanup(cls, max_age_seconds: float = 3600) -> None:
         """Remove stale session logs to avoid unbounded growth."""
         cutoff = time.time() - max_age_seconds
@@ -335,7 +323,6 @@ class SessionLogger:
 # Session Log Archive Writer
 # -----------------------------------------------------------------------------
 
-@timed
 def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     """Write a single encrypted zip archive containing session logs + metadata.
 
@@ -412,7 +399,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     write_text = log_format in {"text", "both"}
     write_jsonl = log_format in {"jsonl", "both"}
 
-    @timed
     def _format_asctime_local(created: float) -> str:
         try:
             base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
@@ -421,7 +407,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         except Exception:
             return datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S,000")
 
-    @timed
     def _format_event_as_text(event: dict[str, Any]) -> str:
         created = event.get("created")
         try:
@@ -437,7 +422,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             message_str = ""
         return f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
 
-    @timed
     def _format_iso_utc(created: float) -> str:
         try:
             ts = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
@@ -446,7 +430,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             ts = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
             return ts.replace("+00:00", "Z")
 
-    @timed
     def _coerce_event(raw: Any) -> dict[str, Any]:
         if isinstance(raw, dict):
             return raw
@@ -468,7 +451,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             "message": msg,
         }
 
-    @timed
     def _build_jsonl_record(event: dict[str, Any]) -> dict[str, Any]:
         created_raw = event.get("created")
         try:

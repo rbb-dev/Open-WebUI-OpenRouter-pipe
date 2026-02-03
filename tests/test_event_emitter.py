@@ -179,18 +179,18 @@ async def test_emit_status_handles_emitter_exception(event_handler, caplog):
 
 
 # -----------------------------------------------------------------------------
-# Test _emit_error (lines 235-241)
+# Test _emit_error_event (lines 235-241)
 # -----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_emit_error_basic(event_handler):
+async def test_emit_error_event_basic(event_handler):
     """Test basic error emission."""
     emitted = []
 
     async def capture_emitter(event):
         emitted.append(event)
 
-    await event_handler._emit_error(
+    await event_handler._emit_error_event(
         capture_emitter,
         "Test error message",
         show_error_message=True,
@@ -203,7 +203,7 @@ async def test_emit_error_basic(event_handler):
 
 
 @pytest.mark.asyncio
-async def test_emit_error_with_exception(event_handler):
+async def test_emit_error_event_with_exception(event_handler):
     """Test error emission with exception object."""
     emitted = []
 
@@ -211,21 +211,21 @@ async def test_emit_error_with_exception(event_handler):
         emitted.append(event)
 
     error = ValueError("Something went wrong")
-    await event_handler._emit_error(capture_emitter, error, show_error_message=True)
+    await event_handler._emit_error_event(capture_emitter, error, show_error_message=True)
 
     assert len(emitted) == 1
     assert "Something went wrong" in emitted[0]["data"]["error"]["message"]
 
 
 @pytest.mark.asyncio
-async def test_emit_error_show_error_message_false(event_handler):
+async def test_emit_error_event_show_error_message_false(event_handler):
     """Test error emission with show_error_message=False does not emit to UI."""
     emitted = []
 
     async def capture_emitter(event):
         emitted.append(event)
 
-    await event_handler._emit_error(
+    await event_handler._emit_error_event(
         capture_emitter,
         "Internal error",
         show_error_message=False,
@@ -235,7 +235,7 @@ async def test_emit_error_show_error_message_false(event_handler):
 
 
 @pytest.mark.asyncio
-async def test_emit_error_with_log_citation_and_logs(event_handler, caplog):
+async def test_emit_error_event_with_log_citation_and_logs(event_handler, caplog):
     """Test error emission with show_error_log_citation logs debug info."""
     # Set up SessionLogger with some logs
     request_id = "test-request-123"
@@ -249,7 +249,7 @@ async def test_emit_error_with_log_citation_and_logs(event_handler, caplog):
 
         with caplog.at_level(logging.DEBUG):
             event_handler.logger.setLevel(logging.DEBUG)
-            await event_handler._emit_error(
+            await event_handler._emit_error_event(
                 None,
                 "Error with debug logs",
                 show_error_log_citation=True,
@@ -264,14 +264,14 @@ async def test_emit_error_with_log_citation_and_logs(event_handler, caplog):
 
 
 @pytest.mark.asyncio
-async def test_emit_error_with_log_citation_no_logs(event_handler, caplog):
+async def test_emit_error_event_with_log_citation_no_logs(event_handler, caplog):
     """Test error emission with show_error_log_citation when no logs exist."""
     request_id = "nonexistent-request"
     token = SessionLogger.request_id.set(request_id)
 
     try:
         with caplog.at_level(logging.WARNING):
-            await event_handler._emit_error(
+            await event_handler._emit_error_event(
                 None,
                 "Error with no logs",
                 show_error_log_citation=True,
@@ -283,11 +283,11 @@ async def test_emit_error_with_log_citation_no_logs(event_handler, caplog):
 
 
 # -----------------------------------------------------------------------------
-# Test _emit_templated_error (lines 284-290, 306-307)
+# Test _emit_templated_error_event (lines 284-290, 306-307)
 # -----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_emit_templated_error_basic(event_handler):
+async def test_emit_templated_error_event_basic(event_handler):
     """Test templated error emission."""
     emitted = []
 
@@ -295,7 +295,7 @@ async def test_emit_templated_error_basic(event_handler):
         emitted.append(event)
 
     template = "### Error\n\nMessage: {error_message}"
-    await event_handler._emit_templated_error(
+    await event_handler._emit_templated_error_event(
         capture_emitter,
         template=template,
         variables={"error_message": "Something went wrong"},
@@ -311,10 +311,10 @@ async def test_emit_templated_error_basic(event_handler):
 
 
 @pytest.mark.asyncio
-async def test_emit_templated_error_with_none_emitter(event_handler, caplog):
+async def test_emit_templated_error_event_with_none_emitter(event_handler, caplog):
     """Test templated error with None emitter logs but does not emit."""
     with caplog.at_level(logging.ERROR):
-        await event_handler._emit_templated_error(
+        await event_handler._emit_templated_error_event(
             None,
             template="Error: {msg}",
             variables={"msg": "test"},
@@ -326,7 +326,7 @@ async def test_emit_templated_error_with_none_emitter(event_handler, caplog):
 
 
 @pytest.mark.asyncio
-async def test_emit_templated_error_template_rendering_fails(event_handler):
+async def test_emit_templated_error_event_template_rendering_fails(event_handler):
     """Test templated error handles template rendering failure."""
     emitted = []
 
@@ -337,7 +337,7 @@ async def test_emit_templated_error_template_rendering_fails(event_handler):
     with patch("open_webui_openrouter_pipe.streaming.event_emitter._render_error_template") as mock_render:
         mock_render.side_effect = Exception("Template rendering failed")
 
-        await event_handler._emit_templated_error(
+        await event_handler._emit_templated_error_event(
             capture_emitter,
             template="{{invalid}}",
             variables={},
@@ -350,13 +350,13 @@ async def test_emit_templated_error_template_rendering_fails(event_handler):
 
 
 @pytest.mark.asyncio
-async def test_emit_templated_error_emitter_fails(event_handler, caplog):
+async def test_emit_templated_error_event_emitter_fails(event_handler, caplog):
     """Test templated error handles emitter failure."""
     async def failing_emitter(event):
         raise RuntimeError("Emitter exploded")
 
     with caplog.at_level(logging.ERROR):
-        await event_handler._emit_templated_error(
+        await event_handler._emit_templated_error_event(
             failing_emitter,
             template="Error: {msg}",
             variables={"msg": "test"},
@@ -367,12 +367,12 @@ async def test_emit_templated_error_emitter_fails(event_handler, caplog):
 
 
 # -----------------------------------------------------------------------------
-# Test _build_error_context (lines 335-364)
+# Test _create_error_context (lines 335-364)
 # -----------------------------------------------------------------------------
 
-def test_build_error_context(event_handler):
+def test_create_error_context(event_handler):
     """Test error context building."""
-    error_id, context = event_handler._build_error_context()
+    error_id, context = event_handler._create_error_context()
 
     assert len(error_id) == 16  # hex(8 bytes) = 16 chars
     assert context["error_id"] == error_id
@@ -767,7 +767,7 @@ async def test_put_middleware_stream_item_cancelled(pipe_instance_async):
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
     with pytest.raises(asyncio.CancelledError):
-        await pipe._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
+        await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
 
 
 @pytest.mark.asyncio
@@ -786,7 +786,7 @@ async def test_put_middleware_stream_item_unbounded_queue(pipe_instance_async):
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    await pipe._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
+    await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
 
     assert queue.qsize() == 1
 
@@ -808,7 +808,7 @@ async def test_put_middleware_stream_item_zero_timeout(pipe_instance_async):
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue(maxsize=10)
 
-    await pipe._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
+    await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
 
     assert queue.qsize() == 1
 
@@ -830,7 +830,7 @@ async def test_put_middleware_stream_item_with_timeout_success(pipe_instance_asy
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue(maxsize=10)
 
-    await pipe._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
+    await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"test": "data"})
 
     assert queue.qsize() == 1
 
@@ -860,7 +860,7 @@ async def test_make_middleware_stream_emitter_basic(pipe_instance_async):
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit a chat:message event
     await emitter({"type": "chat:message", "data": {"delta": "Hello", "content": "Hello"}})
@@ -889,7 +889,7 @@ async def test_make_middleware_stream_emitter_reasoning_delta(pipe_instance_asyn
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit reasoning delta
     await emitter({"type": "reasoning:delta", "data": {"delta": "Thinking..."}})
@@ -918,7 +918,7 @@ async def test_make_middleware_stream_emitter_status_mode(pipe_instance_async):
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit reasoning delta with enough content to trigger status
     await emitter({"type": "reasoning:delta", "data": {"delta": "This is a longer reasoning text that should trigger emission."}})
@@ -946,7 +946,7 @@ async def test_make_middleware_stream_emitter_tool_calls(pipe_instance_async):
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit tool calls
     tool_calls = [
@@ -982,7 +982,7 @@ async def test_make_middleware_stream_emitter_completion_with_error(pipe_instanc
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit completion with error
     await emitter({
@@ -1015,7 +1015,7 @@ async def test_make_middleware_stream_emitter_completion_with_usage(pipe_instanc
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit completion with usage
     await emitter({
@@ -1048,7 +1048,7 @@ async def test_make_middleware_stream_emitter_passthrough_event(pipe_instance_as
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit unknown event type
     await emitter({"type": "custom:event", "data": {"foo": "bar"}})
@@ -1078,7 +1078,7 @@ async def test_make_middleware_stream_emitter_non_dict_event(pipe_instance_async
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit non-dict event
     await emitter("not a dict")
@@ -1116,7 +1116,7 @@ async def test_make_middleware_stream_emitter_events_go_to_stream(pipe_instance_
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit event - should go to stream, NOT original_emitter
     await emitter({"type": "chat:message", "data": {"delta": "Hi", "content": "Hi"}})
@@ -1155,7 +1155,7 @@ async def test_make_middleware_stream_emitter_does_not_call_failing_emitter(pipe
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Should not raise - we don't call original_emitter anymore
     await emitter({"type": "chat:message", "data": {"delta": "Hi", "content": "Hi"}})
@@ -1184,7 +1184,7 @@ async def test_make_middleware_stream_emitter_content_without_delta(pipe_instanc
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # First message sets assistant_sent
     await emitter({"type": "chat:message", "data": {"content": "Hello"}})
@@ -1216,7 +1216,7 @@ async def test_make_middleware_stream_emitter_reasoning_completed(pipe_instance_
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # First emit some reasoning delta to build up buffer
     await emitter({"type": "reasoning:delta", "data": {"delta": "Thinking about the problem..."}})
@@ -1247,7 +1247,7 @@ async def test_make_middleware_stream_emitter_flush_reasoning_status(pipe_instan
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emitter should have flush_reasoning_status attribute
     assert hasattr(emitter, "flush_reasoning_status")
@@ -1280,7 +1280,7 @@ async def test_make_middleware_stream_emitter_tool_calls_debug_logging(pipe_inst
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Set debug logging
     logging.getLogger("open_webui_openrouter_pipe.streaming.event_emitter").setLevel(logging.DEBUG)
@@ -1318,7 +1318,7 @@ async def test_make_middleware_stream_emitter_tool_calls_invalid(pipe_instance_a
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Empty tool_calls list
     await emitter({"type": "chat:tool_calls", "data": {"tool_calls": []}})
@@ -1352,7 +1352,7 @@ async def test_make_middleware_stream_emitter_reasoning_status_punctuation(pipe_
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit text ending with punctuation
     await emitter({"type": "reasoning:delta", "data": {"delta": "First sentence."}})
@@ -1381,7 +1381,7 @@ async def test_make_middleware_stream_emitter_reasoning_status_max_chars(pipe_in
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit very long text without punctuation
     long_text = "a" * 200  # Exceeds REASONING_STATUS_MAX_CHARS (160)
@@ -1411,7 +1411,7 @@ async def test_make_middleware_stream_emitter_reasoning_non_string_delta(pipe_in
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit non-string delta
     await emitter({"type": "reasoning:delta", "data": {"delta": 12345}})
@@ -1440,7 +1440,7 @@ async def test_make_middleware_stream_emitter_both_thinking_modes(pipe_instance_
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit reasoning delta - should emit both box and status
     await emitter({"type": "reasoning:delta", "data": {"delta": "Thinking about this question."}})
@@ -1469,7 +1469,7 @@ async def test_make_middleware_stream_emitter_data_not_dict(pipe_instance_async)
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit event with non-dict data
     await emitter({"type": "chat:message", "data": "not a dict"})
@@ -1498,7 +1498,7 @@ async def test_make_middleware_stream_emitter_model_from_body(pipe_instance_asyn
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit message
     await emitter({"type": "chat:message", "data": {"delta": "Hi", "content": "Hi"}})
@@ -1528,7 +1528,7 @@ async def test_make_middleware_stream_emitter_chat_message_content_updates_assis
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # First: delta="Hello", content="Hello"
     await emitter({"type": "chat:message", "data": {"delta": "Hello", "content": "Hello"}})
@@ -1562,7 +1562,7 @@ async def test_make_middleware_stream_emitter_answer_started_flushes_reasoning(p
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Build up reasoning buffer (not enough to emit)
     await emitter({"type": "reasoning:delta", "data": {"delta": "Think"}})
@@ -1581,7 +1581,7 @@ async def test_make_middleware_stream_emitter_answer_started_flushes_reasoning(p
 # -----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_emit_error_log_citation_format_exception(event_handler, caplog):
+async def test_emit_error_event_log_citation_format_exception(event_handler, caplog):
     """Test error emission handles exception during log formatting."""
     request_id = "test-format-error"
     token = SessionLogger.request_id.set(request_id)
@@ -1597,7 +1597,7 @@ async def test_emit_error_log_citation_format_exception(event_handler, caplog):
         event_handler.logger.setLevel(logging.DEBUG)
 
         with caplog.at_level(logging.DEBUG):
-            await event_handler._emit_error(
+            await event_handler._emit_error_event(
                 None,
                 "Error during format",
                 show_error_log_citation=True,
@@ -1649,7 +1649,7 @@ async def test_put_middleware_stream_item_timeout_exception(pipe_instance_async,
 
     with caplog.at_level(logging.WARNING):
         with pytest.raises(asyncio.TimeoutError):
-            await pipe._put_middleware_stream_item(cast(Any, job), queue, {"second": "item"})
+            await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"second": "item"})
 
     assert "timed out" in caplog.text
 
@@ -1675,7 +1675,7 @@ async def test_make_middleware_stream_emitter_reasoning_idle_timeout(pipe_instan
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit short text (less than MIN_CHARS) - won't emit immediately
     await emitter({"type": "reasoning:delta", "data": {"delta": "Short text here"}})
@@ -1711,7 +1711,7 @@ async def test_make_middleware_stream_emitter_reasoning_empty_buffer(pipe_instan
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Emit just whitespace
     await emitter({"type": "reasoning:delta", "data": {"delta": "   "}})
@@ -1744,7 +1744,7 @@ async def test_make_middleware_stream_emitter_tool_calls_with_non_dict_call(pipe
     logger = logging.getLogger("open_webui_openrouter_pipe.streaming.event_emitter")
     logger.setLevel(logging.DEBUG)
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Tool calls with non-dict item that should be skipped
     tool_calls = [
@@ -1781,7 +1781,7 @@ async def test_make_middleware_stream_emitter_tool_calls_exception_path(pipe_ins
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Patch to cause an exception
     with patch("open_webui_openrouter_pipe.streaming.event_emitter.openai_chat_chunk_message_template") as mock_template:
@@ -1823,7 +1823,7 @@ async def test_make_middleware_stream_emitter_completion_flushes_reasoning_buffe
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Build up buffer
     await emitter({"type": "reasoning:delta", "data": {"delta": "Some reasoning text"}})
@@ -1852,7 +1852,7 @@ async def test_make_middleware_stream_emitter_reasoning_completed_flushes_buffer
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Build up buffer with enough content
     await emitter({"type": "reasoning:delta", "data": {"delta": "Some reasoning text buffer"}})
@@ -1881,7 +1881,7 @@ async def test_make_middleware_stream_emitter_flush_when_disabled(pipe_instance_
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Call flush when status is disabled - should be no-op
     flush_fn = getattr(emitter, "flush_reasoning_status")
@@ -1908,7 +1908,7 @@ async def test_make_middleware_stream_emitter_maybe_emit_non_string_delta(pipe_i
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # The internal function checks isinstance(delta_text, str) at line 544
     # We can't call it directly but the reasoning:delta handler checks first
@@ -1937,7 +1937,7 @@ async def test_make_middleware_stream_emitter_tool_calls_function_not_dict(pipe_
     logger = logging.getLogger("open_webui_openrouter_pipe.streaming.event_emitter")
     logger.setLevel(logging.DEBUG)
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # Tool calls with function that is not a dict
     tool_calls = [
@@ -1973,7 +1973,7 @@ async def test_make_middleware_stream_emitter_delta_with_mismatched_content(pipe
     job = _FakeJob()
     queue: asyncio.Queue[dict | str | None] = asyncio.Queue()
 
-    emitter = pipe._make_middleware_stream_emitter(cast(Any, job), queue)
+    emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
     # First, set assistant_sent to "Hello"
     await emitter({"type": "chat:message", "data": {"delta": "Hello", "content": "Hello"}})

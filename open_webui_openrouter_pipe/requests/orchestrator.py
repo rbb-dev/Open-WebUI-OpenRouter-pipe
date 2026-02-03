@@ -24,8 +24,12 @@ from ..core.errors import (
 )
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
-from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_responses_tools
+from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_responses_tools, apply_context_transforms
 from ..core.timing_logger import timed, timing_scope
+from .task_model_adapter import TaskModelAdapter
+from .sanitizer import _sanitize_request_input
+from ..integrations.anthropic import _is_anthropic_model_id
+from ..storage.users import get_user_by_id
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -35,7 +39,6 @@ if TYPE_CHECKING:
 class RequestOrchestrator:
     """Orchestrates the processing of transformed OpenRouter requests."""
 
-    @timed
     def __init__(self, pipe: "Pipe", logger: logging.Logger):
         """Initialize RequestOrchestrator.
 
@@ -69,7 +72,6 @@ class RequestOrchestrator:
         *,
         user_id: str = "",
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
-        @timed
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get("openrouter_pipe")
             if not isinstance(pipe_meta, dict):
@@ -140,7 +142,6 @@ class RequestOrchestrator:
             max_bytes = int(valves.BASE64_MAX_SIZE_MB) * 1024 * 1024
             chunk_size = int(valves.IMAGE_UPLOAD_CHUNK_BYTES)
 
-            @timed
             def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
                 """Decode a small prefix of base64 to allow MIME/container sniffing.
 
@@ -172,7 +173,6 @@ class RequestOrchestrator:
                         return b""
                 return decoded[:wanted]
 
-            @timed
             def _sniff_audio_format(prefix: bytes) -> str:
                 """Best-effort audio container sniff for routing (mp3/wav vs other)."""
                 if not prefix:
@@ -210,7 +210,6 @@ class RequestOrchestrator:
                     }
                 )
 
-            @timed
             def _csv_set(value: Any) -> set[str]:
                 if not isinstance(value, str):
                     return set()
@@ -230,10 +229,10 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                file_obj = await self._pipe._get_file_by_id(file_id)
+                file_obj = await self._pipe._multimodal_handler._get_file_by_id(file_id)
                 if not file_obj:
                     raise ValueError(f"Native audio attachment '{file_id}' could not be loaded.")
-                b64 = await self._pipe._read_file_record_base64(file_obj, chunk_size, max_bytes)
+                b64 = await self._pipe._multimodal_handler._read_file_record_base64(file_obj, chunk_size, max_bytes)
                 if not b64:
                     raise ValueError(f"Native audio attachment '{file_id}' could not be encoded.")
                 declared = item.get("format")
@@ -256,15 +255,15 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                file_obj = await self._pipe._get_file_by_id(file_id)
+                file_obj = await self._pipe._multimodal_handler._get_file_by_id(file_id)
                 if not file_obj:
                     raise ValueError(f"Native video attachment '{file_id}' could not be loaded.")
-                b64 = await self._pipe._read_file_record_base64(file_obj, chunk_size, max_bytes)
+                b64 = await self._pipe._multimodal_handler._read_file_record_base64(file_obj, chunk_size, max_bytes)
                 if not b64:
                     raise ValueError(f"Native video attachment '{file_id}' could not be encoded.")
                 mime = item.get("content_type")
                 if not isinstance(mime, str) or not mime.strip():
-                    mime = self._pipe._infer_file_mime_type(file_obj)
+                    mime = self._pipe._multimodal_handler._infer_file_mime_type(file_obj)
                 data_url = f"data:{mime.strip()};base64,{b64}"
                 content_blocks.append(
                     {
@@ -278,7 +277,7 @@ class RequestOrchestrator:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
-        task_name = self._pipe._task_name(__task__) if __task__ else ""
+        task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
         # Optional: inject CSS tweak for multi-line statuses when enabled.
         if valves.ENABLE_STATUS_CSS_PATCH:
             if __event_call__:
@@ -320,7 +319,6 @@ class RequestOrchestrator:
             else:
                     self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
 
-        @timed
         def _extract_direct_uploads_warnings(metadata: dict[str, Any]) -> list[str]:
             pipe_meta = metadata.get("openrouter_pipe")
             if not isinstance(pipe_meta, dict):
@@ -344,7 +342,7 @@ class RequestOrchestrator:
             extra_count = max(0, len(direct_uploads_warnings) - 1)
             if extra_count:
                 summary = f"{summary} (+{extra_count} more)"
-            await self._pipe._emit_notification(
+            await self._pipe._event_emitter_handler._emit_notification(
                 __event_emitter__,
                 f"Direct uploads not applied for some attachments: {summary}",
                 level="warning",
@@ -376,7 +374,7 @@ class RequestOrchestrator:
             try:
                 await _inject_direct_uploads_into_messages(body, direct_uploads)
             except Exception as exc:
-                await self._pipe._emit_templated_error(
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.DIRECT_UPLOAD_FAILURE_TEMPLATE,
                     variables={
@@ -399,9 +397,9 @@ class RequestOrchestrator:
             # alongside chat-only modalities when we route the request to /chat/completions.
 
             if requires_chat:
-                selected, forced = self._pipe._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
+                selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
                 if forced and selected == "responses":
-                    await self._pipe._emit_templated_error(
+                    await self._pipe._ensure_error_formatter()._emit_templated_error(
                         __event_emitter__,
                         template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
                         variables={
@@ -432,9 +430,9 @@ class RequestOrchestrator:
                         body["preset"] = preset
 
         if preset and endpoint_override is None:
-            selected, forced = self._pipe._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
+            selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
             if forced and selected == "responses":
-                await self._pipe._emit_templated_error(
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
                     variables={
@@ -460,7 +458,7 @@ class RequestOrchestrator:
         user_model = None
         if user_id:
             try:
-                user_model = await self._pipe._get_user_by_id(user_id)
+                user_model = await get_user_by_id(user_id, self.logger)
             except Exception:  # pragma: no cover - defensive guard
                 user_model = None
 
@@ -470,7 +468,7 @@ class RequestOrchestrator:
             # If chat_id and openwebui_model_id are provided, from_completions() uses them to fetch previously persisted items (function_calls, reasoning, etc.) from DB and reconstruct the input array in the correct order.
             **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
             **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
-            artifact_loader=self._pipe._db_fetch,
+            artifact_loader=self._pipe._artifact_store._db_fetch,
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
             transformer_context=self._pipe,
             request=__request__,
@@ -479,10 +477,10 @@ class RequestOrchestrator:
             transformer_valves=valves,
 
         )
-        self._pipe._sanitize_request_input(responses_body)
-        self._pipe._apply_reasoning_preferences(responses_body, valves)
-        self._pipe._apply_gemini_thinking_config(responses_body, valves)
-        self._pipe._apply_context_transforms(responses_body, valves)
+        _sanitize_request_input(self._pipe, responses_body)
+        self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
+        self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+        apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
         # Inject provider routing from filter-injected metadata
         # Only for non-task requests - task models (title, tags, follow-ups) use different models
@@ -517,10 +515,10 @@ class RequestOrchestrator:
             base_model_for_check = normalized_model_id.rsplit(":", 1)[0] if ":" in normalized_model_id else normalized_model_id
             zdr_capable = OpenRouterModelRegistry.is_zdr_capable(base_model_for_check)
             if zdr_capable is False:
-                task_name = self._pipe._task_name(__task__) if __task__ else ""
+                task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
                 if __task__:
                     return self._pipe._build_task_fallback_content(task_name)
-                await self._pipe._emit_templated_error(
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
@@ -563,7 +561,7 @@ class RequestOrchestrator:
                 self.logger.debug(
                     "Bypassing model whitelist for task request (model=%s, task=%s)",
                     normalized_model_id,
-                    self._pipe._task_name(__task__) or "task",
+                    TaskModelAdapter._task_name(__task__) or "task",
                 )
         else:
             # Strip variant suffix from model ID for restriction checks
@@ -580,7 +578,7 @@ class RequestOrchestrator:
                 model_id_filter = (valves.MODEL_ID or "").strip()
                 free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
                 tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
-                await self._pipe._emit_templated_error(
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
@@ -612,10 +610,10 @@ class RequestOrchestrator:
             owns_task_model = ModelFamily.base_model(requested_model) in allowlist_norm_ids if allowlist_norm_ids else True
             if owns_task_model:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
-                self._pipe._apply_task_reasoning_preferences(responses_body, task_effort)
-                self._pipe._apply_gemini_thinking_config(responses_body, valves)
+                self._pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(responses_body, task_effort)
+                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
 
-            result = await self._pipe._run_task_model_request(
+            result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
                 valves,
                 session=session,
@@ -637,7 +635,7 @@ class RequestOrchestrator:
                 tools_registry = await tools_registry
             except Exception as exc:
                 self.logger.warning("Tool registry unavailable; continuing without tools: %s", exc)
-                await self._pipe._emit_notification(
+                await self._pipe._event_emitter_handler._emit_notification(
                     __event_emitter__,
                     "Tool registry unavailable; continuing without tools.",
                     level="warning",
@@ -649,7 +647,7 @@ class RequestOrchestrator:
         direct_registry: dict[str, dict[str, Any]] = {}
         direct_tool_specs: list[dict[str, Any]] = []
         try:
-            direct_registry, direct_tool_specs = self._pipe._build_direct_tool_server_registry(
+            direct_registry, direct_tool_specs = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
                 __metadata__,
                 valves=valves,
                 event_call=__event_call__,
@@ -799,7 +797,7 @@ class RequestOrchestrator:
             try:
                 if responses_body.stream:
                     # Return async generator for partial text
-                    return await self._pipe._run_streaming_loop(
+                    return await self._pipe._streaming_handler._run_streaming_loop(
                         responses_body,
                         valves,
                         __event_emitter__,
@@ -813,7 +811,7 @@ class RequestOrchestrator:
                         pipe_identifier=pipe_identifier,
                     )
                 # Return final text (non-streaming)
-                return await self._pipe._run_nonstreaming_loop(
+                return await self._pipe._streaming_handler._run_nonstreaming_loop(
                     responses_body,
                     valves,
                     __event_emitter__,
@@ -832,7 +830,7 @@ class RequestOrchestrator:
                     not anthropic_prompt_cache_retry_attempted
                     and getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False)
                     and isinstance(api_model_label, str)
-                    and self._pipe._is_anthropic_model_id(api_model_label)
+                    and _is_anthropic_model_id(api_model_label)
                     and exc.status == 400
                     and Pipe._input_contains_cache_control(getattr(responses_body, "input", None))
                 ):
@@ -888,17 +886,17 @@ class RequestOrchestrator:
                                     responses_body.reasoning = {}
                                 responses_body.reasoning["effort"] = fallback_effort
                                 reasoning_effort_retry_attempted = True
-                                self._pipe._apply_gemini_thinking_config(responses_body, valves)
+                                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
                                 continue
 
                 if (
                     not reasoning_retry_attempted
-                    and self._pipe._should_retry_without_reasoning(exc, responses_body)
+                    and self._pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(exc, responses_body)
                 ):
                     reasoning_retry_attempted = True
                     continue
 
-                await self._pipe._report_openrouter_error(
+                await self._pipe._ensure_error_formatter()._report_openrouter_error(
                     exc,
                     event_emitter=__event_emitter__,
                     normalized_model_id=responses_body.model,

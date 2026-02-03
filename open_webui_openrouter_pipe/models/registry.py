@@ -45,7 +45,6 @@ _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 # Model Helper Functions
 # -----------------------------------------------------------------------------
 
-@timed
 def sanitize_model_id(model_id: str) -> str:
     """Convert `author/model` ids into dot-friendly ids for Open WebUI."""
     if not model_id:
@@ -74,7 +73,6 @@ class ModelFamily:
 
     # -- tiny, intuitive helpers ----------------------------------------------
     @classmethod
-    @timed
     def _norm(cls, model_id: str) -> str:
         """Normalize model ids by stripping pipe prefixes and date suffixes.
 
@@ -106,33 +104,28 @@ class ModelFamily:
         return base
 
     @classmethod
-    @timed
     def base_model(cls, model_id: str) -> str:
         """Canonical base model id (prefix/date stripped)."""
         return cls._norm(model_id)
 
     @classmethod
-    @timed
     def features(cls, model_id: str) -> frozenset[str]:
         """Capabilities for the base model behind this id."""
         spec = cls._lookup_spec(model_id)
         return frozenset(spec.get("features", set()))
 
     @classmethod
-    @timed
     def max_completion_tokens(cls, model_id: str) -> Optional[int]:
         """Return max completion tokens reported by the provider, if any."""
         spec = cls._lookup_spec(model_id)
         return spec.get("max_completion_tokens")
 
     @classmethod
-    @timed
     def supports(cls, feature: str, model_id: str) -> bool:
         """Check if a model supports a given feature."""
         return feature in cls.features(model_id)
 
     @classmethod
-    @timed
     def capabilities(cls, model_id: str) -> dict[str, bool]:
         """Return derived capability checkboxes for the given model."""
         spec = cls._lookup_spec(model_id)
@@ -141,7 +134,6 @@ class ModelFamily:
         return dict(caps)
 
     @classmethod
-    @timed
     def supported_parameters(cls, model_id: str) -> frozenset[str]:
         """Return the raw `supported_parameters` set from the OpenRouter catalog."""
         spec = cls._lookup_spec(model_id)
@@ -153,13 +145,11 @@ class ModelFamily:
         return frozenset()
 
     @classmethod
-    @timed
     def set_dynamic_specs(cls, specs: Dict[str, Dict[str, Any]] | None) -> None:
         """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
         cls._DYNAMIC_SPECS = specs or {}
 
     @classmethod
-    @timed
     def _lookup_spec(cls, model_id: str) -> Dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
         norm = cls.base_model(model_id)
@@ -369,7 +359,6 @@ class OpenRouterModelRegistry:
         ModelFamily.set_dynamic_specs(specs)
 
     @classmethod
-    @timed
     def _record_refresh_success(cls, cache_seconds: int) -> None:
         """Reset refresh backoff bookkeeping after a successful catalog fetch."""
         now = time.time()
@@ -380,7 +369,6 @@ class OpenRouterModelRegistry:
         cls._last_error_time = 0.0
 
     @classmethod
-    @timed
     def _record_refresh_failure(cls, exc: Exception, cache_seconds: int) -> None:
         """Increase backoff delay and track the most recent catalog error."""
         cls._consecutive_failures += 1
@@ -394,7 +382,6 @@ class OpenRouterModelRegistry:
         cls._next_refresh_after = max(cls._next_refresh_after, backoff_until)
 
     @staticmethod
-    @timed
     def _derive_features(
         supported_parameters: set[str],
         architecture: Dict[str, Any],
@@ -442,7 +429,6 @@ class OpenRouterModelRegistry:
         return features
 
     @staticmethod
-    @timed
     def _coerce_pricing_number(value: Any) -> Optional[Decimal]:
         """Return a numeric pricing value when possible."""
         if value is None:
@@ -475,7 +461,6 @@ class OpenRouterModelRegistry:
         return None
 
     @staticmethod
-    @timed
     def _supports_web_search(pricing: Dict[str, Any]) -> bool:
         """Return True when the provider exposes paid web-search support."""
         value = pricing.get("web_search")
@@ -485,14 +470,12 @@ class OpenRouterModelRegistry:
         return amount > Decimal(0)
 
     @staticmethod
-    @timed
     def _derive_capabilities(
         architecture: Dict[str, Any],
         pricing: Dict[str, Any],
     ) -> dict[str, bool]:
         """Translate metadata into Open WebUI capability checkboxes."""
 
-        @timed
         def _normalize(values: list[Any]) -> set[str]:
             """Return a normalized lowercase set from the provider metadata."""
             normalized: set[str] = set()
@@ -524,7 +507,6 @@ class OpenRouterModelRegistry:
         }
 
     @classmethod
-    @timed
     def list_models(cls) -> list[dict[str, Any]]:
         """Return a shallow copy of the cached catalog."""
         enriched: list[dict[str, Any]] = []
@@ -540,7 +522,6 @@ class OpenRouterModelRegistry:
 
 
     @classmethod
-    @timed
     def api_model_id(cls, model_id: str) -> Optional[str]:
         """Map sanitized Open WebUI ids back to provider ids, preserving variant/preset suffix.
 
@@ -576,14 +557,12 @@ class OpenRouterModelRegistry:
         return provider_id
 
     @classmethod
-    @timed
     def spec(cls, model_id: str) -> Dict[str, Any]:
         """Return the cached spec for ``model_id`` (or an empty dict)."""
         norm = ModelFamily.base_model(model_id)
         return cls._specs.get(norm) or {}
 
     @classmethod
-    @timed
     def zdr_model_ids(cls) -> set[str] | None:
         """Return cached ZDR-capable model ids (or None if unavailable)."""
         if cls._zdr_model_ids is None:
@@ -591,7 +570,6 @@ class OpenRouterModelRegistry:
         return set(cls._zdr_model_ids)
 
     @classmethod
-    @timed
     def is_zdr_capable(cls, model_id: str) -> bool | None:
         """Return True/False if ZDR list is available, otherwise None."""
         if cls._zdr_model_ids is None:
@@ -644,7 +622,6 @@ class OpenRouterModelRegistry:
 # Additional Model Helper Functions
 # -----------------------------------------------------------------------------
 
-@timed
 def normalize_model_id_dotted(model_id: str) -> str:
     """Return a dotted variant of a model id (e.g. 'anthropic/claude' -> 'anthropic.claude')."""
     if not isinstance(model_id, str):
@@ -652,7 +629,6 @@ def normalize_model_id_dotted(model_id: str) -> str:
     return model_id.strip().replace("/", ".")
 
 
-@timed
 def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
     """Return True when model_id matches any glob-style pattern."""
     if not isinstance(model_id, str):
@@ -681,7 +657,6 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
 # Gemini Reasoning Helpers
 # -----------------------------------------------------------------------------
 
-@timed
 def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
     """Return the Gemini thinking family for the provided normalized model id."""
     lowered = (normalized_model_id or "").lower()
@@ -690,7 +665,6 @@ def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
     return None
 
 
-@timed
 def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> Optional[int]:
     """Scale the configured Gemini 2.5 thinking budget from the requested effort."""
     if base_budget <= 0:
@@ -709,7 +683,6 @@ def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> Optional[int]
     return int(max(1, round(base_budget * scalar)))
 
 
-@timed
 def _parse_model_patterns(value: Any) -> list[str]:
     """Parse comma-separated fnmatch patterns (order preserved, empty removed)."""
     if not isinstance(value, str):
@@ -724,3 +697,122 @@ def _parse_model_patterns(value: Any) -> list[str]:
             continue
         patterns.append(candidate)
     return patterns
+
+
+# -----------------------------------------------------------------------------
+# Pricing Helpers
+# -----------------------------------------------------------------------------
+
+_PRICING_CATEGORY_KEYS = {
+    "prompt",
+    "completion",
+    "request",
+    "image",
+    "image_token",
+    "image_output",
+    "audio",
+    "audio_output",
+    "input_audio_cache",
+    "web_search",
+    "internal_reasoning",
+    "input_cache_read",
+    "input_cache_write",
+}
+_PRICING_VALUE_KEYS = ("price", "amount", "value", "usd", "cost", "rate")
+
+
+def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
+    """Return (sum, count) of numeric values found in a pricing node.
+
+    Recursively walks pricing structures from OpenRouter model specs,
+    summing all numeric values while ignoring discount fields.
+
+    Args:
+        node: Pricing data structure (dict, list, or scalar)
+
+    Returns:
+        Tuple of (total sum as Decimal, count of numeric values found)
+    """
+    total = Decimal(0)
+    count = 0
+
+    if isinstance(node, dict):
+        keys = set(node.keys())
+        if keys & _PRICING_CATEGORY_KEYS:
+            for key, value in node.items():
+                if key == "discount":
+                    continue
+                child_total, child_count = sum_pricing_values(value)
+                total += child_total
+                count += child_count
+            return total, count
+
+        found_value_key = False
+        for key in _PRICING_VALUE_KEYS:
+            if key in node:
+                found_value_key = True
+                child_total, child_count = sum_pricing_values(node[key])
+                total += child_total
+                count += child_count
+        if found_value_key:
+            return total, count
+
+        for key, value in node.items():
+            if key == "discount":
+                continue
+            child_total, child_count = sum_pricing_values(value)
+            total += child_total
+            count += child_count
+        return total, count
+
+    if isinstance(node, (list, tuple, set)):
+        for value in node:
+            child_total, child_count = sum_pricing_values(value)
+            total += child_total
+            count += child_count
+        return total, count
+
+    if isinstance(node, (int, float, Decimal)):
+        try:
+            return Decimal(str(node)), 1
+        except (InvalidOperation, ValueError):
+            return Decimal(0), 0
+
+    if isinstance(node, str):
+        raw = node.strip()
+        if not raw:
+            return Decimal(0), 0
+        try:
+            return Decimal(raw), 1
+        except (InvalidOperation, ValueError):
+            return Decimal(0), 0
+
+    return Decimal(0), 0
+
+
+def is_free_model(model_norm_id: str) -> bool:
+    """Check if a model has free pricing (all pricing values sum to 0).
+
+    Args:
+        model_norm_id: Normalized model ID (e.g., "openai/gpt-4o")
+
+    Returns:
+        True if model exists and all pricing values sum to zero
+    """
+    pricing = OpenRouterModelRegistry.spec(model_norm_id).get("pricing") or {}
+    total, numeric_count = sum_pricing_values(pricing)
+    if numeric_count <= 0:
+        return False
+    return total == Decimal(0)
+
+
+def supports_tool_calling(model_norm_id: str) -> bool:
+    """Check if model supports tool calling by checking supported parameters.
+
+    Args:
+        model_norm_id: Normalized model ID (e.g., "openai/gpt-4o")
+
+    Returns:
+        True if model supports 'tools' or 'tool_choice' parameters
+    """
+    return bool({"tools", "tool_choice"} & set(ModelFamily.supported_parameters(model_norm_id)))

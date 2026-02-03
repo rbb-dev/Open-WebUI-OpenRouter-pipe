@@ -1206,14 +1206,14 @@ def test_shutdown_without_executor(pipe_instance):
     """Test shutdown when executor is None."""
     store = pipe_instance._artifact_store
     store._db_executor = None
-    store.shutdown()
+    store.close()
 
 
 def test_shutdown_with_executor(pipe_instance):
     """Test shutdown shuts down executor."""
     store = pipe_instance._artifact_store
     store._db_executor = ThreadPoolExecutor(max_workers=1)
-    store.shutdown()
+    store.close()
     assert store._db_executor is None
 
 
@@ -1227,7 +1227,7 @@ def test_shutdown_executor_type_error(pipe_instance, monkeypatch):
 
     store = pipe_instance._artifact_store
     store._db_executor = _OldExecutor()
-    store.shutdown()
+    store.close()
 
 
 def test_shutdown_executor_generic_error(pipe_instance, caplog):
@@ -1240,7 +1240,7 @@ def test_shutdown_executor_generic_error(pipe_instance, caplog):
     store = pipe_instance._artifact_store
     store._db_executor = _FailingExecutor()
     caplog.set_level(logging.DEBUG)
-    store.shutdown()
+    store.close()
 
 
 # -----------------------------------------------------------------------------
@@ -2080,7 +2080,7 @@ def test_discover_engine_and_schema_from_get_db_context(pipe_instance):
 
         get_db_context = staticmethod(_ctx)
 
-    discovered_engine, schema, details = pipe_instance._discover_owui_engine_and_schema(_DB)
+    discovered_engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert discovered_engine is engine
     assert schema == "test_schema"
     assert details.get("engine_source")
@@ -2090,7 +2090,7 @@ def test_discover_engine_and_schema_from_get_db_context(pipe_instance):
 def test_init_artifact_store_with_sqlite(pipe_instance):
     engine = _sqlite_engine()
     with _install_internal_db(engine):
-        pipe_instance._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
+        pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
@@ -2141,10 +2141,10 @@ def test_db_persist_and_fetch_roundtrip(pipe_instance):
     _install_fake_store(pipe_instance)
 
     row = _make_row("chat-1", "msg-1", {"type": "reasoning", "text": "hi"})
-    ulids = pipe_instance._db_persist_sync([row])
+    ulids = pipe_instance._artifact_store._db_persist_sync([row])
     assert len(ulids) == 1
 
-    fetched = pipe_instance._db_fetch_sync("chat-1", "msg-1", ulids)
+    fetched = pipe_instance._artifact_store._db_fetch_sync("chat-1", "msg-1", ulids)
     assert fetched[ulids[0]]["text"] == "hi"
 
 
@@ -2153,10 +2153,10 @@ async def test_db_persist_direct_and_fetch_async(pipe_instance):
     _install_fake_store(pipe_instance)
 
     row = _make_row("chat-2", "msg-2", {"type": "note", "value": 123})
-    ulids = await pipe_instance._db_persist([row])
+    ulids = await pipe_instance._artifact_store._db_persist([row])
     assert len(ulids) == 1
 
-    fetched = await pipe_instance._db_fetch("chat-2", "msg-2", ulids)
+    fetched = await pipe_instance._artifact_store._db_fetch("chat-2", "msg-2", ulids)
     assert fetched[ulids[0]]["value"] == 123
 
 
@@ -2199,23 +2199,23 @@ async def test_delete_and_cleanup_paths(pipe_instance):
         session.close()
 
     cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=30)
-    pipe_instance._cleanup_sync(cutoff)
+    pipe_instance._artifact_store._cleanup_sync(cutoff)
 
-    remaining = pipe_instance._db_fetch_sync("chat-3", "msg-3", [old_id, recent_id])
+    remaining = pipe_instance._artifact_store._db_fetch_sync("chat-3", "msg-3", [old_id, recent_id])
     assert old_id not in remaining
     assert recent_id in remaining
 
-    await pipe_instance._delete_artifacts([("chat-3", recent_id)])
-    remaining_after = pipe_instance._db_fetch_sync("chat-3", "msg-3", [recent_id])
+    await pipe_instance._artifact_store._delete_artifacts([("chat-3", recent_id)])
+    remaining_after = pipe_instance._artifact_store._db_fetch_sync("chat-3", "msg-3", [recent_id])
     assert remaining_after == {}
 
 
 def test_duplicate_key_detection(pipe_instance):
     from sqlalchemy.exc import SQLAlchemyError
 
-    assert pipe_instance._is_duplicate_key_error(SQLAlchemyError("duplicate key value violates unique constraint"))
-    assert pipe_instance._is_duplicate_key_error(SQLAlchemyError("UNIQUE constraint failed")) is True
-    assert pipe_instance._is_duplicate_key_error(SQLAlchemyError("other error")) is False
+    assert pipe_instance._artifact_store._is_duplicate_key_error(SQLAlchemyError("duplicate key value violates unique constraint"))
+    assert pipe_instance._artifact_store._is_duplicate_key_error(SQLAlchemyError("UNIQUE constraint failed")) is True
+    assert pipe_instance._artifact_store._is_duplicate_key_error(SQLAlchemyError("other error")) is False
 
 
 @pytest.mark.asyncio
@@ -2341,10 +2341,10 @@ async def test_redis_enqueue_cache_and_fetch(pipe_instance):
     rows = [
         _make_row("chat-redis", "msg-redis", {"type": "note", "value": 1}),
     ]
-    ids = await pipe_instance._redis_enqueue_rows(rows)
+    ids = await pipe_instance._artifact_store._redis_enqueue_rows(rows)
     assert ids
 
-    fetched = await pipe_instance._redis_fetch_rows("chat-redis", ids)
+    fetched = await pipe_instance._artifact_store._redis_fetch_rows("chat-redis", ids)
     assert fetched[ids[0]]["value"] == 1
 
 
@@ -2419,7 +2419,7 @@ async def test_redis_flush_queue_and_pubsub(pipe_instance, caplog):
 
     store._db_persist_direct = _fake_db_persist_direct  # type: ignore[assignment]
 
-    await pipe_instance._flush_redis_queue()
+    await pipe_instance._artifact_store._flush_redis_queue()
     assert persisted
     assert any(
         isinstance(row.get("payload"), dict) and row["payload"].get("value") == 2
@@ -2427,7 +2427,7 @@ async def test_redis_flush_queue_and_pubsub(pipe_instance, caplog):
     )
 
     caplog.set_level("WARNING")
-    await pipe_instance._redis_pubsub_listener()
+    await pipe_instance._artifact_store._redis_pubsub_listener()
 
 
 @pytest.mark.asyncio
@@ -2454,7 +2454,7 @@ async def test_redis_periodic_flusher_exits(pipe_instance, monkeypatch):
     store._flush_redis_queue = _fake_flush  # type: ignore[assignment]
     monkeypatch.setattr("asyncio.sleep", _fake_sleep)
 
-    await pipe_instance._redis_periodic_flusher()
+    await pipe_instance._artifact_store._redis_periodic_flusher()
 
 
 def test_encode_crockford_rejects_negative_value() -> None:
@@ -2471,12 +2471,12 @@ def test_sanitize_table_fragment_truncates_and_normalizes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wait_for_handles_sync_and_async() -> None:
+async def test_await_if_needed_handles_sync_and_async() -> None:
     async def _coro():
         return "ok"
 
-    assert await persistence_mod._wait_for(5) == 5
-    assert await persistence_mod._wait_for(_coro(), timeout=1) == "ok"
+    assert await persistence_mod._await_if_needed(5) == 5
+    assert await persistence_mod._await_if_needed(_coro(), timeout=1) == "ok"
 
 
 def test_decode_payload_bytes_invalid_flag_and_json(pipe_instance) -> None:
@@ -2522,7 +2522,7 @@ def test_db_persist_sync_returns_existing_ids(pipe_instance) -> None:
     row["id"] = "id-1"
     row["_persisted"] = True
 
-    result = pipe_instance._db_persist_sync([row])
+    result = pipe_instance._artifact_store._db_persist_sync([row])
 
     assert result == ["id-1"]
     assert "_persisted" not in row
@@ -2539,7 +2539,7 @@ def test_db_persist_sync_skips_missing_payload(pipe_instance, caplog) -> None:
     }
 
     caplog.set_level("WARNING")
-    result = pipe_instance._db_persist_sync([row])
+    result = pipe_instance._artifact_store._db_persist_sync([row])
 
     assert result == []
     assert any("payload missing" in rec.message for rec in caplog.records)
@@ -2749,7 +2749,7 @@ def test_db_fetch_sync_touches_created_at_best_effort(pipe_instance) -> None:
     pipe_instance._artifact_store._session_factory = lambda: mock_session
 
     # Execute the fetch
-    results = pipe_instance._db_fetch_sync("chat123", None, ["a1", "b2"])
+    results = pipe_instance._artifact_store._db_fetch_sync("chat123", None, ["a1", "b2"])
 
     # Verify results
     assert results == {"a1": {"type": "tool_output", "output": "ok"}, "b2": {"type": "tool_output", "output": "ok"}}
@@ -2799,7 +2799,7 @@ def test_db_fetch_sync_touch_failure_never_breaks_read(pipe_instance) -> None:
     pipe_instance._artifact_store._session_factory = lambda: sessions.pop(0)
 
     # Execute the fetch - should succeed despite touch failure
-    results = pipe_instance._db_fetch_sync("chat123", None, ["a1"])
+    results = pipe_instance._artifact_store._db_fetch_sync("chat123", None, ["a1"])
 
     # Verify results are still correct
     assert results == {"a1": {"type": "tool_output", "output": "ok"}}

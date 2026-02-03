@@ -46,7 +46,7 @@ class TestEmitTemplatedError:
     @pytest.mark.asyncio
     async def test_basic_template_rendering(self, mock_pipe, mock_event_emitter):
         """Test that basic template rendering works."""
-        await mock_pipe._emit_templated_error(
+        await mock_pipe._ensure_error_formatter()._emit_templated_error(
             mock_event_emitter,
             template="### {title}\n\n{message}",
             variables={"title": "Test Error", "message": "Test message"},
@@ -62,7 +62,7 @@ class TestEmitTemplatedError:
     @pytest.mark.asyncio
     async def test_error_id_generation(self, mock_pipe, mock_event_emitter):
         """Test that error IDs are generated and included."""
-        await mock_pipe._emit_templated_error(
+        await mock_pipe._ensure_error_formatter()._emit_templated_error(
             mock_event_emitter,
             template="Error ID: {error_id}",
             variables={},
@@ -78,7 +78,7 @@ class TestEmitTemplatedError:
     @pytest.mark.asyncio
     async def test_conditional_rendering(self, mock_pipe, mock_event_emitter):
         """Test that {{#if}} conditionals work."""
-        await mock_pipe._emit_templated_error(
+        await mock_pipe._ensure_error_formatter()._emit_templated_error(
             mock_event_emitter,
             template=(
                 "### Error\n\n"
@@ -100,7 +100,7 @@ class TestEmitTemplatedError:
     @pytest.mark.asyncio
     async def test_support_email_injection(self, mock_pipe, mock_event_emitter):
         """Test that support_email from valves is injected."""
-        await mock_pipe._emit_templated_error(
+        await mock_pipe._ensure_error_formatter()._emit_templated_error(
             mock_event_emitter,
             template="Support: {support_email}",
             variables={},
@@ -113,7 +113,7 @@ class TestEmitTemplatedError:
     @pytest.mark.asyncio
     async def test_timestamp_injection(self, mock_pipe, mock_event_emitter):
         """Test that timestamp is injected."""
-        await mock_pipe._emit_templated_error(
+        await mock_pipe._ensure_error_formatter()._emit_templated_error(
             mock_event_emitter,
             template="Time: {timestamp}",
             variables={},
@@ -912,7 +912,7 @@ def test_pipe_builds_streaming_error_from_event(pipe_instance):
         "error": {"code": "rate_limit", "message": "Slow down"},
         "choices": [{"native_finish_reason": "rate_limit"}],
     }
-    err = pipe._build_streaming_openrouter_error(event, requested_model="openai/gpt-4o")
+    err = pipe._ensure_error_formatter()._build_streaming_openrouter_error(event, requested_model="openai/gpt-4o")
     assert err.is_streaming_error is True
     assert err.native_finish_reason == "rate_limit"
     assert err.chunk_id == "chunk_999"
@@ -921,11 +921,11 @@ def test_pipe_builds_streaming_error_from_event(pipe_instance):
 
 def test_select_openrouter_template_by_status(pipe_instance):
     pipe = pipe_instance
-    assert pipe._select_openrouter_template(401) == pipe.valves.AUTHENTICATION_ERROR_TEMPLATE
-    assert pipe._select_openrouter_template(402) == pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE
-    assert pipe._select_openrouter_template(408) == pipe.valves.SERVER_TIMEOUT_TEMPLATE
-    assert pipe._select_openrouter_template(429) == pipe.valves.RATE_LIMIT_TEMPLATE
-    assert pipe._select_openrouter_template(400) == pipe.valves.OPENROUTER_ERROR_TEMPLATE
+    assert pipe._ensure_error_formatter()._select_openrouter_template(401) == pipe.valves.AUTHENTICATION_ERROR_TEMPLATE
+    assert pipe._ensure_error_formatter()._select_openrouter_template(402) == pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE
+    assert pipe._ensure_error_formatter()._select_openrouter_template(408) == pipe.valves.SERVER_TIMEOUT_TEMPLATE
+    assert pipe._ensure_error_formatter()._select_openrouter_template(429) == pipe.valves.RATE_LIMIT_TEMPLATE
+    assert pipe._ensure_error_formatter()._select_openrouter_template(400) == pipe.valves.OPENROUTER_ERROR_TEMPLATE
 
 
 # =============================================================================
@@ -1013,7 +1013,7 @@ class TestStreamingErrorEdgeCases:
                 "error": {"message": "Nested error message"},
             },
         }
-        err = pipe._build_streaming_openrouter_error(event, requested_model="test/model")
+        err = pipe._ensure_error_formatter()._build_streaming_openrouter_error(event, requested_model="test/model")
         assert "Nested error message" in err.reason
 
     def test_streaming_error_default_message(self, pipe_instance):
@@ -1024,7 +1024,7 @@ class TestStreamingErrorEdgeCases:
             "type": "error",
             "error": {"code": "unknown"},  # No message
         }
-        err = pipe._build_streaming_openrouter_error(event, requested_model="test/model")
+        err = pipe._ensure_error_formatter()._build_streaming_openrouter_error(event, requested_model="test/model")
         assert err.reason == "Streaming error"
 
     def test_streaming_error_with_response_id(self, pipe_instance):
@@ -1038,15 +1038,15 @@ class TestStreamingErrorEdgeCases:
                 "error": {"message": "Failed"},
             },
         }
-        err = pipe._build_streaming_openrouter_error(event, requested_model="test/model")
+        err = pipe._ensure_error_formatter()._build_streaming_openrouter_error(event, requested_model="test/model")
         assert err.metadata.get("request_id") == "resp_12345"
 
     def test_extract_streaming_error_with_none_event(self, pipe_instance):
         """_extract_streaming_error_event returns None for non-dict (line 206)."""
         pipe = pipe_instance
-        assert pipe._extract_streaming_error_event(None, "test/model") is None
-        assert pipe._extract_streaming_error_event("not a dict", "test/model") is None
-        assert pipe._extract_streaming_error_event(123, "test/model") is None
+        assert pipe._ensure_error_formatter()._extract_streaming_error_event(None, "test/model") is None
+        assert pipe._ensure_error_formatter()._extract_streaming_error_event("not a dict", "test/model") is None
+        assert pipe._ensure_error_formatter()._extract_streaming_error_event(123, "test/model") is None
 
 
 class TestUsageFormatting:
@@ -1061,7 +1061,7 @@ class TestUsageFormatting:
         try:
             # Usage with bool values (unusual but possible)
             usage = {"input_tokens": True, "output_tokens": False, "total_tokens": 10}
-            result = pipe._format_final_status_description(
+            result = pipe._ensure_error_formatter()._format_final_status_description(
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
@@ -1082,7 +1082,7 @@ class TestUsageFormatting:
         try:
             # Usage with float values (possible from some APIs)
             usage = {"input_tokens": 42.7, "output_tokens": 13.2, "total_tokens": 55.9}
-            result = pipe._format_final_status_description(
+            result = pipe._ensure_error_formatter()._format_final_status_description(
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
@@ -1103,7 +1103,7 @@ class TestUsageFormatting:
         try:
             # Usage with only detail tokens, no total
             usage = {"input_tokens": 100, "output_tokens": 50}
-            result = pipe._format_final_status_description(
+            result = pipe._ensure_error_formatter()._format_final_status_description(
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
@@ -1112,7 +1112,7 @@ class TestUsageFormatting:
             # Should use "Total tokens:" since we can compute total
             # But if we pass explicit None for total_tokens...
             usage_no_total = {"input_tokens": 100, "output_tokens": 50, "total_tokens": None}
-            result2 = pipe._format_final_status_description(
+            result2 = pipe._ensure_error_formatter()._format_final_status_description(
                 elapsed=1.0,
                 stream_duration=None,  # No TPS calculation
                 total_usage=usage_no_total,
@@ -1151,35 +1151,35 @@ class TestErrorsModuleCoverage:
         assert result == ["low", "medium", "high"]
 
     @pytest.mark.asyncio
-    async def test_wait_for_with_non_awaitable(self):
-        """_wait_for returns non-awaitables directly (line 540)."""
-        from open_webui_openrouter_pipe.core.errors import _wait_for
+    async def test_await_if_needed_with_non_awaitable(self):
+        """_await_if_needed returns non-awaitables directly."""
+        from open_webui_openrouter_pipe.core.utils import _await_if_needed
 
         # Non-awaitable values should be returned as-is
-        assert await _wait_for("string_value") == "string_value"
-        assert await _wait_for(42) == 42
-        assert await _wait_for([1, 2, 3]) == [1, 2, 3]
-        assert await _wait_for(None) is None
+        assert await _await_if_needed("string_value") == "string_value"
+        assert await _await_if_needed(42) == 42
+        assert await _await_if_needed([1, 2, 3]) == [1, 2, 3]
+        assert await _await_if_needed(None) is None
 
     @pytest.mark.asyncio
-    async def test_wait_for_with_awaitable_no_timeout(self):
-        """_wait_for awaits coroutines when timeout=None (line 538)."""
-        from open_webui_openrouter_pipe.core.errors import _wait_for
+    async def test_await_if_needed_with_awaitable_no_timeout(self):
+        """_await_if_needed awaits coroutines when timeout=None."""
+        from open_webui_openrouter_pipe.core.utils import _await_if_needed
 
         async def async_value():
             return "awaited_result"
 
         # Awaitable with no timeout
-        result = await _wait_for(async_value(), timeout=None)
+        result = await _await_if_needed(async_value(), timeout=None)
         assert result == "awaited_result"
 
     @pytest.mark.asyncio
-    async def test_wait_for_with_awaitable_and_timeout(self):
-        """_wait_for awaits with timeout when specified (line 539)."""
-        from open_webui_openrouter_pipe.core.errors import _wait_for
+    async def test_await_if_needed_with_awaitable_and_timeout(self):
+        """_await_if_needed awaits with timeout when specified."""
+        from open_webui_openrouter_pipe.core.utils import _await_if_needed
 
         async def async_value():
             return "awaited_with_timeout"
 
-        result = await _wait_for(async_value(), timeout=5.0)
+        result = await _await_if_needed(async_value(), timeout=5.0)
         assert result == "awaited_with_timeout"
