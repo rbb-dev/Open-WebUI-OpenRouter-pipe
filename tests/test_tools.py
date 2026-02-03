@@ -5765,25 +5765,6 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
 # ==============================================================================
 
 
-class TestCitationToolsConstant:
-    """Tests for CITATION_TOOLS constant in streaming_core."""
-
-    def test_citation_tools_contains_expected_tools(self):
-        """Test that CITATION_TOOLS has the expected tool names."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import CITATION_TOOLS
-
-        assert "search_web" in CITATION_TOOLS
-        assert "view_knowledge_file" in CITATION_TOOLS
-        assert "query_knowledge_files" in CITATION_TOOLS
-        assert len(CITATION_TOOLS) == 3
-
-    def test_citation_tools_is_frozenset(self):
-        """Test that CITATION_TOOLS is immutable."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import CITATION_TOOLS
-
-        assert isinstance(CITATION_TOOLS, frozenset)
-
-
 class TestToolCardHtmlFormat:
     """Tests for tool execution card HTML format."""
 
