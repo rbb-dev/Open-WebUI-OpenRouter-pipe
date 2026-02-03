@@ -48,7 +48,6 @@ _USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "rea
 class ErrorFormatter:
     """Handles error formatting, template selection, and emission."""
 
-    @timed
     def __init__(
         self,
         pipe: "Pipe",
@@ -64,7 +63,6 @@ class ErrorFormatter:
     # Error Emission Methods
     # ======================================================================
 
-    @timed
     async def _emit_error(
         self,
         event_emitter: Optional["EventEmitter"],
@@ -74,10 +72,9 @@ class ErrorFormatter:
         show_error_log_citation: bool = False,
         done: bool = False,
     ):
-        """Delegate to EventEmitterHandler._emit_error."""
         if not self._event_emitter_handler:
             return
-        await self._event_emitter_handler._emit_error(
+        await self._event_emitter_handler._emit_error_event(
             event_emitter,
             error_obj,
             show_error_message=show_error_message,
@@ -85,7 +82,6 @@ class ErrorFormatter:
             done=done,
         )
 
-    @timed
     async def _emit_templated_error(
         self,
         event_emitter: Optional["EventEmitter"],
@@ -95,10 +91,9 @@ class ErrorFormatter:
         log_message: str,
         log_level: int = logging.ERROR,
     ):
-        """Delegate to EventEmitterHandler._emit_templated_error."""
         if not self._event_emitter_handler:
             return
-        await self._event_emitter_handler._emit_templated_error(
+        await self._event_emitter_handler._emit_templated_error_event(
             event_emitter,
             template=template,
             variables=variables,
@@ -106,18 +101,15 @@ class ErrorFormatter:
             log_level=log_level,
         )
 
-    @timed
     def _build_error_context(self) -> tuple[str, dict[str, Any]]:
-        """Delegate to EventEmitterHandler._build_error_context."""
         if not self._event_emitter_handler:
             return "", {}
-        return self._event_emitter_handler._build_error_context()
+        return self._event_emitter_handler._create_error_context()
 
     # ======================================================================
     # Template Selection
     # ======================================================================
 
-    @timed
     def _select_openrouter_template(self, status: Optional[int]) -> str:
         """Return the appropriate template based on the HTTP status."""
         if status == 401:
@@ -134,7 +126,6 @@ class ErrorFormatter:
     # Error Building and Extraction
     # ======================================================================
 
-    @timed
     def _build_streaming_openrouter_error(
         self,
         event: dict[str, Any],
@@ -206,7 +197,6 @@ class ErrorFormatter:
             is_streaming_error=True,
         )
 
-    @timed
     def _extract_streaming_error_event(
         self,
         event: dict[str, Any] | None,
@@ -279,7 +269,7 @@ class ErrorFormatter:
                 context=context_defaults,
             )
             await event_emitter({"type": "chat:message", "data": {"content": content}})
-            await self._pipe._emit_completion(
+            await self._pipe._event_emitter_handler._emit_completion(
                 event_emitter,
                 content="",
                 usage=usage or None,
@@ -290,7 +280,6 @@ class ErrorFormatter:
     # Status Formatting
     # ======================================================================
 
-    @timed
     def _format_final_status_description(
         self,
         *,
@@ -340,7 +329,6 @@ class ErrorFormatter:
             else:
                 segments.append(f"Cost ${cost_str}")
 
-        @timed
         def _to_int(value: Any) -> Optional[int]:
             """Best-effort conversion to ``int`` for usage counters."""
             if isinstance(value, bool):

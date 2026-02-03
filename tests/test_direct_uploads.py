@@ -150,9 +150,9 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -274,10 +274,10 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
         # Using m4a signature even though allowlist is "mp3,wav" - should force chat_completions
-        pipe._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_m4a_like_base64())
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -400,9 +400,9 @@ async def test_direct_uploads_audio_injects_audio_blocks():
         # 1. _get_file_by_id returns a file object
         mock_file_obj = MagicMock()
         mock_file_obj.id = "file_audio_1"
-        pipe._get_file_by_id = AsyncMock(return_value=mock_file_obj)
+        pipe._multimodal_handler._get_file_by_id = AsyncMock(return_value=mock_file_obj)
         # 2. _read_file_record_base64 returns the raw base64 data (NOT a data URL)
-        pipe._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
+        pipe._multimodal_handler._read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -1000,7 +1000,7 @@ def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instanc
         "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -1044,7 +1044,7 @@ def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_instanc
         "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
-        pipe._update_or_insert_model_with_metadata(
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -1113,7 +1113,7 @@ async def test_inline_internal_responses_input_files_inplace_rewrites_internal_u
         return_value="data:application/pdf;base64,SGVsbG8="
     )
 
-    await pipe._inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)
+    await pipe._multimodal_handler._inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)
     pipe._multimodal_handler._inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024)
 
     block = cast(dict, payload["input"][0]["content"][0])
@@ -1286,7 +1286,7 @@ async def test_upload_to_owui_storage_links_chat_file(pipe_instance_async, mock_
     monkeypatch.setattr(multimodal, "run_in_threadpool", run_in_threadpool_stub)
 
     # Execute upload
-    file_id = await pipe_instance_async._upload_to_owui_storage(
+    file_id = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
         request=mock_request,
         user=mock_user,
         file_data=b"data",
@@ -1341,7 +1341,7 @@ async def test_upload_to_owui_storage_ignores_missing_insert_api(pipe_instance_a
     monkeypatch.setattr(multimodal, "run_in_threadpool", run_in_threadpool_stub)
 
     # Execute upload - should succeed without insert_chat_files
-    file_id = await pipe_instance_async._upload_to_owui_storage(
+    file_id = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
         request=mock_request,
         user=mock_user,
         file_data=b"data",

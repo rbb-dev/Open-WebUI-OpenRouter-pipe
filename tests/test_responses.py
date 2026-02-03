@@ -485,7 +485,7 @@ async def test_responses_streaming_breaker_open_at_start(pipe_instance_async):
     # Force breaker to be open by simulating failures
     test_user_id = "test-breaker-user"
     for _ in range(20):
-        pipe._record_failure(test_user_id)
+        pipe._circuit_breaker.record_failure(test_user_id)
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -1004,7 +1004,7 @@ async def test_responses_nonstreaming_breaker_open(pipe_instance_async):
     # Force breaker to be open
     test_user_id = "test-nonstream-breaker"
     for _ in range(20):
-        pipe._record_failure(test_user_id)
+        pipe._circuit_breaker.record_failure(test_user_id)
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -1711,21 +1711,23 @@ async def test_from_completions_does_not_override_explicit_tool_choice(minimal_p
 
 
 def test_auto_context_trimming_enabled_by_default(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
-    minimal_pipe._apply_context_transforms(responses, minimal_pipe.valves)
+    apply_context_transforms(responses, auto_context_trimming=minimal_pipe.valves.AUTO_CONTEXT_TRIMMING)
     assert responses.transforms == ["middle-out"]
 
 
 def test_auto_context_trimming_respects_explicit_transforms(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT, transforms=["custom"])
-    minimal_pipe._apply_context_transforms(responses, minimal_pipe.valves)
+    apply_context_transforms(responses, auto_context_trimming=True)
     assert responses.transforms == ["custom"]
 
 
 def test_auto_context_trimming_disabled_via_valve(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
-    valves = minimal_pipe.valves.model_copy(update={"AUTO_CONTEXT_TRIMMING": False})
-    minimal_pipe._apply_context_transforms(responses, valves)
+    apply_context_transforms(responses, auto_context_trimming=False)
     assert responses.transforms is None
 
 
@@ -1737,6 +1739,7 @@ import pytest
 
 def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_instance):
     import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 
     body = pipe_mod.ResponsesBody.model_validate(
         {
@@ -1762,7 +1765,7 @@ def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_inst
         }
     )
 
-    pipe_instance._sanitize_request_input(body)
+    _sanitize_request_input(pipe_instance, body)
 
     assert body.input == [
         {
@@ -1781,6 +1784,7 @@ def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_inst
 
 def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
     import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 
     body = pipe_mod.ResponsesBody.model_validate(
         {
@@ -1797,7 +1801,7 @@ def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
         }
     )
 
-    pipe_instance._sanitize_request_input(body)
+    _sanitize_request_input(pipe_instance, body)
 
     assert body.input == [
         {

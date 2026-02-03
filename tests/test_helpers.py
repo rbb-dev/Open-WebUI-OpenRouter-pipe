@@ -1514,7 +1514,7 @@ def test_decode_payload_bytes_rejects_headerless_ciphertext(pipe_instance):
     pipe = pipe_instance
     legacy_bytes = b'{"type":"reasoning"}'
     with pytest.raises(ValueError, match="Invalid artifact payload flag"):
-        pipe._decode_payload_bytes(legacy_bytes)
+        pipe._artifact_store._decode_payload_bytes(legacy_bytes)
 
 
 def _build_encryption_ready_pipe(pipe: ow.Pipe) -> ow.Pipe:
@@ -1534,13 +1534,13 @@ def test_prepare_rows_for_storage_encrypts_payloads(pipe_instance):
             "payload": {"type": "reasoning", "content": "secret"},
         }
     ]
-    pipe._prepare_rows_for_storage(rows)
+    pipe._artifact_store._prepare_rows_for_storage(rows)
     stored = rows[0]
     payload = stored["payload"]
     assert stored["is_encrypted"] is True
     assert isinstance(payload, dict)
     assert payload.get("enc_v") == ow._ENCRYPTED_PAYLOAD_VERSION
-    decrypted = pipe._decrypt_payload(payload["ciphertext"])
+    decrypted = pipe._artifact_store._decrypt_payload(payload["ciphertext"])
     assert decrypted["content"] == "secret"
 
 
@@ -1554,9 +1554,9 @@ def test_prepare_rows_for_storage_idempotent(pipe_instance):
             "payload": {"type": "reasoning", "content": "secret"},
         }
     ]
-    pipe._prepare_rows_for_storage(rows)
+    pipe._artifact_store._prepare_rows_for_storage(rows)
     first_payload = copy.deepcopy(rows[0]["payload"])
-    pipe._prepare_rows_for_storage(rows)
+    pipe._artifact_store._prepare_rows_for_storage(rows)
     assert rows[0]["payload"] == first_payload
     assert rows[0]["is_encrypted"] is True
 
@@ -1571,7 +1571,7 @@ async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
         "item_type": "reasoning",
         "payload": {"type": "reasoning", "content": "secret"},
     }
-    pipe._prepare_rows_for_storage([row])
+    pipe._artifact_store._prepare_rows_for_storage([row])
     cached_json = json.dumps(row, ensure_ascii=False)
 
     class FakeRedis:
@@ -1580,7 +1580,7 @@ async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
 
     pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[attr-defined]
     pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
-    fetched = await pipe._redis_fetch_rows("chat", ["01TEST"])
+    fetched = await pipe._artifact_store._redis_fetch_rows("chat", ["01TEST"])
     assert fetched["01TEST"]["content"] == "secret"
 
 
@@ -1602,7 +1602,7 @@ async def test_flush_redis_queue_warns_when_lock_release_returns_zero(caplog, pi
     pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[attr-defined]
 
     caplog.set_level(logging.WARNING)
-    await pipe._flush_redis_queue()
+    await pipe._artifact_store._flush_redis_queue()
     assert any(
         "Redis flush lock was not released" in record.getMessage()
         for record in caplog.records
@@ -1767,7 +1767,7 @@ def test_build_tools_combines_registry_and_extras():
 
 def test_tool_output_clamps_failed_status(pipe_instance):
     pipe = pipe_instance
-    output = pipe._build_tool_output(
+    output = pipe._ensure_tool_executor()._build_tool_output(
         {"call_id": "call-1"},
         "Tool not found",
         status="failed",
@@ -1843,7 +1843,7 @@ def test_format_final_status_description_includes_cost_tokens_and_tps(pipe_insta
         "output_tokens_details": {"reasoning_tokens": 5},
     }
 
-    description = pipe._format_final_status_description(
+    description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=3.21,
         total_usage=usage,
         valves=pipe.valves,
@@ -1859,7 +1859,7 @@ def test_format_final_status_description_respects_disabled_flag(pipe_instance):
     pipe = pipe_instance
     valves = pipe.Valves(SHOW_FINAL_USAGE_STATUS=False)
 
-    description = pipe._format_final_status_description(
+    description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=4.5,
         total_usage={},
         valves=valves,
@@ -1883,7 +1883,7 @@ def test_format_final_status_description_with_icons(pipe_instance):
         "output_tokens_details": {"reasoning_tokens": 5},
     }
 
-    description = pipe._format_final_status_description(
+    description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=3.21,
         total_usage=usage,
         valves=valves,

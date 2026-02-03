@@ -285,7 +285,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
 
         pipe = pipe_mod.Pipe()
         try:
-            pipe._update_or_insert_model_with_metadata(
+            pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
                 "openrouter/test",
                 "Test",
                 capabilities={"vision": True},  # pipe-provided capabilities update
@@ -351,7 +351,7 @@ def test_discover_engine_prefers_db_context_over_symbol_names() -> None:
     owui_db: Any = types.ModuleType("open_webui.internal.db")
     owui_db.get_db_context = lambda *args, **kwargs: _ContextManager(_Session())
 
-    discovered_engine, discovered_schema, details = pipe_mod.Pipe._discover_owui_engine_and_schema(owui_db)
+    discovered_engine, discovered_schema, details = pipe_mod.ArtifactStore._discover_owui_engine_and_schema(owui_db)
     assert discovered_engine is engine
     assert discovered_schema is None
     assert details["engine_source"] == "get_db_context.get_bind"
@@ -372,7 +372,7 @@ def test_discover_schema_prefers_base_metadata_schema() -> None:
     owui_db.engine = engine
     owui_db.Base = _Base
 
-    discovered_engine, discovered_schema, details = pipe_mod.Pipe._discover_owui_engine_and_schema(owui_db)
+    discovered_engine, discovered_schema, details = pipe_mod.ArtifactStore._discover_owui_engine_and_schema(owui_db)
     assert discovered_engine is engine
     assert discovered_schema == "owui_schema"
     assert details["schema_source"] == "owui_db.Base.metadata.schema"
@@ -397,7 +397,7 @@ def test_discover_schema_falls_back_to_open_webui_env() -> None:
     sys.modules["open_webui.env"] = env_mod
 
     try:
-        discovered_engine, discovered_schema, details = pipe_mod.Pipe._discover_owui_engine_and_schema(owui_db)
+        discovered_engine, discovered_schema, details = pipe_mod.ArtifactStore._discover_owui_engine_and_schema(owui_db)
         assert discovered_engine is engine
         assert discovered_schema == "fallback_schema"
         assert details["schema_source"] == "open_webui.env.DATABASE_SCHEMA"

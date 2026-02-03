@@ -73,7 +73,6 @@ class _ToolExecutionContext:
 class ToolExecutor:
     """Orchestrates tool execution and direct tool server integration."""
 
-    @timed
     def __init__(self, pipe: "Pipe", logger: logging.Logger):
         """Initialize tool executor.
 
@@ -84,6 +83,43 @@ class ToolExecutor:
         self._pipe = pipe
         self.logger = logger
         self._legacy_tool_warning_emitted = False
+
+    # ------------------------------------------------------------------
+    # Argument parsing helpers
+    # ------------------------------------------------------------------
+
+    def _is_batchable_tool_call(self, args: dict[str, Any]) -> bool:
+        """Check if a tool call can be batched or must run sequentially.
+
+        Args:
+            args: Parsed tool arguments dictionary
+
+        Returns:
+            True if the tool call can be batched, False if it has dependency markers
+        """
+        blockers = {"depends_on", "_depends_on", "sequential", "no_batch"}
+        return not any(key in args for key in blockers)
+
+    def _parse_tool_arguments(self, raw_args: Any) -> dict[str, Any]:
+        """Parse raw tool arguments into a dictionary.
+
+        Args:
+            raw_args: Raw arguments (dict, JSON string, or other)
+
+        Returns:
+            Parsed arguments dictionary
+
+        Raises:
+            ValueError: If arguments cannot be parsed
+        """
+        if isinstance(raw_args, dict):
+            return raw_args
+        if isinstance(raw_args, str):
+            try:
+                return json.loads(raw_args)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Unable to parse tool arguments") from exc
+        raise ValueError(f"Unsupported argument type: {type(raw_args).__name__}")
 
     @timed
     async def _process_tool_result_safe(
@@ -214,7 +250,7 @@ class ToolExecutor:
                 )
                 continue
             tool_type = (tool_cfg.get("type") or "function").lower()
-            if not self._pipe._tool_type_allows(context.user_id, tool_type):
+            if not self._pipe._circuit_breaker.tool_allows(context.user_id, tool_type):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
                 outputs.append(
                     self._build_tool_output(
@@ -253,7 +289,7 @@ class ToolExecutor:
                     raw_args_value = "{}"
                 if raw_args_value is None:
                     raw_args_value = "{}"
-                args = self._pipe._parse_tool_arguments(raw_args_value)
+                args = self._parse_tool_arguments(raw_args_value)
             except Exception as exc:
                 breaker_only_skips = False
                 outputs.append(
@@ -266,7 +302,7 @@ class ToolExecutor:
                 continue
 
             future: asyncio.Future = loop.create_future()
-            allow_batch = self._pipe._is_batchable_tool_call(args)
+            allow_batch = self._is_batchable_tool_call(args)
             queued = _QueuedToolCall(
                 call=call,
                 tool_cfg=tool_cfg,
@@ -292,7 +328,7 @@ class ToolExecutor:
             breaker_only_skips = False
 
         if not enqueued_any and breaker_only_skips and context.user_id:
-            self._pipe._record_failure(context.user_id)
+            self._pipe._circuit_breaker.record_failure(context.user_id)
 
         for call, future in pending:
             try:
@@ -406,7 +442,6 @@ class ToolExecutor:
                             spec_payload = dict(spec)
                             spec_payload["name"] = name
 
-                            @timed
                             async def _direct_tool_callable(  # noqa: ANN001 - tool kwargs are dynamic
                                 _allowed_params: set[str] = allowed_params,
                                 _tool_name: str = name,
@@ -446,7 +481,7 @@ class ToolExecutor:
                                     # Never let tool failures crash the pipe/session.
                                     self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
                                     with contextlib.suppress(Exception):
-                                        await self._pipe._emit_notification(
+                                        await self._pipe._event_emitter_handler._emit_notification(
                                             _event_emitter,
                                             f"Tool '{_tool_name}' failed: {exc}",
                                             level="warning",
@@ -542,7 +577,7 @@ class ToolExecutor:
 
                 raw_args = raw_args_value if raw_args_value is not None else "{}"
                 try:
-                    args = self._pipe._parse_tool_arguments(raw_args)
+                    args = self._parse_tool_arguments(raw_args)
                 except Exception as exc:
                     task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError(f"Invalid arguments: {exc}"))))
                     continue
@@ -618,7 +653,6 @@ class ToolExecutor:
 
         return outputs
 
-    @timed
     async def _notify_tool_breaker(
         self,
         context: "_ToolExecutionContext",
@@ -644,7 +678,6 @@ class ToolExecutor:
             # Event emitter failures (client disconnect, etc.) shouldn't stop pipe
             self.logger.debug("Failed to emit breaker notification", exc_info=True)
 
-    @timed
     def _build_tool_output(
         self,
         call: dict[str, Any],
@@ -685,3 +718,108 @@ class ToolExecutor:
         if embeds:
             result["embeds"] = embeds
         return result
+
+    # ------------------------------------------------------------------
+    # Tool worker loop and batching helpers
+    # ------------------------------------------------------------------
+
+    @timed
+    async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
+        """Process queued tool calls with batching/timeouts."""
+        pending: list[tuple[_QueuedToolCall | None, bool]] = []
+        batch_cap = context.batch_cap
+        idle_timeout = context.idle_timeout
+        try:
+            while True:
+                if pending:
+                    item, from_queue = pending.pop(0)
+                else:
+                    try:
+                        get_coro = context.queue.get()
+                        queued = (
+                            await get_coro
+                            if idle_timeout is None
+                            else await asyncio.wait_for(get_coro, timeout=idle_timeout)
+                        )
+                    except asyncio.TimeoutError:
+                        message = (
+                            f"Tool queue idle for {idle_timeout:.0f}s; cancelling pending work."
+                            if idle_timeout
+                            else "Tool queue idle timeout triggered."
+                        )
+                        context.timeout_error = context.timeout_error or message
+                        self.logger.warning("%s", message)
+                        break
+                    item, from_queue = queued, True
+                if item is None:
+                    if from_queue:
+                        context.queue.task_done()
+                    if pending:
+                        continue
+                    break
+
+                batch: list[tuple[_QueuedToolCall, bool]] = [(item, from_queue)]
+                if item.allow_batch:
+                    while len(batch) < batch_cap:
+                        try:
+                            nxt = context.queue.get_nowait()
+                            from_queue_next = True
+                        except asyncio.QueueEmpty:
+                            break
+                        if nxt is None:
+                            pending.insert(0, (None, True))
+                            break
+                        if nxt.allow_batch and self._can_batch_tool_calls(batch[0][0], nxt):
+                            batch.append((nxt, from_queue_next))
+                        else:
+                            pending.insert(0, (nxt, from_queue_next))
+                            break
+
+                await self._pipe._execute_tool_batch([itm for itm, _ in batch], context)
+                for _, flag in batch:
+                    if flag:
+                        context.queue.task_done()
+        finally:
+            # Resolve remaining futures if the worker is stopping unexpectedly
+            while pending:
+                leftover, from_queue = pending.pop(0)
+                if from_queue:
+                    context.queue.task_done()
+                if leftover is None:
+                    continue
+                if not leftover.future.done():
+                    error_msg = context.timeout_error or "Tool execution cancelled"
+                    leftover.future.set_result(
+                        self._build_tool_output(
+                            leftover.call,
+                            error_msg,
+                            status="cancelled",
+                        )
+                    )
+
+    def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:
+        """Check if two tool calls can be batched together."""
+        if first.call.get("name") != candidate.call.get("name"):
+            return False
+
+        dep_keys = {"depends_on", "_depends_on", "sequential", "no_batch"}
+        if any(key in first.args or key in candidate.args for key in dep_keys):
+            return False
+
+        first_id = first.call.get("call_id")
+        candidate_id = candidate.call.get("call_id")
+        if first_id and self._args_reference_call(candidate.args, first_id):
+            return False
+        if candidate_id and self._args_reference_call(first.args, candidate_id):
+            return False
+        return True
+
+    def _args_reference_call(self, args: Any, call_id: str) -> bool:
+        """Check if args contain a reference to another call_id."""
+        if isinstance(args, str):
+            return call_id in args
+        if isinstance(args, dict):
+            return any(self._args_reference_call(value, call_id) for value in args.values())
+        if isinstance(args, list):
+            return any(self._args_reference_call(item, call_id) for item in args)
+        return False

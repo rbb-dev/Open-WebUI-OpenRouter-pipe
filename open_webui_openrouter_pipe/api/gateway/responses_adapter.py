@@ -65,7 +65,7 @@ class ResponsesAdapter:
         effective_valves = valves or self._pipe.valves
         chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
         max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
-        await self._pipe._inline_internal_responses_input_files_inplace(
+        await self._pipe._multimodal_handler._inline_internal_responses_input_files_inplace(
             request_body,
             chunk_size=chunk_size,
             max_bytes=max_bytes,
@@ -108,7 +108,7 @@ class ResponsesAdapter:
             )
             try:
                 async for attempt in retryer:
-                    if breaker_key and not self._pipe._breaker_allows(breaker_key):
+                    if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                         raise RuntimeError("Breaker open for user during stream")
                     with attempt:
                         buf = bytearray()
@@ -121,7 +121,7 @@ class ResponsesAdapter:
                                 if resp.status >= 400:
                                     error_body = await _debug_print_error_response(resp, logger=self.logger)
                                     if breaker_key:
-                                        self._pipe._record_failure(breaker_key)
+                                        self._pipe._circuit_breaker.record_failure(breaker_key)
                                     special_statuses = {400, 401, 402, 403, 404, 408, 429}
                                     if resp.status in special_statuses:
                                         extra_meta: dict[str, Any] = {}
@@ -160,7 +160,7 @@ class ResponsesAdapter:
                                         first_chunk_received = True
                                         timing_mark("responses_first_chunk")
                                     view = memoryview(chunk)
-                                    if breaker_key and not self._pipe._breaker_allows(breaker_key):
+                                    if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                                         raise RuntimeError("Breaker open during stream")
                                     buf.extend(view)
                                     start_idx = 0
@@ -221,7 +221,7 @@ class ResponsesAdapter:
                                     exc_info=True,
                                 )
                             if breaker_key:
-                                self._pipe._record_failure(breaker_key)
+                                self._pipe._circuit_breaker.record_failure(breaker_key)
                             raise
                         if stream_complete:
                             break
@@ -346,7 +346,7 @@ class ResponsesAdapter:
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
-                    streaming_error = self._pipe._extract_streaming_error_event(current, requested_model)
+                    streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
                     if streaming_error is not None:
                         raise streaming_error
                     etype = current.get("type")
@@ -403,10 +403,6 @@ class ResponsesAdapter:
                     )
 
 
-    # ======================================================================
-    # send_openai_chat_completions_streaming_request (437 lines)
-    # ======================================================================
-
     @timed
     async def send_openai_responses_nonstreaming_request(
         self,
@@ -422,7 +418,7 @@ class ResponsesAdapter:
         effective_valves = valves or self._pipe.valves
         chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
         max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
-        await self._pipe._inline_internal_responses_input_files_inplace(
+        await self._pipe._multimodal_handler._inline_internal_responses_input_files_inplace(
             request_params,
             chunk_size=chunk_size,
             max_bytes=max_bytes,
@@ -445,14 +441,14 @@ class ResponsesAdapter:
 
         async for attempt in retryer:
             with attempt:
-                if breaker_key and not self._pipe._breaker_allows(breaker_key):
+                if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                     raise RuntimeError("Breaker open for user during request")
 
                 async with session.post(url, json=request_params, headers=headers) as resp:
                     if resp.status >= 400:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
-                            self._pipe._record_failure(breaker_key)
+                            self._pipe._circuit_breaker.record_failure(breaker_key)
                         if resp.status < 500:
                             special_statuses = {400, 401, 402, 403, 404, 408, 429}
                             if resp.status in special_statuses:
@@ -485,6 +481,3 @@ class ResponsesAdapter:
         self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")
         return {}
 
-    # ----------------------------------------------------------------------
-    # _run_task_model_request (122 lines)
-    # ----------------------------------------------------------------------

@@ -15,7 +15,6 @@ from typing import Any, Dict, Optional
 from ..core.timing_logger import timed
 
 
-@timed
 def _debug_print_request(
     headers: Dict[str, str],
     payload: Optional[Dict[str, Any]],
@@ -43,7 +42,6 @@ def _debug_print_request(
         logger.debug("OpenRouter request debug logging failed", exc_info=True)
 
 
-@timed
 def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
     """Log sanitized success response payload when DEBUG logging is enabled."""
     from ..core.utils import _redact_payload_blobs
@@ -57,7 +55,6 @@ def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
         logger.debug("OpenRouter response debug logging failed", exc_info=True)
 
 
-@timed
 async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> str:
     """Log the response payload and return the response body for debugging.
 

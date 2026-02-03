@@ -23,6 +23,7 @@ from open_webui_openrouter_pipe.tools.tool_executor import (
     _QueuedToolCall,
     _ToolExecutionContext,
 )
+from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 
 
 # ==============================================================================
@@ -75,7 +76,7 @@ async def test_execute_function_calls_with_context_missing_tool_name():
             tools = {}
             # Call with missing name
             calls = [{"type": "function_call", "call_id": "call-1", "name": "", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
@@ -101,7 +102,7 @@ async def test_execute_function_calls_with_context_tool_not_found():
         try:
             tools = {}
             calls = [{"type": "function_call", "call_id": "call-1", "name": "nonexistent_tool", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
@@ -131,7 +132,7 @@ async def test_execute_function_calls_with_context_circuit_breaker_skips():
         try:
             # Force circuit breaker to deny tool type
             for _ in range(20):
-                pipe._record_tool_failure_type("test-user", "function")
+                pipe._circuit_breaker.record_tool_failure("test-user", "function")
 
             async def my_tool(**kwargs):
                 return "result"
@@ -145,7 +146,7 @@ async def test_execute_function_calls_with_context_circuit_breaker_skips():
             }
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert "skipped" in outputs[0]["output"].lower() or outputs[0]["status"] == "completed"
@@ -176,7 +177,7 @@ async def test_execute_function_calls_with_context_no_callable():
             }
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert "no callable" in outputs[0]["output"].lower()
@@ -217,7 +218,7 @@ async def test_execute_function_calls_with_context_empty_args_required_params():
             }
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert "Missing tool arguments" in outputs[0]["output"] or "Invalid arguments" in outputs[0]["output"]
@@ -251,7 +252,7 @@ async def test_execute_function_calls_with_context_invalid_json_args():
             }
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "not valid json"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert "Invalid arguments" in outputs[0]["output"]
@@ -293,7 +294,7 @@ async def test_execute_function_calls_with_context_origin_logging():
 
             # Run _execute_function_calls but don't await the result
             # because the queue workers aren't running in this test
-            outputs_task = asyncio.create_task(pipe._execute_function_calls(calls, tools))
+            outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
             # Give the queue a chance to receive the item
             await asyncio.sleep(0.01)
@@ -339,7 +340,7 @@ async def test_execute_function_calls_with_context_idle_timeout():
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
 
             with pytest.raises(RuntimeError) as exc_info:
-                await pipe._execute_function_calls(calls, tools)
+                await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert "idle timeout" in str(exc_info.value).lower()
         finally:
@@ -366,7 +367,7 @@ async def test_execute_function_calls_with_context_timeout_error_propagation():
             calls = []  # No calls, but timeout_error is set
 
             with pytest.raises(RuntimeError) as exc_info:
-                await pipe._execute_function_calls(calls, tools)
+                await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert "Pre-existing timeout error" in str(exc_info.value)
         finally:
@@ -679,7 +680,7 @@ async def test_legacy_execute_missing_tool_name():
     try:
         tools = {}
         calls = [{"type": "function_call", "call_id": "call-1", "name": "", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert "Tool error" in outputs[0]["output"]
@@ -697,7 +698,7 @@ async def test_legacy_execute_tool_not_found():
     try:
         tools = {}
         calls = [{"type": "function_call", "call_id": "call-1", "name": "missing_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert "Tool error" in outputs[0]["output"]
@@ -718,7 +719,7 @@ async def test_legacy_execute_no_callable():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert "Tool error" in outputs[0]["output"]
@@ -749,7 +750,7 @@ async def test_legacy_execute_empty_args_with_required():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert "Tool error" in outputs[0]["output"]
@@ -783,7 +784,7 @@ async def test_legacy_execute_empty_args_no_required():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert outputs[0]["status"] == "completed"
@@ -810,7 +811,7 @@ async def test_legacy_execute_sync_callable():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert outputs[0]["status"] == "completed"
@@ -835,7 +836,7 @@ async def test_legacy_execute_tool_exception():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         # Status is normalized to "completed" for OpenRouter Responses API compatibility
@@ -861,7 +862,7 @@ async def test_legacy_execute_tool_returns_none():
             }
         }
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert outputs[0]["status"] == "completed"
@@ -1089,7 +1090,7 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
         try:
             # Force circuit breaker to deny all tool types
             for _ in range(20):
-                pipe._record_tool_failure_type("breaker-test-user", "function")
+                pipe._circuit_breaker.record_tool_failure("breaker-test-user", "function")
 
             async def my_tool(**kwargs):
                 return "result"
@@ -1103,7 +1104,7 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
             }
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             # All calls skipped by breaker should record a failure
             assert len(outputs) >= 1
@@ -1147,7 +1148,7 @@ async def test_execute_function_calls_with_none_arguments():
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": None}]
 
             # Run without waiting (since no workers)
-            outputs_task = asyncio.create_task(pipe._execute_function_calls(calls, tools))
+            outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
             # Get item from queue and resolve its future
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
@@ -1176,7 +1177,7 @@ async def test_execute_function_calls_whitespace_tool_name():
         try:
             tools = {}
             calls = [{"type": "function_call", "call_id": "call-1", "name": "   ", "arguments": "{}"}]
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             # Whitespace-only name should be treated as missing
@@ -1222,7 +1223,7 @@ async def test_legacy_execute_parallel_calls():
             {"type": "function_call", "call_id": "call-2", "name": "tool_b", "arguments": "{}"},
         ]
 
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 2
         # Both tools should have been called
@@ -1325,7 +1326,7 @@ async def test_execute_function_calls_empty_args_no_required_in_context():
             # Empty string args
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
 
-            outputs_task = asyncio.create_task(pipe._execute_function_calls(calls, tools))
+            outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
             # Get from queue and resolve
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
@@ -1499,7 +1500,7 @@ async def test_legacy_execute_invalid_json_arguments():
         }
         # Invalid JSON
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{invalid json}"}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert "Tool error" in outputs[0]["output"]
@@ -1527,7 +1528,7 @@ async def test_legacy_execute_dict_arguments():
         }
         # Dict arguments (already parsed)
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": {"key": "value"}}]
-        outputs = await pipe._execute_function_calls_legacy(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
 
         assert len(outputs) == 1
         assert outputs[0]["status"] == "completed"
@@ -1558,7 +1559,7 @@ async def test_execute_function_calls_fallback_to_legacy():
         }
 
         calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._execute_function_calls(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
         assert len(outputs) == 1
         assert called["count"] == 1
@@ -1672,7 +1673,7 @@ async def test_execute_function_calls_with_dict_arguments():
             # Dict arguments (already parsed)
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": {"key": "value"}}]
 
-            outputs_task = asyncio.create_task(pipe._execute_function_calls(calls, tools))
+            outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
             # Get from queue and resolve
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
@@ -1723,7 +1724,7 @@ async def test_multiple_tools_with_various_errors():
                 {"type": "function_call", "call_id": "call-4", "name": "valid_tool", "arguments": "invalid"},  # Bad JSON
             ]
 
-            outputs = await pipe._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             # All 4 calls should have outputs (errors)
             assert len(outputs) == 4
@@ -3345,7 +3346,7 @@ class TestToolRegistryWithPipe:
         assert "exec_test" in exec_reg
 
         # Execute through pipe
-        results = await pipe._execute_function_calls(
+        results = await pipe._ensure_tool_executor()._execute_function_calls(
             [
                 {
                     "type": "function_call",
@@ -3379,21 +3380,23 @@ from typing import Any
 
 import pytest
 
-from open_webui_openrouter_pipe.tools import tool_worker
 from open_webui_openrouter_pipe.tools.tool_executor import (
+    ToolExecutor,
     _QueuedToolCall,
     _ToolExecutionContext,
 )
 
 
 class _DummyWorker:
-    """Minimal worker stub that delegates batching/reference methods to real impl."""
+    """Minimal worker stub with real batching/reference methods from ToolExecutor."""
 
     def __init__(self) -> None:
         self.logger = logging.getLogger("tests.tool_worker_coverage")
         self.batches: list[list[str]] = []
         self.execution_delay: float = 0.0
         self.raise_exception: bool = False
+        # For _tool_worker_loop to call _pipe._execute_tool_batch
+        self._pipe = self
 
     async def _execute_tool_batch(
         self, calls: list[_QueuedToolCall], _context: _ToolExecutionContext
@@ -3410,13 +3413,14 @@ class _DummyWorker:
                     queued.future.set_result({"ok": True})
 
     def _build_tool_output(
-        self, call: dict[str, Any], message: str, status: str
+        self, call: dict[str, Any], message: str, *, status: str = "completed"
     ) -> dict[str, Any]:
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
-    # Real implementations from tool_worker module
-    _can_batch_tool_calls = tool_worker._can_batch_tool_calls
-    _args_reference_call = tool_worker._args_reference_call
+    # Use real implementations from ToolExecutor
+    _tool_worker_loop = ToolExecutor._tool_worker_loop
+    _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
+    _args_reference_call = ToolExecutor._args_reference_call
 
 
 def _make_queued(
@@ -3718,7 +3722,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1"]]
         assert call.future.done()
@@ -3740,7 +3744,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue, batch_cap=10)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1", "call-2", "call-3"]]
         assert all(c.future.done() for c in [call1, call2, call3])
@@ -3762,7 +3766,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1", "call-2"], ["call-3"]]
 
@@ -3779,7 +3783,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue, batch_cap=2)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Should batch in groups of 2 at most
         assert len(worker.batches) >= 3  # At least 3 batches for 5 items with cap 2
@@ -3799,7 +3803,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # First item has allow_batch=False, so no batching should occur
         assert worker.batches == [["call-1"], ["call-2"]]
@@ -3811,7 +3815,7 @@ class TestToolWorkerLoop:
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
         context = _make_context(queue, idle_timeout=0.01)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert context.timeout_error is not None
         assert "idle" in context.timeout_error.lower()
@@ -3824,7 +3828,7 @@ class TestToolWorkerLoop:
 
         # Use a very small but non-zero timeout
         context = _make_context(queue, idle_timeout=0.001)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert context.timeout_error is not None
 
@@ -3846,7 +3850,7 @@ class TestToolWorkerLoop:
 
         # Start delayed put
         put_task = asyncio.create_task(delayed_put())
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
         await put_task
 
         assert context.timeout_error is None
@@ -3862,7 +3866,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == []
 
@@ -3879,7 +3883,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1"]]
 
@@ -3898,7 +3902,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # call2 should be processed after call1 in separate batch
         assert worker.batches == [["call-1"], ["call-2"]]
@@ -3920,7 +3924,7 @@ class TestToolWorkerLoop:
         # Set the future result manually before running to simulate partial execution
         call1.future.set_result({"ok": True})
 
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Future was already done, so it shouldn't be modified
         assert call1.future.done()
@@ -3949,7 +3953,7 @@ class TestToolWorkerLoop:
         worker.execution_delay = 0.5
 
         context = _make_context(queue, idle_timeout=0.05)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # call2 should have been cancelled via finally cleanup
         # Note: The finally block handles leftover pending items
@@ -3967,7 +3971,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # If task_done wasn't called correctly, join would hang
         await asyncio.wait_for(queue.join(), timeout=1.0)
@@ -3989,7 +3993,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # call2 depends on call1, so they should be in separate batches
         assert worker.batches == [["call-1"], ["call-2"]]
@@ -4003,7 +4007,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == []
         assert context.timeout_error is None
@@ -4025,7 +4029,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue, batch_cap=2)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # With batch_cap=2, first batch has 2 items, second has 1
         assert worker.batches == [["call-1", "call-2"], ["call-3"]]
@@ -4045,7 +4049,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Both calls should be processed
         assert len(worker.batches) == 2
@@ -4062,7 +4066,7 @@ class TestToolWorkerLoop:
         # Pre-set an error
         context.timeout_error = "First error"
 
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Original error should be preserved
         assert context.timeout_error == "First error"
@@ -4084,7 +4088,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Should be separate batches due to cross-reference
         assert worker.batches == [["call-1"], ["call-2"]]
@@ -4102,7 +4106,7 @@ class TestToolWorkerLoop:
         await queue.put(None)
 
         context = _make_context(queue, batch_cap=10)  # High cap
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1"]]
 
@@ -4129,7 +4133,7 @@ class TestToolWorkerLoopEdgeCases:
         worker.execution_delay = 0.1  # Slow execution
 
         context = _make_context(queue, idle_timeout=0.02)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         assert context.timeout_error is not None
 
@@ -4142,7 +4146,7 @@ class TestToolWorkerLoopEdgeCases:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Verify queue is properly marked done
         await asyncio.wait_for(queue.join(), timeout=1.0)
@@ -4167,7 +4171,7 @@ class TestToolWorkerLoopEdgeCases:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Should complete normally (no timeout error)
         assert context.timeout_error is None
@@ -4195,7 +4199,7 @@ class TestToolWorkerLoopEdgeCases:
         worker.execution_delay = 0.3
 
         context = _make_context(queue, idle_timeout=0.01)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # call2's future should retain original result
         assert call2.future.result() == original_result
@@ -4216,7 +4220,7 @@ class TestToolWorkerLoopEdgeCases:
         worker.execution_delay = 0.3
 
         context = _make_context(queue, idle_timeout=0.01)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Timeout error should be set
         assert context.timeout_error is not None
@@ -4238,7 +4242,7 @@ class TestToolWorkerLoopEdgeCases:
         worker.execution_delay = 0.5
 
         context = _make_context(queue, idle_timeout=0.01)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Check that call2 got cancelled output if it wasn't processed
         if call2.future.done():
@@ -4289,7 +4293,7 @@ class TestToolWorkerFinallyCleanup:
 
         # Exception should propagate, but finally runs first
         with pytest.raises(RuntimeError, match="Simulated batch failure"):
-            await tool_worker._tool_worker_loop(worker, context)
+            await worker._tool_worker_loop(context)
 
         # call1's future was never set (worker raised before setting it)
         # But the finally block doesn't handle the current batch, only pending items
@@ -4338,7 +4342,7 @@ class TestToolWorkerFinallyCleanup:
         context = _make_context(queue)
 
         with pytest.raises(RuntimeError, match="Batch execution failed"):
-            await tool_worker._tool_worker_loop(worker, context)
+            await worker._tool_worker_loop(context)
 
         # call1's future should not be done (exception before setting)
         # None was in pending, finally should have skipped it
@@ -4376,7 +4380,7 @@ class TestToolWorkerFinallyCleanup:
 
         # The exception should propagate but finally should still run
         with pytest.raises(RuntimeError, match="Simulated failure"):
-            await tool_worker._tool_worker_loop(raising_worker, context)
+            await raising_worker._tool_worker_loop(context)
 
         # Note: In this scenario, call2 goes to pending during batch collection,
         # but the exception happens AFTER batch execution completes, so call2
@@ -4405,7 +4409,7 @@ class TestToolWorkerFinallyCleanup:
         worker.execution_delay = 0.3
 
         context = _make_context(queue, idle_timeout=0.02)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # The queue should be properly drained despite timeout
         # This verifies task_done is called correctly in finally
@@ -4441,7 +4445,7 @@ class TestToolWorkerIntegration:
         await queue.put(None)
 
         context = _make_context(queue, batch_cap=10)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Expected batches:
         # [call-1, call-2] - same tool
@@ -4469,7 +4473,7 @@ class TestToolWorkerIntegration:
         await queue.put(None)
 
         context = _make_context(queue)
-        await tool_worker._tool_worker_loop(worker, context)
+        await worker._tool_worker_loop(context)
 
         # Each should be its own batch
         assert worker.batches == [["call-1"], ["call-2"], ["call-3"]]
@@ -4825,7 +4829,7 @@ async def test_transform_messages_to_input_replays_owui_tool_results() -> None:
             {"role": "tool", "tool_call_id": "call_1", "content": "OK"},
         ]
         replayed: list[tuple[str, str]] = []
-        input_items = await pipe.transform_messages_to_input(
+        input_items = await transform_messages_to_input(pipe,
             messages,
             chat_id=None,
             openwebui_model_id=None,
@@ -5312,7 +5316,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
     assert exposed_to_origin["direct__search_web"] == "search_web"
     assert {t["name"] for t in tools} == {"owui__search_web", "direct__search_web"}
 
-    out1 = await pipe_instance_async._execute_function_calls(
+    out1 = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
         [
             {
                 "type": "function_call",
@@ -5323,7 +5327,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
         ],
         exec_registry,
     )
-    out2 = await pipe_instance_async._execute_function_calls(
+    out2 = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
         [
             {
                 "type": "function_call",
@@ -5410,7 +5414,7 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
     )
 
     assert {t["name"] for t in tools} == {"kb_query"}
-    result = await pipe_instance_async._execute_function_calls(
+    result = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
         [{"type": "function_call", "call_id": "c1", "name": "kb_query", "arguments": '{"q":"x"}'}],
         exec_registry,
     )
@@ -5426,14 +5430,15 @@ import logging
 
 import pytest
 
-from open_webui_openrouter_pipe.tools import tool_worker
-from open_webui_openrouter_pipe.tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
+from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor, _QueuedToolCall, _ToolExecutionContext
 
 
-class _DummyWorker:
+class _DummyWorker2:
+    """Second DummyWorker for additional batching tests."""
     def __init__(self) -> None:
         self.logger = logging.getLogger("tests.tool_worker")
         self.batches: list[list[str]] = []
+        self._pipe = self  # For _tool_worker_loop to call _pipe._execute_tool_batch
 
     async def _execute_tool_batch(self, calls, _context):
         self.batches.append([call.call.get("call_id") for call in calls])
@@ -5441,11 +5446,13 @@ class _DummyWorker:
             if not queued.future.done():
                 queued.future.set_result({"ok": True})
 
-    def _build_tool_output(self, call, message, status):
+    def _build_tool_output(self, call, message, *, status="completed"):
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
-    _can_batch_tool_calls = tool_worker._can_batch_tool_calls
-    _args_reference_call = tool_worker._args_reference_call
+    # Use real implementations from ToolExecutor
+    _tool_worker_loop = ToolExecutor._tool_worker_loop
+    _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
+    _args_reference_call = ToolExecutor._args_reference_call
 
 
 def _make_queued(loop, call_id: str, name: str, *, allow_batch: bool = True, args=None):
@@ -5459,7 +5466,7 @@ def _make_queued(loop, call_id: str, name: str, *, allow_batch: bool = True, arg
 
 
 def test_args_reference_call_detects_nested_call_ids():
-    worker = _DummyWorker()
+    worker = _DummyWorker2()
     args = {"a": ["x", {"b": "call-123"}], "c": {"d": ["nope", "call-999"]}}
 
     assert worker._args_reference_call(args, "call-123") is True
@@ -5467,7 +5474,7 @@ def test_args_reference_call_detects_nested_call_ids():
 
 
 def test_can_batch_tool_calls_blocks_dependencies_and_cross_refs():
-    worker = _DummyWorker()
+    worker = _DummyWorker2()
     loop = asyncio.new_event_loop()
     try:
         first = _make_queued(loop, "call-1", "tool", args={})
@@ -5482,7 +5489,7 @@ def test_can_batch_tool_calls_blocks_dependencies_and_cross_refs():
 
 @pytest.mark.asyncio
 async def test_tool_worker_batches_and_executes_separately():
-    worker = _DummyWorker()
+    worker = _DummyWorker2()
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
@@ -5507,7 +5514,7 @@ async def test_tool_worker_batches_and_executes_separately():
         batch_cap=4,
     )
 
-    await tool_worker._tool_worker_loop(worker, context)
+    await worker._tool_worker_loop(context)
 
     assert worker.batches == [["call-1", "call-2"], ["call-3"]]
     assert call1.future.done()
@@ -5517,7 +5524,7 @@ async def test_tool_worker_batches_and_executes_separately():
 
 @pytest.mark.asyncio
 async def test_tool_worker_idle_timeout_sets_error():
-    worker = _DummyWorker()
+    worker = _DummyWorker2()
     queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
     context = _ToolExecutionContext(
@@ -5532,7 +5539,7 @@ async def test_tool_worker_idle_timeout_sets_error():
         batch_cap=4,
     )
 
-    await tool_worker._tool_worker_loop(worker, context)
+    await worker._tool_worker_loop(context)
 
     assert context.timeout_error is not None
     assert "idle" in context.timeout_error.lower()
@@ -5625,7 +5632,7 @@ async def test_execute_function_calls_rejects_empty_string_args_when_required() 
     calls = [{"type": "function_call", "call_id": "call-1", "name": "fetch", "arguments": ""}]
 
     try:
-        outputs = await pipe._execute_function_calls(calls, tools)
+        outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
         assert called["count"] == 0
         assert outputs and outputs[0]["type"] == "function_call_output"
         assert "Missing tool arguments" in (outputs[0].get("output") or "")
@@ -5721,9 +5728,7 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
 async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
-    class DummyTransformer:
-        async def transform_messages_to_input(self, messages, **kwargs):  # noqa: ANN001
-            return [{"role": "user", "content": "hi"}]
+    pipe = Pipe()
 
     completions = pipe_mod.CompletionsBody.model_validate(
         {
@@ -5743,7 +5748,7 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
 
     rb = await pipe_mod.ResponsesBody.from_completions(
         completions_body=completions,
-        transformer_context=DummyTransformer(),
+        transformer_context=pipe,
     )
 
     assert rb.tools == [

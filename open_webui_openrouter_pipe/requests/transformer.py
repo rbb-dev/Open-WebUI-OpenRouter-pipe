@@ -56,6 +56,9 @@ from ..models.registry import ModelFamily
 # Import status messages
 from ..core.errors import StatusMessages
 
+# Import Anthropic integration
+from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
+
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
@@ -67,7 +70,7 @@ _TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256  # Characters to keep from the beginning
 _TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128  # Characters to keep from the end
 
 async def transform_messages_to_input(
-    self: "Pipe",
+    pipe: "Pipe",
     messages: List[Dict[str, Any]],
     chat_id: Optional[str] = None,
     openwebui_model_id: Optional[str] = None,
@@ -104,27 +107,27 @@ async def transform_messages_to_input(
     """
 
     logger = LOGGER
-    active_valves = valves or self.valves
+    active_valves = valves or pipe.valves
     image_limit = getattr(
         active_valves,
         "MAX_INPUT_IMAGES_PER_REQUEST",
-        self.valves.MAX_INPUT_IMAGES_PER_REQUEST,
+        pipe.valves.MAX_INPUT_IMAGES_PER_REQUEST,
     )
     selection_mode = getattr(
         active_valves,
         "IMAGE_INPUT_SELECTION",
-        self.valves.IMAGE_INPUT_SELECTION,
+        pipe.valves.IMAGE_INPUT_SELECTION,
     )
     chunk_size = getattr(
         active_valves,
         "IMAGE_UPLOAD_CHUNK_BYTES",
-        self.valves.IMAGE_UPLOAD_CHUNK_BYTES,
+        pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES,
     )
     max_inline_bytes = (
         getattr(
             active_valves,
             "BASE64_MAX_SIZE_MB",
-            self.valves.BASE64_MAX_SIZE_MB,
+            pipe.valves.BASE64_MAX_SIZE_MB,
         )
         * 1024
         * 1024
@@ -383,9 +386,9 @@ async def transform_messages_to_input(
                         return None
 
                     if url.startswith("http://") and not _is_internal_file_url(url):
-                        if not self._is_insecure_http_allowed(url):
-                            self.logger.error("Blocked insecure HTTP image URL by default: %s", url)
-                            await self._emit_error(
+                        if not pipe._multimodal_handler._is_insecure_http_allowed(url):
+                            pipe.logger.error("Blocked insecure HTTP image URL by default: %s", url)
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Image URL blocked by security policy (HTTP disabled by default). "
                                 "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -399,7 +402,7 @@ async def transform_messages_to_input(
                         """Resolve (request,user) tuple only once for storage uploads."""
                         nonlocal storage_context
                         if storage_context is None:
-                            storage_context = await self._resolve_storage_context(__request__, user_obj)
+                            storage_context = await pipe._multimodal_handler._resolve_storage_context(__request__, user_obj)
                         return storage_context
 
                     async def _save_image_bytes(
@@ -412,7 +415,7 @@ async def transform_messages_to_input(
                         upload_request, upload_user = await _get_storage_context()
                         if not (upload_request and upload_user):
                             return None
-                        stored_id = await self._upload_to_owui_storage(
+                        stored_id = await pipe._multimodal_handler._upload_to_owui_storage(
                             request=upload_request,
                             user=upload_user,
                             file_data=payload,
@@ -423,12 +426,12 @@ async def transform_messages_to_input(
                             owui_user_id=getattr(user_obj, "id", None),
                         )
                         if stored_id:
-                            await self._emit_status(event_emitter, status_message, done=False)
+                            await pipe._event_emitter_handler._emit_status(event_emitter, status_message, done=False)
                         return stored_id
 
                     if url.startswith("data:"):
                         try:
-                            parsed = self._parse_data_url(url)
+                            parsed = pipe._multimodal_handler._parse_data_url(url)
                             if parsed:
                                 ext = parsed["mime_type"].split("/")[-1]
                                 stored_id = await _save_image_bytes(
@@ -440,8 +443,8 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            self.logger.error(f"Failed to process base64 image: {exc}")
-                            await self._emit_error(
+                            pipe.logger.error(f"Failed to process base64 image: {exc}")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to save base64 image: {exc}",
                                 show_error_message=False
@@ -449,7 +452,7 @@ async def transform_messages_to_input(
 
                     elif url.startswith(("http://", "https://")) and not _is_internal_file_url(url):
                         try:
-                            downloaded = await self._download_remote_url(url)
+                            downloaded = await pipe._multimodal_handler._download_remote_url(url)
                             if downloaded:
                                 filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
                                 if "." not in filename:
@@ -465,8 +468,8 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            self.logger.error(f"Failed to download remote image {url}: {exc}")
-                            await self._emit_error(
+                            pipe.logger.error(f"Failed to download remote image {url}: {exc}")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to download image: {exc}",
                                 show_error_message=False
@@ -475,13 +478,13 @@ async def transform_messages_to_input(
                         owui_file_id = _extract_internal_file_id(url)
 
                     if owui_file_id:
-                        inlined = await self._inline_owui_file_id(
+                        inlined = await pipe._multimodal_handler._inline_owui_file_id(
                             owui_file_id,
                             chunk_size=chunk_size,
                             max_bytes=max_inline_bytes,
                         )
                         if not inlined:
-                            await self._emit_status(
+                            await pipe._event_emitter_handler._emit_status(
                                 event_emitter,
                                 f"Skipping image {owui_file_id}: Open WebUI file unavailable.",
                                 done=False,
@@ -498,8 +501,8 @@ async def transform_messages_to_input(
                     return result
 
                 except Exception as exc:
-                    self.logger.error(f"Error in _to_input_image: {exc}")
-                    await self._emit_error(
+                    pipe.logger.error(f"Error in _to_input_image: {exc}")
+                    await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Image processing error: {exc}",
                         show_error_message=False
@@ -563,7 +566,7 @@ async def transform_messages_to_input(
                         """Lazy-load the request/user pair used for uploads."""
                         nonlocal storage_context
                         if storage_context is None:
-                            storage_context = await self._resolve_storage_context(__request__, user_obj)
+                            storage_context = await pipe._multimodal_handler._resolve_storage_context(__request__, user_obj)
                         return storage_context
 
                     async def _save_bytes_to_storage(
@@ -583,7 +586,7 @@ async def transform_messages_to_input(
                             ext = safe_mime.split("/")[-1]
                             fname = f"{fname}.{ext}"
 
-                        stored_id = await self._upload_to_owui_storage(
+                        stored_id = await pipe._multimodal_handler._upload_to_owui_storage(
                             request=upload_request,
                             user=upload_user,
                             file_data=payload,
@@ -594,7 +597,7 @@ async def transform_messages_to_input(
                             owui_user_id=getattr(user_obj, "id", None),
                         )
                         if stored_id:
-                            await self._emit_status(
+                            await pipe._event_emitter_handler._emit_status(
                                 event_emitter,
                                 status_message,
                                 done=False,
@@ -607,7 +610,7 @@ async def transform_messages_to_input(
                         name_hint: Optional[str] = None,
                     ) -> Optional[str]:
                         """Download a remote file and persist it via `_save_bytes_to_storage`."""
-                        downloaded = await self._download_remote_url(remote_url)
+                        downloaded = await pipe._multimodal_handler._download_remote_url(remote_url)
                         if not downloaded:
                             return None
                         derived_name = (
@@ -637,11 +640,11 @@ async def transform_messages_to_input(
                     if (
                         file_data
                         and isinstance(file_data, str)
-                        and self.valves.SAVE_FILE_DATA_CONTENT
+                        and pipe.valves.SAVE_FILE_DATA_CONTENT
                     ):
                         if file_data.startswith("data:"):
                             try:
-                                parsed = self._parse_data_url(file_data)
+                                parsed = pipe._multimodal_handler._parse_data_url(file_data)
                                 if parsed:
                                     fname = filename or f"file-{uuid.uuid4().hex}"
                                     stored_id = await _save_bytes_to_storage(
@@ -655,8 +658,8 @@ async def transform_messages_to_input(
                                         file_url = None
                                         file_data = None  # Clear base64; store via OWUI id instead.
                             except Exception as exc:
-                                self.logger.error(f"Failed to process base64 file: {exc}")
-                                await self._emit_error(
+                                pipe.logger.error(f"Failed to process base64 file: {exc}")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file: {exc}",
                                     show_error_message=False
@@ -665,9 +668,9 @@ async def transform_messages_to_input(
                         elif file_data.startswith(("http://", "https://")) and not _is_internal_storage(file_data):
                             try:
                                 remote_url = file_data
-                                if remote_url.startswith("http://") and not self._is_insecure_http_allowed(remote_url):
-                                    self.logger.error("Blocked insecure HTTP file_data URL by default: %s", remote_url)
-                                    await self._emit_error(
+                                if remote_url.startswith("http://") and not pipe._multimodal_handler._is_insecure_http_allowed(remote_url):
+                                    pipe.logger.error("Blocked insecure HTTP file_data URL by default: %s", remote_url)
+                                    await pipe._ensure_error_formatter()._emit_error(
                                         event_emitter,
                                         "File URL blocked by security policy (HTTP disabled by default). "
                                         "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -695,15 +698,15 @@ async def transform_messages_to_input(
                                                     host = urlparse(remote_url).netloc
                                                     if host:
                                                         label = host
-                                            await self._emit_notification(
+                                            await pipe._event_emitter_handler._emit_notification(
                                                 event_emitter,
                                                 f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
                                                 level="warning",
                                             )
                                     file_data = None  # Clear, use URL instead
                             except Exception as exc:
-                                self.logger.error(f"Failed to download remote file: {exc}")
-                                await self._emit_error(
+                                pipe.logger.error(f"Failed to download remote file: {exc}")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file: {exc}",
                                     show_error_message=False
@@ -712,12 +715,12 @@ async def transform_messages_to_input(
                     if (
                         file_url
                         and isinstance(file_url, str)
-                        and self.valves.SAVE_REMOTE_FILE_URLS
+                        and pipe.valves.SAVE_REMOTE_FILE_URLS
                         and not file_url_set_from_file_data
                     ):
                         if file_url.startswith("data:"):
                             try:
-                                parsed = self._parse_data_url(file_url)
+                                parsed = pipe._multimodal_handler._parse_data_url(file_url)
                                 if parsed:
                                     fname = filename or f"file-{uuid.uuid4().hex}"
                                     stored_id = await _save_bytes_to_storage(
@@ -730,8 +733,8 @@ async def transform_messages_to_input(
                                         file_id = stored_id
                                         file_url = None
                             except Exception as exc:
-                                self.logger.error(f"Failed to process base64 file_url: {exc}")
-                                await self._emit_error(
+                                pipe.logger.error(f"Failed to process base64 file_url: {exc}")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file URL: {exc}",
                                     show_error_message=False
@@ -739,9 +742,9 @@ async def transform_messages_to_input(
                         elif file_url.startswith(("http://", "https://")) and not _is_internal_storage(file_url):
                             try:
                                 name_hint = filename or file_url.split("/")[-1].split("?")[0]
-                                if file_url.startswith("http://") and not self._is_insecure_http_allowed(file_url):
-                                    self.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
-                                    await self._emit_error(
+                                if file_url.startswith("http://") and not pipe._multimodal_handler._is_insecure_http_allowed(file_url):
+                                    pipe.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
+                                    await pipe._ensure_error_formatter()._emit_error(
                                         event_emitter,
                                         "File URL blocked by security policy (HTTP disabled by default). "
                                         "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -764,14 +767,14 @@ async def transform_messages_to_input(
                                                     host = urlparse(file_url).netloc
                                                     if host:
                                                         label = host
-                                            await self._emit_notification(
+                                            await pipe._event_emitter_handler._emit_notification(
                                                 event_emitter,
                                                 f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
                                                 level="warning",
                                             )
                             except Exception as exc:
-                                self.logger.error(f"Failed to download remote file_url: {exc}")
-                                await self._emit_error(
+                                pipe.logger.error(f"Failed to download remote file_url: {exc}")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file URL: {exc}",
                                     show_error_message=False
@@ -781,10 +784,10 @@ async def transform_messages_to_input(
                         isinstance(file_data, str)
                         and file_data.startswith("http://")
                         and not _is_internal_storage(file_data)
-                        and not self._is_insecure_http_allowed(file_data)
+                        and not pipe._multimodal_handler._is_insecure_http_allowed(file_data)
                     ):
-                        self.logger.error("Blocked insecure HTTP file_data URL by default: %s", file_data)
-                        await self._emit_error(
+                        pipe.logger.error("Blocked insecure HTTP file_data URL by default: %s", file_data)
+                        await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "File URL blocked by security policy (HTTP disabled by default). "
                             "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -799,10 +802,10 @@ async def transform_messages_to_input(
                         isinstance(file_url, str)
                         and file_url.startswith("http://")
                         and not _is_internal_storage(file_url)
-                        and not self._is_insecure_http_allowed(file_url)
+                        and not pipe._multimodal_handler._is_insecure_http_allowed(file_url)
                     ):
-                        self.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
-                        await self._emit_error(
+                        pipe.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
+                        await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "File URL blocked by security policy (HTTP disabled by default). "
                             "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -825,8 +828,8 @@ async def transform_messages_to_input(
                     return result
 
                 except Exception as exc:
-                    self.logger.error(f"Error in _to_input_file: {exc}")
-                    await self._emit_error(
+                    pipe.logger.error(f"Error in _to_input_file: {exc}")
+                    await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"File processing error: {exc}",
                         show_error_message=False
@@ -902,7 +905,7 @@ async def transform_messages_to_input(
                     cleaned = "".join(data.split())
                     if not cleaned:
                         return None
-                    if not self._validate_base64_size(cleaned):
+                    if not pipe._multimodal_handler._validate_base64_size(cleaned):
                         return None
                     try:
                         base64.b64decode(cleaned, validate=True)
@@ -959,8 +962,8 @@ async def transform_messages_to_input(
                     if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
                         cleaned = _normalize_base64(audio_payload.get("data", ""))
                         if not cleaned:
-                            self.logger.warning("Audio payload rejected: invalid base64 data.")
-                            await self._emit_error(
+                            pipe.logger.warning("Audio payload rejected: invalid base64 data.")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Audio input was not valid base64.",
                                 show_error_message=False,
@@ -974,8 +977,8 @@ async def transform_messages_to_input(
                         if isinstance(raw_data, str):
                             cleaned = _normalize_base64(raw_data)
                             if not cleaned:
-                                self.logger.warning("Audio payload rejected: invalid base64 data.")
-                                await self._emit_error(
+                                pipe.logger.warning("Audio payload rejected: invalid base64 data.")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     "Audio input was not valid base64.",
                                     show_error_message=False,
@@ -989,8 +992,8 @@ async def transform_messages_to_input(
                         sanitized = audio_payload.strip()
                         lowercase = sanitized.lower()
                         if lowercase.startswith(("http://", "https://")):
-                            self.logger.warning("Audio payload rejected: remote URLs are not supported.")
-                            await self._emit_error(
+                            pipe.logger.warning("Audio payload rejected: remote URLs are not supported.")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Audio input must be base64-encoded. URLs are not supported.",
                                 show_error_message=False,
@@ -998,24 +1001,24 @@ async def transform_messages_to_input(
                             return _empty_audio_block()
 
                         if lowercase.startswith("data:"):
-                            parsed = self._parse_data_url(sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
+                            parsed = pipe._multimodal_handler._parse_data_url(sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
                             if not parsed or not parsed.get("mime_type", "").startswith("audio/"):
-                                self.logger.warning("Audio payload rejected: invalid data URL.")
-                                await self._emit_error(
+                                pipe.logger.warning("Audio payload rejected: invalid data URL.")
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     "Audio input must be base64-encoded audio data.",
                                     show_error_message=False,
                                 )
                                 return _empty_audio_block()
-                            if not self._validate_base64_size(parsed.get("b64", "")):
+                            if not pipe._multimodal_handler._validate_base64_size(parsed.get("b64", "")):
                                 return _empty_audio_block()
                             audio_format = _map_format(parsed.get("mime_type"))
                             return _build_audio_block(parsed.get("b64", ""), audio_format)
 
                         cleaned = _normalize_base64(sanitized)
                         if not cleaned:
-                            self.logger.warning("Audio payload rejected: invalid base64 data.")
-                            await self._emit_error(
+                            pipe.logger.warning("Audio payload rejected: invalid base64 data.")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Audio input was not valid base64.",
                                 show_error_message=False,
@@ -1027,12 +1030,12 @@ async def transform_messages_to_input(
                         return _build_audio_block(cleaned, audio_format)
 
                     # Invalid/empty
-                    self.logger.warning("Invalid audio payload format, returning empty audio block")
+                    pipe.logger.warning("Invalid audio payload format, returning empty audio block")
                     return _empty_audio_block()
 
                 except Exception as exc:
-                    self.logger.error(f"Error in _to_input_audio: {exc}")
-                    await self._emit_error(
+                    pipe.logger.error(f"Error in _to_input_audio: {exc}")
+                    await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Audio processing error: {exc}",
                         show_error_message=False,
@@ -1092,16 +1095,16 @@ async def transform_messages_to_input(
                         url = block.get("url", "")
 
                     if not url:
-                        self.logger.warning("Video block has no URL")
+                        pipe.logger.warning("Video block has no URL")
                         return {"type": "video_url", "video_url": {"url": ""}}
 
                     if (
                         url.startswith("http://")
                         and not ("/api/v1/files/" in url or "/files/" in url)
-                        and not self._is_insecure_http_allowed(url)
+                        and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
-                        self.logger.error("Blocked insecure HTTP video URL by default: %s", url)
-                        await self._emit_error(
+                        pipe.logger.error("Blocked insecure HTTP video URL by default: %s", url)
+                        await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "Video URL blocked by security policy (HTTP disabled by default). "
                             "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
@@ -1114,50 +1117,50 @@ async def transform_messages_to_input(
                             b64_data = url.split(",", 1)[1]
                             # Estimate decoded size (base64 is ~33% larger than raw)
                             estimated_size_bytes = (len(b64_data) * 3) // 4
-                            max_size_bytes = self.valves.VIDEO_MAX_SIZE_MB * 1024 * 1024
+                            max_size_bytes = pipe.valves.VIDEO_MAX_SIZE_MB * 1024 * 1024
                             if estimated_size_bytes > max_size_bytes:
                                 estimated_size_mb = estimated_size_bytes / (1024 * 1024)
-                                self.logger.warning(
+                                pipe.logger.warning(
                                     f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
-                                    f"({self.valves.VIDEO_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
+                                    f"({pipe.valves.VIDEO_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
                                 )
-                                await self._emit_error(
+                                await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
-                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {self.valves.VIDEO_MAX_SIZE_MB}MB)",
+                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {pipe.valves.VIDEO_MAX_SIZE_MB}MB)",
                                     show_error_message=True
                                 )
                                 return {"type": "video_url", "video_url": {"url": ""}}
 
-                        await self._emit_status(
+                        await pipe._event_emitter_handler._emit_status(
                             event_emitter,
                             StatusMessages.VIDEO_BASE64,
                             done=False
                         )
-                    elif self._is_youtube_url(url):
+                    elif pipe._multimodal_handler._is_youtube_url(url):
                         # Note: YouTube videos only work with Gemini models (per OpenRouter docs)
-                        await self._emit_status(
+                        await pipe._event_emitter_handler._emit_status(
                             event_emitter,
                             StatusMessages.VIDEO_YOUTUBE,
                             done=False
                         )
                     elif url.startswith(("http://", "https://")) and not ("/api/v1/files/" in url or "/files/" in url):
                         # Apply SSRF protection for non-OWUI URLs (HTTP disabled by default)
-                        if not await self._is_safe_url(url):
-                            self.logger.error(f"SSRF protection blocked video URL: {url}")
-                            await self._emit_error(
+                        if not await pipe._multimodal_handler._is_safe_url(url):
+                            pipe.logger.error(f"SSRF protection blocked video URL: {url}")
+                            await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Video URL blocked by security policy (private network)",
                                 show_error_message=True
                             )
                             return {"type": "video_url", "video_url": {"url": ""}}
 
-                        await self._emit_status(
+                        await pipe._event_emitter_handler._emit_status(
                             event_emitter,
                             StatusMessages.VIDEO_REMOTE,
                             done=False
                         )
                     else:
-                        await self._emit_status(
+                        await pipe._event_emitter_handler._emit_status(
                             event_emitter,
                             StatusMessages.VIDEO_REMOTE,
                             done=False
@@ -1171,8 +1174,8 @@ async def transform_messages_to_input(
                     }
 
                 except Exception as exc:
-                    self.logger.error(f"Error in _to_input_video: {exc}")
-                    await self._emit_error(
+                    pipe.logger.error(f"Error in _to_input_video: {exc}")
+                    await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Video processing error: {exc}",
                         show_error_message=False
@@ -1216,7 +1219,7 @@ async def transform_messages_to_input(
                     encountered_user_images = True
                     if not include_user_images:
                         if latest_user_message and not vision_supported and not vision_warning_sent:
-                            await self._emit_status(
+                            await pipe._event_emitter_handler._emit_status(
                                 event_emitter,
                                 "Model does not accept image inputs; skipping user attachments.",
                                 done=False,
@@ -1238,8 +1241,8 @@ async def transform_messages_to_input(
                         user_images_used += 1
                     converted_blocks.append(result)
                 except Exception as exc:
-                    self.logger.error(f"Failed to transform block type '{block_type}': {exc}")
-                    await self._emit_error(
+                    pipe.logger.error(f"Failed to transform block type '{block_type}': {exc}")
+                    await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Block transformation error for '{block_type}': {exc}",
                         show_error_message=False
@@ -1262,9 +1265,9 @@ async def transform_messages_to_input(
                         if transformed is not None:
                             fallback_blocks.append(transformed)
                     except Exception as exc:
-                        self.logger.error("Failed to reuse assistant image: %s", exc)
+                        pipe.logger.error("Failed to reuse assistant image: %s", exc)
                 if fallback_blocks:
-                    self.logger.debug(
+                    pipe.logger.debug(
                         "Rehydrating %d assistant-generated image(s) due to empty user attachments (selection_mode=%s, limit=%d).",
                         len(fallback_blocks),
                         selection_mode,
@@ -1274,7 +1277,7 @@ async def transform_messages_to_input(
                     user_images_used = len(fallback_blocks)
 
             if dropped_images and latest_user_message:
-                await self._emit_status(
+                await pipe._event_emitter_handler._emit_status(
                     event_emitter,
                     f"Dropped {dropped_images} extra image{'s' if dropped_images != 1 else ''}; limit is {image_limit}.",
                     done=False,
@@ -1285,7 +1288,7 @@ async def transform_messages_to_input(
                 and not vision_supported
                 and not vision_warning_sent
             ):
-                await self._emit_status(
+                await pipe._event_emitter_handler._emit_status(
                     event_emitter,
                     "Model does not accept image inputs; skipping user attachments.",
                     done=False,
@@ -1380,7 +1383,7 @@ async def transform_messages_to_input(
                     if item is not None:
                         item_type = ((item.get("type") or "").lower())
                         if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
-                            self.logger.debug(
+                            pipe.logger.debug(
                                 "Skipping %s artifact when rebuilding provider context (not replayable).",
                                 item_type,
                             )
@@ -1484,7 +1487,7 @@ async def transform_messages_to_input(
                     }
                 )
 
-    self._maybe_apply_anthropic_prompt_caching(
+    _maybe_apply_anthropic_prompt_caching(
         openai_input,
         model_id=target_model_id,
         valves=active_valves,
