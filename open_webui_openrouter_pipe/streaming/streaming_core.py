@@ -1528,15 +1528,27 @@ class StreamingHandler:
                 )
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
+                # Per Responses API spec: reasoning items with encrypted_content must be passed back
+                # on tool continuations to preserve the model's chain of thought across tool calls.
+                # See: https://cookbook.openai.com/examples/responses_api/reasoning_items
+                reasoning_items: list[dict[str, Any]] = []
                 call_items: list[dict[str, Any]] = []
                 if not owui_tool_passthrough:
                     for item in final_response.get("output", []):
-                        if item.get("type") == "function_call":
+                        item_type = item.get("type")
+                        if item_type == "reasoning" and item.get("encrypted_content"):
+                            # Preserve reasoning with encrypted_content for tool continuation
+                            reasoning_items.append(item)
+                        elif item_type == "function_call":
                             normalized_call = _normalize_persisted_item(item)
                             if normalized_call:
                                 call_items.append(normalized_call)
                     if call_items:
                         note_model_activity()  # Cancel thinking tasks when function calls begin
+                        # Order matters: reasoning first, then function_call (per spec)
+                        if reasoning_items:
+                            body.input.extend(reasoning_items)
+                            self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
                         body.input.extend(call_items)
                         self._pipe._sanitize_request_input(body)
 
