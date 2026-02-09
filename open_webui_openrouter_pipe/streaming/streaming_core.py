@@ -397,6 +397,7 @@ class StreamingHandler:
         reasoning_stream_completed: set[str] = set()
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
+        annotation_citations_emitted = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
         model_started = asyncio.Event()
@@ -774,6 +775,53 @@ class StreamingHandler:
             if generation_started_at is None:
                 generation_started_at = now
 
+        async def _emit_annotation_citations(raw_annotations: Any) -> None:
+            """Emit citations from a final annotation dump if no stream citations were seen."""
+            nonlocal annotation_citations_emitted
+            if annotation_citations_emitted:
+                return
+            if not isinstance(raw_annotations, list) or not raw_annotations:
+                return
+            emitted_any = False
+            for raw_ann in raw_annotations:
+                if not isinstance(raw_ann, dict):
+                    continue
+                if raw_ann.get("type") != "url_citation":
+                    continue
+                payload = raw_ann.get("url_citation")
+                if isinstance(payload, dict):
+                    url = payload.get("url")
+                    title = payload.get("title") or url
+                else:
+                    url = raw_ann.get("url")
+                    title = raw_ann.get("title") or url
+                if not isinstance(url, str) or not url.strip():
+                    continue
+                url = url.strip()
+                if url.endswith("?utm_source=openai"):
+                    url = url[: -len("?utm_source=openai")]
+                if isinstance(title, str):
+                    title = title.strip() or url
+                else:
+                    title = url
+                host = url.split("//", 1)[-1].split("/", 1)[0].lower().lstrip("www.")
+                citation = {
+                    "source": {"name": host or "source", "url": url},
+                    "document": [title],
+                    "metadata": [{
+                        "source": url,
+                        "date_accessed": datetime.date.today().isoformat(),
+                    }],
+                }
+                try:
+                    await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
+                except Exception as exc:
+                    self.logger.debug("Failed to emit annotation citation (final): %s", exc)
+                emitted_citations.append(citation)
+                emitted_any = True
+            if emitted_any:
+                annotation_citations_emitted = True
+
         request_started_at = perf_counter()
 
         # Send OpenAI Responses API request, parse and emit response
@@ -966,6 +1014,12 @@ class StreamingHandler:
                             )
                         continue
 
+                    if etype == "response.content_part.done":
+                        part = event.get("part") if isinstance(event, dict) else None
+                        if isinstance(part, dict) and part.get("type") == "output_text":
+                            await _emit_annotation_citations(part.get("annotations"))
+                        continue
+
                     if owui_tool_passthrough and event_emitter and etype in {
                         "response.function_call_arguments.delta",
                         "response.function_call_arguments.done",
@@ -1152,6 +1206,7 @@ class StreamingHandler:
                             except Exception as exc:
                                 self.logger.debug("Failed to emit annotation citation: %s", exc)
                             emitted_citations.append(citation)
+                            annotation_citations_emitted = True
 
                         continue
 
@@ -1202,6 +1257,18 @@ class StreamingHandler:
                         item_name = item.get("name", "unnamed_tool")
 
                         if item_type == "message":
+                            content = item.get("content")
+                            if isinstance(content, list):
+                                for content_part in content:
+                                    if not isinstance(content_part, dict):
+                                        continue
+                                    if content_part.get("type") != "output_text":
+                                        continue
+                                    await _emit_annotation_citations(content_part.get("annotations"))
+                                    if annotation_citations_emitted:
+                                        break
+                            if not annotation_citations_emitted:
+                                await _emit_annotation_citations(item.get("annotations"))
                             continue
 
                         should_persist = False

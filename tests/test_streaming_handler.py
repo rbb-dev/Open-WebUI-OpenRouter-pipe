@@ -1332,6 +1332,112 @@ class TestCitationAnnotations:
         source_events = _collect_events_of_type(emitted, "source")
         assert len(source_events) == 1, "Duplicate citation should be skipped"
 
+    @pytest.mark.asyncio
+    async def test_streaming_loop_citation_fallback_content_part_done(self, monkeypatch, pipe_instance_async):
+        """Emit citations when annotations only arrive on content_part.done."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {
+                "type": "response.content_part.done",
+                "item_id": "msg-1",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": "Cited content.",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/a?utm_source=openai",
+                            "title": "Example A",
+                        },
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/b",
+                            "title": "Example B",
+                        },
+                    ],
+                },
+            },
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        source_events = _collect_events_of_type(emitted, "source")
+        assert len(source_events) == 2, "Expected source events for fallback annotations"
+        assert "utm_source" not in source_events[0]["data"]["source"]["url"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_loop_citation_fallback_skipped_when_streamed(self, monkeypatch, pipe_instance_async):
+        """Do not emit fallback citations if stream annotations already emitted."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {
+                "type": "response.output_text.annotation.added",
+                "annotation": {
+                    "type": "url_citation",
+                    "url": "https://example.com/article",
+                    "title": "Example",
+                },
+            },
+            {
+                "type": "response.content_part.done",
+                "item_id": "msg-1",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": "Cited content.",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/article",
+                            "title": "Example",
+                        },
+                    ],
+                },
+            },
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        source_events = _collect_events_of_type(emitted, "source")
+        assert len(source_events) == 1, "Fallback should not emit duplicates"
+
 
 # =============================================================================
 # Image Generation Tests
