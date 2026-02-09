@@ -45,6 +45,11 @@ git tag v2.0.4                        # Create tag
 git push origin v2.0.4                # Push tag
 # → This creates the v2.0.4 release automatically!
 
+# Version bump checklist (before tagging):
+# - Update `open_webui_openrouter_pipe.py` manifest header:
+#   - `version:` field
+#   - `requirements:` tag pin (`@vX.Y.Z`)
+
 # 3. Go back to dev for next work
 git checkout dev
 git merge main                        # Keep dev in sync
