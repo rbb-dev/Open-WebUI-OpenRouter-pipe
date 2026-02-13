@@ -13,20 +13,17 @@ import secrets
 import time
 from time import perf_counter
 from typing import Any, Optional, Awaitable, Callable, Dict, Literal, Protocol, TYPE_CHECKING
-from ..core.timing_logger import timed
 from .constants import (
     REASONING_STATUS_PUNCTUATION,
     REASONING_STATUS_MAX_CHARS,
     REASONING_STATUS_MIN_CHARS,
     REASONING_STATUS_IDLE_SECONDS,
 )
+from ..core.utils import _render_error_template
+from ..core.logging_system import SessionLogger
 
 # Type hints for Open WebUI components
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
-
-# Import helpers and SessionLogger
-from ..core.utils import _render_error_template
-from ..core.logging_system import SessionLogger
 
 if TYPE_CHECKING:
     from ..pipe import _PipeJob
@@ -96,7 +93,6 @@ def openai_chat_chunk_message_template(
             _owui_template_cached = _stub_chat_chunk_template
     return _owui_template_cached(model, content, reasoning_content, tool_calls, usage)
 
-LOGGER = logging.getLogger(__name__)
 
 
 class EventEmitterHandler:

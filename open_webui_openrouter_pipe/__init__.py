@@ -85,8 +85,6 @@ if TYPE_CHECKING:
         _filter_openrouter_request,
         _strip_disable_model_settings_params,
         _apply_model_fallback_to_payload,
-        _get_disable_param,
-        _model_params_to_dict,
     )
     from .models.registry import (
         OpenRouterModelRegistry,

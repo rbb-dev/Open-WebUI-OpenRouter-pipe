@@ -20,7 +20,7 @@ import contextlib
 import random
 import aiohttp
 from time import perf_counter
-from typing import Any, Optional, Dict, Literal, no_type_check, TYPE_CHECKING
+from typing import Any, Optional, Dict, Literal, TYPE_CHECKING
 from fastapi import Request
 
 # Import parent module classes that are needed at runtime
@@ -47,8 +47,11 @@ from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 # Import SessionLogger
 from ..core.logging_system import SessionLogger
 
+# Import EventEmitter type alias
+from .event_emitter import EventEmitter
+
 # Import timing instrumentation
-from ..core.timing_logger import timed, timing_scope, timing_mark
+from ..core.timing_logger import timed, timing_mark
 from .constants import (
     REASONING_STATUS_PUNCTUATION as _REASONING_STATUS_PUNCTUATION,
     REASONING_STATUS_MAX_CHARS as _REASONING_STATUS_MAX_CHARS,
@@ -276,11 +279,6 @@ def _apply_source_context_responses_api(
     )
 
     return result
-
-# Type hints for Open WebUI components
-EventEmitter = Any  # Callable[[dict[str, Any]], Awaitable[None]]
-
-LOGGER = logging.getLogger(__name__)
 
 
 class StreamingHandler:

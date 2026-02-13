@@ -20,8 +20,9 @@ if TYPE_CHECKING:
 from .errors import _format_openrouter_error_markdown
 from .utils import _pretty_json
 
-# Default template constant
-DEFAULT_OPENROUTER_ERROR_TEMPLATE = """**Provider Error**
+# Simple fallback template used when no valve template is available.
+# The canonical DEFAULT_OPENROUTER_ERROR_TEMPLATE lives in core/config.py.
+_FALLBACK_ERROR_TEMPLATE = """**Provider Error**
 
 The model provider returned an error:
 
@@ -237,9 +238,6 @@ class ErrorFormatter:
         template: Optional[str] = None,
     ) -> None:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
-        # Runtime import to avoid circular dependency
-        from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError as _
-
         if getattr(exc, "status", None) in {401, 403}:
             self._pipe._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
@@ -265,7 +263,7 @@ class ErrorFormatter:
                 exc,
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
-                template=template_to_use or DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+                template=template_to_use or _FALLBACK_ERROR_TEMPLATE,
                 context=context_defaults,
             )
             await event_emitter({"type": "chat:message", "data": {"content": content}})

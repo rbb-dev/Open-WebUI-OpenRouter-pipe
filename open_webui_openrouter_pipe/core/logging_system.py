@@ -30,14 +30,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .utils import _sanitize_path_component
-from ..core.timing_logger import timed
 
 try:
     import pyzipper  # type: ignore[import-untyped]
 except ImportError:
     pyzipper = None  # type: ignore[assignment]
-
-LOGGER = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Session Log Archive Job

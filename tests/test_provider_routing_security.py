@@ -19,10 +19,8 @@ import re
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.pipe import (
-    _PROVIDER_SLUG_PATTERN,
-    _QUANTIZATION_PATTERN,
-)
+from open_webui_openrouter_pipe.core.config import _PROVIDER_SLUG_PATTERN
+from open_webui_openrouter_pipe.filters.filter_manager import _QUANTIZATION_PATTERN
 from open_webui_openrouter_pipe.filters import FilterManager
 
 

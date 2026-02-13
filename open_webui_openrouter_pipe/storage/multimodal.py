@@ -12,20 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import datetime
-import email.utils
-import hashlib
 import inspect
 import io
 import logging
-import mimetypes
-import os
 import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, Optional
-from urllib.parse import quote, urlparse, parse_qs
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import quote, urlparse
 
 # External dependencies
 import aiohttp
@@ -53,6 +48,7 @@ except ImportError:
 # Internal imports
 from ..core.config import (
     _INTERNAL_FILE_ID_PATTERN,
+    _MAX_MODEL_PROFILE_IMAGE_BYTES,
     _OPENROUTER_SITE_URL,
     _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
 )
@@ -62,11 +58,6 @@ from ..core.errors import (
     _classify_retryable_http_error,
     _read_rag_file_constraints,
 )
-
-# Constants
-_MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
-
-LOGGER = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------

@@ -20,12 +20,12 @@ from ..core.errors import (
     OpenRouterAPIError,
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
-    _select_best_effort_fallback,
 )
+from ..core.utils import _select_best_effort_fallback
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_responses_tools, apply_context_transforms
-from ..core.timing_logger import timed, timing_scope
+from ..core.timing_logger import timed
 from .task_model_adapter import TaskModelAdapter
 from .sanitizer import _sanitize_request_input
 from ..integrations.anthropic import _is_anthropic_model_id
@@ -645,16 +645,15 @@ class RequestOrchestrator:
 
         # These are executed client-side via Socket.IO (execute:tool) and must not crash the pipe.
         direct_registry: dict[str, dict[str, Any]] = {}
-        direct_tool_specs: list[dict[str, Any]] = []
         try:
-            direct_registry, direct_tool_specs = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
+            direct_registry, _ = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
                 __metadata__,
                 valves=valves,
                 event_call=__event_call__,
                 event_emitter=__event_emitter__,
             )
         except Exception:
-            direct_registry, direct_tool_specs = {}, []
+            direct_registry = {}
 
         merged_extra_tools: list[dict[str, Any]] = []
         try:

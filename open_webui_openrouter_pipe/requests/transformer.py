@@ -13,8 +13,6 @@ import base64
 import binascii
 import contextlib
 import json
-import logging
-import re
 import uuid
 from typing import Any, Dict, List, Optional, Callable, Awaitable, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
@@ -46,6 +44,7 @@ from ..storage.persistence import generate_item_id
 
 # Import from config
 from ..core.config import (
+    LOGGER,
     _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
 )
@@ -61,8 +60,6 @@ from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
-
-LOGGER = logging.getLogger(__name__)
 
 # Tool output pruning constants
 _TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800  # Minimum length before pruning is applied

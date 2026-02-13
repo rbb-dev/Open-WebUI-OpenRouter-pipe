@@ -1738,10 +1738,10 @@ import pytest
 
 
 def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_instance):
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
     from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 
-    body = pipe_mod.ResponsesBody.model_validate(
+    body = ResponsesBody.model_validate(
         {
             "model": "openrouter/test",
             "input": [
@@ -1783,10 +1783,10 @@ def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_inst
 
 
 def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
     from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 
-    body = pipe_mod.ResponsesBody.model_validate(
+    body = ResponsesBody.model_validate(
         {
             "model": "openrouter/test",
             "input": [

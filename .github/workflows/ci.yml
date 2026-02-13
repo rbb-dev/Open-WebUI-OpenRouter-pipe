@@ -36,7 +36,12 @@ jobs:
           uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
           # Install open-webui and project dependencies
           uv pip install --python .venv/bin/python open-webui -e .
-          uv pip install --python .venv/bin/python pytest pytest-asyncio pyright cairosvg pyzipper aioresponses
+          uv pip install --python .venv/bin/python pytest pytest-asyncio pyright cairosvg pyzipper aioresponses ruff
+
+      - name: Lint production code
+        run: |
+          source .venv/bin/activate
+          ruff check open_webui_openrouter_pipe/
 
       - name: Run tests and checks
         run: |

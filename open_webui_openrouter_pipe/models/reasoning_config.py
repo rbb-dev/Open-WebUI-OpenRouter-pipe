@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
 import logging
-from ..core.timing_logger import timed
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -19,9 +18,6 @@ if TYPE_CHECKING:
 
 from .registry import ModelFamily
 from ..core.errors import OpenRouterAPIError
-# Lazy import to avoid circular dependency.
-
-LOGGER = logging.getLogger(__name__)
 
 
 class ReasoningConfigManager:

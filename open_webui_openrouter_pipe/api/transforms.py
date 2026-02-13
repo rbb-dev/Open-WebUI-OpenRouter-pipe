@@ -17,7 +17,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -33,10 +33,9 @@ from ..core.config import (
 from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
+from ..core.config import LOGGER
 from ..core.utils import _coerce_bool, _parse_model_fallback_csv
 from ..requests.transformer import transform_messages_to_input
-
-LOGGER = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Pydantic Body Classes

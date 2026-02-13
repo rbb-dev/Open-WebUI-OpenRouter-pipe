@@ -12,12 +12,9 @@ Implements aggressive schema transformation for compatibility with strict mode.
 from __future__ import annotations
 
 import json
-import logging
 from functools import lru_cache
-from typing import Any, Dict, Optional
-from ..core.timing_logger import timed
-
-LOGGER = logging.getLogger(__name__)
+from typing import Any, Dict
+from ..core.config import LOGGER
 
 _STRICT_SCHEMA_CACHE_SIZE = 128
 

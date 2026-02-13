@@ -14,32 +14,21 @@ the pipe for model selection, fallback, and feature detection.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import fnmatch
-import json
 import logging
 import re
 import time
 from decimal import Decimal, InvalidOperation
 from contextvars import ContextVar
-from typing import Any, Dict, Optional, cast
-from urllib.parse import quote
+from typing import Any, Dict, Optional
 
 import aiohttp
 
-# Import shared logger from config (for test compatibility)
-from ..core.config import LOGGER
+from ..core.config import _OPENROUTER_TITLE, _OPENROUTER_REFERER
 from .blocklists import is_direct_upload_blocklisted
 from ..core.timing_logger import timed
 
 # Lazy imports to avoid circular dependencies (see requests/__init__.py chain).
-
-# -----------------------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------------------
-
-_OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
-_OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 
 # -----------------------------------------------------------------------------
 # Model Helper Functions

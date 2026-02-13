@@ -143,6 +143,20 @@ Go to **Actions** → select a workflow run → scroll to **Artifacts** → down
 
 ---
 
+## Linting
+
+Production code is linted with [ruff](https://docs.astral.sh/ruff/) in CI. No config file is needed — the command scopes itself:
+
+```bash
+source .venv/bin/activate && ruff check open_webui_openrouter_pipe/
+```
+
+Tests (`tests/`) are **not** linted — patterns like mid-file imports, fixture redefinitions, and assign-to-verify are intentional and would trigger false positives.
+
+> **Warning:** Do not use `ruff --fix`. It cannot detect re-exports and will silently remove imports that other modules depend on. Fix issues manually.
+
+---
+
 ## Key Insight
 
 **Branches are for work, tags are for releases.**

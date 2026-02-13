@@ -19,7 +19,7 @@ import itertools
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ..core.timing_logger import timed
 from ..core.config import (
@@ -1263,7 +1263,6 @@ class Filter:
             p for p in providers
             if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.match(p) and len(p) <= 64
         ]
-        providers_str = ", ".join(safe_providers) if safe_providers else "none"
 
         # Build provider slug -> display name mapping (for dropdowns)
         prov_names = provider_names or {}

@@ -15,7 +15,6 @@ import threading
 import time
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Optional
-from ..core.timing_logger import timed
 
 if TYPE_CHECKING:
     pass

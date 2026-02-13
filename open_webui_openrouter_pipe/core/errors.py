@@ -12,33 +12,16 @@ Responsible for translating technical errors into user-friendly markdown message
 
 from __future__ import annotations
 
-import asyncio
-import datetime
-import email.utils
-import inspect
-import logging
-from typing import Any, Awaitable, Literal, Optional, TypeVar, cast
+from typing import Any, Optional, TypeVar
 
 import httpx
 
-from .timing_logger import timed
 from .config import (
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
-    DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
-    DEFAULT_CONNECTION_ERROR_TEMPLATE,
-    DEFAULT_SERVICE_ERROR_TEMPLATE,
-    DEFAULT_INTERNAL_ERROR_TEMPLATE,
-    DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
-    DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE,
-    DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
-    DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
-    DEFAULT_RATE_LIMIT_TEMPLATE,
-    DEFAULT_SERVER_TIMEOUT_TEMPLATE,
     _REMOTE_FILE_MAX_SIZE_MAX_MB,
 )
 from .utils import (
     _render_error_template,
-    _template_value_present,
     _pretty_json,
     _safe_json_loads,
     _normalize_optional_str,
@@ -48,10 +31,7 @@ from .utils import (
     _get_open_webui_config_module,
     _unwrap_config_value,
     _retry_after_seconds,
-    _select_best_effort_fallback,
 )
-
-LOGGER = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Supporting Classes

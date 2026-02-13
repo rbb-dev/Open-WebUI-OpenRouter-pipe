@@ -10,7 +10,6 @@ Ensures collision-safe tool names and builds execution registry for dispatcher.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
@@ -38,7 +37,7 @@ else:
     except ImportError:
         Valves = Any  # type: ignore
 
-LOGGER = logging.getLogger(__name__)
+from ..core.config import LOGGER
 
 @timed
 def build_tools(

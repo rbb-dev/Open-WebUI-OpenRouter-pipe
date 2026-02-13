@@ -9,7 +9,6 @@ import json
 from typing import Any, TYPE_CHECKING
 
 from ..api.transforms import _filter_replayable_input_items
-from ..core.timing_logger import timed
 
 if TYPE_CHECKING:
     from ..pipe import Pipe

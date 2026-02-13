@@ -14,35 +14,20 @@ Architecture:
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import base64
-import binascii
 import contextlib
 import contextvars
-import datetime
-import fnmatch
-import hashlib
 import inspect
-import itertools
 import json
 import logging
 import os
-import queue
-import random
-import re
 import secrets
-import threading
 import time
-import traceback
 import uuid
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING, cast, no_type_check
-from urllib.parse import quote, urlparse
+from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Optional, TYPE_CHECKING, cast, no_type_check
 
 # Third-party imports
 import aiohttp
@@ -52,7 +37,6 @@ from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
-from .core.timing_logger import timed
 
 # Open WebUI internals (available when running as a pipe)
 try:
@@ -76,7 +60,7 @@ except ImportError:
     aioredis = None  # type: ignore
 
 # Timing instrumentation
-from .core.timing_logger import timed, timing_mark, timing_scope, configure_timing_file, ensure_timing_file_configured
+from .core.timing_logger import timed, timing_mark, configure_timing_file
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
@@ -90,13 +74,8 @@ except ImportError:
     pyzipper = None  # type: ignore
 
 # Import subsystems
-from .storage.persistence import ArtifactStore, generate_item_id
-from .storage.multimodal import (
-    MultimodalHandler,
-    _guess_image_mime_type,
-    _extract_openrouter_og_image,
-    _classify_retryable_http_error,
-)
+from .storage.persistence import ArtifactStore
+from .storage.multimodal import MultimodalHandler
 from .streaming.streaming_core import StreamingHandler
 from .streaming.event_emitter import EventEmitterHandler
 
@@ -123,99 +102,22 @@ from .core.config import (
     UserValves,
     EncryptedStr,
     _PIPE_RUNTIME_ID,
-    _DEFAULT_PIPE_ID,
     _OPENROUTER_TITLE,
     _OPENROUTER_REFERER,
-    _OPENROUTER_SITE_URL,
-    _OPENROUTER_FRONTEND_MODELS_URL,
-    _NON_REPLAYABLE_TOOL_ARTIFACTS,
-    _MAX_OPENROUTER_ID_CHARS,
-    _MAX_OPENROUTER_METADATA_VALUE_CHARS,
-    _detect_runtime_pipe_id,
-    DEFAULT_OPENROUTER_ERROR_TEMPLATE,
-    _ORS_FILTER_FEATURE_FLAG,
-    _ORS_FILTER_MARKER,
-    _ORS_FILTER_PREFERRED_FUNCTION_ID,
-    _DIRECT_UPLOADS_FILTER_MARKER,
-    _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
-    _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
-    _PROVIDER_ROUTING_FILTER_MARKER_VERSION,
-    _PROVIDER_ROUTING_FILTER_ID_PREFIX,
     _select_openrouter_http_referer,
 )
-from .requests.debug import (
-    _debug_print_request,
-    _debug_print_error_response,
-)
-# Imports from storage.persistence (additional)
-from .storage.persistence import (
-    normalize_persisted_item as _normalize_persisted_item,
-)
-# Imports from tools.tool_schema
-from .tools.tool_schema import (
-    _classify_function_call_artifacts,
-)
-# Imports from api.transforms
-from .api.transforms import (
-    _get_disable_param,
-    _responses_tools_to_chat_tools,
-    _responses_tool_choice_to_chat_tool_choice,
-    _responses_input_to_chat_messages,
-    _chat_tools_to_responses_tools,
-    _responses_payload_to_chat_completions_payload,
-    _apply_identifier_valves_to_payload,
-    _filter_openrouter_request,
-    _filter_replayable_input_items,
-    _filter_openrouter_chat_request,
-)
-# Imports from core.utils
-from .core.utils import (
-    _redact_payload_blobs,
-    _extract_plain_text_content,
-    _extract_feature_flags,
-    _retry_after_seconds,
-    _select_best_effort_fallback,
-    _await_if_needed,
-)
-# Imports from core.errors
-from .core.errors import (
-    _resolve_error_model_context,
-    _build_openrouter_api_error,
-    _is_reasoning_effort_error,
-    _parse_supported_effort_values,
-    _format_openrouter_error_markdown,
-)
-# Imports from storage.multimodal
-from .storage.multimodal import (
-    _extract_internal_file_id,
-    _is_internal_file_url,
-)
-# Imports from models.registry
+from .core.utils import _extract_feature_flags, _await_if_needed, _render_error_template
+from .core.errors import _build_openrouter_api_error, OpenRouterAPIError
 from .models.registry import (
     OpenRouterModelRegistry,
     ModelFamily,
     sanitize_model_id,
-    sum_pricing_values,
     is_free_model,
     supports_tool_calling,
 )
-from .tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
-from .api.transforms import (
-    ResponsesBody,
-    CompletionsBody,
-    ALLOWED_OPENROUTER_FIELDS,
-    ALLOWED_OPENROUTER_CHAT_FIELDS,
-    _normalise_openrouter_responses_text_format,
-    _sanitize_openrouter_metadata,
-)
-from .core.errors import (
-    OpenRouterAPIError,
-    StatusMessages,
-    _RetryWait,
-    _RetryableHTTPStatusError,
-)
-from .core.logging_system import SessionLogger, _SessionLogArchiveJob
+from .core.logging_system import SessionLogger
+from .streaming.event_emitter import EventEmitter
 
 if TYPE_CHECKING:
     from .tools.tool_executor import ToolExecutor
@@ -223,27 +125,8 @@ if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from .requests.orchestrator import RequestOrchestrator
     from .filters import FilterManager
-from .core.utils import (
-    _coerce_bool,
-    _coerce_positive_int,
-    _normalize_optional_str,
-    _normalize_string_list,
-    _pretty_json,
-    _safe_json_loads,
-    _render_error_template,
-    _sanitize_path_component,
-    contains_marker,
-    split_text_by_markers,
-    _serialize_marker,
-)
-from .tools.tool_registry import _dedupe_tools, _normalize_responses_function_tool_spec, _responses_spec_from_owui_tool_cfg
-from .tools.tool_schema import _strictify_schema
 
-# Type hints
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
-
-LOGGER = logging.getLogger(__name__)
 
 
 def _consume_background_task_exception(task: asyncio.Task) -> None:
@@ -252,17 +135,6 @@ def _consume_background_task_exception(task: asyncio.Task) -> None:
         task.exception()
 
 
-# Regex patterns
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
-# Security: Provider name sanitization patterns (compiled once for performance)
-_PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
-_PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
-# Security: Provider slug validation (lowercase ASCII + hyphens, optional /segment)
-# Used for validating API slugs like "openai", "amazon-bedrock", "google-vertex"
-_PROVIDER_SLUG_PATTERN = re.compile(r"^[a-z0-9-]+(?:/[a-z0-9-]+)?$")
-# Security: Quantization level validation (alphanumeric + underscore/hyphen)
-# Used for validating quantization values like "int4", "int8", "fp16", "bf16"
-_QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 # -----------------------------------------------------------------------------
 # Data Classes
 # -----------------------------------------------------------------------------
@@ -298,15 +170,6 @@ class _PipeJob:
         """Return the Open WebUI user id associated with the job."""
         return str(self.user.get("id") or self.metadata.get("user_id") or "")
 
-
-# -----------------------------------------------------------------------------
-# Module-level constants
-# -----------------------------------------------------------------------------
-
-# Tool output pruning constants
-_TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800  # Minimum length before pruning is applied
-_TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256  # Characters to keep from the beginning
-_TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128  # Characters to keep from the end
 
 # -----------------------------------------------------------------------------
 # Main Pipe Class
@@ -2310,7 +2173,7 @@ class Pipe:
                 text, files, embeds = await _process_and_emit(result)
                 timing_mark(f"tool_run:{tool_name}:done")
                 return ("completed", text, files, embeds)
-            except Exception as exc:
+            except Exception:
                 self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(
@@ -2338,7 +2201,7 @@ class Pipe:
                     text, files, embeds = await _process_and_emit(result)
                     timing_mark(f"tool_run:{tool_name}:done")
                     return ("completed", text, files, embeds)
-        except Exception as exc:
+        except Exception:
             self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(

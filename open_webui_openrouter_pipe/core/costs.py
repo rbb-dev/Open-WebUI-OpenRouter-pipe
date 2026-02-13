@@ -7,7 +7,6 @@ for billing and analytics purposes.
 from __future__ import annotations
 
 import json
-import logging
 import time
 import uuid
 from typing import Any, Optional, TYPE_CHECKING

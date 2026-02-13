@@ -120,10 +120,8 @@ class NonStreamingAdapter:
             )
             choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
             message = None
-            finish_reason = None
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                 message = choices[0].get("message")
-                finish_reason = choices[0].get("finish_reason")
             message_obj = message if isinstance(message, dict) else {}
 
             usage = chat_response.get("usage") if isinstance(chat_response, dict) else None

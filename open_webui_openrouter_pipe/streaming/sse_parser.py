@@ -15,7 +15,7 @@ import contextlib
 import json
 import logging
 import time
-from typing import Any, AsyncGenerator, Optional, Callable, Awaitable
+from typing import Any, AsyncGenerator, Optional, Callable
 
 import aiohttp
 from tenacity import (
@@ -25,7 +25,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-LOGGER = logging.getLogger(__name__)
+from ..core.config import LOGGER
 
 
 class SSEParser:
@@ -109,7 +109,6 @@ class SSEParser:
             maxsize=self.event_queue_size
         )
 
-        chunk_sentinel = (None, None)
         requested_model = request_body.get("model")
 
         # Launch producer task

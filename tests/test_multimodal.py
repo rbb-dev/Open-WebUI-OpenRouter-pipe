@@ -3124,24 +3124,28 @@ class TestRetryHelpers:
     """Unit tests for retry helper utilities."""
 
     def test_retry_after_seconds_parses_numeric(self):
-        assert pipe_module._retry_after_seconds("5") == 5.0
-        assert pipe_module._retry_after_seconds("0") == 0.0
-        assert pipe_module._retry_after_seconds("") is None
+        from open_webui_openrouter_pipe.core.utils import _retry_after_seconds
+        assert _retry_after_seconds("5") == 5.0
+        assert _retry_after_seconds("0") == 0.0
+        assert _retry_after_seconds("") is None
 
     def test_retry_after_seconds_parses_http_date(self):
+        from open_webui_openrouter_pipe.core.utils import _retry_after_seconds
         future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=3)
         header = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
-        delay = pipe_module._retry_after_seconds(header)
+        delay = _retry_after_seconds(header)
         assert delay is not None and delay <= 4.0
 
     def test_retry_wait_honors_retry_after(self):
+        from open_webui_openrouter_pipe.core.errors import _RetryWait, _RetryableHTTPStatusError
+
         base_wait = lambda state: 1.0
-        wait = pipe_module._RetryWait(base_wait)
+        wait = _RetryWait(base_wait)
 
         request = httpx.Request("GET", "https://example.com")
         response = httpx.Response(status_code=429, request=request)
         error = httpx.HTTPStatusError("Too many requests", request=request, response=response)
-        retry_exc = pipe_module._RetryableHTTPStatusError(error, retry_after=5.0)
+        retry_exc = _RetryableHTTPStatusError(error, retry_after=5.0)
 
         state = SimpleNamespace(outcome=Mock())
         state.outcome.exception = Mock(return_value=retry_exc)
@@ -3149,20 +3153,22 @@ class TestRetryHelpers:
         assert wait(state) == 5.0
 
     def test_classify_retryable_http_error_identifies_425(self):
+        from open_webui_openrouter_pipe.storage.multimodal import _classify_retryable_http_error
         url = "https://example.com/file"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=425, headers={"Retry-After": "2"}, request=request)
         error = httpx.HTTPStatusError("Too Early", request=request, response=response)
-        retryable, retry_after = pipe_module._classify_retryable_http_error(error)
+        retryable, retry_after = _classify_retryable_http_error(error)
         assert retryable is True
         assert retry_after == 2.0
 
     def test_classify_retryable_http_error_rejects_403(self):
+        from open_webui_openrouter_pipe.storage.multimodal import _classify_retryable_http_error
         url = "https://example.com/file"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=403, request=request)
         error = httpx.HTTPStatusError("Forbidden", request=request, response=response)
-        retryable, retry_after = pipe_module._classify_retryable_http_error(error)
+        retryable, retry_after = _classify_retryable_http_error(error)
         assert retryable is False
         assert retry_after is None
 
@@ -3797,10 +3803,12 @@ class TestConversationRebuild:
         sample_image_base64,
         monkeypatch,
     ):
-        call_marker_id = pipe_module.generate_item_id()
-        output_marker_id = pipe_module.generate_item_id()
+        from open_webui_openrouter_pipe.storage.persistence import generate_item_id
+        call_marker_id = generate_item_id()
+        output_marker_id = generate_item_id()
         marker_block = f"[{call_marker_id}]: #\n[{output_marker_id}]: #"
-        long_output = "X" * (pipe_module._TOOL_OUTPUT_PRUNE_MIN_LENGTH + 50)
+        from open_webui_openrouter_pipe.requests.transformer import _TOOL_OUTPUT_PRUNE_MIN_LENGTH
+        long_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 50)
 
         messages = [
             {"role": "system", "content": "Stay on task."},

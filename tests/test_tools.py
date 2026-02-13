@@ -5260,7 +5260,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 
     async def builtin_search_web(**_kwargs: Any) -> str:
         return "builtin"
@@ -5301,7 +5301,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
         }
     }
 
-    tools, exec_registry, exposed_to_origin = pipe_mod._build_collision_safe_tool_specs_and_registry(
+    tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
         request_tool_specs=request_tools,
         owui_registry={},
         direct_registry=direct_registry,
@@ -5343,7 +5343,7 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
 
 
 def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 
     request_tools = [
         {
@@ -5367,7 +5367,7 @@ def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
         }
     }
 
-    tools, exec_registry, exposed_to_origin = pipe_mod._build_collision_safe_tool_specs_and_registry(
+    tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
         request_tool_specs=request_tools,
         owui_registry={},
         direct_registry=direct_registry,
@@ -5386,7 +5386,7 @@ def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
 
 @pytest.mark.asyncio
 async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 
     async def kb_tool(**_kwargs: Any) -> str:
         return "ok"
@@ -5402,7 +5402,7 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
         }
     }
 
-    tools, exec_registry, _map = pipe_mod._build_collision_safe_tool_specs_and_registry(
+    tools, exec_registry, _map = _build_collision_safe_tool_specs_and_registry(
         request_tool_specs=[],
         owui_registry=owui_registry,
         direct_registry={},
@@ -5691,9 +5691,9 @@ import pytest
 
 
 def test_chat_tools_to_responses_tools_converts_function_shape():
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.api.transforms import _chat_tools_to_responses_tools
 
-    converted = pipe_mod._chat_tools_to_responses_tools(
+    converted = _chat_tools_to_responses_tools(
         [
             {
                 "type": "function",
@@ -5726,11 +5726,11 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
 
 @pytest.mark.asyncio
 async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
-    import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.api.transforms import CompletionsBody, ResponsesBody
 
     pipe = Pipe()
 
-    completions = pipe_mod.CompletionsBody.model_validate(
+    completions = CompletionsBody.model_validate(
         {
             "model": "openrouter/test",
             "messages": [{"role": "user", "content": "hi"}],
@@ -5746,7 +5746,7 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
         }
     )
 
-    rb = await pipe_mod.ResponsesBody.from_completions(
+    rb = await ResponsesBody.from_completions(
         completions_body=completions,
         transformer_context=pipe,
     )

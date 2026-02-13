@@ -14,7 +14,7 @@ import aiohttp
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ...core.config import _OPENROUTER_TITLE, _select_openrouter_http_referer
-from ...core.timing_logger import timed, timing_scope, timing_mark
+from ...core.timing_logger import timed, timing_mark
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,

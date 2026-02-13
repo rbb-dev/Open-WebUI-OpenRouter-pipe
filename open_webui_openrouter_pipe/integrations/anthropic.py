@@ -7,7 +7,6 @@ and other Anthropic-specific features when routing through OpenRouter.
 from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
-from ..core.timing_logger import timed
 
 if TYPE_CHECKING:
     from ..pipe import Pipe

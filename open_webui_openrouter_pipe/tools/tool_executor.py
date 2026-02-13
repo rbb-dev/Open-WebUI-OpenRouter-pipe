@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
     from starlette.requests import Request
 
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+from ..streaming.event_emitter import EventEmitter
 
 # Import process_tool_result from OpenWebUI (>= 0.7.0)
 # Falls back to None if not available - we handle gracefully

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, Optional
-from ..core.timing_logger import timed
 
 
 def _debug_print_request(

@@ -3692,7 +3692,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.pipe import (
+from open_webui_openrouter_pipe.core.config import (
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
     _ORS_FILTER_MARKER,
@@ -8373,7 +8373,7 @@ class TestFilterAutoInstallationPaths:
         """Test _matches_candidate matches by feature flag (line 1408)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _ORS_FILTER_FEATURE_FLAG
+            from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
 
             mock_filter = MagicMock()
             mock_filter.id = "test_filter"
@@ -8414,7 +8414,7 @@ class TestFilterAutoInstallationPaths:
         """Test warning when multiple filter candidates found (line 1424)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _ORS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _ORS_FILTER_MARKER
 
             mock_filter1 = MagicMock()
             mock_filter1.id = "filter1"
@@ -8511,7 +8511,7 @@ class TestFilterAutoInstallationPaths:
         """Test returning None when chosen filter has empty id (line 1469-1470)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _ORS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _ORS_FILTER_MARKER
 
             mock_filter = MagicMock()
             mock_filter.id = "   "  # Empty after strip
@@ -8535,7 +8535,7 @@ class TestFilterAutoInstallationPaths:
         """Test updating filter when source matches (line 1488)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _ORS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _ORS_FILTER_MARKER
 
             # Get the desired source
             desired_source = FilterManager.render_ors_filter_source().strip() + "\n"
@@ -8585,7 +8585,7 @@ class TestDirectUploadsFilterPaths:
         """Test warning for multiple filter candidates (line 1540-1541)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _DIRECT_UPLOADS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _DIRECT_UPLOADS_FILTER_MARKER
 
             mock_filter1 = MagicMock()
             mock_filter1.id = "filter1"
@@ -8678,7 +8678,7 @@ class TestDirectUploadsFilterPaths:
         """Test empty function id (line 1594-1595)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _DIRECT_UPLOADS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _DIRECT_UPLOADS_FILTER_MARKER
 
             mock_filter = MagicMock()
             mock_filter.id = ""  # Empty
@@ -8702,7 +8702,7 @@ class TestDirectUploadsFilterPaths:
         """Test update when source matches (line 1612-1613)."""
         pipe = Pipe()
         try:
-            from open_webui_openrouter_pipe.pipe import _DIRECT_UPLOADS_FILTER_MARKER
+            from open_webui_openrouter_pipe.core.config import _DIRECT_UPLOADS_FILTER_MARKER
 
             desired_source = FilterManager.render_direct_uploads_filter_source().strip() + "\n"
 

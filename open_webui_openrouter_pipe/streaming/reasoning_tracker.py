@@ -27,7 +27,7 @@ from .constants import (
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
-LOGGER = logging.getLogger(__name__)
+from ..core.config import LOGGER
 
 
 class ReasoningTracker:

@@ -21,9 +21,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
-from ..core.timing_logger import timed
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("open_webui_openrouter_pipe")
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -69,7 +68,6 @@ _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 _TEMPLATE_VAR_PATTERN = re.compile(r"{(\w+)}")
 _TEMPLATE_IF_OPEN_RE = re.compile(r"\{\{\s*#if\s+(\w+)\s*\}\}")
 _TEMPLATE_IF_CLOSE_RE = re.compile(r"\{\{\s*/if\s*\}\}")
-_TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 
 # ULID generation constants
 ULID_LENGTH = 20

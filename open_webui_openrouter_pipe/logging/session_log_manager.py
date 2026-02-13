@@ -36,8 +36,6 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
     from ..storage.persistence import ArtifactStore
 
-LOGGER = logging.getLogger(__name__)
-
 
 class SessionLogManager:
     """Manages session log background workers and archive operations.
