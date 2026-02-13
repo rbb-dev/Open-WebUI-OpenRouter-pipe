@@ -20,7 +20,7 @@ Use these docs if you are modifying the pipe, working on tests, or extending the
 ## Quick start (install and use)
 
 ### Prerequisites
-- Open WebUI `0.7.0` or later (the pipe declares this requirement in its manifest header).
+- Open WebUI `0.8.0` or later (the pipe declares this requirement in its manifest header).
 - An OpenRouter API key, provided either via the `OPENROUTER_API_KEY` environment variable or via the pipe’s valve configuration.
 
 ### Install (Open WebUI UI)

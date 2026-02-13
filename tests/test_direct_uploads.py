@@ -976,7 +976,7 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
         name="Example",
         meta=ModelMeta(**meta),
         params=params or {},
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
 

@@ -223,7 +223,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
         name: str
         meta: Any
         params: Any
-        access_control: Any
+        access_grants: Any
         is_active: bool
 
     setattr(stub_models_mod, "ModelMeta", ModelMeta)
@@ -241,7 +241,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
         name: str
         meta: Any
         params: Any
-        access_control: Any
+        access_grants: Any
         is_active: bool
 
     @dataclass
@@ -251,7 +251,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
         name: str
         meta: Any
         params: Any
-        access_control: Any
+        access_grants: Any
         is_active: bool
 
     captured: dict[str, Any] = {}
@@ -267,7 +267,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
                 name="Existing",
                 meta=existing_meta,
                 params=ModelParams(),
-                access_control=None,
+                access_grants=[],
                 is_active=True,
             )
 

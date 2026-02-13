@@ -176,7 +176,7 @@ Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
 - `UPDATE_MODEL_DESCRIPTIONS` (default `True`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
-- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access control applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing `access_control` values are preserved). Use `admins` to set `access_control={}` (private), which relies on Open WebUI’s `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
+- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 Per-model opt-outs:
 - `disable_model_metadata_sync`: disables all metadata sync for the model.
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.

@@ -44,7 +44,7 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
         name="Example",
         meta=ModelMeta(**meta),
         params=params or {},
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
 
@@ -1025,7 +1025,7 @@ def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance) -> Non
 
 
 def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None:
-    """Sets admins-only access control for new models by default."""
+    """Sets admins-only access grants for new models by default."""
     pipe = pipe_instance
     pipe._ensure_catalog_manager()
     pipe.valves.NEW_MODEL_ACCESS_CONTROL = "admins"
@@ -1049,11 +1049,11 @@ def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None
 
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
-    assert inserted_form.access_control == {}
+    assert inserted_form.access_grants == []
 
 
 def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None:
-    """Sets None access control (all users) when configured to 'public'."""
+    """Sets wildcard access grants (all users) when configured to 'public'."""
     pipe = pipe_instance
     pipe._ensure_catalog_manager()
     pipe.valves.NEW_MODEL_ACCESS_CONTROL = "public"
@@ -1077,7 +1077,9 @@ def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None
 
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
-    assert inserted_form.access_control is None
+    assert inserted_form.access_grants == [
+        {"principal_type": "user", "principal_id": "*", "permission": "read"}
+    ]
 
 
 def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe_instance) -> None:
@@ -1105,8 +1107,8 @@ def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe
 
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
-    # Invalid values should default to private ({}) not public (None)
-    assert inserted_form.access_control == {}
+    # Invalid values should default to private (empty grants) not public (wildcard)
+    assert inserted_form.access_grants == []
 
 
 def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
@@ -1582,7 +1584,7 @@ def test_existing_model_null_meta_handled(pipe_instance) -> None:
         name="Example",
         meta=None,
         params={},
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
     update_mock = Mock()
@@ -1876,7 +1878,7 @@ def test_update_existing_model_with_existing_params(pipe_instance) -> None:
         name="Example",
         meta=ModelMeta(**{"capabilities": {"vision": True}}),
         params={"temperature": 0.7, "max_tokens": 1000},
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
     update_mock = Mock()
@@ -1975,7 +1977,7 @@ def test_existing_model_with_none_params_handled(pipe_instance) -> None:
         name="Example",
         meta=ModelMeta(**{}),
         params=None,
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
     update_mock = Mock()
@@ -2661,7 +2663,7 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
         name="Example",
         meta=ModelMeta(**meta),
         params=params or {},
-        access_control=None,
+        access_grants=[],
         is_active=True,
     )
 

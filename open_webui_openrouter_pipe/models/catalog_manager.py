@@ -1141,7 +1141,7 @@ class ModelCatalogManager:
                 name=existing.name,
                 meta=meta_obj,
                 params=existing.params if existing.params else ModelParams(),
-                access_control=existing.access_control,
+                access_grants=[grant.model_dump() for grant in existing.access_grants],
                 is_active=existing.is_active,
             )
             Models.update_model_by_id(openwebui_model_id, model_form)
@@ -1182,8 +1182,13 @@ class ModelCatalogManager:
             access_mode = str(
                 getattr(self._pipe.valves, "NEW_MODEL_ACCESS_CONTROL", "admins") or "admins"
             ).strip().lower()
-            # Default to private ({}); only public if explicitly set
-            access_control = None if access_mode == "public" else {}
+            # Map access semantics to access_grants format:
+            # "public" → wildcard read grant; anything else → empty list (private)
+            access_grants = (
+                [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
+                if access_mode == "public"
+                else []
+            )
 
             model_form = ModelForm(
                 id=openwebui_model_id,
@@ -1191,7 +1196,7 @@ class ModelCatalogManager:
                 name=name,
                 meta=meta_obj,
                 params=params_obj,
-                access_control=access_control,
+                access_grants=access_grants,
                 is_active=True,
             )
             # Use empty user_id to let OWUI handle ownership defaults

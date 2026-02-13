@@ -53,7 +53,7 @@ author_url: https://github.com/rbb-dev
 git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API integration for Open WebUI (bundled{description_prefix}monolith)
-required_open_webui_version: 0.7.0
+required_open_webui_version: 0.8.0
 version: {version}
 requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
 license: MIT

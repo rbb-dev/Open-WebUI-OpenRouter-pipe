@@ -744,11 +744,11 @@ class Valves(BaseModel):
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
         default="admins",
         description=(
-            "Default access_control for new OpenRouter model overlays inserted into Open WebUI. "
-            "'public' sets access_control=None (any user can read). "
-            "'admins' sets access_control={} (private) and relies on Open WebUI's "
+            "Default access grants for new OpenRouter model overlays inserted into Open WebUI. "
+            "'public' grants read access to all users (wildcard access grant). "
+            "'admins' creates no access grants (private) and relies on Open WebUI's "
             "BYPASS_ADMIN_ACCESS_CONTROL for admin access; otherwise admins must be granted access explicitly. "
-            "Applies only on insert; existing access_control values are preserved."
+            "Applies only on insert; existing access grants are preserved on update."
         ),
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
