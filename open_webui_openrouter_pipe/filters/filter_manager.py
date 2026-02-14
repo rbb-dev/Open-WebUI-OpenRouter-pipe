@@ -19,7 +19,7 @@ import itertools
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..core.timing_logger import timed
 from ..core.config import (
@@ -246,6 +246,130 @@ class FilterManager:
             return False, f"Parse error: {str(e)}"
 
     # =========================================================================
+    # GENERIC FILTER INSTALL / UPDATE
+    # =========================================================================
+
+    @timed
+    def _ensure_filter_installed(
+        self,
+        *,
+        desired_source: str,
+        desired_name: str,
+        desired_meta: dict[str, Any],
+        preferred_id: str,
+        auto_install_valve: str,
+        log_label: str,
+        matches_candidate: Callable[[str], bool],
+        primary_marker: str | None = None,
+    ) -> str | None:
+        """Generic filter install/update lifecycle shared by ORS and Direct Uploads filters.
+
+        Args:
+            desired_source: The canonical filter source (already stripped + newline-terminated).
+            desired_name: Display name for the filter function.
+            desired_meta: Metadata dict for the filter function.
+            preferred_id: Preferred OWUI function ID when auto-installing.
+            auto_install_valve: Valve attribute name controlling auto-install/update.
+            log_label: Human-readable label for log messages.
+            matches_candidate: Predicate that returns True if a filter's content matches this filter type.
+            primary_marker: If set, narrow candidates to those containing this marker (back-compat support).
+        """
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            filters = Functions.get_functions_by_type("filter", active_only=False)
+        except Exception:
+            return None
+
+        candidates = [f for f in filters if matches_candidate(getattr(f, "content", ""))]
+        chosen = None
+        if candidates:
+            if primary_marker:
+                marked = [f for f in candidates if primary_marker in (getattr(f, "content", "") or "")]
+                if marked:
+                    candidates = marked
+            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
+            if len(candidates) > 1:
+                self.logger.warning(
+                    "Multiple %s candidates found (%d); using '%s'.",
+                    log_label, len(candidates), getattr(chosen, "id", ""),
+                )
+
+        if chosen is None:
+            if not getattr(self.valves, auto_install_valve, False):
+                return None
+
+            candidate_id = preferred_id
+            suffix = 0
+            while True:
+                existing = None
+                try:
+                    existing = Functions.get_function_by_id(candidate_id)
+                except Exception:
+                    existing = None
+                if existing is None:
+                    break
+                suffix += 1
+                candidate_id = f"{preferred_id}_{suffix}"
+                if suffix > 50:
+                    return None
+
+            try:
+                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
+            except Exception:
+                return None
+
+            meta_obj = FunctionMeta(**desired_meta)
+            form = FunctionForm(
+                id=candidate_id,
+                name=desired_name,
+                content=desired_source,
+                meta=meta_obj,
+            )
+            created = Functions.insert_new_function("", "filter", form)
+            if not created:
+                return None
+            Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
+            self.logger.info("Installed %s: %s", log_label, candidate_id)
+            return candidate_id
+
+        function_id = str(getattr(chosen, "id", "") or "").strip()
+        if not function_id:
+            return None
+
+        if getattr(self.valves, auto_install_valve, False):
+            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
+            if existing_content != desired_source:
+                self.logger.info("Updating %s: %s", log_label, function_id)
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "content": desired_source,
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+            else:
+                Functions.update_function_by_id(
+                    function_id,
+                    {
+                        "name": desired_name,
+                        "meta": desired_meta,
+                        "type": "filter",
+                        "is_active": True,
+                        "is_global": False,
+                    },
+                )
+
+        return function_id
+
+    # =========================================================================
     # ORS FILTER (OpenRouter Search)
     # =========================================================================
 
@@ -324,28 +448,8 @@ class Filter:
     @timed
     def ensure_ors_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Search companion filter exists (and is up to date), returning its OWUI function id."""
-        try:
-            from open_webui.models.functions import Functions  # type: ignore
-        except Exception:
-            return None
 
-        desired_source = self.render_ors_filter_source().strip() + "\n"
-        desired_name = "OpenRouter Search"
-        desired_meta = {
-            "description": (
-                "Enable OpenRouter native web search for this request. "
-                "When OpenRouter Search is enabled, OWUI Web Search is disabled to avoid double-search."
-            ),
-            "toggle": True,
-            "manifest": {
-                "title": "OpenRouter Search",
-                "id": "openrouter_search",
-                "version": "0.1.0",
-                "license": "MIT",
-            },
-        }
-
-        def _matches_candidate(content: str) -> bool:
+        def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
             if _ORS_FILTER_MARKER in content:
@@ -353,96 +457,28 @@ class Filter:
             # Back-compat for manual installs of earlier drafts: detect by the feature flag string.
             return _ORS_FILTER_FEATURE_FLAG in content and "class Filter" in content
 
-        try:
-            filters = Functions.get_functions_by_type("filter", active_only=False)
-        except Exception:
-            return None
-
-        candidates = [f for f in filters if _matches_candidate(getattr(f, "content", ""))]
-        chosen = None
-        if candidates:
-            # Prefer the canonical marker when present.
-            marked = [f for f in candidates if _ORS_FILTER_MARKER in (getattr(f, "content", "") or "")]
-            if marked:
-                candidates = marked
-            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
-            if len(candidates) > 1:
-                self.logger.warning(
-                    "Multiple OpenRouter Search filter candidates found (%d); using '%s'.",
-                    len(candidates),
-                    getattr(chosen, "id", ""),
-                )
-
-        if chosen is None:
-            if not getattr(self.valves, "AUTO_INSTALL_ORS_FILTER", False):
-                return None
-
-            candidate_id = _ORS_FILTER_PREFERRED_FUNCTION_ID
-            suffix = 0
-            while True:
-                existing = None
-                try:
-                    existing = Functions.get_function_by_id(candidate_id)
-                except Exception:
-                    existing = None
-                if existing is None:
-                    break
-                suffix += 1
-                candidate_id = f"{_ORS_FILTER_PREFERRED_FUNCTION_ID}_{suffix}"
-                if suffix > 50:
-                    return None
-
-            try:
-                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
-            except Exception:
-                return None
-
-            meta_obj = FunctionMeta(**desired_meta)
-            form = FunctionForm(
-                id=candidate_id,
-                name=desired_name,
-                content=desired_source,
-                meta=meta_obj,
-            )
-            created = Functions.insert_new_function("", "filter", form)
-            if not created:
-                return None
-            Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
-            self.logger.info("Installed OpenRouter Search filter: %s", candidate_id)
-            return candidate_id
-
-        function_id = str(getattr(chosen, "id", "") or "").strip()
-        if not function_id:
-            return None
-
-        if getattr(self.valves, "AUTO_INSTALL_ORS_FILTER", False):
-            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
-            if existing_content != desired_source:
-                self.logger.info("Updating OpenRouter Search filter: %s", function_id)
-                Functions.update_function_by_id(
-                    function_id,
-                    {
-                        "content": desired_source,
-                        "name": desired_name,
-                        "meta": desired_meta,
-                        "type": "filter",
-                        "is_active": True,
-                        "is_global": False,
-                    },
-                )
-            else:
-                Functions.update_function_by_id(
-                    function_id,
-                    {
-                        "name": desired_name,
-                        "meta": desired_meta,
-                        "type": "filter",
-                        "is_active": True,
-                        "is_global": False,
-                    },
-                )
-
-        return function_id
+        return self._ensure_filter_installed(
+            desired_source=self.render_ors_filter_source().strip() + "\n",
+            desired_name="OpenRouter Search",
+            desired_meta={
+                "description": (
+                    "Enable OpenRouter native web search for this request. "
+                    "When OpenRouter Search is enabled, OWUI Web Search is disabled to avoid double-search."
+                ),
+                "toggle": True,
+                "manifest": {
+                    "title": "OpenRouter Search",
+                    "id": "openrouter_search",
+                    "version": "0.1.0",
+                    "license": "MIT",
+                },
+            },
+            preferred_id=_ORS_FILTER_PREFERRED_FUNCTION_ID,
+            auto_install_valve="AUTO_INSTALL_ORS_FILTER",
+            log_label="OpenRouter Search filter",
+            matches_candidate=_matches,
+            primary_marker=_ORS_FILTER_MARKER,
+        )
 
     # =========================================================================
     # DIRECT UPLOADS FILTER
@@ -880,126 +916,33 @@ class Filter:
     @timed
     def ensure_direct_uploads_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Direct Uploads companion filter exists (and is up to date), returning its OWUI function id."""
-        try:
-            from open_webui.models.functions import Functions  # type: ignore
-        except Exception:
-            return None
 
-        desired_source = self.render_direct_uploads_filter_source().strip() + "\n"
-        desired_name = "Direct Uploads"
-        desired_meta = {
-            "description": (
-                "Bypass Open WebUI RAG for chat uploads and forward them to OpenRouter as direct file/audio/video inputs. "
-                "Enable files/audio/video via filter user valves."
-            ),
-            "toggle": True,
-            "manifest": {
-                "title": "Direct Uploads",
-                "id": _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
-                "version": "0.1.0",
-                "license": "MIT",
-            },
-        }
-
-        def _matches_candidate(content: str) -> bool:
+        def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
             return _DIRECT_UPLOADS_FILTER_MARKER in content and "class Filter" in content
 
-        try:
-            filters = Functions.get_functions_by_type("filter", active_only=False)
-        except Exception:
-            return None
-
-        candidates = [f for f in filters if _matches_candidate(getattr(f, "content", ""))]
-        chosen = None
-        if candidates:
-            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
-            if len(candidates) > 1:
-                self.logger.warning(
-                    "Multiple OpenRouter Direct Uploads filter candidates found (%d); using '%s'.",
-                    len(candidates),
-                    getattr(chosen, "id", ""),
-                )
-
-        if chosen is None:
-            if not getattr(self.valves, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER", False):
-                return None
-
-            candidate_id = _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID
-            suffix = 0
-            while True:
-                existing = None
-                try:
-                    existing = Functions.get_function_by_id(candidate_id)
-                except Exception:
-                    existing = None
-                if existing is None:
-                    break
-                suffix += 1
-                candidate_id = f"{_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID}_{suffix}"
-                if suffix > 50:
-                    return None
-
-            try:
-                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
-            except Exception:
-                return None
-
-            meta_obj = FunctionMeta(**desired_meta)
-            form = FunctionForm(
-                id=candidate_id,
-                name=desired_name,
-                content=desired_source,
-                meta=meta_obj,
-            )
-            created = Functions.insert_new_function("", "filter", form)
-            if not created:
-                return None
-            Functions.update_function_by_id(
-                candidate_id,
-                {
-                    "is_active": True,
-                    "is_global": False,
-                    "name": desired_name,
-                    "meta": desired_meta,
+        return self._ensure_filter_installed(
+            desired_source=self.render_direct_uploads_filter_source().strip() + "\n",
+            desired_name="Direct Uploads",
+            desired_meta={
+                "description": (
+                    "Bypass Open WebUI RAG for chat uploads and forward them to OpenRouter as direct file/audio/video inputs. "
+                    "Enable files/audio/video via filter user valves."
+                ),
+                "toggle": True,
+                "manifest": {
+                    "title": "Direct Uploads",
+                    "id": _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+                    "version": "0.1.0",
+                    "license": "MIT",
                 },
-            )
-            self.logger.info("Installed OpenRouter Direct Uploads filter: %s", candidate_id)
-            return candidate_id
-
-        function_id = str(getattr(chosen, "id", "") or "").strip()
-        if not function_id:
-            return None
-
-        if getattr(self.valves, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER", False):
-            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
-            if existing_content != desired_source:
-                self.logger.info("Updating OpenRouter Direct Uploads filter: %s", function_id)
-                Functions.update_function_by_id(
-                    function_id,
-                    {
-                        "content": desired_source,
-                        "name": desired_name,
-                        "meta": desired_meta,
-                        "type": "filter",
-                        "is_active": True,
-                        "is_global": False,
-                    },
-                )
-            else:
-                Functions.update_function_by_id(
-                    function_id,
-                    {
-                        "name": desired_name,
-                        "meta": desired_meta,
-                        "type": "filter",
-                        "is_active": True,
-                        "is_global": False,
-                    },
-                )
-
-        return function_id
+            },
+            preferred_id=_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+            auto_install_valve="AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+            log_label="OpenRouter Direct Uploads filter",
+            matches_candidate=_matches,
+        )
 
     # =========================================================================
     # PROVIDER ROUTING FILTER
