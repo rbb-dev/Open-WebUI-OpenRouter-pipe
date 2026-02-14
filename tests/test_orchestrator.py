@@ -47,6 +47,8 @@ async def orchestrator_and_pipe():
 def mock_valves():
     """Create mock valves with default test values."""
     valves = Mock()
+    valves.MAX_INPUT_IMAGES_PER_REQUEST = 0
+    valves.IMAGE_INPUT_SELECTION = "latest_user"
     valves.BASE64_MAX_SIZE_MB = 10
     valves.IMAGE_UPLOAD_CHUNK_BYTES = 65536
     valves.ENABLE_STATUS_CSS_PATCH = False
