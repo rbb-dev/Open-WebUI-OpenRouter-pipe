@@ -19,14 +19,15 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import io
 import re
 import sys
 import textwrap
+import tokenize
 import zlib
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -297,10 +298,18 @@ def _find_type_checking_blocks(
         has_else = bool(node.orelse)
         else_lines: list[str] = []
         if has_else:
-            else_start = node.orelse[0].lineno
-            else_end = node.orelse[-1].end_lineno or node.orelse[-1].lineno
-            # Include the `else:` line itself (one line before the else body)
-            else_lines = source_lines[else_start - 2: else_end]
+            else_body_start = node.orelse[0].lineno
+            else_body_end = node.orelse[-1].end_lineno or node.orelse[-1].lineno
+            # Find the actual `else:` keyword by scanning backwards from the
+            # first else-body statement.  This handles comments or blank lines
+            # between `else:` and the body.
+            if_body_end = node.body[-1].end_lineno or node.body[-1].lineno
+            else_kw_line = else_body_start - 1  # fallback: line before body
+            for scan in range(else_body_start - 2, if_body_end - 1, -1):
+                if source_lines[scan].strip().startswith("else"):
+                    else_kw_line = scan + 1  # convert 0-indexed to 1-indexed
+                    break
+            else_lines = source_lines[else_kw_line - 1: else_body_end]
 
         start = node.lineno
         end = node.end_lineno or node.lineno
@@ -475,6 +484,38 @@ def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
 # Step 4: Process module body
 # ---------------------------------------------------------------------------
 
+
+def _replace_name_token(source: str, old_name: str, new_name: str) -> str:
+    """Replace occurrences of *old_name* with *new_name*, touching only NAME tokens.
+
+    Strings, comments, and docstrings are never modified.  The original
+    formatting (whitespace, newlines) is preserved byte-for-byte except at
+    the replacement sites.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except tokenize.TokenError:
+        # Malformed source — fall back to regex (best-effort)
+        return re.sub(rf"\b{re.escape(old_name)}\b", new_name, source)
+
+    # Collect (row_1indexed, col_0indexed) of NAME tokens to replace.
+    # Process in reverse order so earlier replacements don't shift offsets.
+    positions: list[tuple[int, int]] = []
+    for tok in tokens:
+        if tok.type == tokenize.NAME and tok.string == old_name:
+            positions.append(tok.start)
+
+    if not positions:
+        return source
+
+    lines = source.splitlines(True)
+    for row, col in reversed(positions):
+        line = lines[row - 1]
+        lines[row - 1] = line[:col] + new_name + line[col + len(old_name):]
+
+    return "".join(lines)
+
+
 def process_module_body(mod: ModuleInfo) -> str:
     """Strip imports and return the processed module body."""
     lines = mod.source_lines[:]  # copy
@@ -502,12 +543,12 @@ def process_module_body(mod: ModuleInfo) -> str:
         if lineno not in delete_lines:
             result_lines.append(lines[i])
 
-    # Apply alias replacements (alias → original_name) at word boundaries.
-    # This replaces references to aliased imports with the original name,
-    # producing natural code without alias assignment lines.
+    # Apply alias replacements (alias → original_name) using the tokenizer.
+    # Only NAME tokens are touched — strings, comments, and docstrings are
+    # never modified.
     text = "".join(result_lines)
     for alias_name, original_name in mod.alias_mappings.items():
-        text = re.sub(rf"\b{re.escape(alias_name)}\b", original_name, text)
+        text = _replace_name_token(text, alias_name, original_name)
 
     # Clean up orphaned comment lines that remain after import removal.
     # Strategy: mark a standalone comment line as orphaned if the next
@@ -1326,12 +1367,14 @@ def bundle(*, output_path: Path, compressed: bool) -> None:
 
     # Step 8: Validate
     ok = validate_output(output, output_path)
-    if not ok:
-        print("WARNING: Validation failed but writing output anyway", file=sys.stderr)
 
-    # Write
+    # Write (even on failure, for debugging)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(output, encoding="utf-8")
+
+    if not ok:
+        print("ERROR: Validation failed — output written for inspection but exiting with error", file=sys.stderr)
+        sys.exit(1)
 
     size_kb = output_path.stat().st_size / 1024
     print(f"Wrote {output_path} (readable, {size_kb:.1f} KB)")
