@@ -20,7 +20,6 @@ import contextvars
 import inspect
 import json
 import logging
-import os
 import secrets
 import time
 import uuid
@@ -61,7 +60,7 @@ except ImportError:
 
 # Timing instrumentation
 from .core.timing_logger import timed, timing_mark, configure_timing_file
-from .storage.persistence import _RedisClient
+from .storage.persistence import _RedisClient, _detect_redis_config
 
 # Optional pyzipper support for session log encryption
 try:
@@ -322,37 +321,8 @@ class Pipe:
         self._warmup_failed = False
 
         # Redis configuration (detected from environment)
-        self._redis_url = (os.getenv("REDIS_URL") or "").strip()
-        self._websocket_manager = (os.getenv("WEBSOCKET_MANAGER") or "").strip().lower()
-        self._websocket_redis_url = (os.getenv("WEBSOCKET_REDIS_URL") or "").strip()
-        raw_uvicorn_workers = (os.getenv("UVICORN_WORKERS") or "1").strip()
-        try:
-            uvicorn_workers = int(raw_uvicorn_workers or "1")
-        except ValueError:
-            self.logger.warning("Invalid UVICORN_WORKERS value '%s'; defaulting to 1.", raw_uvicorn_workers)
-            uvicorn_workers = 1
-        multi_worker = uvicorn_workers > 1
-        redis_url_configured = bool(self._redis_url)
-        websocket_ready = (
-            self._websocket_manager == "redis"
-            and bool(self._websocket_redis_url)
-        )
-        redis_valve_enabled = self.valves.ENABLE_REDIS_CACHE
-        if multi_worker and not redis_valve_enabled:
-            self.logger.warning("Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off.")
-        if multi_worker and redis_valve_enabled:
-            if not redis_url_configured:
-                self.logger.warning("Multiple UVicorn workers detected but REDIS_URL is unset; Redis cache remains off.")
-            elif self._websocket_manager != "redis":
-                self.logger.warning("Multiple UVicorn workers detected but WEBSOCKET_MANAGER is not 'redis'; Redis cache remains off.")
-            elif not websocket_ready:
-                self.logger.warning("Multiple UVicorn workers detected but WEBSOCKET_REDIS_URL is unset; Redis cache remains off.")
-        self._redis_candidate = (
-            redis_url_configured
-            and multi_worker
-            and websocket_ready
-            and aioredis is not None
-            and redis_valve_enabled
+        self._redis_url, self._websocket_manager, self._websocket_redis_url, self._redis_candidate = (
+            _detect_redis_config(self.valves, self.logger)
         )
 
         self._redis_enabled = False
