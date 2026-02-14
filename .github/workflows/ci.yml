@@ -38,27 +38,42 @@ jobs:
           uv pip install --python .venv/bin/python open-webui -e .
           uv pip install --python .venv/bin/python pytest pytest-asyncio pyright cairosvg pyzipper aioresponses ruff
 
-      - name: Lint production code
+      - name: Lint source code
         run: |
           source .venv/bin/activate
           ruff check open_webui_openrouter_pipe/
 
-      - name: Run tests and checks
+      - name: Build monolith bundles
         run: |
           source .venv/bin/activate
-          # Build monolith bundles (used by Open WebUI "Import from Link")
-          python scripts/bundle.py
-          python scripts/bundle.py --compress
+          python scripts/bundle_v2.py
+          python scripts/bundle_v2.py --compress
+
+      - name: Lint bundles
+        run: |
+          source .venv/bin/activate
+          ruff check open_webui_openrouter_pipe_bundled.py
+          ruff check --per-file-ignores '*_compressed.py:E402' open_webui_openrouter_pipe_bundled_compressed.py
+
+      - name: Type-check source and bundles
+        run: |
+          source .venv/bin/activate
+          pyright
+          pyright open_webui_openrouter_pipe_bundled.py
+          pyright open_webui_openrouter_pipe_bundled_compressed.py
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          python -m compileall open_webui_openrouter_pipe tests filters open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py
 
           # Run the test suite in 3 modes:
           # 1) Normal package imports (on-disk modules)
-          # 2) Bundled raw monolith
+          # 2) Bundled flat monolith
           # 3) Bundled compressed monolith
           echo "==> pytest (package imports)"
           PYTHONPATH=. pytest tests -q
-          echo "==> pytest (bundled: open_webui_openrouter_pipe_bundled.py)"
+          echo "==> pytest (bundled flat: open_webui_openrouter_pipe_bundled.py)"
           OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q
-          echo "==> pytest (bundled: open_webui_openrouter_pipe_bundled_compressed.py)"
+          echo "==> pytest (bundled compressed: open_webui_openrouter_pipe_bundled_compressed.py)"
           OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q
-          python -m compileall open_webui_openrouter_pipe tests filters
-          pyright
