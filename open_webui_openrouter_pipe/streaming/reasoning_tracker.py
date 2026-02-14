@@ -260,8 +260,8 @@ class ReasoningTracker:
 
         # Extract image URLs from various fields
         materialized = []
-        for field in ("output", "content", "image"):
-            value = item.get(field)
+        for field_name in ("output", "content", "image"):
+            value = item.get(field_name)
             if isinstance(value, list):
                 for entry in value:
                     url = await self._materialize_image_entry(entry)
