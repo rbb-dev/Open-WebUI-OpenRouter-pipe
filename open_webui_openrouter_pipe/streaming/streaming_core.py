@@ -538,6 +538,7 @@ class StreamingHandler:
                         mime_type = (
                             entry.get("mime_type")
                             or entry.get("mimeType")
+                            or entry.get("content_type")
                             or "image/png"
                         ).lower()
                         if mime_type == "image/jpg":
