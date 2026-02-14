@@ -119,6 +119,28 @@ def _sanitize_table_fragment(value: str) -> str:
     return fragment
 
 
+@contextlib.contextmanager
+def _db_session(factory: Callable[..., Session]):
+    """Open a SQLAlchemy session, ensuring rollback-on-error and safe close.
+
+    Usage::
+
+        with _db_session(self._session_factory) as session:
+            session.add(row)
+            session.commit()
+    """
+    session: Session = factory()  # type: ignore[call-arg]
+    try:
+        yield session
+    except Exception:
+        with contextlib.suppress(Exception):
+            session.rollback()
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+
+
 # -----------------------------------------------------------------------------
 # ArtifactStore Class
 # -----------------------------------------------------------------------------
@@ -847,20 +869,9 @@ class ArtifactStore:
                 if not instances:
                     continue
 
-                session: Session = self._session_factory()  # type: ignore[call-arg]
-                try:
+                with _db_session(self._session_factory) as session:
                     session.add_all(instances)
                     session.commit()
-                except SQLAlchemyError as exc:  # pragma: no cover
-                    session.rollback()
-                    self.logger.error(
-                        "Failed to persist response artifacts: %s",
-                        exc,
-                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                    )
-                    raise
-                finally:
-                    session.close()
 
                 for row in persisted_rows:
                     row["_persisted"] = True
@@ -922,8 +933,7 @@ class ArtifactStore:
             "created_at": now,
         }
 
-        session: Session = self._session_factory()  # type: ignore[call-arg]
-        try:
+        with _db_session(self._session_factory) as session:
             # Use dialect-specific INSERT ON CONFLICT DO NOTHING
             if dialect_name == "postgresql":
                 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -955,11 +965,6 @@ class ArtifactStore:
             # rowcount == 0 means conflict occurred (lock held by another worker)
             # Use getattr for type safety (CursorResult has rowcount, Result typing doesn't expose it)
             return getattr(result, "rowcount", 0) == 1
-        except SQLAlchemyError:
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
     @timed
     async def _db_persist(self, rows: list[dict[str, Any]]) -> list[str]:
@@ -1053,16 +1058,13 @@ class ArtifactStore:
         if not item_ids or not self._item_model or not self._session_factory:
             return {}
         model = self._item_model
-        session: Session = self._session_factory()  # type: ignore[call-arg]
-        try:
+        with _db_session(self._session_factory) as session:
             query = session.query(model).filter(model.chat_id == chat_id)
             if item_ids:
                 query = query.filter(model.id.in_(item_ids))
             if message_id:
                 query = query.filter(model.message_id == message_id)
             rows = query.all()
-        finally:
-            session.close()
 
         # Best-effort "touch" for retention: update created_at on DB access (not on Redis hits).
         # This must never crash the read path.
@@ -1075,18 +1077,16 @@ class ArtifactStore:
                     if isinstance(item_id, str) and item_id
                 ]
                 if touched_ids:
-                    touch_session: Session = self._session_factory()  # type: ignore[call-arg]
                     try:
-                        now = datetime.datetime.now(datetime.UTC)
-                        touch_query = touch_session.query(model).filter(model.chat_id == chat_id)
-                        touch_query = touch_query.filter(model.id.in_(touched_ids))
-                        if message_id:
-                            touch_query = touch_query.filter(model.message_id == message_id)
-                        touch_query.update({model.created_at: now}, synchronize_session=False)
-                        touch_session.commit()
+                        with _db_session(self._session_factory) as touch_session:
+                            now = datetime.datetime.now(datetime.UTC)
+                            touch_query = touch_session.query(model).filter(model.chat_id == chat_id)
+                            touch_query = touch_query.filter(model.id.in_(touched_ids))
+                            if message_id:
+                                touch_query = touch_query.filter(model.message_id == message_id)
+                            touch_query.update({model.created_at: now}, synchronize_session=False)
+                            touch_session.commit()
                     except Exception as exc:
-                        with contextlib.suppress(Exception):
-                            touch_session.rollback()
                         self.logger.debug(
                             "Artifact touch skipped (chat_id=%s, message_id=%s, rows=%s): %s",
                             chat_id,
@@ -1095,8 +1095,6 @@ class ArtifactStore:
                             exc,
                             exc_info=self.logger.isEnabledFor(logging.DEBUG),
                         )
-                    finally:
-                        touch_session.close()
             except Exception as exc:
                 self.logger.debug(
                     "Artifact touch failed (chat_id=%s, message_id=%s): %s",
@@ -1212,20 +1210,13 @@ class ArtifactStore:
         """Synchronously delete artifacts by ULID."""
         if not (artifact_ids and self._session_factory and self._item_model):
             return
-        session: Session = self._session_factory()  # type: ignore[call-arg]
-        try:
+        with _db_session(self._session_factory) as session:
             (
                 session.query(self._item_model)
                 .filter(self._item_model.id.in_(artifact_ids))
                 .delete(synchronize_session=False)
             )
             session.commit()
-        except SQLAlchemyError:
-            # Rollback on any database error, then re-raise
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
     @timed
     async def _delete_artifacts(self, refs: list[Tuple[str, str]]) -> None:
@@ -1535,8 +1526,7 @@ class ArtifactStore:
     def _cleanup_sync(self, cutoff: datetime.datetime) -> None:
         if not (self._session_factory and self._item_model):
             return
-        session: Session = self._session_factory()  # type: ignore[call-arg]
-        try:
+        with _db_session(self._session_factory) as session:
             deleted = (
                 session.query(self._item_model)
                 .filter(self._item_model.created_at < cutoff)
@@ -1545,11 +1535,6 @@ class ArtifactStore:
             session.commit()
             if deleted:
                 self.logger.debug("Cleanup removed %s rows older than %s", deleted, cutoff)
-        except Exception as exc:
-            session.rollback()
-            raise exc
-        finally:
-            session.close()
 
     # -----------------------------------------------------------------------------
     # 6. CIRCUIT BREAKERS (3 methods)

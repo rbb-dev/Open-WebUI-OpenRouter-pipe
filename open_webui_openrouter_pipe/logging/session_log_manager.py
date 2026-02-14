@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from ..core.timing_logger import timed
+from ..storage.persistence import _db_session
 
 # Optional pyzipper support for session log encryption
 try:
@@ -648,8 +649,7 @@ class SessionLogManager:
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=float(lock_stale_seconds))
         ids: list[str] = []
         try:
-            session = session_factory()  # type: ignore[call-arg]
-            try:
+            with _db_session(session_factory) as session:
                 rows = (
                     session.query(model.id)  # type: ignore[attr-defined]
                     .filter(model.item_type == "session_log_lock")  # type: ignore[attr-defined]
@@ -658,9 +658,6 @@ class SessionLogManager:
                     .all()
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
         except Exception as exc:
             self.logger.debug("Stale lock cleanup skipped — %s: %s", type(exc).__name__, exc)
             return
@@ -677,8 +674,7 @@ class SessionLogManager:
         limit: int,
     ) -> list[tuple[str, str]]:
         try:
-            session = session_factory()  # type: ignore[call-arg]
-            try:
+            with _db_session(session_factory) as session:
                 rows = (
                     session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
@@ -697,9 +693,6 @@ class SessionLogManager:
                     seen.add(key)
                     out.append(key)
                 return out
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
         except Exception as exc:
             self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc)
             return []
@@ -715,8 +708,7 @@ class SessionLogManager:
     ) -> list[tuple[str, str]]:
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=float(stale_finalize_seconds))
         try:
-            session = session_factory()  # type: ignore[call-arg]
-            try:
+            with _db_session(session_factory) as session:
                 # Candidates (best effort): any message that has at least one segment.
                 candidates = (
                     session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
@@ -725,9 +717,6 @@ class SessionLogManager:
                     .limit(int(limit) * 5)
                     .all()
                 )
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
         except Exception as exc:
             self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc)
             return []
@@ -738,8 +727,7 @@ class SessionLogManager:
 
         # Filter: no terminal segment, and last activity < cutoff.
         try:
-            session = session_factory()  # type: ignore[call-arg]
-            try:
+            with _db_session(session_factory) as session:
                 for chat_id, message_id in candidates:
                     if not (isinstance(chat_id, str) and isinstance(message_id, str)):
                         continue
@@ -767,9 +755,6 @@ class SessionLogManager:
                     out.append((chat_id, message_id))
                     if len(out) >= int(limit):
                         break
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
         except Exception as exc:
             self.logger.debug("Stale message filtering skipped — %s: %s", type(exc).__name__, exc)
             return []
@@ -892,9 +877,8 @@ class SessionLogManager:
             return False  # Another worker holds the lock
 
         # Fetch all segment ids for this message (including any terminal markers).
-        session = session_factory()  # type: ignore[call-arg]
         ids: list[str] = []
-        try:
+        with _db_session(session_factory) as session:
             rows = (
                 session.query(model.id)  # type: ignore[attr-defined]
                 .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
@@ -904,9 +888,6 @@ class SessionLogManager:
                 .all()
             )
             ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-        finally:
-            with contextlib.suppress(Exception):
-                session.close()
 
         if not ids:
             with contextlib.suppress(Exception):
