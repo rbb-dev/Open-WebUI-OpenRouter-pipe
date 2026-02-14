@@ -52,12 +52,7 @@ from .event_emitter import EventEmitter
 
 # Import timing instrumentation
 from ..core.timing_logger import timed, timing_mark
-from .constants import (
-    REASONING_STATUS_PUNCTUATION as _REASONING_STATUS_PUNCTUATION,
-    REASONING_STATUS_MAX_CHARS as _REASONING_STATUS_MAX_CHARS,
-    REASONING_STATUS_MIN_CHARS as _REASONING_STATUS_MIN_CHARS,
-    REASONING_STATUS_IDLE_SECONDS as _REASONING_STATUS_IDLE_SECONDS,
-)
+from .constants import ReasoningStatusThrottle
 
 # Imports from storage.persistence
 from ..storage.persistence import normalize_persisted_item
@@ -407,45 +402,18 @@ class StreamingHandler:
         storage_context_cache: Optional[tuple[Optional[Request], Optional[Any]]] = None
         processed_image_item_ids: set[str] = set()
         generated_image_count = 0
-        reasoning_status_buffer = ""
-        reasoning_status_last_emit: float | None = None
         thinking_mode = valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
+        reasoning_throttle = ReasoningStatusThrottle()
 
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit readable status updates for reasoning text without flooding."""
-            nonlocal reasoning_status_buffer, reasoning_status_last_emit
-            if not thinking_status_enabled:
+            if not thinking_status_enabled or not event_emitter:
                 return
-            if not event_emitter:
-                return
-            reasoning_status_buffer += delta_text
-            text = reasoning_status_buffer.strip()
-            if not text:
-                return
-            should_emit = force
-            now = perf_counter()
-            if not should_emit:
-                if delta_text.rstrip().endswith(_REASONING_STATUS_PUNCTUATION):
-                    should_emit = True
-                elif len(text) >= _REASONING_STATUS_MAX_CHARS:
-                    should_emit = True
-                else:
-                    elapsed = None if reasoning_status_last_emit is None else (now - reasoning_status_last_emit)
-                    if len(text) >= _REASONING_STATUS_MIN_CHARS:
-                        if elapsed is None or elapsed >= _REASONING_STATUS_IDLE_SECONDS:
-                            should_emit = True
-            if not should_emit:
-                return
-            await event_emitter(
-                {
-                    "type": "status",
-                    "data": {"description": text, "done": False},
-                }
-            )
-            reasoning_status_buffer = ""
-            reasoning_status_last_emit = now
+            text = reasoning_throttle.feed(delta_text, force=force)
+            if text:
+                await event_emitter({"type": "status", "data": {"description": text, "done": False}})
 
         async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
             nonlocal storage_context_cache

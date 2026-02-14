@@ -11,14 +11,8 @@ import datetime
 import json
 import secrets
 import time
-from time import perf_counter
 from typing import Any, Optional, Awaitable, Callable, Dict, Literal, Protocol, TYPE_CHECKING
-from .constants import (
-    REASONING_STATUS_PUNCTUATION,
-    REASONING_STATUS_MAX_CHARS,
-    REASONING_STATUS_MIN_CHARS,
-    REASONING_STATUS_IDLE_SECONDS,
-)
+from .constants import ReasoningStatusThrottle
 from ..core.utils import _render_error_template
 from ..core.logging_system import SessionLogger
 
@@ -112,12 +106,6 @@ class EventEmitterHandler:
         - valves: Configuration valves for support contact info, etc.
         - pipe_instance: Reference to Pipe instance for SessionLogger access
     """
-
-    # Constants for reasoning status emission
-    _REASONING_STATUS_PUNCTUATION = REASONING_STATUS_PUNCTUATION
-    _REASONING_STATUS_MAX_CHARS = REASONING_STATUS_MAX_CHARS
-    _REASONING_STATUS_MIN_CHARS = REASONING_STATUS_MIN_CHARS
-    _REASONING_STATUS_IDLE_SECONDS = REASONING_STATUS_IDLE_SECONDS
 
     def __init__(
         self,
@@ -569,55 +557,24 @@ class EventEmitterHandler:
 
         assistant_sent = ""
         answer_started = False
-        reasoning_status_buffer = ""
-        reasoning_status_last_emit: float | None = None
 
         thinking_mode = job.valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
+        reasoning_throttle = ReasoningStatusThrottle()
 
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit status updates for late-arriving reasoning without spamming the UI."""
-            nonlocal reasoning_status_buffer, reasoning_status_last_emit
-            if not isinstance(delta_text, str):
-                return
-            reasoning_status_buffer += delta_text
-            text = reasoning_status_buffer.strip()
-            if not text:
-                return
-            should_emit = force
-            now = perf_counter()
-            if not should_emit:
-                if delta_text.rstrip().endswith(self._REASONING_STATUS_PUNCTUATION):
-                    should_emit = True
-                elif len(text) >= self._REASONING_STATUS_MAX_CHARS:
-                    should_emit = True
-                else:
-                    elapsed = None if reasoning_status_last_emit is None else (now - reasoning_status_last_emit)
-                    if len(text) >= self._REASONING_STATUS_MIN_CHARS:
-                        if elapsed is None or elapsed >= self._REASONING_STATUS_IDLE_SECONDS:
-                            should_emit = True
-            if not should_emit:
-                return
-            await self._put_middleware_stream_item(
-                job,
-                stream_queue,
-                {
-                    "event": {
-                        "type": "status",
-                        "data": {
-                            "description": text,
-                            "done": False,
-                        },
-                    }
-                }
-            )
-            reasoning_status_buffer = ""
-            reasoning_status_last_emit = now
+            text = reasoning_throttle.feed(delta_text, force=force)
+            if text:
+                await self._put_middleware_stream_item(
+                    job, stream_queue,
+                    {"event": {"type": "status", "data": {"description": text, "done": False}}}
+                )
 
         async def _flush_reasoning_status() -> None:
             """Flush any buffered reasoning status before stream completion."""
-            if thinking_status_enabled and reasoning_status_buffer:
+            if thinking_status_enabled and reasoning_throttle.pending:
                 await _maybe_emit_reasoning_status("", force=True)
 
         async def _emit(event: dict[str, Any]) -> None:
@@ -650,7 +607,7 @@ class EventEmitterHandler:
                     # handler syncs assistant_sent without emitting to the stream.
                 if isinstance(delta_text, str) and delta_text:
                     answer_started = True
-                    if thinking_status_enabled and reasoning_status_buffer:
+                    if thinking_status_enabled and reasoning_throttle.pending:
                         await _maybe_emit_reasoning_status("", force=True)
                     await self._put_middleware_stream_item(
                         job,
@@ -665,7 +622,7 @@ class EventEmitterHandler:
                 if isinstance(delta_text, str) and delta_text:
                     assistant_sent = assistant_sent + delta_text
                     answer_started = True
-                    if thinking_status_enabled and reasoning_status_buffer:
+                    if thinking_status_enabled and reasoning_throttle.pending:
                         await _maybe_emit_reasoning_status("", force=True)
                     await self._put_middleware_stream_item(
                         job,
@@ -729,12 +686,12 @@ class EventEmitterHandler:
                 return
 
             if etype == "reasoning:completed":
-                if thinking_status_enabled and reasoning_status_buffer:
+                if thinking_status_enabled and reasoning_throttle.pending:
                     await _maybe_emit_reasoning_status("", force=True)
                 return
 
             if etype == "chat:completion":
-                if thinking_status_enabled and reasoning_status_buffer:
+                if thinking_status_enabled and reasoning_throttle.pending:
                     await _maybe_emit_reasoning_status("", force=True)
 
                 # Sync assistant_sent when chat:completion has content (OWUI replacement)
