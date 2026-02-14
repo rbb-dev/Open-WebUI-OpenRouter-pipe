@@ -646,20 +646,24 @@ class SessionLogManager:
         lock_stale_seconds: float,
     ) -> None:
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=float(lock_stale_seconds))
-        session = session_factory()  # type: ignore[call-arg]
         ids: list[str] = []
         try:
-            rows = (
-                session.query(model.id)  # type: ignore[attr-defined]
-                .filter(model.item_type == "session_log_lock")  # type: ignore[attr-defined]
-                .filter(model.created_at < cutoff)  # type: ignore[attr-defined]
-                .limit(500)
-                .all()
-            )
-            ids = [row[0] for row in rows if row and isinstance(row[0], str)]
-        finally:
-            with contextlib.suppress(Exception):
-                session.close()
+            session = session_factory()  # type: ignore[call-arg]
+            try:
+                rows = (
+                    session.query(model.id)  # type: ignore[attr-defined]
+                    .filter(model.item_type == "session_log_lock")  # type: ignore[attr-defined]
+                    .filter(model.created_at < cutoff)  # type: ignore[attr-defined]
+                    .limit(500)
+                    .all()
+                )
+                ids = [row[0] for row in rows if row and isinstance(row[0], str)]
+            finally:
+                with contextlib.suppress(Exception):
+                    session.close()
+        except Exception as exc:
+            self.logger.debug("Stale lock cleanup skipped — %s: %s", type(exc).__name__, exc)
+            return
         if ids and self._artifact_store:
             with contextlib.suppress(Exception):
                 self._artifact_store._delete_artifacts_sync(ids)
@@ -672,28 +676,33 @@ class SessionLogManager:
         *,
         limit: int,
     ) -> list[tuple[str, str]]:
-        session = session_factory()  # type: ignore[call-arg]
         try:
-            rows = (
-                session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
-                .order_by(model.created_at.asc())  # type: ignore[attr-defined]
-                .limit(int(limit))
-                .all()
-            )
-            seen: set[tuple[str, str]] = set()
-            out: list[tuple[str, str]] = []
-            for chat_id, message_id in rows:
-                if not (isinstance(chat_id, str) and isinstance(message_id, str)):
-                    continue
-                key = (chat_id, message_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(key)
-            return out
-        finally:
-            session.close()
+            session = session_factory()  # type: ignore[call-arg]
+            try:
+                rows = (
+                    session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
+                    .order_by(model.created_at.asc())  # type: ignore[attr-defined]
+                    .limit(int(limit))
+                    .all()
+                )
+                seen: set[tuple[str, str]] = set()
+                out: list[tuple[str, str]] = []
+                for chat_id, message_id in rows:
+                    if not (isinstance(chat_id, str) and isinstance(message_id, str)):
+                        continue
+                    key = (chat_id, message_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(key)
+                return out
+            finally:
+                with contextlib.suppress(Exception):
+                    session.close()
+        except Exception as exc:
+            self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc)
+            return []
 
     @timed
     def _list_stale_messages(
@@ -705,56 +714,65 @@ class SessionLogManager:
         limit: int,
     ) -> list[tuple[str, str]]:
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=float(stale_finalize_seconds))
-        session = session_factory()  # type: ignore[call-arg]
         try:
-            # Candidates (best effort): any message that has at least one segment.
-            candidates = (
-                session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                .filter(model.item_type == "session_log_segment")  # type: ignore[attr-defined]
-                .distinct()
-                .limit(int(limit) * 5)
-                .all()
-            )
-        finally:
-            with contextlib.suppress(Exception):
-                session.close()
+            session = session_factory()  # type: ignore[call-arg]
+            try:
+                # Candidates (best effort): any message that has at least one segment.
+                candidates = (
+                    session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    .filter(model.item_type == "session_log_segment")  # type: ignore[attr-defined]
+                    .distinct()
+                    .limit(int(limit) * 5)
+                    .all()
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    session.close()
+        except Exception as exc:
+            self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc)
+            return []
 
         out: list[tuple[str, str]] = []
         if not candidates:
             return out
 
         # Filter: no terminal segment, and last activity < cutoff.
-        session = session_factory()  # type: ignore[call-arg]
         try:
-            for chat_id, message_id in candidates:
-                if not (isinstance(chat_id, str) and isinstance(message_id, str)):
-                    continue
-                exists_terminal = (
-                    session.query(model.id)  # type: ignore[attr-defined]
-                    .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
-                    .filter(model.message_id == message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
-                    .first()
-                )
-                if exists_terminal is not None:
-                    continue
-                last_row = (
-                    session.query(model.created_at)  # type: ignore[attr-defined]
-                    .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
-                    .filter(model.message_id == message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
-                    .order_by(model.created_at.desc())  # type: ignore[attr-defined]
-                    .limit(1)
-                    .first()
-                )
-                last_created = last_row[0] if last_row else None
-                if last_created is None or last_created >= cutoff:
-                    continue
-                out.append((chat_id, message_id))
-                if len(out) >= int(limit):
-                    break
-        finally:
-            session.close()
+            session = session_factory()  # type: ignore[call-arg]
+            try:
+                for chat_id, message_id in candidates:
+                    if not (isinstance(chat_id, str) and isinstance(message_id, str)):
+                        continue
+                    exists_terminal = (
+                        session.query(model.id)  # type: ignore[attr-defined]
+                        .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
+                        .filter(model.message_id == message_id)  # type: ignore[attr-defined]
+                        .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
+                        .first()
+                    )
+                    if exists_terminal is not None:
+                        continue
+                    last_row = (
+                        session.query(model.created_at)  # type: ignore[attr-defined]
+                        .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
+                        .filter(model.message_id == message_id)  # type: ignore[attr-defined]
+                        .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
+                        .order_by(model.created_at.desc())  # type: ignore[attr-defined]
+                        .limit(1)
+                        .first()
+                    )
+                    last_created = last_row[0] if last_row else None
+                    if last_created is None or last_created >= cutoff:
+                        continue
+                    out.append((chat_id, message_id))
+                    if len(out) >= int(limit):
+                        break
+            finally:
+                with contextlib.suppress(Exception):
+                    session.close()
+        except Exception as exc:
+            self.logger.debug("Stale message filtering skipped — %s: %s", type(exc).__name__, exc)
+            return []
         return out
 
     # =========================================================================
