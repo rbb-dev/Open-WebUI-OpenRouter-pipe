@@ -28,7 +28,7 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Tuple, Type, cast
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
@@ -75,7 +75,10 @@ _PAYLOAD_HEADER_SIZE = 1
 _REDIS_FLUSH_CHANNEL = "db-flush"
 
 # Type alias for Redis client
-_RedisClient = Any
+if TYPE_CHECKING:
+    from redis.asyncio import Redis as _RedisClient
+else:
+    _RedisClient = Any
 
 
 # -----------------------------------------------------------------------------

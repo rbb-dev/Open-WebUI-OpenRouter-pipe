@@ -61,11 +61,7 @@ except ImportError:
 
 # Timing instrumentation
 from .core.timing_logger import timed, timing_mark, configure_timing_file
-
-if TYPE_CHECKING:
-    from redis.asyncio import Redis as _RedisClient
-else:
-    _RedisClient = Any
+from .storage.persistence import _RedisClient
 
 # Optional pyzipper support for session log encryption
 try:
