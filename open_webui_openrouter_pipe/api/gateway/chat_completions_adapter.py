@@ -56,6 +56,43 @@ class ChatCompletionsAdapter:
         self.logger = logger
 
     @timed
+    async def _inline_internal_chat_files(self, chat_payload: dict, effective_valves: Any) -> None:
+        """Inline OWUI internal file URLs in chat messages before sending to OpenRouter."""
+        messages = chat_payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return
+        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
+        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list) or not content:
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "file":
+                    continue
+                file_obj = block.get("file")
+                if not isinstance(file_obj, dict):
+                    continue
+                file_value = file_obj.get("file_data")
+                if not isinstance(file_value, str) or not file_value.strip():
+                    file_value = file_obj.get("file_url")
+                if not isinstance(file_value, str) or not file_value.strip():
+                    continue
+                file_value = file_value.strip()
+                if not _is_internal_file_url(file_value):
+                    continue
+                inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
+                    file_value, chunk_size=chunk_size, max_bytes=max_bytes,
+                )
+                if not inlined:
+                    raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
+                file_obj["file_data"] = inlined
+
+    @timed
     async def send_openai_chat_completions_streaming_request(
         self,
         session: aiohttp.ClientSession,
@@ -125,44 +162,6 @@ class ChatCompletionsAdapter:
         )
 
         @timed
-        async def _inline_internal_chat_files() -> None:
-            messages = chat_payload.get("messages")
-            if not isinstance(messages, list) or not messages:
-                return
-            chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
-            max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content")
-                if not isinstance(content, list) or not content:
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") != "file":
-                        continue
-                    file_obj = block.get("file")
-                    if not isinstance(file_obj, dict):
-                        continue
-                    file_value = file_obj.get("file_data")
-                    if not isinstance(file_value, str) or not file_value.strip():
-                        file_value = file_obj.get("file_url")
-                    if not isinstance(file_value, str) or not file_value.strip():
-                        continue
-                    file_value = file_value.strip()
-                    if not _is_internal_file_url(file_value):
-                        continue
-                    inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
-                        file_value,
-                        chunk_size=chunk_size,
-                        max_bytes=max_bytes,
-                    )
-                    if not inlined:
-                        raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
-                    file_obj["file_data"] = inlined
-
-        @timed
         def _record_reasoning_detail(detail: dict[str, Any]) -> None:
             dtype = detail.get("type")
             if not isinstance(dtype, str) or not dtype:
@@ -216,7 +215,7 @@ class ChatCompletionsAdapter:
                 if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                     raise RuntimeError("Breaker open for user during stream")
 
-                await _inline_internal_chat_files()
+                await self._inline_internal_chat_files(chat_payload, effective_valves)
 
                 timing_mark("chat_http_request_start")
                 async with session.post(url, json=chat_payload, headers=headers) as resp:
@@ -642,44 +641,6 @@ class ChatCompletionsAdapter:
         _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
-        @timed
-        async def _inline_internal_chat_files() -> None:
-            messages = chat_payload.get("messages")
-            if not isinstance(messages, list) or not messages:
-                return
-            chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
-            max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content")
-                if not isinstance(content, list) or not content:
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") != "file":
-                        continue
-                    file_obj = block.get("file")
-                    if not isinstance(file_obj, dict):
-                        continue
-                    file_value = file_obj.get("file_data")
-                    if not isinstance(file_value, str) or not file_value.strip():
-                        file_value = file_obj.get("file_url")
-                    if not isinstance(file_value, str) or not file_value.strip():
-                        continue
-                    file_value = file_value.strip()
-                    if not _is_internal_file_url(file_value):
-                        continue
-                    inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
-                        file_value,
-                        chunk_size=chunk_size,
-                        max_bytes=max_bytes,
-                    )
-                    if not inlined:
-                        raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
-                    file_obj["file_data"] = inlined
-
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
@@ -692,7 +653,7 @@ class ChatCompletionsAdapter:
                 if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                     raise RuntimeError("Breaker open for user during request")
 
-                await _inline_internal_chat_files()
+                await self._inline_internal_chat_files(chat_payload, effective_valves)
 
                 timing_mark("chat_nonstream_http_request_start")
                 async with session.post(url, json=chat_payload, headers=headers) as resp:
