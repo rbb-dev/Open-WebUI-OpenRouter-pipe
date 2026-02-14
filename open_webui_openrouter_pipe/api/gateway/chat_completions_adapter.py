@@ -28,6 +28,7 @@ from ...core.errors import (
 from ..transforms import (
     _filter_openrouter_chat_request,
     _filter_openrouter_request,
+    _parse_url_citation_annotations,
     _responses_payload_to_chat_completions_payload,
 )
 # Imports from storage
@@ -442,28 +443,10 @@ class ChatCompletionsAdapter:
                                             images_emitted = True
 
                                 if annotations:
-                                    for raw_ann in annotations:
-                                        if not isinstance(raw_ann, dict):
-                                            continue
-                                        if raw_ann.get("type") != "url_citation":
-                                            continue
-                                        payload = raw_ann.get("url_citation")
-                                        if isinstance(payload, dict):
-                                            url = payload.get("url")
-                                            title = payload.get("title") or url
-                                        else:
-                                            url = raw_ann.get("url")
-                                            title = raw_ann.get("title") or url
-                                        if not isinstance(url, str) or not url.strip():
-                                            continue
-                                        url = url.strip()
+                                    for url, title in _parse_url_citation_annotations(annotations):
                                         if url in seen_citation_urls:
                                             continue
                                         seen_citation_urls.add(url)
-                                        if isinstance(title, str):
-                                            title = title.strip() or url
-                                        else:
-                                            title = url
                                         yield {
                                             "type": "response.output_text.annotation.added",
                                             "annotation": {"type": "url_citation", "url": url, "title": title},

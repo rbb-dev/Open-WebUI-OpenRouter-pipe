@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -1517,3 +1518,32 @@ def apply_context_transforms(responses_body: "ResponsesBody", *, auto_context_tr
     if responses_body.transforms is not None:
         return
     responses_body.transforms = ["middle-out"]
+
+
+def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tuple[str, str]]:
+    """Parse url_citation annotations, yielding (url, title) pairs.
+
+    Handles both nested format (``annotation.url_citation.url``) and flat
+    format (``annotation.url``).  Validates that url is a non-empty string
+    and normalises the title.
+    """
+    for raw_ann in raw_annotations:
+        if not isinstance(raw_ann, dict):
+            continue
+        if raw_ann.get("type") != "url_citation":
+            continue
+        payload = raw_ann.get("url_citation")
+        if isinstance(payload, dict):
+            url = payload.get("url")
+            title = payload.get("title") or url
+        else:
+            url = raw_ann.get("url")
+            title = raw_ann.get("title") or url
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        if isinstance(title, str):
+            title = title.strip() or url
+        else:
+            title = url
+        yield url, title

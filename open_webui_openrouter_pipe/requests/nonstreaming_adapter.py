@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
 
 import aiohttp
 
-from ..api.transforms import _filter_openrouter_request
+from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
 from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 from ..storage.persistence import generate_item_id
 from ..models.registry import normalize_model_id_dotted
@@ -201,28 +201,10 @@ class NonStreamingAdapter:
             annotations = message_obj.get("annotations")
             if isinstance(annotations, list) and annotations:
                 seen_urls: set[str] = set()
-                for raw_ann in annotations:
-                    if not isinstance(raw_ann, dict):
-                        continue
-                    if raw_ann.get("type") != "url_citation":
-                        continue
-                    payload = raw_ann.get("url_citation")
-                    if isinstance(payload, dict):
-                        url = payload.get("url")
-                        title = payload.get("title") or url
-                    else:
-                        url = raw_ann.get("url")
-                        title = raw_ann.get("title") or url
-                    if not isinstance(url, str) or not url.strip():
-                        continue
-                    url = url.strip()
+                for url, title in _parse_url_citation_annotations(annotations):
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    if isinstance(title, str):
-                        title = title.strip() or url
-                    else:
-                        title = url
                     yield {
                         "type": "response.output_text.annotation.added",
                         "annotation": {"type": "url_citation", "url": url, "title": title},

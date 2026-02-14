@@ -77,6 +77,7 @@ from ..api.transforms import (
     _apply_identifier_valves_to_payload,
     _apply_model_fallback_to_payload,
     _apply_disable_native_websearch_to_payload,
+    _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
 )
 
@@ -748,27 +749,9 @@ class StreamingHandler:
             if not isinstance(raw_annotations, list) or not raw_annotations:
                 return
             emitted_any = False
-            for raw_ann in raw_annotations:
-                if not isinstance(raw_ann, dict):
-                    continue
-                if raw_ann.get("type") != "url_citation":
-                    continue
-                payload = raw_ann.get("url_citation")
-                if isinstance(payload, dict):
-                    url = payload.get("url")
-                    title = payload.get("title") or url
-                else:
-                    url = raw_ann.get("url")
-                    title = raw_ann.get("title") or url
-                if not isinstance(url, str) or not url.strip():
-                    continue
-                url = url.strip()
+            for url, title in _parse_url_citation_annotations(raw_annotations):
                 if url.endswith("?utm_source=openai"):
                     url = url[: -len("?utm_source=openai")]
-                if isinstance(title, str):
-                    title = title.strip() or url
-                else:
-                    title = url
                 host = url.split("//", 1)[-1].split("/", 1)[0].lower().lstrip("www.")
                 citation = {
                     "source": {"name": host or "source", "url": url},
