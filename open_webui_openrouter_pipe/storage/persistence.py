@@ -1599,14 +1599,21 @@ class ArtifactStore:
 # Helper Functions
 # -----------------------------------------------------------------------------
 
-def _normalize_persisted_item(item: Optional[Dict[str, Any]], generate_item_id: Callable[[], str]) -> Optional[Dict[str, Any]]:
-    """
-    Ensure persisted response artifacts match the schema expected by the
-    Responses API when replayed via the `input` array.
-    
+def normalize_persisted_item(
+    item: Optional[Dict[str, Any]],
+    generate_item_id: Callable[[], str] = generate_item_id,
+) -> Optional[Dict[str, Any]]:
+    """Ensure persisted response artifacts match the schema expected by the
+    Responses API when replayed via the ``input`` array.
+
     Args:
-        item: The item to normalize
-        generate_item_id: Function to generate unique item IDs
+        item: The item to normalize.
+        generate_item_id: Callable that produces unique item IDs.  Defaults to
+            the module-level :func:`generate_item_id`.  Callers may supply an
+            alternative for deterministic testing.
+
+    Returns:
+        Normalized item dict, or ``None`` when the item is invalid.
     """
     if not isinstance(item, dict):
         return None
@@ -1677,17 +1684,3 @@ def _normalize_persisted_item(item: Optional[Dict[str, Any]], generate_item_id: 
         return normalized
 
     return item
-
-
-def normalize_persisted_item(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Convenience wrapper for _normalize_persisted_item using the module's generate_item_id.
-
-    Ensure persisted response artifacts match the schema expected by the Responses API.
-
-    Args:
-        item: The item to normalize
-
-    Returns:
-        Normalized item dict or None
-    """
-    return _normalize_persisted_item(item, generate_item_id)

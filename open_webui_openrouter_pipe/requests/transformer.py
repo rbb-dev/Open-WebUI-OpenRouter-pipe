@@ -19,9 +19,7 @@ from urllib.parse import urlparse
 from starlette.requests import Request
 
 # Import helper functions from domain modules
-from ..storage.persistence import (
-    normalize_persisted_item as _normalize_persisted_item,
-)
+from ..storage.persistence import normalize_persisted_item
 from ..tools.tool_schema import (
     _classify_function_call_artifacts,
 )
@@ -1376,7 +1374,7 @@ async def transform_messages_to_input(
                         and chat_id
                     ):
                         replayed_reasoning_refs.append((chat_id, segment["marker"]))
-                    item = _normalize_persisted_item(payload)
+                    item = normalize_persisted_item(payload)
                     if item is not None:
                         item_type = ((item.get("type") or "").lower())
                         if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:

@@ -60,9 +60,7 @@ from .constants import (
 )
 
 # Imports from storage.persistence
-from ..storage.persistence import (
-    normalize_persisted_item as _normalize_persisted_item,
-)
+from ..storage.persistence import normalize_persisted_item
 # Imports from core.utils
 from ..core.utils import (
     wrap_code_block,
@@ -1285,7 +1283,7 @@ class StreamingHandler:
                             should_persist = False
 
                         if should_persist:
-                            normalized_item = _normalize_persisted_item(item)
+                            normalized_item = normalize_persisted_item(item)
                             if normalized_item:
                                 row = self._pipe._artifact_store._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_item
@@ -1597,7 +1595,7 @@ class StreamingHandler:
                             # Preserve reasoning with encrypted_content for tool continuation
                             reasoning_items.append(item)
                         elif item_type == "function_call":
-                            normalized_call = _normalize_persisted_item(item)
+                            normalized_call = normalize_persisted_item(item)
                             if normalized_call:
                                 call_items.append(normalized_call)
                     if call_items:
@@ -1942,7 +1940,7 @@ class StreamingHandler:
                                     len(persist_payloads),
                                     payload_type,
                                 )
-                                normalized_payload = _normalize_persisted_item(payload)
+                                normalized_payload = normalize_persisted_item(payload)
                                 if not normalized_payload:
                                     self.logger.warning(
                                         "❌ [%d/%d] Normalization returned None for type=%s",

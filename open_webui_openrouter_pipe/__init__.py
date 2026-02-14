@@ -93,7 +93,7 @@ if TYPE_CHECKING:
     )
     from .requests.debug import _debug_print_request, _debug_print_error_response
     from .storage.persistence import (
-        normalize_persisted_item as _normalize_persisted_item,
+        normalize_persisted_item,
         ArtifactStore,
         generate_item_id,
         _PAYLOAD_FLAG_LZ4,
@@ -189,7 +189,7 @@ __all__ = [
     "_extract_feature_flags",
     "_classify_function_call_artifacts",
     "_render_error_template",
-    "_normalize_persisted_item",
+    "normalize_persisted_item",
     "_sanitize_path_component",
     "_pretty_json",
     "_select_openrouter_http_referer",
@@ -328,7 +328,7 @@ _LAZY_IMPORTS = {
     "TaskModelAdapter": (".requests.task_model_adapter", "TaskModelAdapter"),
 
     # Storage persistence
-    "_normalize_persisted_item": (".storage.persistence", "normalize_persisted_item"),
+    "normalize_persisted_item": (".storage.persistence", "normalize_persisted_item"),
     "ArtifactStore": (".storage.persistence", "ArtifactStore"),
     "generate_item_id": (".storage.persistence", "generate_item_id"),
     "_PAYLOAD_FLAG_LZ4": (".storage.persistence", "_PAYLOAD_FLAG_LZ4"),

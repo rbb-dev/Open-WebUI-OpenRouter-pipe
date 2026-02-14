@@ -25,7 +25,6 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
-    _normalize_persisted_item,
     _sanitize_table_fragment,
     generate_item_id,
     normalize_persisted_item,
@@ -2815,7 +2814,7 @@ import json
 from open_webui_openrouter_pipe import (
     _classify_function_call_artifacts,
     _dedupe_tools,
-    _normalize_persisted_item,
+    normalize_persisted_item,
 )
 
 
@@ -2826,7 +2825,7 @@ def test_normalize_function_call_serializes_arguments_and_ids():
         "arguments": {"city": "Lisbon", "units": "metric"},
     }
 
-    normalized = _normalize_persisted_item(item)
+    normalized = normalize_persisted_item(item)
     assert normalized is not None
 
     assert normalized["type"] == "function_call"
@@ -2839,7 +2838,7 @@ def test_normalize_function_call_serializes_arguments_and_ids():
 def test_normalize_function_call_output_assigns_defaults():
     item = {"type": "function_call_output", "output": {"ok": True}}
 
-    normalized = _normalize_persisted_item(item)
+    normalized = normalize_persisted_item(item)
     assert normalized is not None
 
     assert isinstance(normalized["output"], str)
@@ -2848,13 +2847,13 @@ def test_normalize_function_call_output_assigns_defaults():
 
 
 def test_normalize_reasoning_and_file_search_payloads():
-    reasoning = _normalize_persisted_item(
+    reasoning = normalize_persisted_item(
         {"type": "reasoning", "content": "Chain", "summary": "Done"}
     )
     assert reasoning is not None
-    file_search = _normalize_persisted_item({"type": "file_search_call", "queries": "bad"})
+    file_search = normalize_persisted_item({"type": "file_search_call", "queries": "bad"})
     assert file_search is not None
-    web_search = _normalize_persisted_item({"type": "web_search_call", "action": "invalid"})
+    web_search = normalize_persisted_item({"type": "web_search_call", "action": "invalid"})
     assert web_search is not None
 
     assert reasoning["content"] == [{"type": "reasoning_text", "text": "Chain"}]

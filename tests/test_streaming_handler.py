@@ -8655,7 +8655,7 @@ class TestPersistToolsNormalizationNone:
         monkeypatch.setattr(persistence, "normalize_persisted_item", mock_normalize)
         # Also patch the imported reference in streaming_core
         monkeypatch.setattr(
-            "open_webui_openrouter_pipe.streaming.streaming_core._normalize_persisted_item",
+            "open_webui_openrouter_pipe.streaming.streaming_core.normalize_persisted_item",
             mock_normalize
         )
 

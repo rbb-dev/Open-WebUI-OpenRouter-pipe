@@ -1419,13 +1419,13 @@ def test_merge_usage_stats_and_wrap_code_block():
 
 
 def test_normalize_persisted_item_variants(monkeypatch):
-    fn_call = ow._normalize_persisted_item({"type": "function_call", "name": "tool", "arguments": {"a": 1}})
+    fn_call = ow.normalize_persisted_item({"type": "function_call", "name": "tool", "arguments": {"a": 1}})
     assert fn_call is not None
     assert fn_call["name"] == "tool"
-    fn_output = ow._normalize_persisted_item({"type": "function_call_output", "call_id": "123", "output": 5})
+    fn_output = ow.normalize_persisted_item({"type": "function_call_output", "call_id": "123", "output": 5})
     assert fn_output is not None
     assert fn_output["output"] == "5"
-    reasoning = ow._normalize_persisted_item({"type": "reasoning", "content": "text"})
+    reasoning = ow.normalize_persisted_item({"type": "reasoning", "content": "text"})
     assert reasoning is not None
     assert reasoning["content"]
 
@@ -1624,7 +1624,7 @@ from open_webui_openrouter_pipe import (
     _OPENROUTER_REFERER,
     _build_error_template_values,
     _classify_function_call_artifacts,
-    _normalize_persisted_item,
+    normalize_persisted_item,
     _pretty_json,
     _render_error_template,
     _select_openrouter_http_referer,
@@ -1791,18 +1791,18 @@ def test_select_openrouter_http_referer_rejects_non_url_override():
 
 
 def test_normalize_persisted_items_and_classifier():
-    call = _normalize_persisted_item({"type": "function_call", "name": "fetch", "arguments": {"foo": 1}})
+    call = normalize_persisted_item({"type": "function_call", "name": "fetch", "arguments": {"foo": 1}})
     assert call is not None
     assert call["call_id"]
     assert json.loads(call["arguments"])["foo"] == 1
 
-    output = _normalize_persisted_item(
+    output = normalize_persisted_item(
         {"type": "function_call_output", "call_id": "abc", "output": {"data": 42}}
     )
     assert output is not None
     assert output["output"] == str({"data": 42})
 
-    reasoning = _normalize_persisted_item({"type": "reasoning", "content": "step"})
+    reasoning = normalize_persisted_item({"type": "reasoning", "content": "step"})
     assert reasoning is not None
     assert reasoning["content"][0]["text"] == "step"
 
