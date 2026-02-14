@@ -86,7 +86,7 @@ from ..api.transforms import (
 )
 
 # Import config classes
-from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE
+from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
 
 # Import Open WebUI models
 try:
@@ -1271,16 +1271,16 @@ class StreamingHandler:
                         if item_type == "reasoning":
                             should_persist = valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
 
-                        elif item_type == "web_search_call":
-                            # Never persist assistant/user messages or ephemeral search calls
+                        elif item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
+                            # Never persist non-replayable artifacts (images, searches, etc.)
+                            should_persist = False
+
+                        elif item_type == "function_call":
+                            # Defer persistence until the corresponding tool result is stored
                             should_persist = False
 
                         else:
                             should_persist = persist_tools_enabled
-
-                        if item_type == "function_call":
-                            # Defer persistence until the corresponding tool result is stored
-                            should_persist = False
 
                         if should_persist:
                             normalized_item = normalize_persisted_item(item)
