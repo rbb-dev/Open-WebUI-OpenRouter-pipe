@@ -23,8 +23,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from aioresponses import aioresponses
-
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.requests.transformer import (
     transform_messages_to_input,
@@ -1109,7 +1107,11 @@ class TestImageSelection:
             async def mock_inline(*args, **kwargs):
                 return "data:image/png;base64,test"
 
+            async def mock_download(*args, **kwargs):
+                return None
+
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
+            pipe_instance._multimodal_handler._download_remote_url = mock_download
 
             messages = [
                 {"role": "assistant", "content": "Here's an image: ![alt](https://example.com/img.png)"},
@@ -2586,7 +2588,7 @@ class TestBlockTypeVariations:
 
 
 # =============================================================================
-# Remote Image Download Tests (using aioresponses)
+# Remote Image Download Tests
 # =============================================================================
 
 
@@ -2601,27 +2603,25 @@ class TestRemoteImageDownload:
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
-            with aioresponses() as mocked:
-                mocked.get(
-                    "https://example.com/test-image.png",
-                    body=image_bytes,
-                    content_type="image/png"
-                )
+            async def mock_download(url, **kwargs):
+                return {"data": image_bytes, "mime_type": "image/png", "url": url}
 
-                messages = [
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": "https://example.com/test-image.png"}}
-                    ]}
-                ]
+            pipe_instance._multimodal_handler._download_remote_url = mock_download
 
-                result = await transform_messages_to_input(pipe_instance, messages)
+            messages = [
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "https://example.com/test-image.png"}}
+                ]}
+            ]
 
-                # Should have user message with image
-                assert len(result) == 1
-                image_blocks = [b for b in result[0]["content"] if b.get("type") == "input_image"]
-                assert len(image_blocks) == 1
-                # URL should be passed through or converted to data URL
-                assert image_blocks[0]["image_url"]
+            result = await transform_messages_to_input(pipe_instance, messages)
+
+            # Should have user message with image
+            assert len(result) == 1
+            image_blocks = [b for b in result[0]["content"] if b.get("type") == "input_image"]
+            assert len(image_blocks) == 1
+            # URL should be passed through or converted to data URL
+            assert image_blocks[0]["image_url"]
 
 
 # =============================================================================
@@ -3738,7 +3738,11 @@ class TestAssistantImageFallbackException:
             async def raise_on_inline(*args, **kwargs):
                 raise RuntimeError("Inline failed")
 
+            async def mock_download(*args, **kwargs):
+                return None
+
             pipe_instance._multimodal_handler._inline_owui_file_id = raise_on_inline
+            pipe_instance._multimodal_handler._download_remote_url = mock_download
 
             messages = [
                 {"role": "assistant", "content": "Here's an image: ![alt](https://example.com/img.png)"},
