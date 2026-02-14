@@ -25,8 +25,8 @@ jobs:
 
       - name: Run bundler
         run: |
-          python scripts/bundle.py
-          python scripts/bundle.py --compress
+          python scripts/bundle_v2.py
+          python scripts/bundle_v2.py --compress
 
       - name: Verify bundled files
         run: |
