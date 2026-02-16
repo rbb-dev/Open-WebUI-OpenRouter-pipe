@@ -2146,7 +2146,7 @@ class Pipe:
 
         # Import tenacity for retries
         try:
-            from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type
+            from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_not_exception_type
         except ImportError:
             # Fallback without retries if tenacity not available
             try:
@@ -2159,7 +2159,7 @@ class Pipe:
                 text, files, embeds = await _process_and_emit(result)
                 timing_mark(f"tool_run:{tool_name}:done")
                 return ("completed", text, files, embeds)
-            except Exception:
+            except Exception as exc:
                 self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(
@@ -2167,12 +2167,16 @@ class Pipe:
                         tool_name,
                         exc_info=True,
                     )
-                raise
+                timing_mark(f"tool_run:{tool_name}:failed")
+                return ("failed", f"Tool error: {exc}", [], [])
 
         retryer = AsyncRetrying(
             stop=stop_after_attempt(2),
             wait=wait_exponential(multiplier=0.2, min=0.2, max=1),
-            retry=retry_if_exception_type(Exception),
+            retry=(
+                retry_if_exception_type(Exception)
+                & retry_if_not_exception_type(asyncio.TimeoutError)
+            ),
             reraise=True,
         )
         try:
@@ -2187,7 +2191,7 @@ class Pipe:
                     text, files, embeds = await _process_and_emit(result)
                     timing_mark(f"tool_run:{tool_name}:done")
                     return ("completed", text, files, embeds)
-        except Exception:
+        except Exception as exc:
             self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -2195,7 +2199,8 @@ class Pipe:
                     tool_name,
                     exc_info=True,
                 )
-            raise
+            timing_mark(f"tool_run:{tool_name}:failed")
+            return ("failed", f"Tool error: {exc}", [], [])
         return ("failed", "Tool execution produced no output.", [], [])
 
     @timed

@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe import Pipe, ResponsesBody, _ToolExecutionContext
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.streaming.streaming_core import (
@@ -3883,15 +3883,37 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
     async def emitter(event):
         emitted.append(event)
 
-    result = await pipe._streaming_handler._run_streaming_loop(
-        body,
-        valves,
-        emitter,
-        metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
-        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_tool_callable}},
-        session=cast(Any, object()),
+    # Set up tool execution context with worker (required since legacy fallback removed)
+    loop = asyncio.get_running_loop()
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(),
+        per_request_semaphore=asyncio.Semaphore(1),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=None,
+        idle_timeout=None,
         user_id="user-123",
+        event_emitter=emitter,
+        batch_cap=4,
     )
+    executor = pipe._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "sandbox"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_tool_callable}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe._TOOL_CONTEXT.reset(token)
 
     assert result.startswith("All set.")
     assert any(event["type"] == "source" for event in emitted), "Expected source event"
@@ -4313,18 +4335,6 @@ async def test_function_call_status_invalid_json_arguments_does_not_crash(monkey
     assert not any(event.get("type") == "chat:completion" and event.get("data", {}).get("error") for event in emitted)
 
 
-@pytest.mark.asyncio
-async def test_legacy_tool_execution_invalid_arguments_returns_failed_output(pipe_instance_async):
-    pipe = pipe_instance_async
-    calls = [{"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{"}]
-    tools = {"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda: None}}
-
-    outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-    assert outputs and outputs[0]["type"] == "function_call_output"
-    assert "Invalid arguments" in outputs[0]["output"]
-
-
 def test_anthropic_interleaved_thinking_header_applied(pipe_instance):
     pipe = pipe_instance
     valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True})
@@ -4401,15 +4411,37 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance
     async def emitter(event):
         emitted.append(event)
 
-    await pipe._streaming_handler._run_streaming_loop(
-        body,
-        valves,
-        emitter,
-        metadata={"model": {"id": "sandbox"}},
-        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_lookup_tool}},
-        session=cast(Any, object()),
+    # Set up tool execution context with worker (required since legacy fallback removed)
+    loop = asyncio.get_running_loop()
+    context = _ToolExecutionContext(
+        queue=asyncio.Queue(),
+        per_request_semaphore=asyncio.Semaphore(1),
+        global_semaphore=None,
+        timeout=5.0,
+        batch_timeout=None,
+        idle_timeout=None,
         user_id="user-123",
+        event_emitter=emitter,
+        batch_cap=4,
     )
+    executor = pipe._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "sandbox"}},
+            tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_lookup_tool}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe._TOOL_CONTEXT.reset(token)
 
     notifications = [e for e in emitted if e.get("type") == "notification"]
     assert notifications, "Expected a notification when MAX_FUNCTION_CALL_LOOPS is reached"

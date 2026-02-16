@@ -130,7 +130,6 @@ class SSEParser:
         worker_tasks = [
             asyncio.create_task(
                 self._worker(
-                    worker_id=idx,
                     chunk_queue=chunk_queue,
                     event_queue=event_queue,
                 ),
@@ -333,7 +332,6 @@ class SSEParser:
     async def _worker(
         self,
         *,
-        worker_id: int,
         chunk_queue: asyncio.Queue,
         event_queue: asyncio.Queue,
     ) -> None:
@@ -346,7 +344,6 @@ class SSEParser:
         - Emits parsed events to event queue for distribution
 
         Args:
-            worker_id: Worker index for logging
             chunk_queue: Queue to read raw SSE events from
             event_queue: Queue to send parsed JSON events to
         """

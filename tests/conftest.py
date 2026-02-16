@@ -427,6 +427,7 @@ def _install_tenacity_stub() -> None:
 
     tenacity_mod.AsyncRetrying = AsyncRetrying
     tenacity_mod.retry_if_exception_type = _passthrough
+    tenacity_mod.retry_if_not_exception_type = _passthrough
     tenacity_mod.stop_after_attempt = _passthrough
     tenacity_mod.wait_exponential = _passthrough
 

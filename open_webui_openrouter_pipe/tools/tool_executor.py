@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
 import uuid
@@ -82,7 +81,6 @@ class ToolExecutor:
         """
         self._pipe = pipe
         self.logger = logger
-        self._legacy_tool_warning_emitted = False
 
     # ------------------------------------------------------------------
     # Argument parsing helpers
@@ -215,9 +213,10 @@ class ToolExecutor:
 
         context = self._pipe._TOOL_CONTEXT.get()
         if context is None:
-            self.logger.debug("Using legacy tool execution path")
-            # Fallback: legacy direct execution
-            return await self._execute_function_calls_legacy(calls, tools)
+            raise ValueError(
+                "_execute_function_calls called without a tool execution context. "
+                "Ensure _TOOL_CONTEXT is set before calling tool execution."
+            )
 
         loop = asyncio.get_running_loop()
         pending: list[tuple[dict[str, Any], asyncio.Future]] = []
@@ -337,14 +336,17 @@ class ToolExecutor:
                 else:
                     result = await future
             except asyncio.TimeoutError:
+                tool_name = call.get("name")
+                idle_secs = context.idle_timeout if context else None
                 message = (
-                    f"Tool '{call.get('name')}' idle timeout after {context.idle_timeout:.0f}s."
-                    if context and context.idle_timeout
+                    f"Tool '{tool_name}' timed out after {idle_secs:.0f}s (idle timeout)."
+                    if idle_secs
                     else "Tool idle timeout exceeded."
                 )
-                if context:
-                    context.timeout_error = context.timeout_error or message
-                raise RuntimeError(message)
+                if context and not context.timeout_error:
+                    context.timeout_error = message
+                self.logger.warning("Tool idle timeout: %s", message)
+                result = self._build_tool_output(call, message, status="failed")
             except Exception as exc:  # pragma: no cover - defensive
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(
@@ -359,9 +361,6 @@ class ToolExecutor:
                     status="failed",
                 )
             outputs.append(result)
-
-        if context and context.timeout_error:
-            raise RuntimeError(context.timeout_error)
 
         return outputs
 
@@ -518,140 +517,6 @@ class ToolExecutor:
         except Exception:
             self.logger.debug("Direct tool server registry build failed", exc_info=True)
             return {}, []
-
-    @timed
-    async def _execute_function_calls_legacy(
-        self,
-        calls: list[dict],
-        tools: dict[str, dict[str, Any]],
-    ) -> list[dict]:
-        """Legacy direct execution path used when tool context is unavailable.
-
-        Note: In legacy mode, we don't have full context (request/user/metadata)
-        so file/embed extraction from process_tool_result() won't work fully.
-        This is expected - legacy mode is a fallback.
-        """
-        if not self._legacy_tool_warning_emitted:
-            self._legacy_tool_warning_emitted = True
-            self.logger.warning("Tool queue unavailable; falling back to direct execution.")
-
-        # Track tasks with their metadata for result processing
-        task_entries: list[tuple[dict, dict[str, Any] | None, Awaitable]] = []
-
-        for call in calls:
-            timing_mark(f"legacy_tool_prep:{call.get('name', 'unknown')}")
-            try:
-                raw_name = call.get("name")
-                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
-                if not tool_name:
-                    task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError("Tool call missing name"))))
-                    continue
-
-                tool_cfg = tools.get(tool_name)
-                if not tool_cfg:
-                    task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError("Tool not found"))))
-                    continue
-
-                fn = tool_cfg.get("callable")
-                if fn is None:
-                    task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError("Tool has no callable configured"))))
-                    continue
-
-                raw_args_value = call.get("arguments")
-                if isinstance(raw_args_value, str) and not raw_args_value.strip():
-                    required: list[str] = []
-                    try:
-                        spec = tool_cfg.get("spec")
-                        if isinstance(spec, dict):
-                            params = spec.get("parameters")
-                            if isinstance(params, dict):
-                                req = params.get("required")
-                                if isinstance(req, list):
-                                    required = [r for r in req if isinstance(r, str) and r.strip()]
-                    except Exception:
-                        pass  # Non-critical - continue with empty required list
-                    if required:
-                        task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError("Missing tool arguments (empty string)"))))
-                        continue
-                    raw_args_value = "{}"
-
-                raw_args = raw_args_value if raw_args_value is not None else "{}"
-                try:
-                    args = self._parse_tool_arguments(raw_args)
-                except Exception as exc:
-                    task_entries.append((call, tool_cfg, asyncio.sleep(0, result=RuntimeError(f"Invalid arguments: {exc}"))))
-                    continue
-
-                if inspect.iscoroutinefunction(fn):
-                    task_entries.append((call, tool_cfg, fn(**args)))
-                else:
-                    task_entries.append((call, tool_cfg, asyncio.to_thread(fn, **args)))
-
-            except Exception as prep_exc:
-                # Safety net for any unexpected error during preparation
-                self.logger.debug("Tool preparation failed for '%s': %s", call.get("name"), prep_exc)
-                task_entries.append((call, None, asyncio.sleep(0, result=RuntimeError(f"Preparation error: {prep_exc}"))))
-
-        # Execute all tasks, catching exceptions per-task
-        tasks = [entry[2] for entry in task_entries]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        outputs: list[dict] = []
-        for (call, tool_cfg, _), result in zip(task_entries, results):
-            tool_name = call.get("name", "unknown")
-            timing_mark(f"legacy_tool_result:{tool_name}")
-
-            try:
-                if isinstance(result, Exception):
-                    status = "failed"
-                    output_text = f"Tool error: {result}"
-                else:
-                    status = "completed"
-                    # Get tool type for process_tool_result
-                    tool_type = "function"
-                    if tool_cfg is not None:
-                        try:
-                            tool_type = (tool_cfg.get("type") or "function").lower()
-                        except Exception:
-                            pass
-
-                    # Use safe result processing (no context in legacy mode)
-                    is_direct = bool(tool_cfg.get("direct")) if tool_cfg else False
-                    output_text, files, embeds = await self._process_tool_result_safe(
-                        tool_name=tool_name,
-                        tool_type=tool_type,
-                        raw_result=result,
-                        context=None,  # Legacy mode has no context
-                        is_direct_tool=is_direct,
-                    )
-
-                    # Log if we extracted files/embeds (won't be emitted in legacy mode)
-                    if files or embeds:
-                        self.logger.debug(
-                            "Tool '%s' produced %d files, %d embeds (not emitted in legacy mode)",
-                            tool_name, len(files), len(embeds),
-                        )
-
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        output_text,
-                        status=status,
-                    )
-                )
-
-            except Exception as output_exc:
-                # Safety net - ensure we always produce an output
-                self.logger.warning("Failed to build output for '%s': %s", tool_name, output_exc)
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        f"Tool output error: {output_exc}",
-                        status="failed",
-                    )
-                )
-
-        return outputs
 
     async def _notify_tool_breaker(
         self,

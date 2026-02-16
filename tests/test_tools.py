@@ -315,13 +315,13 @@ async def test_execute_function_calls_with_context_origin_logging():
 
 @pytest.mark.asyncio
 async def test_execute_function_calls_with_context_idle_timeout():
-    """Test that idle timeout raises RuntimeError (lines 196-208)."""
+    """Test that idle timeout returns a failed output (not raises)."""
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
 
         loop = asyncio.get_running_loop()
-        # Very short idle timeout
+        # Very short idle timeout — no worker, so future will never resolve
         context = create_tool_context(loop, idle_timeout=0.01)
         token = pipe._TOOL_CONTEXT.set(context)
 
@@ -339,10 +339,11 @@ async def test_execute_function_calls_with_context_idle_timeout():
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
 
-            with pytest.raises(RuntimeError) as exc_info:
-                await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
-            assert "idle timeout" in str(exc_info.value).lower()
+            assert len(outputs) == 1
+            assert outputs[0]["type"] == "function_call_output"
+            assert "timed out" in outputs[0]["output"].lower()
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -350,8 +351,8 @@ async def test_execute_function_calls_with_context_idle_timeout():
 
 
 @pytest.mark.asyncio
-async def test_execute_function_calls_with_context_timeout_error_propagation():
-    """Test that context.timeout_error is raised at end (line 225)."""
+async def test_execute_function_calls_with_context_timeout_error_no_raise():
+    """Test that a pre-set context.timeout_error does not cause a raise."""
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
@@ -366,10 +367,81 @@ async def test_execute_function_calls_with_context_timeout_error_propagation():
             tools = {}
             calls = []  # No calls, but timeout_error is set
 
-            with pytest.raises(RuntimeError) as exc_info:
-                await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+            # Should return normally — no raise
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+            assert outputs == []
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+    finally:
+        await pipe.close()
 
-            assert "Pre-existing timeout error" in str(exc_info.value)
+
+# ==============================================================================
+# Resilience tests — tool failures return outputs, never raise
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_returns_failed_output_and_continues():
+    """Idle timeout returns failed outputs for all timed-out tools (no exception)."""
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-key")
+        loop = asyncio.get_running_loop()
+        # Very short idle timeout — no worker, so futures never resolve
+        context = create_tool_context(loop, idle_timeout=0.01)
+        token = pipe._TOOL_CONTEXT.set(context)
+
+        try:
+            async def tool_a(**_kwargs):
+                return "a"
+
+            async def tool_b(**_kwargs):
+                return "b"
+
+            tools = {
+                "tool_a": {
+                    "type": "function",
+                    "spec": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}},
+                    "callable": tool_a,
+                },
+                "tool_b": {
+                    "type": "function",
+                    "spec": {"name": "tool_b", "parameters": {"type": "object", "properties": {}}},
+                    "callable": tool_b,
+                },
+            }
+            calls = [
+                {"type": "function_call", "call_id": "c1", "name": "tool_a", "arguments": "{}"},
+                {"type": "function_call", "call_id": "c2", "name": "tool_b", "arguments": "{}"},
+            ]
+
+            # No worker → both futures time out → both should return failed outputs
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+
+            assert len(outputs) == 2
+            for out in outputs:
+                assert out["type"] == "function_call_output"
+                assert "timed out" in out["output"].lower()
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_context_timeout_error_does_not_raise():
+    """Pre-set context.timeout_error no longer triggers a raise — just returns normally."""
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-key")
+        loop = asyncio.get_running_loop()
+        context = create_tool_context(loop)
+        context.timeout_error = "batch timeout triggered externally"
+        token = pipe._TOOL_CONTEXT.set(context)
+        try:
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls([], {})
+            assert outputs == []
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -669,209 +741,6 @@ async def test_build_direct_tool_server_registry_outer_exception():
 
 
 # ==============================================================================
-# Tests for _execute_function_calls_legacy (lines 401-410, 424, 434)
-# ==============================================================================
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_missing_tool_name():
-    """Test legacy execution with missing tool name (line 401)."""
-    pipe = Pipe()
-    try:
-        tools = {}
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert "Tool error" in outputs[0]["output"]
-        # Status is normalized to "completed" for OpenRouter Responses API compatibility
-        # even when there's an error (error info is in "output" field)
-        assert outputs[0]["status"] == "completed"
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_tool_not_found():
-    """Test legacy execution with non-existent tool (line 405)."""
-    pipe = Pipe()
-    try:
-        tools = {}
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "missing_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert "Tool error" in outputs[0]["output"]
-        assert "not found" in outputs[0]["output"].lower()
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_no_callable():
-    """Test legacy execution with tool missing callable (line 409)."""
-    pipe = Pipe()
-    try:
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                # No callable
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert "Tool error" in outputs[0]["output"]
-        assert "no callable" in outputs[0]["output"].lower()
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_empty_args_with_required():
-    """Test legacy execution with empty args and required params (line 421-424)."""
-    pipe = Pipe()
-    try:
-        async def my_tool(**kwargs):
-            return "should not be called"
-
-        tools = {
-            "my_tool": {
-                "spec": {
-                    "name": "my_tool",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"url": {"type": "string"}},
-                        "required": ["url"],
-                    },
-                },
-                "callable": my_tool,
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert "Tool error" in outputs[0]["output"]
-        assert "empty string" in outputs[0]["output"].lower() or "missing" in outputs[0]["output"].lower()
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_empty_args_no_required():
-    """Test legacy execution with empty args but no required params (line 424)."""
-    pipe = Pipe()
-    try:
-        call_count = {"count": 0}
-
-        async def my_tool(**kwargs):
-            call_count["count"] += 1
-            return "success"
-
-        tools = {
-            "my_tool": {
-                "spec": {
-                    "name": "my_tool",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"url": {"type": "string"}},
-                        # No required
-                    },
-                },
-                "callable": my_tool,
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": ""}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert outputs[0]["status"] == "completed"
-        assert call_count["count"] == 1
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_sync_callable():
-    """Test legacy execution with sync callable (line 434)."""
-    pipe = Pipe()
-    try:
-        call_count = {"count": 0}
-
-        def sync_tool(**kwargs):
-            call_count["count"] += 1
-            return "sync result"
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": sync_tool,
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert outputs[0]["status"] == "completed"
-        assert outputs[0]["output"] == "sync result"
-        assert call_count["count"] == 1
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_tool_exception():
-    """Test legacy execution when tool raises exception."""
-    pipe = Pipe()
-    try:
-        async def failing_tool(**kwargs):
-            raise ValueError("Tool failed!")
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": failing_tool,
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        # Status is normalized to "completed" for OpenRouter Responses API compatibility
-        # even when there's an error (error info is in "output" field)
-        assert outputs[0]["status"] == "completed"
-        assert "Tool failed!" in outputs[0]["output"]
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_tool_returns_none():
-    """Test legacy execution when tool returns None."""
-    pipe = Pipe()
-    try:
-        async def none_tool(**kwargs):
-            return None
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": none_tool,
-            }
-        }
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert outputs[0]["status"] == "completed"
-        assert outputs[0]["output"] == ""
-    finally:
-        await pipe.close()
-
-
-# ==============================================================================
 # Tests for _notify_tool_breaker (lines 463, 476-478)
 # ==============================================================================
 
@@ -1065,7 +934,6 @@ def test_tool_executor_initialization():
 
         assert executor._pipe is pipe
         assert executor.logger is pipe.logger
-        assert executor._legacy_tool_warning_emitted is False
     finally:
         import asyncio
         asyncio.run(pipe.close())
@@ -1184,51 +1052,6 @@ async def test_execute_function_calls_whitespace_tool_name():
             assert "Tool call missing name" in outputs[0]["output"] or "Tool not found" in outputs[0]["output"]
         finally:
             pipe._TOOL_CONTEXT.reset(token)
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_parallel_calls():
-    """Test legacy execution handles parallel calls correctly."""
-    pipe = Pipe()
-    try:
-        execution_order = []
-
-        async def tool_a(**kwargs):
-            execution_order.append("a_start")
-            await asyncio.sleep(0.01)
-            execution_order.append("a_end")
-            return "a_result"
-
-        async def tool_b(**kwargs):
-            execution_order.append("b_start")
-            await asyncio.sleep(0.01)
-            execution_order.append("b_end")
-            return "b_result"
-
-        tools = {
-            "tool_a": {
-                "spec": {"name": "tool_a", "parameters": {"type": "object", "properties": {}}},
-                "callable": tool_a,
-            },
-            "tool_b": {
-                "spec": {"name": "tool_b", "parameters": {"type": "object", "properties": {}}},
-                "callable": tool_b,
-            },
-        }
-
-        calls = [
-            {"type": "function_call", "call_id": "call-1", "name": "tool_a", "arguments": "{}"},
-            {"type": "function_call", "call_id": "call-2", "name": "tool_b", "arguments": "{}"},
-        ]
-
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 2
-        # Both tools should have been called
-        assert "a_start" in execution_order
-        assert "b_start" in execution_order
     finally:
         await pipe.close()
 
@@ -1485,84 +1308,15 @@ async def test_build_direct_tool_server_registry_transform_exception():
 
 
 @pytest.mark.asyncio
-async def test_legacy_execute_invalid_json_arguments():
-    """Test legacy execution with invalid JSON arguments (lines 428-430)."""
+async def test_execute_function_calls_raises_without_context():
+    """Test that _execute_function_calls raises ValueError when no context set."""
     pipe = Pipe()
     try:
-        async def my_tool(**kwargs):
-            return "should not be called"
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": my_tool,
-            }
-        }
-        # Invalid JSON
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{invalid json}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert "Tool error" in outputs[0]["output"]
-        assert "Invalid arguments" in outputs[0]["output"]
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_execute_dict_arguments():
-    """Test legacy execution with dict arguments (already parsed)."""
-    pipe = Pipe()
-    try:
-        received_args = {"value": None}
-
-        async def my_tool(**kwargs):
-            received_args["value"] = kwargs
-            return "success"
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": my_tool,
-            }
-        }
-        # Dict arguments (already parsed)
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": {"key": "value"}}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls_legacy(calls, tools)
-
-        assert len(outputs) == 1
-        assert outputs[0]["status"] == "completed"
-        assert received_args["value"] == {"key": "value"}
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_execute_function_calls_fallback_to_legacy():
-    """Test that _execute_function_calls falls back to legacy when no context (lines 79-81)."""
-    pipe = Pipe()
-    try:
-        # Ensure no context is set
         assert pipe._TOOL_CONTEXT.get() is None
-
-        called = {"count": 0}
-
-        async def my_tool(**kwargs):
-            called["count"] += 1
-            return "result"
-
-        tools = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                "callable": my_tool,
-            }
-        }
-
-        calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-        outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
-
-        assert len(outputs) == 1
-        assert called["count"] == 1
+        tools = {"my_tool": {"spec": {}, "callable": lambda: None}}
+        calls = [{"type": "function_call", "call_id": "c1", "name": "my_tool", "arguments": "{}"}]
+        with pytest.raises(ValueError, match="tool execution context"):
+            await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
     finally:
         await pipe.close()
 
@@ -3345,18 +3099,29 @@ class TestToolRegistryWithPipe:
 
         assert "exec_test" in exec_reg
 
-        # Execute through pipe
-        results = await pipe._ensure_tool_executor()._execute_function_calls(
-            [
-                {
-                    "type": "function_call",
-                    "call_id": "test_call",
-                    "name": "exec_test",
-                    "arguments": '{"arg": "test_value"}',
-                }
-            ],
-            exec_reg,
-        )
+        # Execute through pipe (requires tool context + worker)
+        loop = asyncio.get_running_loop()
+        context = create_tool_context(loop)
+        executor = pipe._ensure_tool_executor()
+        worker = asyncio.create_task(executor._tool_worker_loop(context))
+        context.workers.append(worker)
+        token = pipe._TOOL_CONTEXT.set(context)
+        try:
+            results = await executor._execute_function_calls(
+                [
+                    {
+                        "type": "function_call",
+                        "call_id": "test_call",
+                        "name": "exec_test",
+                        "arguments": '{"arg": "test_value"}',
+                    }
+                ],
+                exec_reg,
+            )
+        finally:
+            await context.queue.put(None)
+            await worker
+            pipe._TOOL_CONTEXT.reset(token)
 
         assert results is not None
         assert len(results) == 1
@@ -5316,28 +5081,39 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
     assert exposed_to_origin["direct__search_web"] == "search_web"
     assert {t["name"] for t in tools} == {"owui__search_web", "direct__search_web"}
 
-    out1 = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
-        [
-            {
-                "type": "function_call",
-                "call_id": "c1",
-                "name": "owui__search_web",
-                "arguments": '{"query":"x"}',
-            }
-        ],
-        exec_registry,
-    )
-    out2 = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
-        [
-            {
-                "type": "function_call",
-                "call_id": "c2",
-                "name": "direct__search_web",
-                "arguments": '{"query":"x"}',
-            }
-        ],
-        exec_registry,
-    )
+    loop = asyncio.get_running_loop()
+    context = create_tool_context(loop)
+    executor = pipe_instance_async._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe_instance_async._TOOL_CONTEXT.set(context)
+    try:
+        out1 = await executor._execute_function_calls(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "owui__search_web",
+                    "arguments": '{"query":"x"}',
+                }
+            ],
+            exec_registry,
+        )
+        out2 = await executor._execute_function_calls(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "c2",
+                    "name": "direct__search_web",
+                    "arguments": '{"query":"x"}',
+                }
+            ],
+            exec_registry,
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe_instance_async._TOOL_CONTEXT.reset(token)
     assert out1 and out1[0]["output"] == "builtin"
     assert out2 and out2[0]["output"] == "direct"
 
@@ -5414,10 +5190,21 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
     )
 
     assert {t["name"] for t in tools} == {"kb_query"}
-    result = await pipe_instance_async._ensure_tool_executor()._execute_function_calls(
-        [{"type": "function_call", "call_id": "c1", "name": "kb_query", "arguments": '{"q":"x"}'}],
-        exec_registry,
-    )
+    loop = asyncio.get_running_loop()
+    context = create_tool_context(loop)
+    executor = pipe_instance_async._ensure_tool_executor()
+    worker = asyncio.create_task(executor._tool_worker_loop(context))
+    context.workers.append(worker)
+    token = pipe_instance_async._TOOL_CONTEXT.set(context)
+    try:
+        result = await executor._execute_function_calls(
+            [{"type": "function_call", "call_id": "c1", "name": "kb_query", "arguments": '{"q":"x"}'}],
+            exec_registry,
+        )
+    finally:
+        await context.queue.put(None)
+        await worker
+        pipe_instance_async._TOOL_CONTEXT.reset(token)
     assert result and result[0]["output"] == "ok"
 
 
@@ -5595,7 +5382,7 @@ async def test_tool_exception_logs_stack_trace(caplog, pipe_instance_async):
         record
         for record in caplog.records
         if record.levelno == logging.DEBUG
-        and "Tool execution raised exception" in record.getMessage()
+        and "execution failed" in record.getMessage()
     ]
     assert debug_records, "Expected debug log with exc_info for tool exception"
     assert debug_records[0].exc_info is not None
@@ -5631,12 +5418,16 @@ async def test_execute_function_calls_rejects_empty_string_args_when_required() 
     }
     calls = [{"type": "function_call", "call_id": "call-1", "name": "fetch", "arguments": ""}]
 
+    loop = asyncio.get_running_loop()
+    context = create_tool_context(loop)
+    token = pipe._TOOL_CONTEXT.set(context)
     try:
         outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
         assert called["count"] == 0
         assert outputs and outputs[0]["type"] == "function_call_output"
         assert "Missing tool arguments" in (outputs[0].get("output") or "")
     finally:
+        pipe._TOOL_CONTEXT.reset(token)
         await pipe.close()
 
 

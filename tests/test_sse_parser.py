@@ -552,7 +552,7 @@ async def test_worker_skips_done_token():
     event_queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
 
     worker_task = asyncio.create_task(
-        parser._worker(worker_id=0, chunk_queue=chunk_queue, event_queue=event_queue)
+        parser._worker(chunk_queue=chunk_queue, event_queue=event_queue)
     )
 
     # Send [DONE] as raw bytes to worker
