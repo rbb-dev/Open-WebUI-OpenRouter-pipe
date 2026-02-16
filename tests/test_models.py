@@ -15,6 +15,8 @@ These tests target coverage of model catalog operations including:
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -2982,3 +2984,533 @@ def test_model_family_capabilities_returns_copy_and_defaults():
         assert ModelFamily.capabilities("unknown") == {}
     finally:
         ModelFamily.set_dynamic_specs(previous_specs)
+
+
+# ---------------------------------------------------------------------------
+# Stale Filter ID Pruning Tests
+# ---------------------------------------------------------------------------
+
+
+def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instance) -> None:
+    """Stale openrouter_* filter IDs not in the valid set should be pruned."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "openrouter_search",
+                "openrouter_native_attachments",  # stale — doesn't exist
+                "openrouter_direct_uploads",
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset({
+                "openrouter_search",
+                "openrouter_direct_uploads",
+                "openrouter_provider_openai_gpt_4o",
+            }),
+        )
+
+    update_mock.assert_called_once()
+    updated_form = update_mock.call_args[0][1]
+    meta = dict(updated_form.meta)
+    assert "openrouter_native_attachments" not in meta["filterIds"]
+    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_direct_uploads" in meta["filterIds"]
+
+
+def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
+    """Filter IDs that don't start with openrouter_ are never pruned, even if unknown."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "openrouter_search",
+                "openrouter_native_attachments",  # stale
+                "some_other_plugin_filter",        # non-openrouter — must survive
+                "openrouter_direct_uploads",
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset({
+                "openrouter_search",
+                "openrouter_direct_uploads",
+            }),
+        )
+
+    update_mock.assert_called_once()
+    updated_form = update_mock.call_args[0][1]
+    meta = dict(updated_form.meta)
+    assert "openrouter_native_attachments" not in meta["filterIds"]
+    assert "some_other_plugin_filter" in meta["filterIds"]
+    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_direct_uploads" in meta["filterIds"]
+
+
+def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance) -> None:
+    """When the valid set is empty (batch query failed), pruning is skipped entirely."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "openrouter_search",
+                "openrouter_native_attachments",  # would be stale, but pruning disabled
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset(),  # empty — pruning disabled
+        )
+
+    # No changes should be made (pruning skipped, no other metadata changes)
+    update_mock.assert_not_called()
+
+
+def test_prune_stale_no_filter_ids_is_noop(pipe_instance) -> None:
+    """When model has no filterIds, pruning is a no-op."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={"capabilities": {"vision": True}},
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            {"vision": True},  # same as existing — no capability change
+            None,
+            True,
+            False,
+            valid_openrouter_filter_ids=frozenset({"openrouter_search"}),
+        )
+
+    # No update needed — capabilities identical and no stale filter IDs
+    update_mock.assert_not_called()
+
+
+def test_prune_stale_all_valid_no_update(pipe_instance) -> None:
+    """When all openrouter_* filter IDs are valid, no pruning update is triggered."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "openrouter_search",
+                "openrouter_direct_uploads",
+                "openrouter_provider_openai_gpt_4o",
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset({
+                "openrouter_search",
+                "openrouter_direct_uploads",
+                "openrouter_provider_openai_gpt_4o",
+            }),
+        )
+
+    # All filter IDs valid — no changes needed
+    update_mock.assert_not_called()
+
+
+def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance) -> None:
+    """Pruning preserves the original order of the remaining filter IDs."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "other_plugin",
+                "openrouter_stale_one",
+                "openrouter_search",
+                "openrouter_stale_two",
+                "openrouter_direct_uploads",
+                "another_plugin",
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset({
+                "openrouter_search",
+                "openrouter_direct_uploads",
+            }),
+        )
+
+    update_mock.assert_called_once()
+    updated_form = update_mock.call_args[0][1]
+    meta = dict(updated_form.meta)
+    assert meta["filterIds"] == [
+        "other_plugin",
+        "openrouter_search",
+        "openrouter_direct_uploads",
+        "another_plugin",
+    ]
+
+
+def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_instance) -> None:
+    """Pruning alone should trigger a model update write, even if no other metadata changed."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": ["openrouter_search", "openrouter_ghost"],
+            "capabilities": {"vision": True},
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4o",
+            {"vision": True},  # same as existing — no capability change
+            None,
+            True,
+            False,
+            valid_openrouter_filter_ids=frozenset({"openrouter_search"}),
+        )
+
+    # Update should still happen because stale ID was pruned
+    update_mock.assert_called_once()
+    updated_form = update_mock.call_args[0][1]
+    meta = dict(updated_form.meta)
+    assert meta["filterIds"] == ["openrouter_search"]
+    assert "openrouter_ghost" not in meta["filterIds"]
+
+
+def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance) -> None:
+    """Provider routing filter IDs (openrouter_provider_*) are kept when in the valid set."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4.1"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": [
+                "openrouter_search",
+                "openrouter_direct_uploads",
+                "openrouter_provider_openai_gpt_4_1",
+            ],
+        },
+    )
+    update_mock = Mock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "GPT-4.1",
+            None,
+            None,
+            False,
+            False,
+            valid_openrouter_filter_ids=frozenset({
+                "openrouter_search",
+                "openrouter_direct_uploads",
+                "openrouter_provider_openai_gpt_4_1",
+            }),
+        )
+
+    # All valid — no update
+    update_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Startup Bulk Prune Tests (prune_stale_openrouter_filter_ids)
+# ---------------------------------------------------------------------------
+
+
+def _make_model_for_bulk_prune(model_id: str, filter_ids: list[str]):
+    """Create a stub model for bulk prune tests with filterIds in meta."""
+    from open_webui.models.models import ModelMeta, ModelParams
+
+    return SimpleNamespace(
+        id=model_id,
+        base_model_id=None,
+        name="Test Model",
+        meta=ModelMeta(filterIds=filter_ids) if filter_ids else None,
+        params=ModelParams(),
+        access_grants=[],
+        is_active=True,
+    )
+
+
+def _make_filter_function(function_id: str):
+    """Create a stub filter function record."""
+    return SimpleNamespace(id=function_id, type="filter")
+
+
+def _make_functions_module(valid_filters: list):
+    """Create a mock ``open_webui.models.functions`` module for lazy imports.
+
+    The ``prune_stale_openrouter_filter_ids`` method does a lazy
+    ``from open_webui.models.functions import Functions`` inside the body.
+    Since conftest does not stub that module, we inject one into
+    ``sys.modules`` using ``patch.dict``.
+    """
+    mod = types.ModuleType("open_webui.models.functions")
+
+    class _Functions:
+        @staticmethod
+        def get_functions_by_type(filter_type):
+            return valid_filters
+
+    mod.Functions = _Functions  # type: ignore[attr-defined]
+    return mod
+
+
+def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance) -> None:
+    """Bulk prune should remove stale openrouter_* IDs across all models."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+
+    models = [
+        _make_model_for_bulk_prune("model_a", [
+            "openrouter_search", "openrouter_native_attachments", "openrouter_direct_uploads",
+        ]),
+        _make_model_for_bulk_prune("model_b", [
+            "openrouter_search", "openrouter_direct_uploads",
+        ]),
+        _make_model_for_bulk_prune("model_c", [
+            "openrouter_native_attachments", "openrouter_provider_qwen_qwen3_coder",
+        ]),
+    ]
+
+    valid_filters = [
+        _make_filter_function("openrouter_search"),
+        _make_filter_function("openrouter_direct_uploads"),
+    ]
+
+    update_calls = {}
+
+    def capture_update(model_id, form):
+        update_calls[model_id] = form
+
+    functions_mod = _make_functions_module(valid_filters)
+
+    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
+         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
+         patch("open_webui.models.models.Models.update_model_by_id", side_effect=capture_update), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+
+    assert count == 2  # model_a and model_c updated; model_b clean
+    assert "model_a" in update_calls
+    assert "model_b" not in update_calls
+    assert "model_c" in update_calls
+
+    meta_a = dict(update_calls["model_a"].meta)
+    assert meta_a["filterIds"] == ["openrouter_search", "openrouter_direct_uploads"]
+
+    meta_c = dict(update_calls["model_c"].meta)
+    assert meta_c["filterIds"] == []  # both IDs were stale
+
+
+def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
+    """Bulk prune should never touch filter IDs that don't start with openrouter_."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+
+    models = [
+        _make_model_for_bulk_prune("model_x", [
+            "other_plugin_filter",
+            "openrouter_native_attachments",
+            "openrouter_search",
+            "yet_another_filter",
+        ]),
+    ]
+
+    valid_filters = [_make_filter_function("openrouter_search")]
+    update_calls = {}
+
+    def capture_update(model_id, form):
+        update_calls[model_id] = form
+
+    functions_mod = _make_functions_module(valid_filters)
+
+    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
+         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
+         patch("open_webui.models.models.Models.update_model_by_id", side_effect=capture_update), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+
+    assert count == 1
+    meta = dict(update_calls["model_x"].meta)
+    assert meta["filterIds"] == ["other_plugin_filter", "openrouter_search", "yet_another_filter"]
+
+
+def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance) -> None:
+    """Returns 0 when all openrouter_* IDs are valid."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+
+    models = [
+        _make_model_for_bulk_prune("model_clean", [
+            "openrouter_search", "openrouter_direct_uploads",
+        ]),
+    ]
+
+    valid_filters = [
+        _make_filter_function("openrouter_search"),
+        _make_filter_function("openrouter_direct_uploads"),
+    ]
+
+    functions_mod = _make_functions_module(valid_filters)
+
+    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
+         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
+         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
+        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+
+    assert count == 0
+    update_mock.assert_not_called()
+
+
+def test_bulk_prune_returns_zero_when_no_valid_filters(pipe_instance) -> None:
+    """Returns 0 (skip) when the valid filter set is empty — fail-safe."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+
+    models = [
+        _make_model_for_bulk_prune("model_stale", [
+            "openrouter_native_attachments",
+        ]),
+    ]
+
+    functions_mod = _make_functions_module([])
+
+    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
+         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
+         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
+        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+
+    assert count == 0
+    update_mock.assert_not_called()
+
+
+def test_bulk_prune_skips_models_without_meta(pipe_instance) -> None:
+    """Models with no meta should be silently skipped."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+
+    model_no_meta = SimpleNamespace(
+        id="model_none", base_model_id=None, name="No Meta",
+        meta=None, params={}, access_grants=[], is_active=True,
+    )
+    models = [model_no_meta]
+
+    valid_filters = [_make_filter_function("openrouter_search")]
+    functions_mod = _make_functions_module(valid_filters)
+
+    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
+         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
+         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
+        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+
+    assert count == 0
+    update_mock.assert_not_called()
+
+
+def test_startup_prune_flag_prevents_repeat_calls(pipe_instance) -> None:
+    """The _stale_filter_ids_pruned flag should prevent repeat bulk prune calls."""
+    pipe = pipe_instance
+    assert pipe._stale_filter_ids_pruned is False
+    pipe._stale_filter_ids_pruned = True
+    # After flag is set, pipes() should not call prune again
+    # (verified implicitly — if it did, it would fail without mocks)

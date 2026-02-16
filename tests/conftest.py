@@ -92,6 +92,10 @@ def _install_open_webui_stubs() -> None:
             return None
 
         @staticmethod
+        def get_all_models():
+            return []
+
+        @staticmethod
         def update_model_by_id(_model_id, _model_form):
             return None
 

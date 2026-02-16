@@ -313,6 +313,9 @@ class Pipe:
             lambda: deque(maxlen=breaker_history_size)
         )
 
+        # One-time stale filter ID pruning (runs on first pipes() call)
+        self._stale_filter_ids_pruned = False
+
         # Startup check coordination
         self._startup_task: asyncio.Task | None = None
         self._startup_checks_started = False
@@ -763,6 +766,23 @@ class Pipe:
                     )
             except Exception as exc:
                 self.logger.debug("Provider routing filter creation failed: %s", exc)
+
+        # One-time cleanup of stale openrouter_* filter IDs in model metadata.
+        # Must run inside pipes() — before OWUI's get_all_models() reads model
+        # overlays and pre-warms the function cache — to prevent "Function not
+        # found" crashes on OWUI 0.8.0+.
+        if not self._stale_filter_ids_pruned:
+            self._stale_filter_ids_pruned = True
+            try:
+                count = await run_in_threadpool(
+                    self._ensure_catalog_manager().prune_stale_openrouter_filter_ids
+                )
+                if count:
+                    self.logger.info(
+                        "Pruned stale openrouter_* filter IDs from %d model(s) on startup.", count
+                    )
+            except Exception as exc:
+                self.logger.debug("Startup stale filter ID pruning failed: %s", exc)
 
         self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
             selected_models,

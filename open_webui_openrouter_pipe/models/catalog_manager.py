@@ -690,6 +690,21 @@ class ModelCatalogManager:
                         ", ".join(sorted(provider_routing_filter_map.keys())),
                     )
 
+            # Build set of existing openrouter_* filter IDs for stale-reference pruning.
+            # A single query here avoids per-model DB lookups during metadata sync.
+            _valid_openrouter_filter_ids: frozenset[str] = frozenset()
+            try:
+                from open_webui.models.functions import Functions as _FunctionsTable
+
+                _all_filter_functions = await run_in_threadpool(
+                    _FunctionsTable.get_functions_by_type, "filter"
+                )
+                _valid_openrouter_filter_ids = frozenset(
+                    f.id for f in _all_filter_functions if f.id.startswith("openrouter_")
+                )
+            except Exception as exc:
+                self.logger.debug("Failed to fetch valid filter IDs for stale pruning: %s", exc)
+
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
                 name = model.get("name")
@@ -807,6 +822,7 @@ class ModelCatalogManager:
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
                             provider_routing_filter_id=pr_filter_id,
+                            valid_openrouter_filter_ids=_valid_openrouter_filter_ids,
                             openrouter_pipe_capabilities=pipe_capabilities,
                             description=description,
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
@@ -822,6 +838,70 @@ class ModelCatalogManager:
         finally:
             with contextlib.suppress(Exception):
                 await session.close()
+
+    def prune_stale_openrouter_filter_ids(self) -> int:
+        """Remove stale ``openrouter_*`` filter IDs from all model metadata.
+
+        Queries the ``function`` table for existing ``openrouter_*`` filters,
+        then sweeps the ``model`` table and removes any ``filterIds`` entries
+        that match the ``openrouter_`` prefix but are not in the valid set.
+
+        Designed to run **synchronously** inside ``pipes()`` — before OWUI's
+        ``get_all_models()`` reads model overlays — so that the pre-warming
+        cache step never encounters stale function references.
+
+        Returns the number of models that were updated.
+        """
+        from open_webui.models.functions import Functions as _FunctionsTable
+        from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+
+        all_filters = _FunctionsTable.get_functions_by_type("filter")
+        valid_ids = frozenset(
+            f.id for f in all_filters if f.id.startswith("openrouter_")
+        )
+        if not valid_ids:
+            return 0
+
+        updated = 0
+        all_models = Models.get_all_models()
+        for model in all_models:
+            if not model.meta:
+                continue
+            meta_dict = model.meta.model_dump()
+            filter_ids = meta_dict.get("filterIds", [])
+            if not isinstance(filter_ids, list) or not filter_ids:
+                continue
+
+            pruned = [
+                fid for fid in filter_ids
+                if not isinstance(fid, str)
+                or not fid.startswith("openrouter_")
+                or fid in valid_ids
+            ]
+            if len(pruned) == len(filter_ids):
+                continue
+
+            removed = set(filter_ids) - set(pruned)
+            self.logger.warning(
+                "Startup prune: removed stale filter IDs from model '%s': %s",
+                model.id,
+                ", ".join(sorted(str(r) for r in removed)),
+            )
+            meta_dict["filterIds"] = pruned
+            meta_obj = ModelMeta(**meta_dict)
+            form = ModelForm(
+                id=model.id,
+                base_model_id=model.base_model_id,
+                name=model.name,
+                meta=meta_obj,
+                params=model.params if model.params else ModelParams(),
+                access_grants=[g.model_dump() for g in model.access_grants],
+                is_active=model.is_active,
+            )
+            Models.update_model_by_id(model.id, form)
+            updated += 1
+
+        return updated
 
     @timed
     def _update_or_insert_model_with_metadata(
@@ -841,6 +921,7 @@ class ModelCatalogManager:
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
         provider_routing_filter_id: str | None = None,
+        valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
         description: str | None = None,
         update_descriptions: bool = False,
@@ -921,6 +1002,34 @@ class ModelCatalogManager:
                 seen.add(entry)
                 deduped.append(entry)
             return deduped
+
+        def _prune_stale_openrouter_filter_ids(meta_dict: dict) -> bool:
+            """Remove openrouter_* filter IDs that no longer exist in the function table.
+
+            Only prunes IDs with the ``openrouter_`` prefix — filter IDs belonging
+            to other plugins are left untouched.  If *valid_openrouter_filter_ids*
+            is empty (e.g. the batch query failed), pruning is skipped to avoid
+            accidentally removing valid references.
+            """
+            if not valid_openrouter_filter_ids:
+                return False
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            if not normalized:
+                return False
+            pruned = [
+                fid for fid in normalized
+                if not fid.startswith("openrouter_") or fid in valid_openrouter_filter_ids
+            ]
+            if len(pruned) == len(normalized):
+                return False
+            removed = set(normalized) - set(pruned)
+            self.logger.warning(
+                "Pruned stale openrouter_* filter IDs from model '%s': %s",
+                openwebui_model_id,
+                ", ".join(sorted(removed)),
+            )
+            meta_dict["filterIds"] = pruned
+            return True
 
         def _apply_filter_ids(meta_dict: dict) -> bool:
             if not auto_attach_filter or not filter_function_id:
@@ -1106,6 +1215,9 @@ class ModelCatalogManager:
                 if meta_dict.get("description") != description:
                     meta_dict["description"] = description
                     meta_updated = True
+
+            if _prune_stale_openrouter_filter_ids(meta_dict):
+                meta_updated = True
 
             if _apply_filter_ids(meta_dict):
                 meta_updated = True
