@@ -227,8 +227,13 @@ class ResponsesAdapter:
                             break
             finally:
                 for _ in range(workers):
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await chunk_queue.put(chunk_sentinel)
+                    try:
+                        chunk_queue.put_nowait(chunk_sentinel)
+                    except asyncio.QueueFull:
+                        self.logger.debug(
+                            "Chunk queue full while sending sentinel; workers will be cancelled during cleanup."
+                        )
+                        break
 
         worker_first_event_queued = False
 
