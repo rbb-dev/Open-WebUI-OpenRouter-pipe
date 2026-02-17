@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import QueuePool, NullPool
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.storage import persistence as persistence_mod
@@ -401,6 +402,65 @@ def test_init_artifact_store_existing_table_removal(pipe_instance):
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
+
+
+# -----------------------------------------------------------------------------
+# Tests for DB Thread Pool Sizing from Engine Pool (line 564-574)
+# -----------------------------------------------------------------------------
+
+
+def test_init_artifact_store_thread_pool_matches_queue_pool_size(pipe_instance):
+    """Thread pool max_workers should match the engine's QueuePool pool_size."""
+    engine = create_engine("sqlite:///", poolclass=QueuePool, pool_size=12)
+    store = pipe_instance._artifact_store
+    store._db_executor = None
+    with _install_internal_db(engine):
+        store._init_artifact_store(pipe_identifier="pipe_pool", table_fragment="pipe_pool")
+    assert store._db_executor is not None
+    assert store._db_executor._max_workers == 12
+    store._db_executor.shutdown(wait=False)
+
+
+def test_init_artifact_store_thread_pool_fallback_on_null_pool(pipe_instance):
+    """Thread pool should fall back to 5 workers when engine uses NullPool."""
+    engine = create_engine("sqlite:///", poolclass=NullPool)
+    store = pipe_instance._artifact_store
+    store._db_executor = None
+    with _install_internal_db(engine):
+        store._init_artifact_store(pipe_identifier="pipe_null", table_fragment="pipe_null")
+    assert store._db_executor is not None
+    assert store._db_executor._max_workers == 5
+    store._db_executor.shutdown(wait=False)
+
+
+def test_init_artifact_store_thread_pool_default_sqlite(pipe_instance):
+    """Thread pool should read default pool_size=5 from a default SQLite file engine."""
+    engine = _sqlite_engine()  # in-memory SQLite → SingletonThreadPool with size=5
+    store = pipe_instance._artifact_store
+    store._db_executor = None
+    with _install_internal_db(engine):
+        store._init_artifact_store(pipe_identifier="pipe_default", table_fragment="pipe_default")
+    assert store._db_executor is not None
+    assert store._db_executor._max_workers == 5
+    store._db_executor.shutdown(wait=False)
+
+
+def test_init_artifact_store_thread_pool_includes_max_overflow(pipe_instance, monkeypatch):
+    """Thread pool max_workers should be pool_size + DATABASE_POOL_MAX_OVERFLOW."""
+    engine = create_engine("sqlite:///", poolclass=QueuePool, pool_size=10)
+    store = pipe_instance._artifact_store
+    store._db_executor = None
+
+    # Mock open_webui.env with DATABASE_POOL_MAX_OVERFLOW = 20
+    env_mod = types.ModuleType("open_webui.env")
+    env_mod.DATABASE_POOL_MAX_OVERFLOW = 20
+    monkeypatch.setitem(sys.modules, "open_webui.env", env_mod)
+
+    with _install_internal_db(engine):
+        store._init_artifact_store(pipe_identifier="pipe_overflow", table_fragment="pipe_overflow")
+    assert store._db_executor is not None
+    assert store._db_executor._max_workers == 30  # 10 + 20
+    store._db_executor.shutdown(wait=False)
 
 
 # -----------------------------------------------------------------------------

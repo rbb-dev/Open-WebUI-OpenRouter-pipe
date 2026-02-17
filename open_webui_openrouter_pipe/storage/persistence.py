@@ -562,7 +562,25 @@ class ArtifactStore:
         if not table_exists:
             self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, key_hash[:8])
         if self._db_executor is None:
-            self._db_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="responses-db")
+            pool_workers: int = 5
+            try:
+                size_attr = getattr(engine.pool, "size", None)
+                if callable(size_attr):
+                    val = size_attr()  # QueuePool.size()
+                    if isinstance(val, int) and val > 0:
+                        pool_workers = val
+                elif isinstance(size_attr, int) and size_attr > 0:
+                    pool_workers = size_attr  # SingletonThreadPool.size
+                try:
+                    from open_webui.env import DATABASE_POOL_MAX_OVERFLOW  # type: ignore
+                    if isinstance(DATABASE_POOL_MAX_OVERFLOW, int) and DATABASE_POOL_MAX_OVERFLOW > 0:
+                        pool_workers += DATABASE_POOL_MAX_OVERFLOW
+                except (ImportError, ModuleNotFoundError):
+                    pass
+            except Exception as exc:
+                self.logger.debug("Failed to read DB pool size from engine, using default: %s", exc)
+            self._db_executor = ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="responses-db")
+            self.logger.debug("DB thread pool: max_workers=%d (pool type: %s)", pool_workers, type(engine.pool).__name__)
         self.logger.debug("Artifact table ready: %s", table_name)
 
     @staticmethod
