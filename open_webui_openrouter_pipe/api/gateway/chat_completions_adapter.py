@@ -86,11 +86,16 @@ class ChatCompletionsAdapter:
                 file_value = file_value.strip()
                 if not _is_internal_file_url(file_value):
                     continue
-                inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
-                    file_value, chunk_size=chunk_size, max_bytes=max_bytes,
-                )
+                try:
+                    inlined = await self._pipe._multimodal_handler._inline_internal_file_url(
+                        file_value, chunk_size=chunk_size, max_bytes=max_bytes,
+                    )
+                except Exception:
+                    self.logger.warning("Exception inlining file URL, skipping: %s", file_value, exc_info=True)
+                    continue
                 if not inlined:
-                    raise ValueError(f"Failed to inline Open WebUI file URL for /chat/completions: {file_value}")
+                    self.logger.warning("Failed to inline file URL, skipping: %s", file_value)
+                    continue
                 file_obj["file_data"] = inlined
 
     @timed
@@ -283,7 +288,7 @@ class ChatCompletionsAdapter:
                                     break
                                 try:
                                     chunk_obj = json.loads(data_blob.decode("utf-8"))
-                                except json.JSONDecodeError:
+                                except Exception:
                                     continue
 
                                 if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
