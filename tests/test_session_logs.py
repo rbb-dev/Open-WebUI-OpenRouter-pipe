@@ -937,7 +937,7 @@ def test_session_logger_concurrent_writes_same_request() -> None:
     assert request_id in SessionLogger.logs
     buffer = SessionLogger.logs[request_id]
     expected_min_messages = min(
-        num_threads * messages_per_thread, SessionLogger.max_lines
+        num_threads * messages_per_thread, SessionLogger.SESSION_LOG_MAX_LINES
     )
     assert len(buffer) == expected_min_messages
 

@@ -474,6 +474,7 @@ class Pipe:
             self._log_queue_loop = loop
             SessionLogger.set_log_queue(self._log_queue)
         SessionLogger.set_main_loop(loop)
+        SessionLogger.SESSION_LOG_MAX_LINES = self.valves.SESSION_LOG_MAX_LINES
 
         # Capture self for the nested async function
         pipe_self = self
@@ -1523,8 +1524,7 @@ class Pipe:
         request_id = job.request_id or None
         user_id = job.user_id or None
         log_level = getattr(logging, job.valves.LOG_LEVEL)
-        with contextlib.suppress(Exception):
-            SessionLogger.set_max_lines(job.valves.SESSION_LOG_MAX_LINES)
+        SessionLogger.SESSION_LOG_MAX_LINES = job.valves.SESSION_LOG_MAX_LINES
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
         tokens.append((SessionLogger.request_id, SessionLogger.request_id.set(request_id)))

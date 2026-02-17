@@ -402,7 +402,7 @@ class SSEParser:
         idle_flush_seconds = float(self.idle_flush_ms) / 1000 if self.idle_flush_ms > 0 else None
         passthrough_deltas = self.delta_char_limit <= 0 and self.idle_flush_ms <= 0
 
-        pending_events: dict[int, dict[str, Any]] = {}
+        pending_events: dict[int, dict[str, Any] | None] = {}
         next_seq = 0
         done_workers = 0
         delta_buffer: list[str] = []

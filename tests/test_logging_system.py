@@ -398,47 +398,6 @@ class TestGetLogger:
 
 
 # -----------------------------------------------------------------------------
-# Test: set_max_lines (lines 241-246)
-# -----------------------------------------------------------------------------
-
-class TestSetMaxLines:
-    """Test max_lines configuration."""
-
-    def test_set_max_lines_valid(self) -> None:
-        original = SessionLogger.max_lines
-        try:
-            SessionLogger.set_max_lines(5000)
-            assert SessionLogger.max_lines == 5000
-        finally:
-            SessionLogger.max_lines = original
-
-    def test_set_max_lines_below_minimum(self) -> None:
-        original = SessionLogger.max_lines
-        try:
-            SessionLogger.set_max_lines(10)  # Below minimum of 100
-            assert SessionLogger.max_lines == 100
-        finally:
-            SessionLogger.max_lines = original
-
-    def test_set_max_lines_above_maximum(self) -> None:
-        original = SessionLogger.max_lines
-        try:
-            SessionLogger.set_max_lines(999999)  # Above maximum of 200000
-            assert SessionLogger.max_lines == 200000
-        finally:
-            SessionLogger.max_lines = original
-
-    def test_set_max_lines_invalid_value(self) -> None:
-        original = SessionLogger.max_lines
-        try:
-            SessionLogger.set_max_lines("not-a-number")  # type: ignore[arg-type]
-            # Should not change the value
-            assert SessionLogger.max_lines == original
-        finally:
-            SessionLogger.max_lines = original
-
-
-# -----------------------------------------------------------------------------
 # Test: _enqueue (lines 250-268)
 # -----------------------------------------------------------------------------
 
@@ -759,17 +718,17 @@ class TestProcessRecord:
             SessionLogger._session_last_seen.update(original_last_seen)
 
     def test_process_record_resizes_buffer_on_maxlen_change(self) -> None:
-        """Buffer is recreated if max_lines changes."""
+        """Buffer is recreated if SESSION_LOG_MAX_LINES changes."""
         original_logs = SessionLogger.logs.copy()
         original_last_seen = SessionLogger._session_last_seen.copy()
-        original_max = SessionLogger.max_lines
+        original_max = SessionLogger.SESSION_LOG_MAX_LINES
 
         try:
             SessionLogger.logs.clear()
             SessionLogger._session_last_seen.clear()
 
-            # Create initial buffer with one max_lines
-            SessionLogger.max_lines = 100
+            # Create initial buffer with one SESSION_LOG_MAX_LINES
+            SessionLogger.SESSION_LOG_MAX_LINES = 100
             record1 = logging.LogRecord(
                 name="test",
                 level=logging.INFO,
@@ -787,8 +746,8 @@ class TestProcessRecord:
             SessionLogger.process_record(record1)
             assert SessionLogger.logs["req-resize"].maxlen == 100
 
-            # Change max_lines and add another record
-            SessionLogger.max_lines = 200
+            # Change SESSION_LOG_MAX_LINES and add another record
+            SessionLogger.SESSION_LOG_MAX_LINES = 200
             record2 = logging.LogRecord(
                 name="test",
                 level=logging.INFO,
@@ -811,7 +770,7 @@ class TestProcessRecord:
             SessionLogger.logs.update(original_logs)
             SessionLogger._session_last_seen.clear()
             SessionLogger._session_last_seen.update(original_last_seen)
-            SessionLogger.max_lines = original_max
+            SessionLogger.SESSION_LOG_MAX_LINES = original_max
 
 
 # -----------------------------------------------------------------------------

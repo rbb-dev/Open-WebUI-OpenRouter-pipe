@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from open_webui_openrouter_pipe.core.config import Valves
+
 from .utils import _sanitize_path_component
 
 try:
@@ -83,7 +85,7 @@ class SessionLogger:
     request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
     user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
-    max_lines: int = 2000
+    SESSION_LOG_MAX_LINES: int = Valves.model_fields["SESSION_LOG_MAX_LINES"].default
     logs: Dict[str, deque[dict[str, Any]]] = {}
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
@@ -225,16 +227,6 @@ class SessionLogger:
         cls._main_loop = loop
 
     @classmethod
-    def set_max_lines(cls, value: int) -> None:
-        """Set the maximum in-memory lines retained per request (best effort)."""
-        try:
-            value_int = int(value)
-        except Exception:
-            return
-        value_int = max(100, min(200000, value_int))
-        cls.max_lines = value_int
-
-    @classmethod
     def _enqueue(cls, record: logging.LogRecord) -> None:
         queue = cls.log_queue
         if queue is None:
@@ -293,8 +285,8 @@ class SessionLogger:
                     }
                 with cls._state_lock:
                     buffer = cls.logs.get(request_id)
-                    if buffer is None or buffer.maxlen != cls.max_lines:
-                        buffer = deque(maxlen=cls.max_lines)
+                    if buffer is None or buffer.maxlen != cls.SESSION_LOG_MAX_LINES:
+                        buffer = deque(maxlen=cls.SESSION_LOG_MAX_LINES)
                         cls.logs[request_id] = buffer
                     try:
                         buffer.append(event)
