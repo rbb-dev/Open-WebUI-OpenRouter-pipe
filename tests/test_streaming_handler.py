@@ -398,8 +398,8 @@ class TestStreamingLoopBasic:
         assert result == "Hello"
 
     @pytest.mark.asyncio
-    async def test_streaming_loop_no_final_response_emits_error(self, monkeypatch, pipe_instance_async, caplog):
-        """Test that missing final response emits error."""
+    async def test_streaming_loop_no_final_response_appends_interrupted_template(self, monkeypatch, pipe_instance_async, caplog):
+        """Test that missing response.completed appends interrupted notice and emits completion."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
@@ -414,7 +414,7 @@ class TestStreamingLoopBasic:
             emitted.append(event)
 
         import logging
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             result = await pipe._streaming_handler._run_streaming_loop(
                 body,
                 pipe.valves,
@@ -425,7 +425,26 @@ class TestStreamingLoopBasic:
                 user_id="user-123",
             )
 
-        assert any("No final response" in record.message for record in caplog.records)
+        # Log warning about incomplete stream
+        assert any("Stream ended without completion event" in record.message for record in caplog.records)
+
+        # Result contains the partial content plus the interrupted notice
+        assert result is not None
+        assert "Hello" in result
+        assert "Response interrupted" in result
+
+        # Verify the interrupted notice was emitted as a delta
+        deltas = [e for e in emitted if e.get("type") == "chat:message:delta"]
+        delta_contents = "".join(d.get("data", {}).get("content", "") for d in deltas)
+        assert "Response interrupted" in delta_contents
+
+        # Verify a completion event was emitted
+        completions = [e for e in emitted if e.get("type") == "chat:completion"]
+        assert len(completions) >= 1
+        last_completion = completions[-1]
+        completion_content = last_completion.get("data", {}).get("content", "")
+        assert "Hello" in completion_content
+        assert "Response interrupted" in completion_content
 
     @pytest.mark.asyncio
     async def test_streaming_loop_multiple_text_deltas(self, monkeypatch, pipe_instance_async):

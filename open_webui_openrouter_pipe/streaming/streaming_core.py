@@ -82,7 +82,7 @@ from ..api.transforms import (
 )
 
 # Import config classes
-from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
+from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
 
 # Import Open WebUI models
 try:
@@ -1487,7 +1487,7 @@ class StreamingHandler:
                         continue
 
                     # --- Capture final response payload for this loop
-                    if etype == "response.completed":
+                    if etype in ("response.completed", "response.done"):
                         note_model_activity()  # Ensure thinking tasks are cancelled when response completes
                         final_response = event.get("response", {})
                         response_completed_at = perf_counter()
@@ -1496,7 +1496,32 @@ class StreamingHandler:
                         break
 
                 if final_response is None:
-                    raise ValueError("No final response received from OpenAI Responses API.")
+                    self.logger.warning("Stream ended without completion event for model=%s", body.model)
+                    try:
+                        template_vars = {
+                            "model": body.model or "",
+                            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+                            "support_email": valves.SUPPORT_EMAIL,
+                            "support_url": valves.SUPPORT_URL,
+                        }
+                        try:
+                            notice = _render_error_template(valves.STREAM_INTERRUPTED_TEMPLATE, template_vars)
+                        except Exception:
+                            notice = _render_error_template(DEFAULT_STREAM_INTERRUPTED_TEMPLATE, template_vars)
+                        if notice:
+                            delta = f"\n\n{notice}" if assistant_message else notice
+                            assistant_message = f"{assistant_message}{delta}" if assistant_message else notice
+                            if event_emitter:
+                                await event_emitter({"type": "chat:message:delta", "data": {"content": delta}})
+                    except Exception:
+                        self.logger.debug("Failed to render stream interrupted template", exc_info=True)
+                    if event_emitter:
+                        await self._pipe._event_emitter_handler._emit_completion(
+                            event_emitter,
+                            content=assistant_message,
+                            done=True,
+                        )
+                    break
 
                 # Extract usage information from OpenAI response and pass-through to Open WebUI
                 raw_usage = final_response.get("usage") or {}

@@ -446,6 +446,24 @@ DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
     "Choose an allowed model or ask your admin to update the pipe filters.\n"
 )
 
+DEFAULT_STREAM_INTERRUPTED_TEMPLATE = (
+    "---\n"
+    "### ⚠️ Response interrupted\n\n"
+    "The stream ended unexpectedly before the model finished responding.\n\n"
+    "{{#if model}}\n"
+    "**Model:** `{model}`\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "Retry the message — this is usually a transient issue.\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+    "{{#if support_url}}\n"
+    "\n**Support:** {support_url}\n"
+    "{{/if}}\n"
+)
 
 
 # -----------------------------------------------------------------------------
@@ -1249,6 +1267,14 @@ class Valves(BaseModel):
             "Available variables: {requested_model}, {normalized_model_id}, {restriction_reasons}, "
             "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, plus standard context variables "
             "like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, and {support_url}."
+        ),
+    )
+    STREAM_INTERRUPTED_TEMPLATE: str = Field(
+        default=DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
+        description=(
+            "Markdown template appended to the assistant message when the streaming response ends "
+            "without a completion event. The partial content is preserved and this notice is appended. "
+            "Available variables: {model}, {timestamp}, {support_email}, {support_url}."
         ),
     )
 
