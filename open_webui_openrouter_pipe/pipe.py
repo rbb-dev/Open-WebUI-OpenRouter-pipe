@@ -606,6 +606,7 @@ class Pipe:
                 pipe=self,
                 multimodal_handler=self._multimodal_handler,
                 logger=self.logger,
+                task_done_callback=_consume_background_task_exception,
             )
         return self._catalog_manager
 

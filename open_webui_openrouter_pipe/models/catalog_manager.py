@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any, Iterable, Optional, TYPE_CHECKING
 from urllib.parse import quote
 
@@ -48,11 +49,12 @@ class ModelCatalogManager:
         pipe: "Pipe",
         multimodal_handler: Any,
         logger: logging.Logger,
+        task_done_callback: Callable[[asyncio.Task], None] | None = None,
     ):
-        self._pipe = pipe
         self._pipe = pipe
         self._multimodal_handler = multimodal_handler
         self.logger = logger
+        self._task_done_callback = task_done_callback
 
         # State for sync scheduling
         self._model_metadata_sync_task: asyncio.Task | None = None
@@ -149,6 +151,8 @@ class ModelCatalogManager:
                 pipe_identifier=pipe_identifier,
             )
         )
+        if self._task_done_callback:
+            self._model_metadata_sync_task.add_done_callback(self._task_done_callback)
 
     @timed
     def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:
