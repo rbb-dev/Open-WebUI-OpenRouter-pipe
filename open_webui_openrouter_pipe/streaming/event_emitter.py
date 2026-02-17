@@ -171,7 +171,7 @@ class EventEmitterHandler:
                     }
                 })
             except Exception as exc:
-                self.logger.error(f"Failed to emit status: {exc}")
+                self.logger.error("Failed to emit status: %s", exc)
 
 
 
@@ -194,15 +194,18 @@ class EventEmitterHandler:
         self.logger.error("Error: %s", error_message)
 
         if show_error_message and event_emitter:
-            await event_emitter(
-                {
-                    "type": "chat:completion",
-                    "data": {
-                        "error": {"message": error_message},
-                        "done": done,
-                    },
-                }
-            )
+            try:
+                await event_emitter(
+                    {
+                        "type": "chat:completion",
+                        "data": {
+                            "error": {"message": error_message},
+                            "done": done,
+                        },
+                    }
+                )
+            except Exception as exc:
+                self.logger.error("Failed to emit error event: %s", exc)
 
         # 2) Optionally dump the collected logs to the backend logger
         if show_error_log_citation:
@@ -343,16 +346,19 @@ class EventEmitterHandler:
                 }
             ]
 
-        await event_emitter(
-            {
-                "type": "source",
-                "data": {
-                    "document": documents,
-                    "metadata": metadata,
-                    "source": source_info,
-                },
-            }
-        )
+        try:
+            await event_emitter(
+                {
+                    "type": "source",
+                    "data": {
+                        "document": documents,
+                        "metadata": metadata,
+                        "source": source_info,
+                    },
+                }
+            )
+        except Exception as exc:
+            self.logger.error("Failed to emit citation: %s", exc)
 
 
     async def _emit_files(
@@ -437,17 +443,20 @@ class EventEmitterHandler:
             return
 
         # Note: Open WebUI emits a final "chat:completion" event after the stream ends, which overwrites any previously emitted completion events' content and title in the UI.
-        await event_emitter(
-            {
-                "type": "chat:completion",
-                "data": {
-                    "done": done,
-                    "content": content,
-                    **({"title": title} if title is not None else {}),
-                    **({"usage": usage} if usage is not None else {}),
+        try:
+            await event_emitter(
+                {
+                    "type": "chat:completion",
+                    "data": {
+                        "done": done,
+                        "content": content,
+                        **({"title": title} if title is not None else {}),
+                        **({"usage": usage} if usage is not None else {}),
+                    }
                 }
-            }
-        )
+            )
+        except Exception as exc:
+            self.logger.error("Failed to emit completion: %s", exc)
 
 
     async def _emit_notification(
@@ -464,9 +473,12 @@ class EventEmitterHandler:
         if event_emitter is None:
             return
 
-        await event_emitter(
-            {"type": "notification", "data": {"type": level, "content": content}}
-        )
+        try:
+            await event_emitter(
+                {"type": "notification", "data": {"type": level, "content": content}}
+            )
+        except Exception as exc:
+            self.logger.error("Failed to emit notification: %s", exc)
 
 
     def _wrap_safe_event_emitter(

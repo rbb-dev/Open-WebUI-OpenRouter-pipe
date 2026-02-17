@@ -250,15 +250,6 @@ class ErrorFormatter:
             context_defaults["retry_after_seconds"] = retry_after_hint
         self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
         if event_emitter:
-            await event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "description": "Encountered a provider error. See details below.",
-                        "done": True,
-                    },
-                }
-            )
             content = _format_openrouter_error_markdown(
                 exc,
                 normalized_model_id=normalized_model_id,
@@ -266,13 +257,25 @@ class ErrorFormatter:
                 template=template_to_use or _FALLBACK_ERROR_TEMPLATE,
                 context=context_defaults,
             )
-            await event_emitter({"type": "chat:message", "data": {"content": content}})
-            await self._pipe._event_emitter_handler._emit_completion(
-                event_emitter,
-                content="",
-                usage=usage or None,
-                done=True,
-            )
+            try:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": "Encountered a provider error. See details below.",
+                            "done": True,
+                        },
+                    }
+                )
+                await event_emitter({"type": "chat:message", "data": {"content": content}})
+                await self._pipe._event_emitter_handler._emit_completion(
+                    event_emitter,
+                    content="",
+                    usage=usage or None,
+                    done=True,
+                )
+            except Exception as exc_emit:
+                self.logger.error("[%s] Failed to emit OpenRouter error report: %s", error_id, exc_emit)
 
     # ======================================================================
     # Status Formatting

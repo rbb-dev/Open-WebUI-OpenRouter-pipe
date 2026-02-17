@@ -2006,12 +2006,15 @@ class StreamingHandler:
                 and event_emitter
                 and thinking_box_enabled
             ):
-                await event_emitter(
-                    {
-                        "type": "reasoning:completed",
-                        "data": {"content": reasoning_buffer},
-                    }
-                )
+                try:
+                    await event_emitter(
+                        {
+                            "type": "reasoning:completed",
+                            "data": {"content": reasoning_buffer},
+                        }
+                    )
+                except Exception as exc:
+                    self.logger.error("Failed to emit reasoning:completed in finally: %s", exc)
                 reasoning_completed_emitted = True
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
@@ -2032,15 +2035,18 @@ class StreamingHandler:
                     valves=valves,
                     stream_duration=stream_window,
                 )
-                await event_emitter(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": description,
-                            "done": True,
-                        },
-                    }
-                )
+                try:
+                    await event_emitter(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": description,
+                                "done": True,
+                            },
+                        }
+                    )
+                except Exception as exc:
+                    self.logger.error("Failed to emit final status in finally: %s", exc)
 
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
