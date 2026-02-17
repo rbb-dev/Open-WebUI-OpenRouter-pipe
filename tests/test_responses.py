@@ -29,6 +29,7 @@ Remaining uncovered paths (23 lines):
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -1811,4 +1812,266 @@ def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
             "arguments": "{}",
         }
     ]
+
+
+# ============================================================================
+# Streaming - Parse Failure Resilience (C3 fix verification)
+#
+# These tests verify that malformed SSE data (invalid JSON, invalid UTF-8)
+# does NOT cause the producer→worker→distributor pipeline to hang.
+#
+# The C3 bug: when a worker encounters unparseable data, it must still emit
+# a (seq, None) placeholder into event_queue so the distributor can advance
+# past that sequence number.  Without it, the distributor waits forever for
+# the missing seq → infinite hang.
+#
+# The fix is 3 parts:
+#   1. Worker: catch Exception (not just JSONDecodeError), emit (seq, None)
+#   2. Distributor: store event BEFORE checking for None (don't skip)
+#   3. Distributor: skip None INSIDE the ordering loop (after advancing seq)
+# ============================================================================
+
+_HANG_TIMEOUT = 10  # seconds — generous to avoid CI flakes; catches real hangs
+
+
+def _completed_sse() -> str:
+    """Return a standard response.completed SSE line."""
+    return _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
+
+
+async def _collect_sse_events(
+    pipe, session, sse_body: bytes, valves, *, workers: int = 4,
+) -> list[dict[str, Any]]:
+    """Mock HTTP, run the streaming pipeline, return collected events.
+
+    Wraps the pipeline with ``asyncio.wait_for`` so that if the C3 fix
+    regresses (distributor stalls on a missing sequence), the test raises
+    ``TimeoutError`` instead of hanging the entire test suite.
+    """
+
+    async def _run() -> list[dict[str, Any]]:
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                body=sse_body,
+                headers={"Content-Type": "text/event-stream"},
+                status=200,
+            )
+            events: list[dict[str, Any]] = []
+            async for event in pipe.send_openai_responses_streaming_request(
+                session,
+                {"model": "openai/gpt-4o", "stream": True, "input": []},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                valves=valves,
+                workers=workers,
+            ):
+                events.append(event)
+            return events
+
+    return await asyncio.wait_for(_run(), timeout=_HANG_TIMEOUT)
+
+
+@pytest.mark.asyncio
+async def test_streaming_malformed_json_does_not_block(pipe_instance_async):
+    """Malformed JSON in SSE stream must not hang — valid events still arrive.
+
+    Before the C3 fix the worker would ``continue`` on JSONDecodeError
+    without emitting a placeholder, so the distributor waited forever for
+    the missing sequence number.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        _sse({"type": "response.output_text.delta", "delta": "Hello"})
+        + "data: {not valid json!!!}\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": " World"})
+        + _completed_sse()
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    combined = "".join(e["delta"] for e in text_deltas)
+    assert "Hello" in combined
+    assert "World" in combined
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_invalid_utf8_does_not_block(pipe_instance_async):
+    """Invalid UTF-8 bytes after ``data:`` must not crash or hang the pipeline.
+
+    Before the C3 fix the ``except json.JSONDecodeError`` would NOT catch
+    ``UnicodeDecodeError``.  The broadened ``except Exception`` catches it
+    and emits the placeholder.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        _sse({"type": "response.output_text.delta", "delta": "Before"}).encode("utf-8")
+        + b"data: \xff\xfe\xfd\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "After"}).encode("utf-8")
+        + _completed_sse().encode("utf-8")
+        + b"data: [DONE]\n\n"
+    )
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    combined = "".join(e["delta"] for e in text_deltas)
+    assert "Before" in combined
+    assert "After" in combined
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_only_malformed_before_completed(pipe_instance_async):
+    """If all text-delta events are malformed, only completed is yielded.
+
+    No text deltas should appear, but the stream must still terminate
+    normally — the completed event must arrive.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        "data: INVALID_1\n\n"
+        + "data: INVALID_2\n\n"
+        + "data: INVALID_3\n\n"
+        + _completed_sse()
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    assert len(text_deltas) == 0
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_multiple_failures_preserve_event_order(pipe_instance_async):
+    """Interleaved parse failures must not reorder valid events.
+
+    Input:  A, BAD, BAD, B, BAD, C, completed, [DONE]
+    Output: A, B, C in that exact order — the distributor's sequence
+    numbering must advance through None placeholders without reordering.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        _sse({"type": "response.output_text.delta", "delta": "A"})
+        + "data: BAD_1\n\n"
+        + "data: BAD_2\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "B"})
+        + "data: BAD_3\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "C"})
+        + _completed_sse()
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    delta_texts = [e["delta"] for e in text_deltas]
+    assert delta_texts == ["A", "B", "C"]
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_parse_failure_multiworker(pipe_instance_async):
+    """Parse failures with multiple workers must not cause hangs.
+
+    Uses ``workers=4`` to verify that the sequencing fix holds even when
+    chunks are distributed across multiple concurrent workers.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        _sse({"type": "response.output_text.delta", "delta": "W1"})
+        + "data: BROKEN\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "W2"})
+        + _completed_sse()
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    events = await _collect_sse_events(
+        pipe, session, sse_body, pipe.valves, workers=4,
+    )
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    combined = "".join(e["delta"] for e in text_deltas)
+    assert "W1" in combined
+    assert "W2" in combined
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_mixed_error_types_do_not_block(pipe_instance_async):
+    """Both JSONDecodeError and UnicodeDecodeError must be handled together.
+
+    Sends a mix of:
+      - ``{broken json`` → JSONDecodeError
+      - raw ``\\xff\\x80\\x81`` → UnicodeDecodeError
+    Both must produce placeholders; valid events must still arrive.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        _sse({"type": "response.output_text.delta", "delta": "Start"}).encode("utf-8")
+        + b"data: {broken json\n\n"
+        + b"data: \xff\x80\x81\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "End"}).encode("utf-8")
+        + _completed_sse().encode("utf-8")
+        + b"data: [DONE]\n\n"
+    )
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    combined = "".join(e["delta"] for e in text_deltas)
+    assert "Start" in combined
+    assert "End" in combined
+    assert any(e.get("type") == "response.completed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_streaming_consecutive_malformed_at_start(pipe_instance_async):
+    """Malformed events at the very start of the stream must not block.
+
+    The distributor starts at ``next_seq = 0``.  If sequences 0 and 1 are
+    both None placeholders, the distributor must advance through them to
+    reach the first valid event at sequence 2.
+    """
+    pipe = pipe_instance_async
+    session = pipe._create_http_session(pipe.valves)
+
+    sse_body = (
+        "data: JUNK_0\n\n"
+        + "data: JUNK_1\n\n"
+        + _sse({"type": "response.output_text.delta", "delta": "Finally"})
+        + _completed_sse()
+        + "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    events = await _collect_sse_events(pipe, session, sse_body, pipe.valves)
+    await session.close()
+
+    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
+    assert len(text_deltas) >= 1
+    assert "Finally" in "".join(e["delta"] for e in text_deltas)
+    assert any(e.get("type") == "response.completed" for e in events)
 

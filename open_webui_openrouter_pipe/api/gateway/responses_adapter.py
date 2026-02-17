@@ -246,11 +246,13 @@ class ResponsesAdapter:
                         if seq is None:
                             break
                         if data == b"[DONE]":
+                            await event_queue.put((seq, None))
                             continue
                         try:
                             event = json.loads(data.decode("utf-8"))
-                        except json.JSONDecodeError as exc:
+                        except Exception as exc:
                             self.logger.warning("Chunk parse failed (seq=%s): %s", seq, exc)
+                            await event_queue.put((seq, None))
                             continue
                         if not worker_first_event_queued:
                             worker_first_event_queued = True
@@ -268,7 +270,7 @@ class ResponsesAdapter:
             for idx in range(workers)
         ]
 
-        pending_events: dict[int, dict[str, Any]] = {}
+        pending_events: dict[int, dict[str, Any] | None] = {}
         next_seq = 0
         done_workers = 0
         delta_buffer: list[str] = []
@@ -339,13 +341,18 @@ class ResponsesAdapter:
                     if done_workers >= workers and not pending_events:
                         break
                     continue
-                if event is None:
-                    self.logger.debug("Skipping empty SSE event (seq=%s)", seq)
-                    continue
+
+                # Store event (including None placeholders from parse failures)
                 pending_events[seq] = event
+
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
+
+                    # Skip parse-failed placeholders (advance seq but don't process)
+                    if current is None:
+                        continue
+
                     streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
                     if streaming_error is not None:
                         raise streaming_error
