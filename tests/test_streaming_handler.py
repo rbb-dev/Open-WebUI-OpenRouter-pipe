@@ -4767,7 +4767,7 @@ async def test_try_put_middleware_stream_nowait_does_not_raise_when_full(pipe_in
 
 
 @pytest.mark.asyncio
-async def test_put_middleware_stream_item_times_out_when_full(pipe_instance_async) -> None:
+async def test_put_middleware_stream_item_times_out_drops_item(pipe_instance_async) -> None:
     pipe = pipe_instance_async
 
     class _FakeJob:
@@ -4784,12 +4784,14 @@ async def test_put_middleware_stream_item_times_out_when_full(pipe_instance_asyn
     stream_queue: asyncio.Queue[dict | str | None] = asyncio.Queue(maxsize=1)
     stream_queue.put_nowait({"event": {"type": "notification", "data": {}}})
 
-    with pytest.raises(asyncio.TimeoutError):
-        await pipe._event_emitter_handler._put_middleware_stream_item(
-            cast(Any, job),
-            stream_queue,
-            {"event": {"type": "status"}},
-        )
+    # Should NOT raise — item is silently dropped
+    await pipe._event_emitter_handler._put_middleware_stream_item(
+        cast(Any, job),
+        stream_queue,
+        {"event": {"type": "status"}},
+    )
+    # Queue still has only the original item
+    assert stream_queue.qsize() == 1
 
 
 # =============================================================================

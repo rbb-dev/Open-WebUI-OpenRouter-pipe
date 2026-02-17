@@ -1630,8 +1630,8 @@ async def test_emit_citation_document_not_string_or_list(event_handler):
 
 
 @pytest.mark.asyncio
-async def test_put_middleware_stream_item_timeout_exception(pipe_instance_async, caplog):
-    """Test put_middleware_stream_item timeout logs warning and re-raises."""
+async def test_put_middleware_stream_item_timeout_drops_item(pipe_instance_async, caplog):
+    """Test put_middleware_stream_item timeout logs warning and drops the item."""
     pipe = pipe_instance_async
 
     class _FakeJob:
@@ -1648,10 +1648,11 @@ async def test_put_middleware_stream_item_timeout_exception(pipe_instance_async,
     queue.put_nowait({"first": "item"})  # Fill the queue
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(asyncio.TimeoutError):
-            await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"second": "item"})
+        await pipe._event_emitter_handler._put_middleware_stream_item(cast(Any, job), queue, {"second": "item"})
 
     assert "timed out" in caplog.text
+    # Queue still contains only the original item — second was dropped
+    assert queue.qsize() == 1
 
 
 @pytest.mark.asyncio

@@ -536,11 +536,10 @@ class EventEmitterHandler:
             await asyncio.wait_for(stream_queue.put(item), timeout=timeout)
         except asyncio.TimeoutError:
             self.logger.warning(
-                "Middleware stream queue enqueue timed out (request_id=%s, maxsize=%s).",
+                "Middleware stream queue enqueue timed out, dropping item (request_id=%s, maxsize=%s).",
                 job.request_id,
                 stream_queue.maxsize,
             )
-            raise
 
 
 
