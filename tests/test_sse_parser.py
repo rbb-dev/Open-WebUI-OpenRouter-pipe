@@ -546,7 +546,12 @@ async def test_producer_queue_full_on_sentinel():
 
 @pytest.mark.asyncio
 async def test_worker_skips_done_token():
-    """Test worker ignores [DONE] tokens that slip through (line 362)."""
+    """Test worker emits None placeholder for [DONE] tokens that slip through.
+
+    The producer normally filters [DONE] before assigning a sequence number,
+    but the worker has a defensive check. When it fires, the worker emits
+    (seq, None) to preserve the sequence so the distributor doesn't hang.
+    """
     parser = SSEParser(workers=1)
     chunk_queue: asyncio.Queue[tuple[int | None, bytes | None]] = asyncio.Queue()
     event_queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
@@ -560,21 +565,21 @@ async def test_worker_skips_done_token():
     await chunk_queue.put((1, b'{"type":"test","value":"real"}'))
     await chunk_queue.put((None, None))
 
-    events = []
+    all_events = []
     while True:
         seq, event = await event_queue.get()
         event_queue.task_done()
         if seq is None:
             break
-        if event is not None:
-            events.append((seq, event))
+        all_events.append((seq, event))
 
     await worker_task
 
-    # Only the real event should be emitted, [DONE] should be skipped
-    assert len(events) == 1
-    assert events[0][0] == 1
-    assert events[0][1]["type"] == "test"
+    # [DONE] emits (0, None) placeholder; real event emits (1, parsed_dict)
+    assert len(all_events) == 2
+    assert all_events[0] == (0, None)
+    assert all_events[1][0] == 1
+    assert all_events[1][1]["type"] == "test"
 
 
 # -----------------------------------------------------------------------------
@@ -613,14 +618,12 @@ async def test_distributor_warns_on_queue_backlog():
 
 @pytest.mark.asyncio
 async def test_distributor_skips_empty_events():
-    """Test distributor logs and skips None events (lines 472-474).
+    """Test distributor advances next_seq past None placeholders.
 
-    Note: In production, workers only emit (seq, event) for valid parsed events
-    and (None, None) as a sentinel. The empty event skip code is defensive.
-    When a None event with a valid seq is received, we log and skip it but
-    don't increment next_seq since subsequent events should not depend on it.
-
-    This test verifies the skip logic fires without causing issues.
+    Workers emit (seq, None) when a chunk fails to parse (e.g., malformed
+    JSON or UnicodeDecodeError). The distributor buffers the None placeholder,
+    advances next_seq past it, and continues processing subsequent events.
+    This prevents a sequence gap from hanging the stream forever.
     """
     parser = SSEParser(workers=1, delta_char_limit=0, idle_flush_ms=0)
     logger = logging.getLogger("test_empty_events")
@@ -628,13 +631,12 @@ async def test_distributor_skips_empty_events():
 
     queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
 
-    # Valid events with sequential seq numbers that can be processed in order
-    # Note: Empty events with non-None seq don't advance next_seq, so we
-    # test that a None event at the start is handled before valid events
-    await queue.put((0, None))  # Empty event - should be skipped and logged
-    await queue.put((0, {"type": "response.output_text.delta", "delta": "a"}))
-    await queue.put((1, {"type": "response.output_text.delta", "delta": "b"}))
-    await queue.put((None, None))
+    # seq 0 is a parse-failed placeholder (None) — should advance next_seq
+    # seq 1 and 2 are valid events — should be emitted normally
+    await queue.put((0, None))
+    await queue.put((1, {"type": "response.output_text.delta", "delta": "a"}))
+    await queue.put((2, {"type": "response.output_text.delta", "delta": "b"}))
+    await queue.put((None, None))  # sentinel
 
     events = []
     async for event in parser._distributor(
@@ -648,6 +650,178 @@ async def test_distributor_skips_empty_events():
     assert len(events) == 2
     assert events[0]["delta"] == "a"
     assert events[1]["delta"] == "b"
+
+
+@pytest.mark.asyncio
+async def test_distributor_handles_multiple_consecutive_none_placeholders():
+    """Test distributor advances through multiple consecutive None placeholders.
+
+    If several chunks fail to parse in a row, the distributor must advance
+    next_seq past all of them and still emit the valid events that follow.
+    """
+    parser = SSEParser(workers=1, delta_char_limit=0, idle_flush_ms=0)
+    parser.logger = logging.getLogger("test_consecutive_none")
+
+    queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
+
+    # seq 0-2 all failed to parse; seq 3-4 are valid
+    await queue.put((0, None))
+    await queue.put((1, None))
+    await queue.put((2, None))
+    await queue.put((3, {"type": "response.output_text.delta", "delta": "x"}))
+    await queue.put((4, {"type": "response.output_text.delta", "delta": "y"}))
+    await queue.put((None, None))  # sentinel
+
+    events = []
+    async for event in parser._distributor(
+        event_queue=queue,
+        extract_error=None,
+        requested_model=None,
+        event_queue_warn_size=100,
+    ):
+        events.append(event)
+
+    assert len(events) == 2
+    assert events[0]["delta"] == "x"
+    assert events[1]["delta"] == "y"
+
+
+@pytest.mark.asyncio
+async def test_distributor_handles_parse_failure_mid_stream():
+    """Test parse failure in middle of stream doesn't block subsequent events.
+
+    seq 0-1 are valid, seq 2 failed (None), seq 3-4 are valid.
+    All valid events should be emitted in order.
+    """
+    parser = SSEParser(workers=1, delta_char_limit=0, idle_flush_ms=0)
+    parser.logger = logging.getLogger("test_mid_stream_failure")
+
+    queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
+
+    await queue.put((0, {"type": "response.output_text.delta", "delta": "a"}))
+    await queue.put((1, {"type": "response.output_text.delta", "delta": "b"}))
+    await queue.put((2, None))  # parse failure
+    await queue.put((3, {"type": "response.output_text.delta", "delta": "c"}))
+    await queue.put((4, {"type": "response.output_text.delta", "delta": "d"}))
+    await queue.put((None, None))  # sentinel
+
+    events = []
+    async for event in parser._distributor(
+        event_queue=queue,
+        extract_error=None,
+        requested_model=None,
+        event_queue_warn_size=100,
+    ):
+        events.append(event)
+
+    assert len(events) == 4
+    deltas = [e["delta"] for e in events]
+    assert deltas == ["a", "b", "c", "d"]
+
+
+@pytest.mark.asyncio
+async def test_distributor_all_events_none_ends_cleanly():
+    """Test distributor ends cleanly when ALL events are None placeholders.
+
+    If every single chunk fails to parse, the stream should still terminate
+    normally (no hang) — just with zero events emitted.
+    """
+    parser = SSEParser(workers=1, delta_char_limit=0, idle_flush_ms=0)
+    parser.logger = logging.getLogger("test_all_none")
+
+    queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
+
+    for i in range(5):
+        await queue.put((i, None))
+    await queue.put((None, None))  # sentinel
+
+    events = []
+    async for event in parser._distributor(
+        event_queue=queue,
+        extract_error=None,
+        requested_model=None,
+        event_queue_warn_size=100,
+    ):
+        events.append(event)
+
+    assert len(events) == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_emits_none_on_json_parse_failure():
+    """Test worker emits (seq, None) when JSON parsing fails.
+
+    This directly tests the C3 fix: instead of dropping the sequence number
+    (which would hang the distributor), the worker emits a None placeholder.
+    """
+    parser = SSEParser(workers=1)
+    chunk_queue: asyncio.Queue[tuple[int | None, bytes | None]] = asyncio.Queue()
+    event_queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
+
+    worker_task = asyncio.create_task(
+        parser._worker(chunk_queue=chunk_queue, event_queue=event_queue)
+    )
+
+    # Malformed JSON at seq 0
+    await chunk_queue.put((0, b"{not valid json}"))
+    await chunk_queue.put((1, b'{"type":"test"}'))
+    await chunk_queue.put((None, None))
+
+    all_events = []
+    while True:
+        seq, event = await event_queue.get()
+        event_queue.task_done()
+        if seq is None:
+            break
+        all_events.append((seq, event))
+
+    await worker_task
+
+    assert len(all_events) == 2
+    # seq 0: None placeholder for parse failure
+    assert all_events[0] == (0, None)
+    # seq 1: valid parsed event
+    assert all_events[1][0] == 1
+    assert all_events[1][1]["type"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_worker_emits_none_on_unicode_decode_error():
+    """Test worker emits (seq, None) when UTF-8 decoding fails.
+
+    The broad `except Exception` in the worker catches UnicodeDecodeError
+    (not just JSONDecodeError), ensuring sequence preservation for any
+    parse failure mode.
+    """
+    parser = SSEParser(workers=1)
+    chunk_queue: asyncio.Queue[tuple[int | None, bytes | None]] = asyncio.Queue()
+    event_queue: asyncio.Queue[tuple[int | None, dict | None]] = asyncio.Queue()
+
+    worker_task = asyncio.create_task(
+        parser._worker(chunk_queue=chunk_queue, event_queue=event_queue)
+    )
+
+    # Invalid UTF-8 bytes at seq 0
+    await chunk_queue.put((0, b"\xff\xfe\x80\x81"))
+    await chunk_queue.put((1, b'{"type":"ok"}'))
+    await chunk_queue.put((None, None))
+
+    all_events = []
+    while True:
+        seq, event = await event_queue.get()
+        event_queue.task_done()
+        if seq is None:
+            break
+        all_events.append((seq, event))
+
+    await worker_task
+
+    assert len(all_events) == 2
+    # seq 0: None placeholder for UnicodeDecodeError
+    assert all_events[0] == (0, None)
+    # seq 1: valid parsed event
+    assert all_events[1][0] == 1
+    assert all_events[1][1]["type"] == "ok"
 
 
 # -----------------------------------------------------------------------------

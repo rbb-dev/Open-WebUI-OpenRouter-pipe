@@ -355,12 +355,14 @@ class SSEParser:
                         break
 
                     if data == b"[DONE]":
+                        await event_queue.put((seq, None))
                         continue
 
                     try:
                         event = json.loads(data.decode("utf-8"))
-                    except json.JSONDecodeError as exc:
+                    except Exception as exc:
                         self.logger.warning("Chunk parse failed (seq=%s): %s", seq, exc)
+                        await event_queue.put((seq, None))
                         continue
 
                     await event_queue.put((seq, event))
@@ -464,18 +466,17 @@ class SSEParser:
                         break
                     continue
 
-                # Skip empty events
-                if event is None:
-                    self.logger.debug("Skipping empty SSE event (seq=%s)", seq)
-                    continue
-
-                # Buffer event until we can emit in order
+                # Buffer event (including None placeholders) until we can emit in order
                 pending_events[seq] = event
 
                 # Emit events in sequence order
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
+
+                    # Skip parse-failed placeholders (advance seq but don't process)
+                    if current is None:
+                        continue
 
                     # Check for error events
                     if extract_error:
