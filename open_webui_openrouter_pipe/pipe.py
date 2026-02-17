@@ -806,131 +806,159 @@ class Pipe:
         __task_body__: Any = None,
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
-        # Set up timing context at the very start to capture full request flow
-        from .core.timing_logger import set_timing_context, timing_mark, ensure_timing_file_configured
-        _early_request_id = secrets.token_hex(8)
-        # Ensure timing file is configured when enabled (handles runtime valve changes)
-        if self.valves.ENABLE_TIMING_LOG:
-            ensure_timing_file_configured(self.valves.TIMING_LOG_FILE)
-        set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
-        timing_mark("pipe_entry")
+        safe_event_emitter = None
 
-        self._maybe_start_log_worker()
-        timing_mark("after_log_worker")
-        self._maybe_start_startup_checks()
-        timing_mark("after_startup_checks")
-        self._maybe_start_redis()
-        timing_mark("after_redis")
-        self._maybe_start_cleanup()
-        timing_mark("after_cleanup")
+        try:
+            # Set up timing context at the very start to capture full request flow
+            from .core.timing_logger import set_timing_context, timing_mark, ensure_timing_file_configured
+            _early_request_id = secrets.token_hex(8)
+            # Ensure timing file is configured when enabled (handles runtime valve changes)
+            if self.valves.ENABLE_TIMING_LOG:
+                ensure_timing_file_configured(self.valves.TIMING_LOG_FILE)
+            set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
+            timing_mark("pipe_entry")
 
-        if not isinstance(body, dict):
-            body = {}
-        if not isinstance(__user__, dict):
-            __user__ = {}
-        if not isinstance(__metadata__, dict):
-            __metadata__ = {}
+            self._maybe_start_log_worker()
+            timing_mark("after_log_worker")
+            self._maybe_start_startup_checks()
+            timing_mark("after_startup_checks")
+            self._maybe_start_redis()
+            timing_mark("after_redis")
+            self._maybe_start_cleanup()
+            timing_mark("after_cleanup")
 
-        user_valves_raw = __user__.get("valves") or {}
-        user_valves = self.UserValves.model_validate(user_valves_raw)
-        valves = self._merge_valves(self.valves, user_valves)
-        user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
-        safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(__event_emitter__)
-        wants_stream = bool(body.get("stream"))
+            if not isinstance(body, dict):
+                body = {}
+            if not isinstance(__user__, dict):
+                __user__ = {}
+            if not isinstance(__metadata__, dict):
+                __metadata__ = {}
 
-        http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
-        referer_override_invalid = bool(
-            http_referer_override
-            and not http_referer_override.startswith(("http://", "https://"))
-        )
-        if referer_override_invalid and not wants_stream:
-            await self._event_emitter_handler._emit_notification(
-                safe_event_emitter,
-                "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
-                "Falling back to the default pipe referer.",
-                level="warning",
+            safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(__event_emitter__)
+            user_valves_raw = __user__.get("valves") or {}
+            user_valves = self.UserValves.model_validate(user_valves_raw)
+            valves = self._merge_valves(self.valves, user_valves)
+            user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
+            wants_stream = bool(body.get("stream"))
+
+            http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
+            referer_override_invalid = bool(
+                http_referer_override
+                and not http_referer_override.startswith(("http://", "https://"))
             )
-
-        if not self._circuit_breaker.allows(user_id):
-            message = "Temporarily disabled due to repeated errors. Please retry later."
-            if safe_event_emitter:
-                await self._event_emitter_handler._emit_notification(safe_event_emitter, message, level="warning")
-            SessionLogger.cleanup()
-            return message
-
-        if self._warmup_failed:
-            message = "Service unavailable due to startup issues"
-            if safe_event_emitter:
-                await self._ensure_error_formatter()._emit_error(
+            if referer_override_invalid and not wants_stream:
+                await self._event_emitter_handler._emit_notification(
                     safe_event_emitter,
-                    message,
-                    show_error_message=True,
-                    done=True,
+                    "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
+                    "Falling back to the default pipe referer.",
+                    level="warning",
                 )
-            SessionLogger.cleanup()
-            return message
 
-        await self._ensure_concurrency_controls(valves)
-        timing_mark("after_concurrency_controls")
-        queue = self._request_queue
-        if queue is None:
-            raise RuntimeError("request queue not initialized")
+            if not self._circuit_breaker.allows(user_id):
+                message = "Temporarily disabled due to repeated errors. Please retry later."
+                if safe_event_emitter:
+                    await self._event_emitter_handler._emit_notification(safe_event_emitter, message, level="warning")
+                SessionLogger.cleanup()
+                return message
 
-        loop = asyncio.get_running_loop()
-        stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
-        future = loop.create_future()
-        if wants_stream:
-            stream_queue_maxsize = valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE
-            stream_queue = (
-                asyncio.Queue(maxsize=stream_queue_maxsize)
-                if stream_queue_maxsize > 0
-                else asyncio.Queue()
-            )
-            if referer_override_invalid:
-                await stream_queue.put(
-                    {
-                        "event": {
-                            "type": "notification",
-                            "data": {
-                                "type": "warning",
-                                "content": (
-                                    "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
-                                    "Falling back to the default pipe referer."
-                                ),
+            if self._warmup_failed:
+                message = "Service unavailable due to startup issues"
+                if safe_event_emitter:
+                    await self._ensure_error_formatter()._emit_error(
+                        safe_event_emitter,
+                        message,
+                        show_error_message=True,
+                        done=True,
+                    )
+                SessionLogger.cleanup()
+                return message
+            await self._ensure_concurrency_controls(valves)
+            timing_mark("after_concurrency_controls")
+            queue = self._request_queue
+            if queue is None:
+                self.logger.error("Request queue not initialized after concurrency setup")
+                if safe_event_emitter:
+                    await self._ensure_error_formatter()._emit_error(
+                        safe_event_emitter,
+                        "Service temporarily unavailable",
+                        show_error_message=True,
+                        done=True,
+                    )
+                SessionLogger.cleanup()
+                return "Service temporarily unavailable"
+
+            loop = asyncio.get_running_loop()
+            stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
+            future = loop.create_future()
+            if wants_stream:
+                stream_queue_maxsize = valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE
+                stream_queue = (
+                    asyncio.Queue(maxsize=stream_queue_maxsize)
+                    if stream_queue_maxsize > 0
+                    else asyncio.Queue()
+                )
+                if referer_override_invalid:
+                    await stream_queue.put(
+                        {
+                            "event": {
+                                "type": "notification",
+                                "data": {
+                                    "type": "warning",
+                                    "content": (
+                                        "HTTP_REFERER_OVERRIDE must be a full URL including http(s)://. "
+                                        "Falling back to the default pipe referer."
+                                    ),
+                                },
                             },
                         }
-                    }
-                )
+                    )
 
-        job = _PipeJob(
-            pipe=self,
-            body=body,
-            user=__user__,
-            request=__request__,
-            event_emitter=safe_event_emitter,  # Keep emitter for both streaming and non-streaming
-            event_call=__event_call__,
-            metadata=__metadata__,
-            tools=__tools__,
-            task=__task__,
-            task_body=__task_body__,
-            valves=valves,
-            future=future,
-            stream_queue=stream_queue,
-            request_id=_early_request_id,  # Use same ID as timing context
-        )
+            job = _PipeJob(
+                pipe=self,
+                body=body,
+                user=__user__,
+                request=__request__,
+                event_emitter=safe_event_emitter,  # Keep emitter for both streaming and non-streaming
+                event_call=__event_call__,
+                metadata=__metadata__,
+                tools=__tools__,
+                task=__task__,
+                task_body=__task_body__,
+                valves=valves,
+                future=future,
+                stream_queue=stream_queue,
+                request_id=_early_request_id,  # Use same ID as timing context
+            )
 
-        timing_mark("before_enqueue_job")
-        if not self._enqueue_job(job):
-            self.logger.warning("Request queue full; rejecting request_id=%s", job.request_id)
+            timing_mark("before_enqueue_job")
+            if not self._enqueue_job(job):
+                self.logger.warning("Request queue full; rejecting request_id=%s", job.request_id)
+                if safe_event_emitter:
+                    await self._ensure_error_formatter()._emit_error(
+                        safe_event_emitter,
+                        "Server busy (503)",
+                        show_error_message=True,
+                        done=True,
+                    )
+                SessionLogger.cleanup()
+                return "Server busy (503)"
+        except Exception as exc:
+            self.logger.error("Pre-enqueue setup failed: %s", exc)
             if safe_event_emitter:
-                await self._ensure_error_formatter()._emit_error(
-                    safe_event_emitter,
-                    "Server busy (503)",
-                    show_error_message=True,
-                    done=True,
-                )
-            SessionLogger.cleanup()
-            return "Server busy (503)"
+                try:
+                    await self._ensure_error_formatter()._emit_error(
+                        safe_event_emitter,
+                        "Request setup failed. Please retry.",
+                        show_error_message=True,
+                        done=True,
+                    )
+                except Exception:
+                    self.logger.debug("Failed to emit error during pre-enqueue recovery", exc_info=True)
+            try:
+                SessionLogger.cleanup()
+            except Exception:
+                self.logger.debug("SessionLogger.cleanup failed during pre-enqueue recovery", exc_info=True)
+            return "Request setup failed. Please retry."
 
         if wants_stream and stream_queue is not None:
             @timed
@@ -1271,7 +1299,8 @@ class Pipe:
         """Attempt to enqueue a request, returning False when the queue is full."""
         queue = self._request_queue
         if queue is None:
-            raise RuntimeError("Request queue not initialized")
+            self.logger.error("Request queue not initialized in _enqueue_job")
+            return False
         try:
             queue.put_nowait(job)
             self.logger.debug("Enqueued request %s (depth=%s)", job.request_id, queue.qsize())

@@ -2488,6 +2488,112 @@ class TestPipeEntryPointEdgeCases:
         finally:
             await pipe.close()
 
+    @pytest.mark.asyncio
+    async def test_pipe_entry_queue_none_returns_safe_string(self):
+        """Test that pipe() returns a safe string when queue is None after concurrency setup."""
+        pipe = Pipe()
+
+        try:
+            # Force _ensure_concurrency_controls to leave queue as None
+            with patch.object(pipe, "_ensure_concurrency_controls", new_callable=AsyncMock) as mock_cc:
+                mock_cc.return_value = None
+                pipe._request_queue = None
+
+                result = await pipe.pipe(
+                    body={},
+                    __user__={},
+                    __request__=None,
+                    __event_emitter__=None,
+                    __event_call__=None,
+                    __metadata__={},
+                    __tools__=None,
+                )
+
+                assert isinstance(result, str)
+                assert "unavailable" in result.lower()
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_pipe_entry_user_valves_validation_error_caught(self):
+        """Test that UserValves validation error is caught by pre-enqueue safety net."""
+        pipe = Pipe()
+
+        try:
+            # Patch model_validate to raise a ValidationError
+            with patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("bad valves")):
+                result = await pipe.pipe(
+                    body={},
+                    __user__={"valves": {"invalid_field": "x"}},
+                    __request__=None,
+                    __event_emitter__=None,
+                    __event_call__=None,
+                    __metadata__={},
+                    __tools__=None,
+                )
+
+                assert isinstance(result, str)
+                assert "retry" in result.lower()
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_pipe_entry_cleanup_failure_suppressed_in_except(self):
+        """Test that SessionLogger.cleanup() failure in except handler is suppressed."""
+        pipe = Pipe()
+
+        try:
+            # Force a pre-enqueue exception and also make cleanup fail
+            with (
+                patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("boom")),
+                patch(
+                    "open_webui_openrouter_pipe.pipe.SessionLogger.cleanup",
+                    side_effect=RuntimeError("cleanup broken"),
+                ),
+            ):
+                # Should NOT raise — cleanup failure must be suppressed
+                result = await pipe.pipe(
+                    body={},
+                    __user__={},
+                    __request__=None,
+                    __event_emitter__=None,
+                    __event_call__=None,
+                    __metadata__={},
+                    __tools__=None,
+                )
+
+                assert isinstance(result, str)
+                assert "retry" in result.lower()
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_pipe_entry_emit_error_failure_suppressed_in_except(self):
+        """Test that _emit_error failure in except handler is suppressed."""
+        pipe = Pipe()
+
+        async def _broken_emitter(event):
+            raise RuntimeError("emitter broken")
+
+        try:
+            # Force a pre-enqueue exception AND provide a broken emitter
+            with patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("boom")):
+                # Should NOT raise — _emit_error failure must be suppressed
+                result = await pipe.pipe(
+                    body={},
+                    __user__={},
+                    __request__=None,
+                    __event_emitter__=_broken_emitter,
+                    __event_call__=None,
+                    __metadata__={},
+                    __tools__=None,
+                )
+
+                assert isinstance(result, str)
+                assert "retry" in result.lower()
+        finally:
+            await pipe.close()
+
 
 # =============================================================================
 # ENQUEUE JOB TESTS
@@ -2499,20 +2605,20 @@ class TestEnqueueJob:
 
     @pytest.mark.asyncio
     async def test_enqueue_job_requires_queue(self):
-        """Test that _enqueue_job raises when queue is None."""
+        """Test that _enqueue_job returns False when queue is None."""
         pipe = Pipe()
         pipe._request_queue = None
 
         job = Mock()
 
         try:
-            with pytest.raises(RuntimeError, match="Request queue not initialized"):
-                pipe._enqueue_job(job)
+            result = pipe._enqueue_job(job)
+            assert result is False
         finally:
             await pipe.close()
 
     def test_enqueue_job_request_queue_not_initialized(self):
-        """Test that _enqueue_job raises when request queue is None.
+        """Test that _enqueue_job returns False when request queue is None.
 
         Note: In practice, pipe() calls _ensure_concurrency_controls which creates
         the queue before _enqueue_job is called. This tests the defensive check
@@ -2543,8 +2649,8 @@ class TestEnqueueJob:
                 request_id="test123",
             )
 
-            with pytest.raises(RuntimeError, match="Request queue not initialized"):
-                pipe._enqueue_job(job)
+            result = pipe._enqueue_job(job)
+            assert result is False
         finally:
             loop.close()
             pipe.shutdown()
