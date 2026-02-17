@@ -440,31 +440,6 @@ def _resolve_error_model_context(
     }
 
 
-def _format_openrouter_error_markdown(
-    error: OpenRouterAPIError,
-    *,
-    normalized_model_id: Optional[str],
-    api_model_id: Optional[str],
-    template: str,
-    context: Optional[dict[str, Any]] = None,
-) -> str:
-    """Render a provider error into markdown after enriching with model context."""
-    model_display, diagnostics, metrics = _resolve_error_model_context(
-        error,
-        normalized_model_id=normalized_model_id,
-        api_model_id=api_model_id,
-    )
-    return error.to_markdown(
-        model_label=model_display,
-        diagnostics=diagnostics or None,
-        fallback_model=api_model_id or normalized_model_id,
-        template=template,
-        metrics=metrics,
-        normalized_model_id=normalized_model_id,
-        api_model_id=api_model_id,
-        context=context,
-    )
-
 
 # -----------------------------------------------------------------------------
 # RAG File Constraints (using imported config helpers from core.utils)

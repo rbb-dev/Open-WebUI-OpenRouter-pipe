@@ -1359,7 +1359,7 @@ def test_extract_openrouter_error_details_and_builder():
     assert error.requested_model == "demo"
 
 
-def test_resolve_and_format_openrouter_error_markdown(monkeypatch):
+def test_resolve_error_model_context_and_to_markdown(monkeypatch):
     ow.ModelFamily.set_dynamic_specs({
         "demo": {
             "context_length": 123,
@@ -1371,7 +1371,15 @@ def test_resolve_and_format_openrouter_error_markdown(monkeypatch):
     display, diagnostics, metrics = ow._resolve_error_model_context(error, normalized_model_id="demo", api_model_id="demo")
     assert metrics["context_limit"] == 123
     assert display == "Demo"
-    markdown = ow._format_openrouter_error_markdown(error, normalized_model_id="demo", api_model_id="demo", template="{heading}")
+    markdown = error.to_markdown(
+        model_label=display,
+        diagnostics=diagnostics or None,
+        fallback_model="demo",
+        template="{heading}",
+        metrics=metrics,
+        normalized_model_id="demo",
+        api_model_id="demo",
+    )
     assert "OpenRouter" in markdown or "Provider" in markdown
     ow.ModelFamily.set_dynamic_specs(None)
 

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
     from ..streaming.event_emitter import EventEmitterHandler, EventEmitter
 
-from .errors import _format_openrouter_error_markdown
+from .errors import _resolve_error_model_context
 from .utils import _pretty_json
 
 # Simple fallback template used when no valve template is available.
@@ -250,11 +250,19 @@ class ErrorFormatter:
             context_defaults["retry_after_seconds"] = retry_after_hint
         self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
         if event_emitter:
-            content = _format_openrouter_error_markdown(
+            model_display, diagnostics, metrics = _resolve_error_model_context(
                 exc,
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
+            )
+            content = exc.to_markdown(
+                model_label=model_display,
+                diagnostics=diagnostics or None,
+                fallback_model=api_model_id or normalized_model_id,
                 template=template_to_use or _FALLBACK_ERROR_TEMPLATE,
+                metrics=metrics,
+                normalized_model_id=normalized_model_id,
+                api_model_id=api_model_id,
                 context=context_defaults,
             )
             try:

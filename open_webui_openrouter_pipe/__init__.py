@@ -52,7 +52,6 @@ if TYPE_CHECKING:
         _extract_openrouter_error_details,
         _resolve_error_model_context,
         _build_openrouter_api_error,
-        _format_openrouter_error_markdown,
         _read_rag_file_constraints,
     )
     from .core.utils import (
@@ -167,7 +166,6 @@ __all__ = [
     "_extract_openrouter_error_details",
     "_resolve_error_model_context",
     "_build_openrouter_api_error",
-    "_format_openrouter_error_markdown",
     "_OPEN_WEBUI_CONFIG_MODULE",
 
     # Model registry
@@ -280,7 +278,6 @@ _LAZY_IMPORTS = {
     "_extract_openrouter_error_details": (".core.errors", "_extract_openrouter_error_details"),
     "_resolve_error_model_context": (".core.errors", "_resolve_error_model_context"),
     "_build_openrouter_api_error": (".core.errors", "_build_openrouter_api_error"),
-    "_format_openrouter_error_markdown": (".core.errors", "_format_openrouter_error_markdown"),
     "_read_rag_file_constraints": (".core.errors", "_read_rag_file_constraints"),
 
     # Core utils
