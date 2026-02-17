@@ -1895,14 +1895,15 @@ class Pipe:
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         chunk_queue_maxsize: int = 100,
+        chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
             session, request_body, api_key, base_url, valves=valves, workers=workers,
             breaker_key=breaker_key, delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
-            chunk_queue_maxsize=chunk_queue_maxsize, event_queue_maxsize=event_queue_maxsize,
-            event_queue_warn_size=event_queue_warn_size
+            chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
+            event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size
         ):
             yield event
 
@@ -1971,6 +1972,7 @@ class Pipe:
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         chunk_queue_maxsize: int = 100,
+        chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -1978,8 +1980,8 @@ class Pipe:
             session, responses_request_body, api_key, base_url, valves=valves,
             endpoint_override=endpoint_override, workers=workers, breaker_key=breaker_key,
             delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
-            chunk_queue_maxsize=chunk_queue_maxsize, event_queue_maxsize=event_queue_maxsize,
-            event_queue_warn_size=event_queue_warn_size
+            chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
+            event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size
         ):
             yield event
 

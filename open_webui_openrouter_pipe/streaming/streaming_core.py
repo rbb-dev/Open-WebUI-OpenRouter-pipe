@@ -819,6 +819,7 @@ class StreamingHandler:
                         delta_char_limit=0,
                         idle_flush_ms=0,
                         chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
+                        chunk_queue_warn_size=valves.STREAMING_CHUNK_QUEUE_WARN_SIZE,
                         event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
                         event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
                     )

@@ -700,6 +700,7 @@ class ChatCompletionsAdapter:
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         chunk_queue_maxsize: int = 100,
+        chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -741,6 +742,7 @@ class ChatCompletionsAdapter:
                 delta_char_limit=delta_char_limit,
                 idle_flush_ms=idle_flush_ms,
                 chunk_queue_maxsize=chunk_queue_maxsize,
+                chunk_queue_warn_size=chunk_queue_warn_size,
                 event_queue_maxsize=event_queue_maxsize,
                 event_queue_warn_size=event_queue_warn_size,
             ):

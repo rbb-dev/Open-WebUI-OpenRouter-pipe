@@ -57,6 +57,7 @@ class ResponsesAdapter:
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         chunk_queue_maxsize: int = 100,
+        chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -236,10 +237,11 @@ class ResponsesAdapter:
                         break
 
         worker_first_event_queued = False
+        chunk_queue_warn_last_ts: float = 0.0
 
         @timed
         async def _worker(worker_idx: int) -> None:
-            nonlocal worker_first_event_queued
+            nonlocal worker_first_event_queued, chunk_queue_warn_last_ts
             first_chunk_got = False
             try:
                 while True:
@@ -247,6 +249,20 @@ class ResponsesAdapter:
                     if not first_chunk_got:
                         first_chunk_got = True
                         timing_mark(f"worker_{worker_idx}_first_chunk_got")
+                    # Non-spammy chunk queue monitoring
+                    now_cq = time.perf_counter()
+                    if self._pipe._should_warn_event_queue_backlog(
+                        chunk_queue.qsize(),
+                        chunk_queue_warn_size,
+                        now_cq,
+                        chunk_queue_warn_last_ts,
+                    ):
+                        self.logger.warning(
+                            "Chunk queue backlog high: %d items (session=%s)",
+                            chunk_queue.qsize(),
+                            SessionLogger.session_id.get() or "unknown",
+                        )
+                        chunk_queue_warn_last_ts = now_cq
                     try:
                         if seq is None:
                             break

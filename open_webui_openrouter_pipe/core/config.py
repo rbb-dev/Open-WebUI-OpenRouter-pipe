@@ -1089,6 +1089,11 @@ class Valves(BaseModel):
         description="Maximum number of parsed SSE events buffered ahead of downstream processing. 0=unbounded (deadlock-proof, recommended); bounded values &lt;500 risk hangs on tool-heavy loads or slow DB/emit (drain block -> event full -> workers block -> chunk full -> producer halt).",
 
     )
+    STREAMING_CHUNK_QUEUE_WARN_SIZE: int = Field(
+        default=1000,
+        ge=100,
+        description="Log warning when chunk_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
+    )
     STREAMING_EVENT_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
