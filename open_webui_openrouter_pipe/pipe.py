@@ -863,7 +863,7 @@ class Pipe:
                 SessionLogger.cleanup()
                 return message
 
-            if self._warmup_failed:
+            if self._warmup_failed and (self._startup_task is None or self._startup_task.done()):
                 message = "Service unavailable due to startup issues"
                 if safe_event_emitter:
                     await self._ensure_error_formatter()._emit_error(
