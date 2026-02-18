@@ -337,13 +337,13 @@ class StreamingHandler:
         if not isinstance(metadata, dict):
             metadata = {}
 
-        owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
-        persist_tools_enabled = bool(valves.PERSIST_TOOL_RESULTS) and (not owui_tool_passthrough)
+        owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
+        persist_tools_enabled = valves.PERSIST_TOOL_RESULTS and (not owui_tool_passthrough)
         self.logger.debug(
             "🔧 TOOL_EXECUTION_MODE=%s owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s",
-            getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline"),
+            valves.TOOL_EXECUTION_MODE,
             owui_tool_passthrough,
-            bool(valves.PERSIST_TOOL_RESULTS),
+            valves.PERSIST_TOOL_RESULTS,
             persist_tools_enabled,
         )
         self.logger.debug("Streaming config: direct pass-through (no server batching)")
@@ -1732,7 +1732,7 @@ class StreamingHandler:
                     # In-progress cards are ephemeral: emit via chat:completion so they do NOT
                     # enter content_blocks or persistence. They will be replaced once completed.
                     in_progress_cards_html = ""
-                    show_tool_cards = getattr(valves, "SHOW_TOOL_CARDS", False)
+                    show_tool_cards = valves.SHOW_TOOL_CARDS
                     if show_tool_cards and event_emitter and body.stream and calls:
                         try:
                             for call in calls:
@@ -2312,8 +2312,8 @@ class StreamingHandler:
     ) -> Literal["responses", "chat_completions"]:
         """Choose which OpenRouter endpoint to use for a given model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
-        force_chat = _parse_model_patterns(getattr(valves, "FORCE_CHAT_COMPLETIONS_MODELS", ""))
-        force_responses = _parse_model_patterns(getattr(valves, "FORCE_RESPONSES_MODELS", ""))
+        force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
+        force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
         if _matches_any_model_pattern(base_id, force_responses):
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -2332,7 +2332,7 @@ class StreamingHandler:
                     force_chat,
                 )
             return "chat_completions"
-        default_endpoint = getattr(valves, "DEFAULT_LLM_ENDPOINT", "responses")
+        default_endpoint = valves.DEFAULT_LLM_ENDPOINT
         selected = "chat_completions" if default_endpoint == "chat_completions" else "responses"
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
@@ -2353,8 +2353,8 @@ class StreamingHandler:
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
         """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
-        force_chat = _parse_model_patterns(getattr(valves, "FORCE_CHAT_COMPLETIONS_MODELS", ""))
-        force_responses = _parse_model_patterns(getattr(valves, "FORCE_RESPONSES_MODELS", ""))
+        force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
+        force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
         if _matches_any_model_pattern(base_id, force_responses):
             return "responses", True
         if _matches_any_model_pattern(base_id, force_chat):

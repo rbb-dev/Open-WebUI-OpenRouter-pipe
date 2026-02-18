@@ -627,24 +627,20 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
     last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
 
-    # Get provider routing valve values for sync_key
-    admin_routing = (getattr(pipe.valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
-    user_routing = (getattr(pipe.valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
-
     pipe._catalog_manager._model_metadata_sync_key = (
         "test_pipe",
         float(last_fetch or 0.0),
-        str(pipe.valves.MODEL_ID or ""),
-        bool(pipe.valves.UPDATE_MODEL_IMAGES),
-        bool(pipe.valves.UPDATE_MODEL_CAPABILITIES),
-        bool(pipe.valves.UPDATE_MODEL_DESCRIPTIONS),
-        bool(pipe.valves.AUTO_ATTACH_ORS_FILTER),
-        bool(pipe.valves.AUTO_INSTALL_ORS_FILTER),
-        bool(pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER),
-        bool(pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
-        bool(pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
-        admin_routing,
-        user_routing,
+        pipe.valves.MODEL_ID,
+        pipe.valves.UPDATE_MODEL_IMAGES,
+        pipe.valves.UPDATE_MODEL_CAPABILITIES,
+        pipe.valves.UPDATE_MODEL_DESCRIPTIONS,
+        pipe.valves.AUTO_ATTACH_ORS_FILTER,
+        pipe.valves.AUTO_INSTALL_ORS_FILTER,
+        pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+        pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
+        pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
+        pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
+        pipe.valves.USER_PROVIDER_ROUTING_MODELS,
     )
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(

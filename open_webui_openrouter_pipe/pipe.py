@@ -1368,8 +1368,8 @@ class Pipe:
                 tokens = self._apply_logging_context(job)
                 tool_queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
-                per_tool_timeout = float(job.valves.TOOL_TIMEOUT_SECONDS)
-                batch_timeout = float(max(per_tool_timeout, job.valves.TOOL_BATCH_TIMEOUT_SECONDS))
+                per_tool_timeout = job.valves.TOOL_TIMEOUT_SECONDS
+                batch_timeout = max(per_tool_timeout, job.valves.TOOL_BATCH_TIMEOUT_SECONDS)
                 idle_timeout_value = job.valves.TOOL_IDLE_TIMEOUT_SECONDS
                 idle_timeout = float(idle_timeout_value) if idle_timeout_value else None
                 self.logger.debug("Tool timeouts (request=%s): per_call=%ss batch=%ss idle=%s", job.request_id, per_tool_timeout, batch_timeout, idle_timeout if idle_timeout is not None else "disabled")
@@ -1729,7 +1729,7 @@ class Pipe:
                 __event_emitter__,
                 template=valves.NETWORK_TIMEOUT_TEMPLATE,
                 variables={
-                    "timeout_seconds": getattr(e, 'timeout', valves.HTTP_TOTAL_TIMEOUT_SECONDS or 120),
+                    "timeout_seconds": getattr(e, 'timeout', valves.HTTP_TOTAL_TIMEOUT_SECONDS),
                     "endpoint": "https://openrouter.ai/api/v1/responses",
                 },
                 log_message=f"Network timeout: {e}",
@@ -2315,10 +2315,10 @@ class Pipe:
             keepalive_timeout=75,
             ttl_dns_cache=300,
         )
-        connect_timeout = float(valves.HTTP_CONNECT_TIMEOUT_SECONDS)
+        connect_timeout = valves.HTTP_CONNECT_TIMEOUT_SECONDS
         total_timeout_value = valves.HTTP_TOTAL_TIMEOUT_SECONDS
-        total_timeout = float(total_timeout_value) if total_timeout_value else None
-        sock_read = float(valves.HTTP_SOCK_READ_SECONDS) if total_timeout is None else None
+        total_timeout = total_timeout_value if total_timeout_value else None
+        sock_read = valves.HTTP_SOCK_READ_SECONDS if total_timeout is None else None
         timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout, sock_read=sock_read)
         self.logger.debug("HTTP timeouts: connect=%ss total=%s sock_read=%s", connect_timeout, total_timeout if total_timeout is not None else "disabled", sock_read if sock_read is not None else "disabled")
         return aiohttp.ClientSession(
@@ -2357,9 +2357,9 @@ class Pipe:
         if not models:
             return []
 
-        free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
-        tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
-        zdr_only = bool(getattr(valves, "ZDR_MODELS_ONLY", False))
+        free_mode = valves.FREE_MODEL_FILTER
+        tool_mode = valves.TOOL_CALLING_FILTER
+        zdr_only = valves.ZDR_MODELS_ONLY
         zdr_model_ids = None
         if zdr_only:
             zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
@@ -2416,7 +2416,7 @@ class Pipe:
         Returns:
             Extended list with both base models and variant/preset models
         """
-        variant_specs_csv = (valves.VARIANT_MODELS or "").strip()
+        variant_specs_csv = valves.VARIANT_MODELS
         if not variant_specs_csv:
             return models  # No variants configured
 
@@ -2525,12 +2525,12 @@ class Pipe:
         if catalog_norm_ids and model_norm_id not in catalog_norm_ids:
             reasons.append("not_in_catalog")
 
-        model_id_filter = (valves.MODEL_ID or "").strip()
+        model_id_filter = valves.MODEL_ID
         if model_id_filter and model_id_filter.lower() != "auto":
             if model_norm_id not in allowlist_norm_ids:
                 reasons.append("MODEL_ID")
 
-        free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
+        free_mode = valves.FREE_MODEL_FILTER
         if free_mode != "all" and model_norm_id in catalog_norm_ids:
             is_free = is_free_model(model_norm_id)
             if free_mode == "only" and not is_free:
@@ -2538,7 +2538,7 @@ class Pipe:
             elif free_mode == "exclude" and is_free:
                 reasons.append("FREE_MODEL_FILTER=exclude")
 
-        tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
+        tool_mode = valves.TOOL_CALLING_FILTER
         if tool_mode != "all" and model_norm_id in catalog_norm_ids:
             supports_tools = supports_tool_calling(model_norm_id)
             if tool_mode == "only" and not supports_tools:
@@ -2546,7 +2546,7 @@ class Pipe:
             elif tool_mode == "exclude" and supports_tools:
                 reasons.append("TOOL_CALLING_FILTER=exclude")
 
-        zdr_only = bool(getattr(valves, "ZDR_MODELS_ONLY", False))
+        zdr_only = valves.ZDR_MODELS_ONLY
         if zdr_only and model_norm_id in catalog_norm_ids:
             zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
             if zdr_model_ids is not None and model_norm_id not in zdr_model_ids:
@@ -2570,7 +2570,7 @@ class Pipe:
         """
         if not isinstance(headers, dict):
             return
-        if not getattr(valves, "ENABLE_ANTHROPIC_INTERLEAVED_THINKING", True):
+        if not valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING:
             return
         if not isinstance(model, str):
             return
@@ -2615,8 +2615,7 @@ class Pipe:
         be decrypted (WEBUI_SECRET_KEY mismatch / missing), which would
         otherwise be sent upstream as `Bearer encrypted:...` and cause noisy 401s.
         """
-        raw_value = str(getattr(valves, "API_KEY", "") or "")
-        raw_value = raw_value.strip()
+        raw_value = valves.API_KEY
         decrypted = EncryptedStr.decrypt(raw_value)
         decrypted = decrypted.strip() if isinstance(decrypted, str) else ""
 

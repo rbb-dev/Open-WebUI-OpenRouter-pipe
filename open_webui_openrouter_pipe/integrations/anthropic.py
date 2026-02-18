@@ -37,12 +37,12 @@ def _maybe_apply_anthropic_prompt_caching(
         model_id: The model identifier to check if it's an Anthropic model
         valves: Valve configuration containing caching settings
     """
-    if not getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False):
+    if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
         return
     if not _is_anthropic_model_id(model_id):
         return
 
-    ttl = getattr(valves, "ANTHROPIC_PROMPT_CACHE_TTL", "5m")
+    ttl = valves.ANTHROPIC_PROMPT_CACHE_TTL
     cache_control_payload: dict[str, Any] = {"type": "ephemeral"}
     if isinstance(ttl, str) and ttl:
         cache_control_payload["ttl"] = ttl

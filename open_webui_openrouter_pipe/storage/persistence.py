@@ -161,7 +161,7 @@ def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str,
     multi_worker = uvicorn_workers > 1
     redis_url_configured = bool(redis_url)
     websocket_ready = websocket_manager == "redis" and bool(websocket_redis_url)
-    redis_valve_enabled = getattr(valves, "ENABLE_REDIS_CACHE", False)
+    redis_valve_enabled = valves.ENABLE_REDIS_CACHE
 
     if multi_worker and not redis_valve_enabled:
         logger.warning("Multiple UVicorn workers detected but ENABLE_REDIS_CACHE is disabled; Redis cache remains off.")

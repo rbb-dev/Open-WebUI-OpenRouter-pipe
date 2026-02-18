@@ -749,9 +749,9 @@ class MultimodalHandler:
             if self._storage_user_cache is not None:
                 return self._storage_user_cache
 
-            fallback_email = (self.valves.FALLBACK_STORAGE_EMAIL or "").strip() or "openrouter-pipe@system.local"
-            fallback_name = (self.valves.FALLBACK_STORAGE_NAME or "").strip() or "OpenRouter Pipe Storage"
-            fallback_role = (self.valves.FALLBACK_STORAGE_ROLE or "").strip() or "pending"
+            fallback_email = self.valves.FALLBACK_STORAGE_EMAIL or "openrouter-pipe@system.local"
+            fallback_name = self.valves.FALLBACK_STORAGE_NAME or "OpenRouter Pipe Storage"
+            fallback_role = self.valves.FALLBACK_STORAGE_ROLE or "pending"
 
             if (
                 fallback_role.lower() in {"admin", "system", "owner"}

@@ -104,8 +104,8 @@ class ModelCatalogManager:
         valves = self._pipe.valves
 
         # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
-        admin_routing_models = (getattr(valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
-        user_routing_models = (getattr(valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
+        user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
         if not (
@@ -126,15 +126,15 @@ class ModelCatalogManager:
         sync_key = (
             pipe_identifier,
             float(last_fetch or 0.0),
-            str(valves.MODEL_ID or ""),
-            bool(valves.UPDATE_MODEL_IMAGES),
-            bool(valves.UPDATE_MODEL_CAPABILITIES),
-            bool(valves.UPDATE_MODEL_DESCRIPTIONS),
-            bool(valves.AUTO_ATTACH_ORS_FILTER),
-            bool(valves.AUTO_INSTALL_ORS_FILTER),
-            bool(valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER),
-            bool(valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER),
-            bool(valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER),
+            valves.MODEL_ID,
+            valves.UPDATE_MODEL_IMAGES,
+            valves.UPDATE_MODEL_CAPABILITIES,
+            valves.UPDATE_MODEL_DESCRIPTIONS,
+            valves.AUTO_ATTACH_ORS_FILTER,
+            valves.AUTO_INSTALL_ORS_FILTER,
+            valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+            valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
+            valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
             admin_routing_models,
             user_routing_models,
         )
@@ -452,8 +452,8 @@ class ModelCatalogManager:
         valves = self._pipe.valves
 
         # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
-        admin_routing_models = (getattr(valves, "ADMIN_PROVIDER_ROUTING_MODELS", "") or "").strip()
-        user_routing_models = (getattr(valves, "USER_PROVIDER_ROUTING_MODELS", "") or "").strip()
+        admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
+        user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
         if not (
@@ -1295,9 +1295,7 @@ class ModelCatalogManager:
             meta_obj = ModelMeta(**meta_dict)
             params_obj = ModelParams()
 
-            access_mode = str(
-                getattr(self._pipe.valves, "NEW_MODEL_ACCESS_CONTROL", "admins") or "admins"
-            ).strip().lower()
+            access_mode = self._pipe.valves.NEW_MODEL_ACCESS_CONTROL
             # Map access semantics to access_grants format:
             # "public" → wildcard read grant; anything else → empty list (private)
             access_grants = (

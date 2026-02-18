@@ -81,8 +81,8 @@ class SessionLogManager:
 
         # Thread-safe configuration access
         self._lock = threading.Lock()
-        self._cleanup_interval_seconds = getattr(self.valves, "SESSION_LOG_CLEANUP_INTERVAL_SECONDS", 3600)
-        self._retention_days = getattr(self.valves, "SESSION_LOG_RETENTION_DAYS", 30)
+        self._cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
+        self._retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
         self._dirs: set[str] = set()
         self._warning_emitted = False
 
@@ -257,10 +257,7 @@ class SessionLogManager:
                 return
 
             # Desynchronize workers so multiple UVicorn processes don't spike the DB at once.
-            jitter = 0.0
-            with contextlib.suppress(Exception):
-                jitter = float(getattr(self.valves, "SESSION_LOG_ASSEMBLER_JITTER_SECONDS", 0) or 0)
-            jitter = max(0.0, jitter)
+            jitter = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
             if jitter:
                 initial = random.uniform(0.0, jitter)
                 if _wait(stop_event, initial):
@@ -273,14 +270,8 @@ class SessionLogManager:
                     self.run_assembler_once()
                 except Exception:
                     self.logger.debug("Session log assembler failed", exc_info=True)
-                interval = 15.0
-                extra = 0.0
-                with contextlib.suppress(Exception):
-                    interval = float(getattr(self.valves, "SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS", 15) or 15)
-                with contextlib.suppress(Exception):
-                    extra = float(getattr(self.valves, "SESSION_LOG_ASSEMBLER_JITTER_SECONDS", 0) or 0)
-                interval = max(1.0, interval)
-                extra = max(0.0, extra)
+                interval = self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
+                extra = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
                 delay = interval + (random.uniform(0.0, extra) if extra else 0.0)
                 if _wait(stop_event, delay):
                     break
@@ -322,7 +313,7 @@ class SessionLogManager:
                 self._warning_emitted = True
             return None
 
-        base_dir = valves.SESSION_LOG_DIR.strip()
+        base_dir = valves.SESSION_LOG_DIR
         if not base_dir:
             if not self._warning_emitted:
                 self.logger.warning(
@@ -386,7 +377,7 @@ class SessionLogManager:
                 self._warning_emitted = True
             return
 
-        base_dir = valves.SESSION_LOG_DIR.strip()
+        base_dir = valves.SESSION_LOG_DIR
         if not base_dir:
             if not self._warning_emitted:
                 self.logger.warning("Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.")
@@ -466,7 +457,7 @@ class SessionLogManager:
         from ..storage.persistence import generate_item_id
         from ..core.logging_system import _SessionLogArchiveJob, write_session_log_archive
 
-        if not getattr(valves, "SESSION_LOG_STORE_ENABLED", False):
+        if not valves.SESSION_LOG_STORE_ENABLED:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Session log segment skipped (SESSION_LOG_STORE_ENABLED=false): chat_id=%s message_id=%s request_id=%s",
@@ -521,7 +512,7 @@ class SessionLogManager:
             "message_id": str(message_id or ""),
             "request_id": str(request_id or ""),
             "created_at": time.time(),
-            "log_format": str(getattr(valves, "SESSION_LOG_FORMAT", "") or ""),
+            "log_format": valves.SESSION_LOG_FORMAT,
             "events": log_events,
         }
         if pipe_identifier:
@@ -565,7 +556,7 @@ class SessionLogManager:
                         message_id=fallback_message_id,
                         request_id=request_id,
                         created_at=time.time(),
-                        log_format=str(getattr(valves, "SESSION_LOG_FORMAT", "jsonl") or "jsonl"),
+                        log_format=valves.SESSION_LOG_FORMAT,
                         log_events=log_events,
                     )
                 )
@@ -598,7 +589,7 @@ class SessionLogManager:
     @timed
     def run_assembler_once(self) -> None:
         """One assembler tick: cleanup stale locks, assemble terminal + stale bundles."""
-        if not getattr(self.valves, "SESSION_LOG_STORE_ENABLED", False):
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
             return
         model, session_factory = self._db_handles()
         if not model or not session_factory:
@@ -611,18 +602,9 @@ class SessionLogManager:
         with contextlib.suppress(Exception):
             probe.close()
 
-        batch_size = 25
-        lock_stale_seconds = 1800.0
-        stale_finalize_seconds = 6 * 3600.0
-        with contextlib.suppress(Exception):
-            batch_size = int(getattr(self.valves, "SESSION_LOG_ASSEMBLER_BATCH_SIZE", 25) or 25)
-        with contextlib.suppress(Exception):
-            lock_stale_seconds = float(getattr(self.valves, "SESSION_LOG_LOCK_STALE_SECONDS", 1800) or 1800)
-        with contextlib.suppress(Exception):
-            stale_finalize_seconds = float(getattr(self.valves, "SESSION_LOG_STALE_FINALIZE_SECONDS", 6 * 3600) or 6 * 3600)
-        batch_size = max(1, min(500, batch_size))
-        lock_stale_seconds = max(60.0, lock_stale_seconds)
-        stale_finalize_seconds = max(300.0, stale_finalize_seconds)
+        batch_size = self.valves.SESSION_LOG_ASSEMBLER_BATCH_SIZE
+        lock_stale_seconds = self.valves.SESSION_LOG_LOCK_STALE_SECONDS
+        stale_finalize_seconds = max(300, self.valves.SESSION_LOG_STALE_FINALIZE_SECONDS)
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
 
@@ -1017,7 +999,7 @@ class SessionLogManager:
             message_id=message_id,
             request_id=preferred_request_id or "",
             created_at=time.time(),
-            log_format=str(getattr(self.valves, "SESSION_LOG_FORMAT", "jsonl") or "jsonl"),
+            log_format=self.valves.SESSION_LOG_FORMAT,
             log_events=merged_events,
         )
         self._write_archive(job)

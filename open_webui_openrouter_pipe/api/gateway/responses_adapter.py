@@ -64,8 +64,8 @@ class ResponsesAdapter:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
         effective_valves = valves or self._pipe.valves
-        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
-        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
+        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
         await self._pipe._multimodal_handler._inline_internal_responses_input_files_inplace(
             request_body,
             chunk_size=chunk_size,
@@ -444,8 +444,8 @@ class ResponsesAdapter:
     ) -> Dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
-        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
-        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
+        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
         await self._pipe._multimodal_handler._inline_internal_responses_input_files_inplace(
             request_params,
             chunk_size=chunk_size,

@@ -1627,7 +1627,7 @@ class UserValves(BaseModel):
 
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
-    override = (getattr(valves, "HTTP_REFERER_OVERRIDE", "") or "").strip()
+    override = valves.HTTP_REFERER_OVERRIDE if valves else ""
     if override:
         if override.startswith(("http://", "https://")):
             return override

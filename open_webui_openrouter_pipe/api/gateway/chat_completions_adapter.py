@@ -62,8 +62,8 @@ class ChatCompletionsAdapter:
         messages = chat_payload.get("messages")
         if not isinstance(messages, list) or not messages:
             return
-        chunk_size = getattr(effective_valves, "IMAGE_UPLOAD_CHUNK_BYTES", self._pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES)
-        max_bytes = int(getattr(effective_valves, "BASE64_MAX_SIZE_MB", self._pipe.valves.BASE64_MAX_SIZE_MB)) * 1024 * 1024
+        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
+        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
@@ -782,7 +782,7 @@ class ChatCompletionsAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
+            if effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
                 if responses_emitted_user_visible:
                     self.logger.info(
                         "Not falling back to /chat/completions for model=%s: /responses already emitted user-visible output before error: %s",

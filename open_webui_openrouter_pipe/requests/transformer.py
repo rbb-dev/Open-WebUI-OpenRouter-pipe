@@ -103,30 +103,10 @@ async def transform_messages_to_input(
 
     logger = LOGGER
     active_valves = valves or pipe.valves
-    image_limit = getattr(
-        active_valves,
-        "MAX_INPUT_IMAGES_PER_REQUEST",
-        pipe.valves.MAX_INPUT_IMAGES_PER_REQUEST,
-    )
-    selection_mode = getattr(
-        active_valves,
-        "IMAGE_INPUT_SELECTION",
-        pipe.valves.IMAGE_INPUT_SELECTION,
-    )
-    chunk_size = getattr(
-        active_valves,
-        "IMAGE_UPLOAD_CHUNK_BYTES",
-        pipe.valves.IMAGE_UPLOAD_CHUNK_BYTES,
-    )
-    max_inline_bytes = (
-        getattr(
-            active_valves,
-            "BASE64_MAX_SIZE_MB",
-            pipe.valves.BASE64_MAX_SIZE_MB,
-        )
-        * 1024
-        * 1024
-    )
+    image_limit = active_valves.MAX_INPUT_IMAGES_PER_REQUEST
+    selection_mode = active_valves.IMAGE_INPUT_SELECTION
+    chunk_size = active_valves.IMAGE_UPLOAD_CHUNK_BYTES
+    max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
     target_model_id = model_id or openwebui_model_id or ""
     if target_model_id:
         vision_supported = ModelFamily.supports("vision", target_model_id)

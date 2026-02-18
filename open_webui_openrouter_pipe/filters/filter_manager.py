@@ -681,10 +681,10 @@ class Filter:
         if not isinstance(user_valves, BaseModel):
             user_valves = self.UserValves()
 
-        enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))
-        enable_audio = bool(getattr(user_valves, "DIRECT_AUDIO", False))
-        enable_video = bool(getattr(user_valves, "DIRECT_VIDEO", False))
-        pdf_parser = getattr(user_valves, "DIRECT_PDF_PARSER", "Native")
+        enable_files = user_valves.DIRECT_FILES
+        enable_audio = user_valves.DIRECT_AUDIO
+        enable_video = user_valves.DIRECT_VIDEO
+        pdf_parser = user_valves.DIRECT_PDF_PARSER
 
         files = body.get("files", None)
         if not isinstance(files, list) or not files:

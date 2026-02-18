@@ -301,7 +301,7 @@ class NonStreamingAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if getattr(effective_valves, "AUTO_FALLBACK_CHAT_COMPLETIONS", True) and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
+            if effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
                 self.logger.info(
                     "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
                     model_id,

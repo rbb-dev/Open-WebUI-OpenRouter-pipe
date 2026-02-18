@@ -139,8 +139,8 @@ class RequestOrchestrator:
             else:
                 raise ValueError("Direct uploads require a supported message content type.")
 
-            max_bytes = int(valves.BASE64_MAX_SIZE_MB) * 1024 * 1024
-            chunk_size = int(valves.IMAGE_UPLOAD_CHUNK_BYTES)
+            max_bytes = valves.BASE64_MAX_SIZE_MB * 1024 * 1024
+            chunk_size = valves.IMAGE_UPLOAD_CHUNK_BYTES
 
             def _decode_base64_prefix(data: str, *, byte_count: int = 96) -> bytes:
                 """Decode a small prefix of base64 to allow MIME/container sniffing.
@@ -500,14 +500,14 @@ class RequestOrchestrator:
                     self.logger.debug("Injected provider routing from filter: %s", filter_provider)
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)
-        admin_enforce_zdr = bool(getattr(valves, "ZDR_ENFORCE", False))
-        allow_user_zdr = bool(getattr(valves, "ALLOW_USER_ZDR_OVERRIDE", True))
+        admin_enforce_zdr = valves.ZDR_ENFORCE
+        allow_user_zdr = valves.ALLOW_USER_ZDR_OVERRIDE
         user_requests_zdr = False
         if allow_user_zdr and not admin_enforce_zdr:
             user_valves_raw = __user__.get("valves") or {}
             try:
                 user_valves = self._pipe.UserValves.model_validate(user_valves_raw)
-                user_requests_zdr = bool(getattr(user_valves, "REQUEST_ZDR", False))
+                user_requests_zdr = user_valves.REQUEST_ZDR
             except Exception:
                 user_requests_zdr = False
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
@@ -575,9 +575,9 @@ class RequestOrchestrator:
                     allowlist_norm_ids=allowlist_norm_ids,
                     catalog_norm_ids=catalog_norm_ids,
                 )
-                model_id_filter = (valves.MODEL_ID or "").strip()
-                free_mode = (getattr(valves, "FREE_MODEL_FILTER", "all") or "all").strip().lower()
-                tool_mode = (getattr(valves, "TOOL_CALLING_FILTER", "all") or "all").strip().lower()
+                model_id_filter = valves.MODEL_ID
+                free_mode = valves.FREE_MODEL_FILTER
+                tool_mode = valves.TOOL_CALLING_FILTER
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
@@ -665,10 +665,10 @@ class RequestOrchestrator:
         if not merged_extra_tools:
             merged_extra_tools = []
 
-        owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
+        owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         incoming_tools_raw = body.get("tools")
         incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
-        strictify = bool(valves.ENABLE_STRICT_TOOL_CALLING) and (not owui_tool_passthrough)
+        strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
 
         # Normalize OWUI tool registry (__tools__) into a dict form when possible.
         owui_registry: dict[str, dict[str, Any]] = {}
@@ -827,7 +827,7 @@ class RequestOrchestrator:
                 api_model_label = getattr(responses_body, "api_model", None) or responses_body.model
                 if (
                     not anthropic_prompt_cache_retry_attempted
-                    and getattr(valves, "ENABLE_ANTHROPIC_PROMPT_CACHING", False)
+                    and valves.ENABLE_ANTHROPIC_PROMPT_CACHING
                     and isinstance(api_model_label, str)
                     and _is_anthropic_model_id(api_model_label)
                     and exc.status == 400

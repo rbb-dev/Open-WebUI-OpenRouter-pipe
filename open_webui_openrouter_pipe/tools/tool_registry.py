@@ -63,7 +63,7 @@ def build_tools(
     """
     features = features or {}
 
-    owui_tool_passthrough = getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") == "Open-WebUI"
+    owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
 
     # 1) If model can't do function calling, no tools (unless Open-WebUI tool pass-through is enabled).
     if (not owui_tool_passthrough) and (not ModelFamily.supports("function_calling", responses_body.model)):
@@ -76,7 +76,7 @@ def build_tools(
         tools.extend(
             ResponsesBody.transform_owui_tools(
                 __tools__,
-                strict=bool(valves.ENABLE_STRICT_TOOL_CALLING) and (not owui_tool_passthrough),
+                strict=valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough),
             )
         )
     elif isinstance(__tools__, list) and __tools__:

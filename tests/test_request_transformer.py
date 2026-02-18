@@ -1169,6 +1169,7 @@ class TestValvesOverride:
             IMAGE_INPUT_SELECTION="user_only",
             IMAGE_UPLOAD_CHUNK_BYTES=1024,
             BASE64_MAX_SIZE_MB=10,
+            ENABLE_ANTHROPIC_PROMPT_CACHING=False,
         )
 
         messages = [{"role": "user", "content": "Test"}]

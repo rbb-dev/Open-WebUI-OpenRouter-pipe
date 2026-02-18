@@ -508,8 +508,8 @@ class ToolExecutor:
                 try:
                     direct_tool_specs = ResponsesBody.transform_owui_tools(
                         direct_registry,
-                        strict=bool(valves.ENABLE_STRICT_TOOL_CALLING)
-                        and (getattr(valves, "TOOL_EXECUTION_MODE", "Pipeline") != "Open-WebUI"),
+                        strict=valves.ENABLE_STRICT_TOOL_CALLING
+                        and (valves.TOOL_EXECUTION_MODE != "Open-WebUI"),
                     )
                 except Exception:
                     direct_tool_specs = []

@@ -306,11 +306,11 @@ class ErrorFormatter:
         if not valves.SHOW_FINAL_USAGE_STATUS:
             return default_description
 
-        status_style = (getattr(valves, "FINAL_USAGE_STATUS_STYLE", "text") or "text").strip().lower()
+        status_style = valves.FINAL_USAGE_STATUS_STYLE
         use_icons = status_style == "icons"
         icons: list[str] = list(_DEFAULT_USAGE_STATUS_ICONS)
         if use_icons:
-            raw_icon_set = (getattr(valves, "USAGE_STATUS_ICON_SET", "") or "").strip()
+            raw_icon_set = valves.USAGE_STATUS_ICON_SET
             if raw_icon_set:
                 provided = [item.strip() for item in raw_icon_set.split(",")]
                 for idx, icon in enumerate(provided[: len(icons)]):
