@@ -3372,6 +3372,220 @@ class TestLoopLimitAndFunctionExecution:
 
         assert "sunny" in result.lower() or persisted_rows
 
+    @pytest.mark.asyncio
+    async def test_invalid_tool_call_generates_error_output(self, monkeypatch, pipe_instance_async):
+        """Test malformed tool call produces error output and continues loop."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 2,
+        })
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "arguments": '{"city":"NYC"}',
+                            }
+                        ],
+                        "usage": {},
+                    },
+                },
+            ],
+            [
+                {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                },
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            captured_requests.append(dict(request_body))
+            for event in events_by_call[call_index]:
+                yield event
+            call_index += 1
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) == 2
+        second_input = captured_requests[1].get("input", [])
+        outputs = [
+            item
+            for item in second_input
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        ]
+        assert len(outputs) == 1
+        assert outputs[0].get("call_id") == "call-1"
+        assert "missing name" in str(outputs[0].get("output", "")).lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_and_valid_tool_calls_append_outputs(self, monkeypatch, pipe_instance_async):
+        """Test valid tool execution plus invalid tool call error output are both returned."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 2,
+        })
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-good",
+                                "name": "get_weather",
+                                "arguments": '{"city":"NYC"}',
+                            },
+                            {
+                                "type": "function_call",
+                                "call_id": "call-bad",
+                                "arguments": '{"city":"LA"}',
+                            },
+                        ],
+                        "usage": {},
+                    },
+                },
+            ],
+            [
+                {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                },
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            captured_requests.append(dict(request_body))
+            for event in events_by_call[call_index]:
+                yield event
+            call_index += 1
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-good", "output": "sunny"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={"get_weather": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) == 2
+        second_input = captured_requests[1].get("input", [])
+        output_ids = {
+            item.get("call_id")
+            for item in second_input
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        }
+        assert "call-good" in output_ids
+        assert "call-bad" in output_ids
+
+    @pytest.mark.asyncio
+    async def test_tool_call_without_call_id_is_normalized(self, monkeypatch, pipe_instance_async):
+        """Test tool call without call_id is normalized and executed."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 2,
+        })
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "get_weather",
+                                "arguments": '{"city":"NYC"}',
+                            }
+                        ],
+                        "usage": {},
+                    },
+                },
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            captured_requests.append(dict(request_body))
+            for event in events_by_call[call_index]:
+                yield event
+            call_index += 1
+
+        captured_calls: list[list[dict[str, Any]]] = []
+
+        async def mock_execute(calls, registry):
+            captured_calls.append(list(calls))
+            return []
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={"get_weather": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) == 2
+        assert captured_calls
+        normalized_call = captured_calls[0][0]
+        assert normalized_call.get("name") == "get_weather"
+        call_id = normalized_call.get("call_id")
+        assert isinstance(call_id, str) and call_id
+        second_input = captured_requests[1].get("input", [])
+        persisted_call = next(
+            (item for item in second_input if isinstance(item, dict) and item.get("type") == "function_call"),
+            None,
+        )
+        assert persisted_call
+        assert persisted_call.get("call_id") == call_id
+
 
 # =============================================================================
 # Validate Base64 Size Tests

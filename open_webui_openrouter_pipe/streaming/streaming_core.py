@@ -1561,34 +1561,69 @@ class StreamingHandler:
                 )
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
-                # Per Responses API spec: reasoning items with encrypted_content must be passed back
-                # on tool continuations to preserve the model's chain of thought across tool calls.
+                # Per Responses API spec: the full output (reasoning, messages, function_calls)
+                # must be passed back on tool continuations to preserve the model's context.
                 # See: https://cookbook.openai.com/examples/responses_api/reasoning_items
                 reasoning_items: list[dict[str, Any]] = []
+                message_items: list[dict[str, Any]] = []
                 call_items: list[dict[str, Any]] = []
-                if not owui_tool_passthrough:
-                    for item in final_response.get("output", []):
-                        item_type = item.get("type")
-                        if item_type == "reasoning" and item.get("encrypted_content"):
-                            # Preserve reasoning with encrypted_content for tool continuation
-                            reasoning_items.append(item)
-                        elif item_type == "function_call":
-                            normalized_call = normalize_persisted_item(item)
-                            if normalized_call:
-                                call_items.append(normalized_call)
-                    if call_items:
-                        note_model_activity()  # Cancel thinking tasks when function calls begin
-                        # Order matters: reasoning first, then function_call (per spec)
-                        if reasoning_items:
-                            body.input.extend(reasoning_items)
-                            self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
-                        body.input.extend(call_items)
-                        _sanitize_request_input(self._pipe, body)
+                invalid_call_outputs: list[dict[str, Any]] = []
+                for item in final_response.get("output", []):
+                    item_type = item.get("type")
+                    if item_type == "reasoning" and item.get("encrypted_content"):
+                        reasoning_items.append(item)
+                    elif item_type == "message":
+                        message_items.append(item)
+                    elif item_type == "function_call":
+                        normalized_call = normalize_persisted_item(item)
+                        if normalized_call:
+                            call_items.append(normalized_call)
+                            continue
+                        raw_call_id = item.get("call_id") or item.get("id")
+                        call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+                        if not call_id:
+                            self.logger.warning(
+                                "Dropping malformed function_call without call_id (name=%s)",
+                                item.get("name"),
+                            )
+                            continue
+                        if not item.get("name"):
+                            reason = "Tool call missing name"
+                        elif item.get("arguments") is None:
+                            reason = "Tool call missing arguments"
+                        else:
+                            reason = "Invalid tool call"
+                        output_item = {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": reason,
+                            "status": "completed",
+                        }
+                        normalized_output = normalize_persisted_item(output_item)
+                        if normalized_output:
+                            invalid_call_outputs.append(normalized_output)
+                        else:
+                            self.logger.warning(
+                                "Failed to normalize tool error output for call_id=%s",
+                                call_id,
+                            )
 
-                calls = [i for i in final_response.get("output", []) if i.get("type") == "function_call"]
-                self.logger.debug("📞 Found %d function_call items in response", len(calls))
+                if (call_items or invalid_call_outputs) and not owui_tool_passthrough:
+                    note_model_activity()  # Cancel thinking tasks when function calls begin
+                    # Per spec: pass back full output in order — reasoning, messages, calls
+                    if reasoning_items:
+                        body.input.extend(reasoning_items)
+                        self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
+                    if message_items:
+                        body.input.extend(message_items)
+                        self.logger.debug("💬 Preserving %d message item(s) for tool continuation", len(message_items))
+                    if call_items:
+                        body.input.extend(call_items)
+                    _sanitize_request_input(self._pipe, body)
+
+                self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
-                if calls:
+                if call_items:
                     if loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
                         loop_limit_reached = True
 
@@ -1600,7 +1635,7 @@ class StreamingHandler:
                             if isinstance(raw_map, dict):
                                 exposed_to_origin = {str(k): str(v) for k, v in raw_map.items() if k and v}
                         try:
-                            for call in calls:
+                            for call in call_items:
                                 raw_call_id = call.get("call_id") or call.get("id")
                                 call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
                                 raw_name = call.get("name")
@@ -1733,9 +1768,9 @@ class StreamingHandler:
                     # enter content_blocks or persistence. They will be replaced once completed.
                     in_progress_cards_html = ""
                     show_tool_cards = valves.SHOW_TOOL_CARDS
-                    if show_tool_cards and event_emitter and body.stream and calls:
+                    if show_tool_cards and event_emitter and body.stream and call_items:
                         try:
-                            for call in calls:
+                            for call in call_items:
                                 call_id = call.get("call_id") or call.get("id") or ""
                                 tool_name = (call.get("name") or "").strip()
                                 raw_args = call.get("arguments") or "{}"
@@ -1757,15 +1792,15 @@ class StreamingHandler:
                         except Exception as exc:
                             self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
 
-                    function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(calls, tool_registry)
+                    function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(call_items, tool_registry)
 
                     # Emit completed tool cards
                     # 1) chat:message:delta to persist completed cards
                     # 2) chat:completion to immediately replace spinners in the UI
-                    if show_tool_cards and event_emitter and body.stream and calls and function_outputs:
+                    if show_tool_cards and event_emitter and body.stream and call_items and function_outputs:
                         try:
                             completed_cards_html = ""
-                            for call, output in zip(calls, function_outputs):
+                            for call, output in zip(call_items, function_outputs):
                                 call_id = call.get("call_id") or call.get("id") or ""
                                 tool_name = (call.get("name") or "").strip()
                                 raw_args = call.get("arguments") or "{}"
@@ -1806,7 +1841,7 @@ class StreamingHandler:
                     # Collection happens regardless of event_emitter (needed for source context)
                     collected_sources: list[dict[str, Any]] = []
                     if get_citation_source_from_tool_result is not None:
-                        for call, output in zip(calls, function_outputs):
+                        for call, output in zip(call_items, function_outputs):
                             tool_name = (call.get("name") or "").strip()
                             if output.get("status") != "completed":
                                 continue
@@ -1900,13 +1935,17 @@ class StreamingHandler:
                                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
                             )
 
+                    all_function_outputs = function_outputs + invalid_call_outputs
+
                     if persist_tools_enabled:
-                        self.logger.debug("💾 Persisting %d tool results", len(function_outputs))
+                        self.logger.debug("💾 Persisting %d tool results", len(all_function_outputs))
                         persist_payloads: list[dict] = []
                         for idx, output in enumerate(function_outputs):
                             if idx < len(call_items):
                                 persist_payloads.append(call_items[idx])
                             persist_payloads.append(output)
+                        if invalid_call_outputs:
+                            persist_payloads.extend(invalid_call_outputs)
 
                         if persist_payloads:
                             self.logger.debug("🔍 Processing %d persist_payloads", len(persist_payloads))
@@ -1959,12 +1998,55 @@ class StreamingHandler:
                                 cancel_thinking()
                             await _flush_pending("function_outputs")
 
-                    for output in function_outputs:
+                    for output in all_function_outputs:
                         result_text = wrap_code_block(output.get("output", ""))
                         if thinking_tasks:
                             cancel_thinking()
                         self.logger.debug("Received tool result\n%s", result_text)
-                    body.input.extend(function_outputs)
+                    body.input.extend(all_function_outputs)
+                    _sanitize_request_input(self._pipe, body)
+                elif invalid_call_outputs:
+                    # No valid tool calls, but we still need to pass back error outputs.
+                    all_function_outputs = list(invalid_call_outputs)
+                    if persist_tools_enabled:
+                        self.logger.debug("💾 Persisting %d tool results", len(all_function_outputs))
+                        persist_payloads = list(all_function_outputs)
+                        if persist_payloads:
+                            for idx, payload in enumerate(persist_payloads, start=1):
+                                payload_type = payload.get("type")
+                                normalized_payload = normalize_persisted_item(payload)
+                                if not normalized_payload:
+                                    self.logger.warning(
+                                        "❌ [%d/%d] Normalization returned None for type=%s",
+                                        idx,
+                                        len(persist_payloads),
+                                        payload_type,
+                                    )
+                                    continue
+                                row = self._pipe._artifact_store._make_db_row(
+                                    chat_id, message_id, openwebui_model, normalized_payload
+                                )
+                                if not row:
+                                    self.logger.warning(
+                                        "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
+                                        idx,
+                                        len(persist_payloads),
+                                        chat_id,
+                                        message_id,
+                                        payload_type,
+                                    )
+                                    continue
+                                pending_items.append(row)
+                            if thinking_tasks:
+                                cancel_thinking()
+                            await _flush_pending("function_outputs")
+
+                    for output in all_function_outputs:
+                        result_text = wrap_code_block(output.get("output", ""))
+                        if thinking_tasks:
+                            cancel_thinking()
+                        self.logger.debug("Received tool result\n%s", result_text)
+                    body.input.extend(all_function_outputs)
                     _sanitize_request_input(self._pipe, body)
                 else:
                     break
