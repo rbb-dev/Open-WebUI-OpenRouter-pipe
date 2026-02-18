@@ -102,15 +102,15 @@ This keeps user-facing failures consistent between streaming and non-streaming c
 
 ---
 
-## 6. Server-side delta batching (capability vs current configuration)
+## 6. Server-side delta batching
 
-The SSE pipeline supports server-side batching of `response.output_text.delta` events (accumulating deltas and yielding combined batches) using the `delta_char_limit` and `idle_flush_ms` parameters.
+The SSE pipeline can batch `response.output_text.delta` events (accumulating deltas and yielding combined batches). This reduces UI event volume during bursty model output and helps avoid slow “crawl” symptoms when a model finishes quickly but the UI is still draining tiny deltas.
 
-In current code paths, the pipe calls the streaming request helper with:
-- `delta_char_limit=0`
-- `idle_flush_ms=0`
+The batching behavior is controlled by two valves:
+- `STREAMING_DELTA_CHAR_LIMIT`: character threshold for flushing a combined delta.
+- `STREAMING_IDLE_FLUSH_MS`: idle timeout (ms) for flushing buffered deltas.
 
-This configuration effectively passes through deltas without batching.
+**Operator note:** If you observe slow end-of-stream rendering in the UI, increase `STREAMING_DELTA_CHAR_LIMIT` (for example 256–512) and/or `STREAMING_IDLE_FLUSH_MS` (for example 30–80ms). Setting either value to `0` disables that batching mode.
 
 ---
 

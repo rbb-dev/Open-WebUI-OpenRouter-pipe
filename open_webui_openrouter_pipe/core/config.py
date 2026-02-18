@@ -1117,6 +1117,22 @@ class Valves(BaseModel):
         ge=100,
         description="Log warning when event_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
     )
+    STREAMING_DELTA_CHAR_LIMIT: int = Field(
+        default=256,
+        ge=0,
+        description=(
+            "Maximum number of characters to buffer before emitting a combined response.output_text.delta "
+            "event in the /responses streaming pipeline. 0 disables batching (emit each delta as-is)."
+        ),
+    )
+    STREAMING_IDLE_FLUSH_MS: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "Idle flush timeout (ms) for buffered streaming deltas in the /responses pipeline. "
+            "0 disables time-based flushing."
+        ),
+    )
     MIDDLEWARE_STREAM_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,

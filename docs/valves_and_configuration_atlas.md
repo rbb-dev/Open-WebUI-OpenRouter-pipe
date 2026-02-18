@@ -124,6 +124,8 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of parsed stream events buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for buffered stream events. |
+| `STREAMING_DELTA_CHAR_LIMIT` | `int` | `256` | Maximum characters to buffer before emitting a combined `response.output_text.delta` event in the `/responses` stream. `0` disables batching. |
+| `STREAMING_IDLE_FLUSH_MS` | `int` | `30` | Idle flush timeout (ms) for buffered streaming deltas in the `/responses` pipeline. `0` disables time-based flushing. |
 | `MIDDLEWARE_STREAM_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of per-request items buffered for the middleware streaming bridge (`pipe(stream=True)` generator). `0` means unbounded. |
 | `MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS` | `float` | `1.0` | When `MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0`, maximum seconds to wait while enqueueing an item before aborting the request. Set to `0` to disable the timeout (not recommended). |
 

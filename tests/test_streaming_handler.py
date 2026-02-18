@@ -777,6 +777,39 @@ class TestStreamingLoopBasic:
 
         assert captured_request.get("model") == "actual/api-model"
 
+    @pytest.mark.asyncio
+    async def test_streaming_loop_delta_batching_valves(self, monkeypatch, pipe_instance_async):
+        """Test delta batching valves are forwarded to the streaming adapter."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "STREAMING_DELTA_CHAR_LIMIT": 256,
+                "STREAMING_IDLE_FLUSH_MS": 30,
+            }
+        )
+
+        captured_kwargs: dict[str, Any] = {}
+
+        async def capturing_stream(self, session, request_body, **kwargs):
+            captured_kwargs.update(kwargs)
+            yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", capturing_stream)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert captured_kwargs.get("delta_char_limit") == 256
+        assert captured_kwargs.get("idle_flush_ms") == 30
+
 
 # =============================================================================
 # Tool Pass-through Mode Tests
