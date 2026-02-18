@@ -18,7 +18,7 @@ try:
     from importlib.metadata import version as _get_version
     __version__ = _get_version("open-webui-openrouter-pipe")
 except Exception:
-    __version__ = "2.2.4"  # Fallback if not installed as package
+    __version__ = "2.2.5"  # Fallback if not installed as package
 
 # -----------------------------------------------------------------------------
 # Type hints only (no runtime import)
