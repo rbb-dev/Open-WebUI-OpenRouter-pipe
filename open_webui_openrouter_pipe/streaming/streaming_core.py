@@ -7,7 +7,6 @@ and endpoint selection.
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import re
@@ -367,6 +366,9 @@ class StreamingHandler:
         tool_call_names: dict[str, str] = {}
         streamed_tool_call_args: dict[str, str] = {}
         streamed_tool_call_name_sent: set[str] = set()
+        emitted_tool_call_items: set[str] = set()
+        emitted_tool_output_items: set[str] = set()
+        emitted_response_output_items = False
         session_log_reason: str = ""
 
         raw_tools = tools or {}
@@ -1778,10 +1780,8 @@ class StreamingHandler:
 
                         break
 
-                    # Build and emit in-progress (spinning) tool cards
-                    # In-progress cards are ephemeral: emit via chat:completion so they do NOT
-                    # enter content_blocks or persistence. They will be replaced once completed.
-                    in_progress_cards_html = ""
+                    # Build and emit in-progress tool items as Responses API events so
+                    # OWUI can render tool cards via serialize_output.
                     show_tool_cards = valves.SHOW_TOOL_CARDS
                     if show_tool_cards and event_emitter and body.stream and call_items:
                         try:
@@ -1789,68 +1789,65 @@ class StreamingHandler:
                                 call_id = call.get("call_id") or call.get("id") or ""
                                 tool_name = (call.get("name") or "").strip()
                                 raw_args = call.get("arguments") or "{}"
-                                args_json = raw_args if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)
-                                in_progress_cards_html += (
-                                    f'<details type="tool_calls" done="false" id="{html.escape(call_id)}" '
-                                    f'name="{html.escape(tool_name)}" arguments="{html.escape(args_json)}">\n'
-                                    f'<summary>Executing...</summary>\n</details>\n'
+                                if not call_id or call_id in emitted_tool_call_items:
+                                    continue
+                                emitted_tool_call_items.add(call_id)
+                                if not tool_name:
+                                    continue
+                                args_text = (
+                                    raw_args.strip()
+                                    if isinstance(raw_args, str)
+                                    else json.dumps(raw_args, ensure_ascii=False)
                                 )
-                            if in_progress_cards_html:
-                                # Emit via chat:completion (immediate display, NOT tracked)
-                                # Do NOT add to assistant_message - spinners are ephemeral
-                                prefix = "" if (not assistant_message or assistant_message.endswith("\n")) else "\n"
+                                item = {
+                                    "type": "function_call",
+                                    "id": call_id,
+                                    "call_id": call_id,
+                                    "name": tool_name,
+                                    "arguments": args_text,
+                                    "status": "in_progress",
+                                }
+                                emitted_response_output_items = True
                                 await event_emitter(
-                                    {
-                                        "type": "chat:completion",
-                                        "data": {"content": assistant_message + prefix + in_progress_cards_html},
-                                    }
+                                    {"type": "response.output_item.added", "item": item}
                                 )
                         except Exception as exc:
                             self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
 
                     function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(call_items, tool_registry)
 
-                    # Emit completed tool cards
-                    # 1) chat:message:delta to persist completed cards
-                    # 2) chat:completion to immediately replace spinners in the UI
+                    # Emit completed tool outputs as Responses API events so OWUI
+                    # can render tool cards via serialize_output.
                     if show_tool_cards and event_emitter and body.stream and call_items and function_outputs:
                         try:
-                            completed_cards_html = ""
                             for call, output in zip(call_items, function_outputs):
                                 call_id = call.get("call_id") or call.get("id") or ""
                                 tool_name = (call.get("name") or "").strip()
-                                raw_args = call.get("arguments") or "{}"
-                                args_json = raw_args if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)
+                                if not call_id or call_id in emitted_tool_output_items:
+                                    continue
+                                emitted_tool_output_items.add(call_id)
+                                if not tool_name:
+                                    continue
                                 result_str = output.get("output") or ""
+                                if not isinstance(result_str, str):
+                                    result_str = str(result_str)
                                 # Extract files/embeds from tool output (populated by process_tool_result)
                                 tool_files = output.get("files") or []
                                 tool_embeds = output.get("embeds") or []
-                                files_attr = html.escape(json.dumps(tool_files if tool_files else []))
-                                embeds_attr = html.escape(json.dumps(tool_embeds if tool_embeds else []))
-                                completed_cards_html += (
-                                    f'<details type="tool_calls" done="true" id="{html.escape(call_id)}" '
-                                    f'name="{html.escape(tool_name)}" arguments="{html.escape(args_json)}" '
-                                    f'result="{html.escape(json.dumps(result_str, ensure_ascii=False))}" '
-                                    f'files="{files_attr}" embeds="{embeds_attr}">\n'
-                                    f'<summary>Tool Executed</summary>\n</details>\n'
-                                )
-                            if completed_cards_html:
-                                prefix = "" if (not assistant_message or assistant_message.endswith("\n")) else "\n"
-                                completed_cards_html = prefix + completed_cards_html
-                                # Persist completed cards in the streaming content
-                                assistant_message = assistant_message + completed_cards_html
+                                output_item = {
+                                    "type": "function_call_output",
+                                    "id": f"fco-{uuid.uuid4().hex}",
+                                    "call_id": call_id,
+                                    "output": [{"type": "input_text", "text": result_str}],
+                                    "status": "completed",
+                                }
+                                if tool_files:
+                                    output_item["files"] = tool_files
+                                if tool_embeds:
+                                    output_item["embeds"] = tool_embeds
+                                emitted_response_output_items = True
                                 await event_emitter(
-                                    {
-                                        "type": "chat:message:delta",
-                                        "data": {"content": completed_cards_html},
-                                    }
-                                )
-                                # Immediately replace spinners in the UI
-                                await event_emitter(
-                                    {
-                                        "type": "chat:completion",
-                                        "data": {"content": assistant_message},
-                                    }
+                                    {"type": "response.output_item.added", "item": output_item}
                                 )
                         except Exception as exc:
                             self.logger.debug("Failed to emit completed tool cards: %s", exc)
@@ -2234,11 +2231,11 @@ class StreamingHandler:
 
             if (not error_occurred) and (not was_cancelled):
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
-                # Emit the final completion frame with the last assistant snapshot so
-                # late-arriving emitters (middleware, other workers) cannot wipe the UI.
+                # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
+                final_content = None if emitted_response_output_items else assistant_message
                 await self._pipe._event_emitter_handler._emit_completion(
                     event_emitter,
-                    content=assistant_message,
+                    content=final_content,
                     usage=total_usage,
                     done=True,
                 )

@@ -597,6 +597,12 @@ class EventEmitterHandler:
             raw_data = event.get("data")
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
 
+            if isinstance(etype, str) and etype.startswith("response."):
+                # Pass through Responses API events as raw SSE payloads so OWUI can
+                # build output items (tool cards, reasoning, etc.) via serialize_output.
+                await self._put_middleware_stream_item(job, stream_queue, event)
+                return
+
             if etype == "chat:message":
                 delta = data.get("delta")
                 content = data.get("content")
