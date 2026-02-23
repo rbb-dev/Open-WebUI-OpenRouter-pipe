@@ -1682,6 +1682,9 @@ class Pipe:
             available_models = OpenRouterModelRegistry.list_models()
         catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
         allowlist_models = self._select_models(valves.MODEL_ID, available_models) or available_models
+        allowlist_models, virtual_variant_bases = self._expand_variants_for_enforcement(
+            allowlist_models, valves, available_models,
+        )
         allowlist_norm_ids = {m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")}
         enforced_models = self._apply_model_filters(allowlist_models, valves)
         enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
@@ -1712,6 +1715,7 @@ class Pipe:
                 catalog_norm_ids,
                 features,
                 user_id=user_id,
+                virtual_variant_bases=virtual_variant_bases,
             )
         # OpenRouter 400 errors (already have templates)
         except OpenRouterAPIError as e:
@@ -1844,11 +1848,13 @@ class Pipe:
         features: dict[str, Any],
         *,
         user_id: str = "",
+        virtual_variant_bases: dict[str, str] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         return await self._ensure_request_orchestrator().process_request(
             body, __user__, __request__, __event_emitter__, __event_call__, __metadata__, __tools__,
             __task__, __task_body__, valves, session, openwebui_model_id, pipe_identifier,
-            allowlist_norm_ids, enforced_norm_ids, catalog_norm_ids, features, user_id=user_id
+            allowlist_norm_ids, enforced_norm_ids, catalog_norm_ids, features,
+            user_id=user_id, virtual_variant_bases=virtual_variant_bases,
         )
 
     # Model Management
@@ -2376,18 +2382,28 @@ class Pipe:
             if not norm_id:
                 continue
 
+            # Three-tier spec resolution for filter evaluation:
+            # 1. Real catalog variant (has own spec) -> use full norm_id
+            # 2. Virtual routing variant (admin-configured, no catalog spec) -> use base ID
+            # 3. Unknown variant (no spec, not virtual) -> spec lookups return empty -> fail filters
+            is_virtual = model.get("variant_is_virtual", False)
+            if is_virtual:
+                spec_lookup_id = model.get("variant_base_norm_id") or norm_id.rsplit(":", 1)[0]
+            else:
+                spec_lookup_id = norm_id
+
             if zdr_only and zdr_model_ids is not None and norm_id not in zdr_model_ids:
                 continue
 
             if free_mode != "all":
-                is_free = is_free_model(norm_id)
+                is_free = is_free_model(spec_lookup_id)
                 if free_mode == "only" and not is_free:
                     continue
                 if free_mode == "exclude" and is_free:
                     continue
 
             if tool_mode != "all":
-                supports_tools = supports_tool_calling(norm_id)
+                supports_tools = supports_tool_calling(spec_lookup_id)
                 if tool_mode == "only" and not supports_tools:
                     continue
                 if tool_mode == "exclude" and supports_tools:
@@ -2511,6 +2527,141 @@ class Pipe:
 
         return expanded
 
+    @timed
+    def _expand_variants_for_enforcement(
+        self,
+        allowlist_models: list[dict[str, Any]],
+        valves: "Pipe.Valves",
+        available_models: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Expand MODEL_ID + VARIANT_MODELS into the allowlist for enforcement.
+
+        Unlike :meth:`_expand_variant_models` (used in ``pipes()`` for UI display),
+        this helper sets ``norm_id`` to the **full suffixed ID** so that strict
+        enforcement in ``pipe()`` sees the exact variant.
+
+        Returns:
+            A tuple of (expanded_models, virtual_variant_bases) where
+            ``virtual_variant_bases`` maps full variant norm_id to base norm_id
+            for admin-configured routing-only variants.
+        """
+        virtual_variant_bases: dict[str, str] = {}
+
+        def _collect_variant_specs(raw_csv: str) -> list[tuple[str, str, bool]]:
+            specs: list[tuple[str, str, bool]] = []
+            if not isinstance(raw_csv, str):
+                return specs
+            raw_csv = raw_csv.strip()
+            if not raw_csv or raw_csv.lower() == "auto":
+                return specs
+            for spec in raw_csv.split(","):
+                spec = spec.strip()
+                if not spec or spec.lower() == "auto":
+                    continue
+                if "@" in spec:
+                    parts = spec.rsplit("@", 1)
+                    base_id = parts[0].strip()
+                    raw_tag = parts[1].strip()
+                    is_preset = raw_tag.startswith("preset/")
+                    if base_id and raw_tag:
+                        specs.append((base_id, raw_tag, is_preset))
+                elif ":" in spec:
+                    parts = spec.rsplit(":", 1)
+                    base_id = parts[0].strip()
+                    variant_tag = parts[1].strip().lower()
+                    if base_id and variant_tag:
+                        specs.append((base_id, variant_tag, False))
+            return specs
+
+        variant_specs: list[tuple[str, str, bool]] = []
+        seen_specs: set[tuple[str, str, bool]] = set()
+        for spec in _collect_variant_specs(valves.VARIANT_MODELS):
+            if spec in seen_specs:
+                continue
+            seen_specs.add(spec)
+            variant_specs.append(spec)
+        for spec in _collect_variant_specs(valves.MODEL_ID):
+            if spec in seen_specs:
+                continue
+            seen_specs.add(spec)
+            variant_specs.append(spec)
+
+        if not variant_specs:
+            return allowlist_models, virtual_variant_bases
+
+        # Build lookup from ALL available models (not just allowlist) so that
+        # base models excluded from MODEL_ID can still be used as variant bases.
+        catalog_by_original: dict[str, dict[str, Any]] = {}
+        catalog_by_sanitized: dict[str, dict[str, Any]] = {}
+        catalog_by_norm: dict[str, dict[str, Any]] = {}
+        for model in available_models:
+            original_id = model.get("original_id", "")
+            if original_id:
+                catalog_by_original[original_id] = model
+            sanitized_id = model.get("id", "")
+            if sanitized_id:
+                catalog_by_sanitized[sanitized_id] = model
+            norm_id = model.get("norm_id", "")
+            if norm_id:
+                catalog_by_norm[norm_id] = model
+
+        expanded: list[dict[str, Any]] = list(allowlist_models)
+        existing_norm_ids = {
+            m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")
+        }
+
+        for base_id, variant_tag, is_preset in variant_specs:
+            sanitized_base = sanitize_model_id(base_id)
+            base_model = (
+                catalog_by_original.get(base_id)
+                or catalog_by_sanitized.get(sanitized_base)
+                or catalog_by_sanitized.get(base_id)
+            )
+            base_norm_id = ModelFamily.base_model(sanitized_base)
+            full_norm_id = f"{base_norm_id}:{variant_tag}" if base_norm_id else ""
+
+            if full_norm_id and full_norm_id in existing_norm_ids:
+                continue
+
+            is_real_variant = bool(full_norm_id and not is_preset and full_norm_id in catalog_by_norm)
+            if is_real_variant:
+                variant_model = dict(catalog_by_norm[full_norm_id])
+                expanded.append(variant_model)
+                existing_norm_ids.add(full_norm_id)
+                self.logger.debug(
+                    "Added enforcement variant: %s (base=%s, virtual=False)",
+                    full_norm_id,
+                    base_norm_id,
+                )
+                continue
+
+            if not base_model:
+                separator = "@" if is_preset else ":"
+                self.logger.warning(
+                    "Variant model base not found in catalog: %s (skipping %s%s%s)",
+                    base_id, base_id, separator, variant_tag,
+                )
+                continue
+            if not full_norm_id:
+                self.logger.warning("Variant model base could not be normalized: %s", base_id)
+                continue
+
+            variant_model = dict(base_model)  # Shallow copy
+            base_sanitized_id = variant_model.get("id", "")
+            variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
+            variant_model["norm_id"] = full_norm_id
+            variant_model["variant_base_norm_id"] = base_norm_id
+            variant_model["variant_is_virtual"] = True
+
+            virtual_variant_bases[full_norm_id] = base_norm_id
+            expanded.append(variant_model)
+            existing_norm_ids.add(full_norm_id)
+            self.logger.debug(
+                "Added enforcement variant: %s (base=%s, virtual=True)",
+                full_norm_id, base_norm_id,
+            )
+
+        return expanded, virtual_variant_bases
 
     @timed
     def _model_restriction_reasons(
@@ -2520,10 +2671,19 @@ class Pipe:
         valves: "Pipe.Valves",
         allowlist_norm_ids: set[str],
         catalog_norm_ids: set[str],
+        virtual_variant_bases: dict[str, str] | None = None,
     ) -> list[str]:
         reasons: list[str] = []
+
+        # Compute spec_lookup_id: virtual variants use the base model for
+        # capability/pricing checks (three-tier rule from plan Section D).
+        vvb = virtual_variant_bases or {}
+        spec_lookup_id = vvb.get(model_norm_id, model_norm_id)
+        spec_available = spec_lookup_id in catalog_norm_ids
+
         if catalog_norm_ids and model_norm_id not in catalog_norm_ids:
-            reasons.append("not_in_catalog")
+            if model_norm_id not in allowlist_norm_ids:
+                reasons.append("not_in_catalog")
 
         model_id_filter = valves.MODEL_ID
         if model_id_filter and model_id_filter.lower() != "auto":
@@ -2531,25 +2691,25 @@ class Pipe:
                 reasons.append("MODEL_ID")
 
         free_mode = valves.FREE_MODEL_FILTER
-        if free_mode != "all" and model_norm_id in catalog_norm_ids:
-            is_free = is_free_model(model_norm_id)
+        if free_mode != "all" and spec_available:
+            is_free = is_free_model(spec_lookup_id)
             if free_mode == "only" and not is_free:
                 reasons.append("FREE_MODEL_FILTER=only")
             elif free_mode == "exclude" and is_free:
                 reasons.append("FREE_MODEL_FILTER=exclude")
 
         tool_mode = valves.TOOL_CALLING_FILTER
-        if tool_mode != "all" and model_norm_id in catalog_norm_ids:
-            supports_tools = supports_tool_calling(model_norm_id)
+        if tool_mode != "all" and spec_available:
+            supports_tools = supports_tool_calling(spec_lookup_id)
             if tool_mode == "only" and not supports_tools:
                 reasons.append("TOOL_CALLING_FILTER=only")
             elif tool_mode == "exclude" and supports_tools:
                 reasons.append("TOOL_CALLING_FILTER=exclude")
 
         zdr_only = valves.ZDR_MODELS_ONLY
-        if zdr_only and model_norm_id in catalog_norm_ids:
-            zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
-            if zdr_model_ids is not None and model_norm_id not in zdr_model_ids:
+        if zdr_only and spec_available:
+            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(model_norm_id)
+            if zdr_capable is False:
                 reasons.append("ZDR_MODELS_ONLY")
 
         return reasons

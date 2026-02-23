@@ -263,6 +263,7 @@ class ResponsesBody(BaseModel):
         pruning_turns: int = 0,
         transformer_context: Optional[Any] = None,
         transformer_valves: Optional["Pipe.Valves"] = None,
+        capability_model_id: Optional[str] = None,
         **extra_params,
     ) -> "ResponsesBody":
         """
@@ -358,6 +359,7 @@ class ResponsesBody(BaseModel):
                 event_emitter=event_emitter,
                 model_id=completions_dict.get("model"),
                 valves=transformer_valves or getattr(transformer_owner, "valves", None),
+                capability_model_id=capability_model_id,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs

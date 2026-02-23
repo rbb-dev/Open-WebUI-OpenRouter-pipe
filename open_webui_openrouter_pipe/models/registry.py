@@ -560,12 +560,16 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def is_zdr_capable(cls, model_id: str) -> bool | None:
-        """Return True/False if ZDR list is available, otherwise None."""
+        """Return True/False if ZDR list is available, otherwise None.
+
+        Uses strict full-ID matching (no base fallback). Routing-only
+        variants (e.g. ``:nitro``) that are absent from the ZDR endpoint
+        will return False even if their base model is ZDR-capable.
+        """
         if cls._zdr_model_ids is None:
             return None
         norm = ModelFamily.base_model(model_id)
-        base = norm.rsplit(":", 1)[0] if ":" in norm else norm
-        return base in cls._zdr_model_ids
+        return norm in cls._zdr_model_ids
 
     @classmethod
     @timed
@@ -602,9 +606,8 @@ class OpenRouterModelRegistry:
                 continue
             sanitized = sanitize_model_id(model_id)
             norm = ModelFamily.base_model(sanitized)
-            base = norm.rsplit(":", 1)[0] if ":" in norm else norm
-            if base:
-                model_ids.add(base)
+            if norm:
+                model_ids.add(norm)
         return model_ids
 
 # -----------------------------------------------------------------------------

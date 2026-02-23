@@ -953,6 +953,206 @@ class TestModelSelectionAndFiltering:
 
 
 # =============================================================================
+# STRICT VARIANT ID ENFORCEMENT TESTS (Issue #16)
+# =============================================================================
+
+
+class TestVariantEnforcement:
+    """Tests for strict variant ID enforcement (Issue #16).
+
+    Verifies that:
+    - Suffixed model IDs (e.g. :free, :nitro) are treated as integral identities
+    - No silent fallback from variant to base for restriction enforcement
+    - Virtual routing variants inherit base metadata only when explicitly configured
+    - Unknown variants fail filters when filters are enabled
+    """
+
+    # -- _model_restriction_reasons with variants --
+
+    def test_restriction_reasons_variant_in_allowlist(self):
+        """Variant in allowlist should NOT produce MODEL_ID reason."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "arcee-ai/trinity-mini:free"
+        try:
+            reasons = pipe._model_restriction_reasons(
+                "arcee-ai.trinity-mini:free",
+                valves=pipe.valves,
+                allowlist_norm_ids={"arcee-ai.trinity-mini:free"},
+                catalog_norm_ids={"arcee-ai.trinity-mini:free"},
+            )
+            assert "MODEL_ID" not in reasons
+        finally:
+            pipe.shutdown()
+
+    def test_restriction_reasons_variant_not_in_allowlist(self):
+        """Variant NOT in allowlist should produce MODEL_ID reason."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "arcee-ai/trinity-mini"
+        try:
+            reasons = pipe._model_restriction_reasons(
+                "arcee-ai.trinity-mini:free",
+                valves=pipe.valves,
+                allowlist_norm_ids={"arcee-ai.trinity-mini"},
+                catalog_norm_ids={"arcee-ai.trinity-mini:free", "arcee-ai.trinity-mini"},
+            )
+            assert "MODEL_ID" in reasons
+        finally:
+            pipe.shutdown()
+
+    def test_restriction_reasons_free_variant_with_free_filter(self):
+        """Real :free variant should NOT trigger FREE_MODEL_FILTER=only."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "auto"
+        pipe.valves.FREE_MODEL_FILTER = "only"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            OpenRouterModelRegistry._specs = {
+                "arcee-ai.trinity-mini:free": {"pricing": {"prompt": "0", "completion": "0"}},
+            }
+            reasons = pipe._model_restriction_reasons(
+                "arcee-ai.trinity-mini:free",
+                valves=pipe.valves,
+                allowlist_norm_ids=set(),
+                catalog_norm_ids={"arcee-ai.trinity-mini:free"},
+            )
+            assert "FREE_MODEL_FILTER=only" not in reasons
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+    def test_restriction_reasons_zdr_strict_no_base_fallback(self):
+        """ZDR check should be strict on full ID, no base fallback."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "auto"
+        pipe.valves.FREE_MODEL_FILTER = "all"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+        pipe.valves.ZDR_MODELS_ONLY = True
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_zdr = OpenRouterModelRegistry._zdr_model_ids
+        try:
+            # ZDR list has the base but NOT the :nitro variant
+            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o"}
+            reasons = pipe._model_restriction_reasons(
+                "openai.gpt-4o:nitro",
+                valves=pipe.valves,
+                allowlist_norm_ids={"openai.gpt-4o:nitro"},
+                catalog_norm_ids={"openai.gpt-4o"},
+                virtual_variant_bases={"openai.gpt-4o:nitro": "openai.gpt-4o"},
+            )
+            assert "ZDR_MODELS_ONLY" in reasons
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr
+            pipe.shutdown()
+
+    def test_restriction_reasons_virtual_variant_uses_base_spec(self):
+        """Virtual variant should use base spec for FREE_MODEL_FILTER evaluation."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "auto"
+        pipe.valves.FREE_MODEL_FILTER = "only"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            # Base model is paid, not free
+            OpenRouterModelRegistry._specs = {
+                "openai.gpt-4o": {"pricing": {"prompt": "0.005", "completion": "0.015"}},
+            }
+            reasons = pipe._model_restriction_reasons(
+                "openai.gpt-4o:nitro",
+                valves=pipe.valves,
+                allowlist_norm_ids={"openai.gpt-4o:nitro"},
+                catalog_norm_ids={"openai.gpt-4o"},
+                virtual_variant_bases={"openai.gpt-4o:nitro": "openai.gpt-4o"},
+            )
+            # Base is paid → FREE_MODEL_FILTER=only should block
+            assert "FREE_MODEL_FILTER=only" in reasons
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+    # -- _apply_model_filters with variants --
+
+    def test_apply_filters_virtual_variant_inherits_base_spec(self):
+        """Virtual variant should inherit base spec for filter evaluation."""
+        pipe = Pipe()
+        pipe.valves.FREE_MODEL_FILTER = "only"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            # Base model is free
+            OpenRouterModelRegistry._specs = {
+                "openai.gpt-4o": {"pricing": {"prompt": "0", "completion": "0"}},
+            }
+            models = [
+                {"id": "openai.gpt-4o:nitro", "norm_id": "openai.gpt-4o:nitro",
+                 "name": "GPT-4o Nitro", "variant_is_virtual": True,
+                 "variant_base_norm_id": "openai.gpt-4o"},
+            ]
+            result = pipe._apply_model_filters(models, pipe.valves)
+            assert len(result) == 1
+            assert result[0]["norm_id"] == "openai.gpt-4o:nitro"
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+    def test_apply_filters_real_free_variant_uses_own_pricing(self):
+        """Real :free variant should use its own pricing, not the base."""
+        pipe = Pipe()
+        pipe.valves.FREE_MODEL_FILTER = "only"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            OpenRouterModelRegistry._specs = {
+                "arcee-ai.trinity-mini": {"pricing": {"prompt": "0.000000045", "completion": "0.00000015"}},
+                "arcee-ai.trinity-mini:free": {"pricing": {"prompt": "0", "completion": "0"}},
+            }
+            models = [
+                {"id": "arcee-ai.trinity-mini:free", "norm_id": "arcee-ai.trinity-mini:free",
+                 "name": "Trinity Mini Free"},
+            ]
+            result = pipe._apply_model_filters(models, pipe.valves)
+            assert len(result) == 1
+            assert result[0]["norm_id"] == "arcee-ai.trinity-mini:free"
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+    def test_apply_filters_unknown_variant_fails_filters(self):
+        """Unknown variant (not virtual, no spec) should fail filters."""
+        pipe = Pipe()
+        pipe.valves.FREE_MODEL_FILTER = "only"
+        pipe.valves.TOOL_CALLING_FILTER = "all"
+
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            OpenRouterModelRegistry._specs = {
+                "openai.gpt-4o": {"pricing": {"prompt": "0.005", "completion": "0.015"}},
+            }
+            # Unknown variant: no variant_is_virtual, no own spec
+            models = [
+                {"id": "openai.gpt-4o:unknown", "norm_id": "openai.gpt-4o:unknown",
+                 "name": "GPT-4o Unknown"},
+            ]
+            result = pipe._apply_model_filters(models, pipe.valves)
+            # Should be filtered out: no spec for :unknown, not virtual, FREE_MODEL_FILTER=only
+            assert len(result) == 0
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+            pipe.shutdown()
+
+
+
+# =============================================================================
 # CONTEXT TRANSFORMS TESTS
 # =============================================================================
 

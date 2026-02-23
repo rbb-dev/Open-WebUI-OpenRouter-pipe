@@ -466,3 +466,139 @@ class TestAPIModelIDPresetConversion:
 
         result = OpenRouterModelRegistry.api_model_id("nonexistent.model:preset/my-preset")
         assert result is None
+
+
+class TestVariantEnforcementExpansion:
+    """Tests for _expand_variants_for_enforcement (Issue #16).
+
+    Verifies that the enforcement-path expansion produces entries with
+    full norm_id, variant_base_norm_id, and virtual_variant_bases map.
+    """
+
+    def test_expand_variants_for_enforcement_builds_virtual_map(self):
+        """_expand_variants_for_enforcement should produce entries with full norm_id and virtual map."""
+        pipe = Pipe()
+        pipe.valves.VARIANT_MODELS = "openai/gpt-4o:nitro"
+        try:
+            available = [
+                {"id": "openai.gpt-4o", "norm_id": "openai.gpt-4o", "name": "GPT-4o",
+                 "original_id": "openai/gpt-4o"},
+            ]
+            allowlist = list(available)
+            expanded, vvb = pipe._expand_variants_for_enforcement(allowlist, pipe.valves, available)
+
+            # Should have base + variant
+            assert len(expanded) == 2
+            variant = expanded[1]
+            assert variant["norm_id"] == "openai.gpt-4o:nitro"
+            assert variant["variant_base_norm_id"] == "openai.gpt-4o"
+            assert variant["variant_is_virtual"] is True
+
+            # Virtual variant bases map
+            assert vvb == {"openai.gpt-4o:nitro": "openai.gpt-4o"}
+        finally:
+            pipe.shutdown()
+
+    def test_expand_variants_for_enforcement_real_variant_not_virtual(self):
+        """Real catalog variants should NOT be marked virtual or added to the virtual map."""
+        pipe = Pipe()
+        pipe.valves.VARIANT_MODELS = "arcee-ai/trinity-mini:free"
+        try:
+            available = [
+                {"id": "arcee-ai.trinity-mini", "norm_id": "arcee-ai.trinity-mini",
+                 "name": "Trinity Mini", "original_id": "arcee-ai/trinity-mini"},
+                {"id": "arcee-ai.trinity-mini:free", "norm_id": "arcee-ai.trinity-mini:free",
+                 "name": "Trinity Mini Free", "original_id": "arcee-ai/trinity-mini:free"},
+            ]
+            allowlist = [available[0]]
+            expanded, vvb = pipe._expand_variants_for_enforcement(allowlist, pipe.valves, available)
+
+            assert len(expanded) == 2
+            variant = next(m for m in expanded if m["norm_id"] == "arcee-ai.trinity-mini:free")
+            assert variant.get("variant_is_virtual") is not True
+            assert "arcee-ai.trinity-mini:free" not in vvb
+        finally:
+            pipe.shutdown()
+
+    def test_expand_variants_for_enforcement_from_model_id(self):
+        """MODEL_ID routing-only variants should be expanded for enforcement."""
+        pipe = Pipe()
+        pipe.valves.MODEL_ID = "openai/gpt-4o:nitro"
+        try:
+            available = [
+                {"id": "openai.gpt-4o", "norm_id": "openai.gpt-4o", "name": "GPT-4o",
+                 "original_id": "openai/gpt-4o"},
+            ]
+            allowlist = list(available)
+            expanded, vvb = pipe._expand_variants_for_enforcement(allowlist, pipe.valves, available)
+
+            assert len(expanded) == 2
+            variant = expanded[1]
+            assert variant["norm_id"] == "openai.gpt-4o:nitro"
+            assert variant["variant_is_virtual"] is True
+            assert vvb == {"openai.gpt-4o:nitro": "openai.gpt-4o"}
+        finally:
+            pipe.shutdown()
+
+    def test_expand_variants_for_enforcement_no_variants(self):
+        """_expand_variants_for_enforcement should be a no-op without VARIANT_MODELS."""
+        pipe = Pipe()
+        pipe.valves.VARIANT_MODELS = ""
+        try:
+            available = [
+                {"id": "openai.gpt-4o", "norm_id": "openai.gpt-4o", "name": "GPT-4o",
+                 "original_id": "openai/gpt-4o"},
+            ]
+            expanded, vvb = pipe._expand_variants_for_enforcement(available, pipe.valves, available)
+            assert len(expanded) == 1
+            assert vvb == {}
+        finally:
+            pipe.shutdown()
+
+
+class TestVariantRegistryEnforcement:
+    """Tests for variant-aware registry functions (Issue #16).
+
+    Verifies strict enforcement of variant IDs in is_free_model and is_zdr_capable.
+    """
+
+    def test_is_free_model_real_free_variant(self):
+        """Real :free variant should be detected as free via its own pricing."""
+        from open_webui_openrouter_pipe.models.registry import is_free_model
+        original_specs = OpenRouterModelRegistry._specs.copy()
+        try:
+            OpenRouterModelRegistry._specs = {
+                "arcee-ai.trinity-mini:free": {"pricing": {"prompt": "0", "completion": "0"}},
+            }
+            assert is_free_model("arcee-ai.trinity-mini:free") is True
+        finally:
+            OpenRouterModelRegistry._specs = original_specs
+
+    def test_is_zdr_capable_exact_match(self):
+        """ZDR check should match on exact full ID."""
+        original_zdr = OpenRouterModelRegistry._zdr_model_ids
+        try:
+            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o", "arcee-ai.trinity-mini:free"}
+            assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o") is True
+            assert OpenRouterModelRegistry.is_zdr_capable("arcee-ai/trinity-mini:free") is True
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr
+
+    def test_is_zdr_capable_no_base_fallback(self):
+        """ZDR check should NOT fall back to base model."""
+        original_zdr = OpenRouterModelRegistry._zdr_model_ids
+        try:
+            # Only base in ZDR, not the :nitro variant
+            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o"}
+            assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o:nitro") is False
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr
+
+    def test_is_zdr_capable_no_match(self):
+        """ZDR check should return False for unknown models."""
+        original_zdr = OpenRouterModelRegistry._zdr_model_ids
+        try:
+            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o"}
+            assert OpenRouterModelRegistry.is_zdr_capable("unknown/model") is False
+        finally:
+            OpenRouterModelRegistry._zdr_model_ids = original_zdr

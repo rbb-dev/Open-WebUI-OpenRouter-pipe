@@ -5085,3 +5085,272 @@ async def test_tool_renames_with_collisions(caplog):
 
     finally:
         await pipe.close()
+
+
+# -----------------------------------------------------------------------------
+# Variant Enforcement Integration Tests (Issue #16)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_variant_in_model_id_not_restricted():
+    """Variant suffixed model in MODEL_ID should NOT be restricted (plan item 11).
+
+    When MODEL_ID='arcee-ai/trinity-mini:free' and user requests that exact model,
+    it should pass enforcement and reach the API call.
+    """
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.MODEL_ID = "arcee-ai/trinity-mini:free"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "OK")
+
+        emitted_events: list[dict] = []
+
+        async def event_emitter(event):
+            emitted_events.append(event)
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [
+                    {"id": "arcee-ai/trinity-mini", "name": "Trinity Mini",
+                     "pricing": {"prompt": "0.000000045", "completion": "0.00000015"}},
+                    {"id": "arcee-ai/trinity-mini:free", "name": "Trinity Mini Free",
+                     "pricing": {"prompt": "0", "completion": "0"}},
+                ]},
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+
+            body = {
+                "model": "arcee-ai/trinity-mini:free",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "arcee-ai/trinity-mini:free"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            output = await _consume_stream(result)
+
+        # Should have made an API call (not been restricted)
+        assert len(captured_payloads) >= 1, "Variant in MODEL_ID should not be restricted"
+        # Should NOT have a restriction error event
+        restriction_events = [e for e in emitted_events
+                              if isinstance(e, dict) and "restricted" in str(e).lower()]
+        assert len(restriction_events) == 0, f"Should not be restricted but got: {restriction_events}"
+
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_variant_from_variant_models_not_restricted():
+    """Variant from VARIANT_MODELS should NOT be restricted (plan item 12).
+
+    When VARIANT_MODELS='openai/gpt-4o:nitro' and the base model is in the catalog,
+    the :nitro variant should pass enforcement even though it has no catalog entry.
+    """
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.MODEL_ID = "openai/gpt-4o"
+        pipe.valves.VARIANT_MODELS = "openai/gpt-4o:nitro"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "OK")
+
+        emitted_events: list[dict] = []
+
+        async def event_emitter(event):
+            emitted_events.append(event)
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [
+                    {"id": "openai/gpt-4o", "name": "GPT-4o",
+                     "pricing": {"prompt": "0.005", "completion": "0.015"}},
+                ]},
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o:nitro",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o:nitro"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            output = await _consume_stream(result)
+
+        # Should have made an API call (not been restricted)
+        assert len(captured_payloads) >= 1, "VARIANT_MODELS variant should not be restricted"
+        restriction_events = [e for e in emitted_events
+                              if isinstance(e, dict) and "restricted" in str(e).lower()]
+        assert len(restriction_events) == 0, f"Should not be restricted but got: {restriction_events}"
+
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_variant_in_model_id_routing_only_not_restricted():
+    """Routing-only variant in MODEL_ID should NOT be restricted."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.MODEL_ID = "openai/gpt-4o:nitro"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "OK")
+
+        emitted_events: list[dict] = []
+
+        async def event_emitter(event):
+            emitted_events.append(event)
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [
+                    {"id": "openai/gpt-4o", "name": "GPT-4o",
+                     "pricing": {"prompt": "0.005", "completion": "0.015"}},
+                ]},
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o:nitro",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o:nitro"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            output = await _consume_stream(result)
+
+        assert len(captured_payloads) >= 1, "MODEL_ID routing-only variant should not be restricted"
+        restriction_events = [e for e in emitted_events
+                              if isinstance(e, dict) and "restricted" in str(e).lower()]
+        assert len(restriction_events) == 0, f"Should not be restricted but got: {restriction_events}"
+
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_variant_is_restricted():
+    """Unknown variant NOT in MODEL_ID or VARIANT_MODELS should be restricted (plan item 13).
+
+    When MODEL_ID='openai/gpt-4o' (base only) and user requests 'openai/gpt-4o:nitro',
+    the variant should be restricted because it wasn't explicitly configured.
+    """
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.MODEL_ID = "openai/gpt-4o"  # Only base, no :nitro
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "OK")
+
+        emitted_events: list[dict] = []
+
+        async def event_emitter(event):
+            emitted_events.append(event)
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [
+                    {"id": "openai/gpt-4o", "name": "GPT-4o",
+                     "pricing": {"prompt": "0.005", "completion": "0.015"}},
+                ]},
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o:nitro",  # Variant not configured
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o:nitro"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            output = await _consume_stream(result)
+
+        # Should NOT have made an API call (should be restricted)
+        assert len(captured_payloads) == 0, "Unknown variant should be restricted and not reach API"
+
+    finally:
+        await pipe.close()

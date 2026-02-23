@@ -80,6 +80,7 @@ async def transform_messages_to_input(
     *,
     model_id: Optional[str] = None,
     valves: Optional["Pipe.Valves"] = None,
+    capability_model_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -108,8 +109,9 @@ async def transform_messages_to_input(
     chunk_size = active_valves.IMAGE_UPLOAD_CHUNK_BYTES
     max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
     target_model_id = model_id or openwebui_model_id or ""
-    if target_model_id:
-        vision_supported = ModelFamily.supports("vision", target_model_id)
+    vision_lookup_id = capability_model_id or target_model_id
+    if vision_lookup_id:
+        vision_supported = ModelFamily.supports("vision", vision_lookup_id)
     else:
         vision_supported = True
 

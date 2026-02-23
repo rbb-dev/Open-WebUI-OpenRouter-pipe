@@ -71,6 +71,7 @@ class RequestOrchestrator:
         features: dict[str, Any],
         *,
         user_id: str = "",
+        virtual_variant_bases: dict[str, str] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get("openrouter_pipe")
@@ -454,6 +455,13 @@ class RequestOrchestrator:
 
         completions_body = CompletionsBody.model_validate(body)
 
+        # For virtual routing variants, resolve the base model ID for capability
+        # checks (vision, tools, etc.) so features aren't silently disabled.
+        vvb = virtual_variant_bases or {}
+        raw_model = completions_body.model if isinstance(completions_body.model, str) else ""
+        raw_norm = ModelFamily.base_model(raw_model) if raw_model else ""
+        pre_capability_model_id = vvb.get(raw_norm) if raw_norm and raw_norm in vvb else None
+
         # Resolve full Open WebUI user model for uploads/status events.
         user_model = None
         if user_id:
@@ -475,7 +483,7 @@ class RequestOrchestrator:
             user_obj=user_model,
             event_emitter=__event_emitter__,
             transformer_valves=valves,
-
+            capability_model_id=pre_capability_model_id,
         )
         _sanitize_request_input(self._pipe, responses_body)
         self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
@@ -512,8 +520,7 @@ class RequestOrchestrator:
                 user_requests_zdr = False
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
         if enforce_zdr:
-            base_model_for_check = normalized_model_id.rsplit(":", 1)[0] if ":" in normalized_model_id else normalized_model_id
-            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(base_model_for_check)
+            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
             if zdr_capable is False:
                 task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
                 if __task__:
@@ -555,6 +562,10 @@ class RequestOrchestrator:
         else:
             responses_body.max_output_tokens = None
 
+        # For virtual routing variants (e.g. :nitro), resolve capability lookups
+        # against the base model so tools/vision/search are not silently disabled.
+        capability_model_id = vvb.get(normalized_model_id, responses_body.model)
+
         task_mode = bool(__task__)
         if task_mode:
             if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:
@@ -564,16 +575,14 @@ class RequestOrchestrator:
                     TaskModelAdapter._task_name(__task__) or "task",
                 )
         else:
-            # Strip variant suffix from model ID for restriction checks
-            # Variants like :nitro, :free, :thinking are routing modifiers, not different models
-            base_model_for_check = normalized_model_id.rsplit(":", 1)[0] if ":" in normalized_model_id else normalized_model_id
 
-            if catalog_norm_ids and base_model_for_check not in enforced_norm_ids:
+            if catalog_norm_ids and normalized_model_id not in enforced_norm_ids:
                 reasons = self._pipe._model_restriction_reasons(
-                    base_model_for_check,
+                    normalized_model_id,
                     valves=valves,
                     allowlist_norm_ids=allowlist_norm_ids,
                     catalog_norm_ids=catalog_norm_ids,
+                    virtual_variant_bases=vvb,
                 )
                 model_id_filter = valves.MODEL_ID
                 free_mode = valves.FREE_MODEL_FILTER
@@ -737,7 +746,7 @@ class RequestOrchestrator:
             if owui_tool_passthrough:
                 # Full bypass: do not gate tools on model capability here; forward as OWUI provided.
                 responses_body.tools = tools
-            elif ModelFamily.supports("function_calling", responses_body.model):
+            elif ModelFamily.supports("function_calling", capability_model_id):
                 responses_body.tools = tools
 
         pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
@@ -763,7 +772,7 @@ class RequestOrchestrator:
                     responses_body.plugins = plugins
 
         ors_requested = bool(features.get(_ORS_FILTER_FEATURE_FLAG, False))
-        if ModelFamily.supports("web_search_tool", responses_body.model) and ors_requested:
+        if ModelFamily.supports("web_search_tool", capability_model_id) and ors_requested:
             reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             effort = (reasoning_cfg.get("effort") or "").strip().lower()
             if not effort:
