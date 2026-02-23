@@ -17,6 +17,7 @@ import datetime
 import base64
 import binascii
 import contextlib
+import inspect
 import random
 import aiohttp
 from time import perf_counter
@@ -102,6 +103,17 @@ try:
     from open_webui.utils.middleware import apply_source_context_to_messages as _owui_apply_source_context  # type: ignore[import-not-found]
 except ImportError:
     _owui_apply_source_context = None  # type: ignore
+
+# Detect whether OWUI supports include_content param (added in v0.8.4 to avoid
+# duplicating tool result content inside <source> tags when it's already in the
+# tool result message). Checked once at import time — zero per-request cost.
+try:
+    _OWUI_SUPPORTS_INCLUDE_CONTENT = (
+        _owui_apply_source_context is not None
+        and "include_content" in inspect.signature(_owui_apply_source_context).parameters
+    )
+except (TypeError, ValueError):
+    _OWUI_SUPPORTS_INCLUDE_CONTENT = False
 
 # Import our transform function for Responses API → Chat Completions conversion
 from ..api.transforms import _responses_input_to_chat_messages
@@ -247,11 +259,14 @@ def _apply_source_context_responses_api(
     _logger.debug("Converted %d Responses API messages → %d Chat Completions messages", len(messages_only), len(chat_messages))
 
     # Step 3: Apply OWUI's source context injection (handles RAG template, citation formatting)
+    # Pass include_content=False (OWUI ≥0.8.4) to avoid duplicating tool result
+    # content inside <source> tags — the content is already in the tool result message.
     modified_chat_messages = _owui_apply_source_context(
         request_context,
         chat_messages,
         sources,
         user_message,
+        **({"include_content": False} if _OWUI_SUPPORTS_INCLUDE_CONTENT else {}),
     )
     _logger.debug("Applied source context via OWUI adapter")
 
