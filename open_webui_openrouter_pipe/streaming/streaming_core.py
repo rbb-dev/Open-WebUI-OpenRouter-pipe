@@ -1783,10 +1783,11 @@ class StreamingHandler:
                             if in_progress_cards_html:
                                 # Emit via chat:completion (immediate display, NOT tracked)
                                 # Do NOT add to assistant_message - spinners are ephemeral
+                                prefix = "" if (not assistant_message or assistant_message.endswith("\n")) else "\n"
                                 await event_emitter(
                                     {
                                         "type": "chat:completion",
-                                        "data": {"content": assistant_message + in_progress_cards_html},
+                                        "data": {"content": assistant_message + prefix + in_progress_cards_html},
                                     }
                                 )
                         except Exception as exc:
@@ -1819,6 +1820,8 @@ class StreamingHandler:
                                     f'<summary>Tool Executed</summary>\n</details>\n'
                                 )
                             if completed_cards_html:
+                                prefix = "" if (not assistant_message or assistant_message.endswith("\n")) else "\n"
+                                completed_cards_html = prefix + completed_cards_html
                                 # Persist completed cards in the streaming content
                                 assistant_message = assistant_message + completed_cards_html
                                 await event_emitter(
