@@ -82,6 +82,160 @@ class ModelCatalogManager:
         """
         return self._cached_provider_map
 
+    @staticmethod
+    def _model_form_supports_access_control(model_form_cls: Any) -> bool:
+        """Return True when ModelForm uses ``access_control`` rather than legacy grants."""
+        fields = getattr(model_form_cls, "model_fields", None)
+        return isinstance(fields, dict) and "access_control" in fields
+
+    @staticmethod
+    def _normalize_access_grants(value: Any) -> list[dict[str, Any]]:
+        """Normalize legacy grant objects/dicts into plain dictionaries."""
+        if not isinstance(value, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for entry in value:
+            if isinstance(entry, dict):
+                normalized.append(dict(entry))
+                continue
+            model_dump = getattr(entry, "model_dump", None)
+            if callable(model_dump):
+                with contextlib.suppress(Exception):
+                    dumped = model_dump()
+                    if isinstance(dumped, dict):
+                        normalized.append(dumped)
+        return normalized
+
+    @staticmethod
+    def _legacy_grants_imply_public(grants: list[dict[str, Any]]) -> bool:
+        """Detect wildcard read grants used by legacy public model overlays."""
+        for grant in grants:
+            principal_id = grant.get("principal_id")
+            principal_type = grant.get("principal_type")
+            permission = grant.get("permission")
+            if (
+                isinstance(principal_id, str)
+                and principal_id == "*"
+                and isinstance(principal_type, str)
+                and principal_type.lower() == "user"
+                and isinstance(permission, str)
+                and permission.lower() == "read"
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _legacy_grants_to_access_control(cls, grants_value: Any) -> dict[str, Any] | None:
+        """Convert legacy grants into OWUI ``access_control`` shape."""
+        grants = cls._normalize_access_grants(grants_value)
+        if cls._legacy_grants_imply_public(grants):
+            return None
+
+        access_control: dict[str, dict[str, list[str]]] = {}
+        for grant in grants:
+            principal_id = grant.get("principal_id")
+            principal_type = grant.get("principal_type")
+            permission = grant.get("permission")
+            if not isinstance(principal_id, str) or not principal_id:
+                continue
+            if not isinstance(principal_type, str) or not isinstance(permission, str):
+                continue
+
+            principal_type_lower = principal_type.lower()
+            permission_lower = permission.lower()
+            if permission_lower not in {"read", "write"}:
+                continue
+
+            bucket = access_control.setdefault(
+                permission_lower, {"user_ids": [], "group_ids": []}
+            )
+            if principal_type_lower == "user":
+                target = bucket["user_ids"]
+            elif principal_type_lower == "group":
+                target = bucket["group_ids"]
+            else:
+                continue
+
+            if principal_id not in target:
+                target.append(principal_id)
+
+        return access_control or {}
+
+    def _resolve_model_access_payload(
+        self,
+        *,
+        model_obj: Any,
+        supports_access_control: bool,
+    ) -> dict[str, Any] | list[dict[str, Any]] | None:
+        """Return access payload preserving existing model visibility semantics."""
+        if supports_access_control:
+            access_control = getattr(model_obj, "access_control", None)
+            if access_control is None:
+                return None
+            if isinstance(access_control, dict):
+                return dict(access_control)
+            return self._legacy_grants_to_access_control(
+                getattr(model_obj, "access_grants", None)
+            )
+
+        return self._normalize_access_grants(getattr(model_obj, "access_grants", None))
+
+    @staticmethod
+    def _default_new_model_access_payload(
+        *,
+        access_mode: str,
+        supports_access_control: bool,
+    ) -> dict[str, Any] | list[dict[str, str]] | None:
+        """Build default access payload for newly inserted overlays."""
+        if supports_access_control:
+            # ``None`` means public in current OWUI. Non-public defaults to private.
+            return None if access_mode == "public" else {}
+
+        if access_mode == "public":
+            return [
+                {
+                    "principal_type": "user",
+                    "principal_id": "*",
+                    "permission": "read",
+                }
+            ]
+        return []
+
+    @staticmethod
+    def _build_model_form(
+        *,
+        model_form_cls: Any,
+        supports_access_control: bool,
+        id: str,
+        base_model_id: str | None,
+        name: str,
+        meta: Any,
+        params: Any,
+        access_payload: dict[str, Any] | list[dict[str, Any]] | None,
+        is_active: bool,
+    ) -> Any:
+        """Instantiate ModelForm with whichever access schema the runtime supports."""
+        payload: dict[str, Any] = {
+            "id": id,
+            "base_model_id": base_model_id,
+            "name": name,
+            "meta": meta,
+            "params": params,
+            "is_active": is_active,
+        }
+        if supports_access_control:
+            payload["access_control"] = (
+                access_payload
+                if access_payload is None or isinstance(access_payload, dict)
+                else {}
+            )
+        else:
+            payload["access_grants"] = (
+                access_payload if isinstance(access_payload, list) else []
+            )
+
+        return model_form_cls(**payload)
+
     @timed
     def maybe_schedule_model_metadata_sync(
         self,
@@ -859,6 +1013,8 @@ class ModelCatalogManager:
         from open_webui.models.functions import Functions as _FunctionsTable
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
 
+        supports_access_control = self._model_form_supports_access_control(ModelForm)
+
         all_filters = _FunctionsTable.get_functions_by_type("filter")
         valid_ids = frozenset(
             f.id for f in all_filters if f.id.startswith("openrouter_")
@@ -893,13 +1049,18 @@ class ModelCatalogManager:
             )
             meta_dict["filterIds"] = pruned
             meta_obj = ModelMeta(**meta_dict)
-            form = ModelForm(
+            form = self._build_model_form(
+                model_form_cls=ModelForm,
+                supports_access_control=supports_access_control,
                 id=model.id,
                 base_model_id=model.base_model_id,
                 name=model.name,
                 meta=meta_obj,
                 params=model.params if model.params else ModelParams(),
-                access_grants=[g.model_dump() for g in model.access_grants],
+                access_payload=self._resolve_model_access_payload(
+                    model_obj=model,
+                    supports_access_control=supports_access_control,
+                ),
                 is_active=model.is_active,
             )
             Models.update_model_by_id(model.id, form)
@@ -932,6 +1093,7 @@ class ModelCatalogManager:
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+        supports_access_control = self._model_form_supports_access_control(ModelForm)
 
         openwebui_model_id = (openwebui_model_id or "").strip()
         if not openwebui_model_id:
@@ -1251,13 +1413,18 @@ class ModelCatalogManager:
                 return
 
             meta_obj = ModelMeta(**meta_dict)
-            model_form = ModelForm(
+            model_form = self._build_model_form(
+                model_form_cls=ModelForm,
+                supports_access_control=supports_access_control,
                 id=existing.id,
                 base_model_id=existing.base_model_id,
                 name=existing.name,
                 meta=meta_obj,
                 params=existing.params if existing.params else ModelParams(),
-                access_grants=[grant.model_dump() for grant in existing.access_grants],
+                access_payload=self._resolve_model_access_payload(
+                    model_obj=existing,
+                    supports_access_control=supports_access_control,
+                ),
                 is_active=existing.is_active,
             )
             Models.update_model_by_id(openwebui_model_id, model_form)
@@ -1296,21 +1463,20 @@ class ModelCatalogManager:
             params_obj = ModelParams()
 
             access_mode = self._pipe.valves.NEW_MODEL_ACCESS_CONTROL
-            # Map access semantics to access_grants format:
-            # "public" → wildcard read grant; anything else → empty list (private)
-            access_grants = (
-                [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
-                if access_mode == "public"
-                else []
+            access_payload = self._default_new_model_access_payload(
+                access_mode=access_mode,
+                supports_access_control=supports_access_control,
             )
 
-            model_form = ModelForm(
+            model_form = self._build_model_form(
+                model_form_cls=ModelForm,
+                supports_access_control=supports_access_control,
                 id=openwebui_model_id,
                 base_model_id=None,
                 name=name,
                 meta=meta_obj,
                 params=params_obj,
-                access_grants=access_grants,
+                access_payload=access_payload,
                 is_active=True,
             )
             # Use empty user_id to let OWUI handle ownership defaults

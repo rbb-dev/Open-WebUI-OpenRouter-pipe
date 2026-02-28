@@ -7,35 +7,13 @@ import logging
 from typing import Any
 
 from .config import LOGGER
+from .utils import _coerce_positive_int
 from ..models.registry import ModelFamily
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
 _LIVE_OMISSION_PREFIX = "[Tool result omitted due to context budget."
 _REPLAY_OMISSION_PREFIX = "[Replayed tool result omitted due to context budget."
-
-
-def _coerce_positive_int(value: Any) -> int | None:
-    """Return a positive integer when possible."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        if value > 0:
-            return int(value)
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            parsed = float(text)
-        except ValueError:
-            return None
-        if parsed > 0:
-            return int(parsed)
-    return None
 
 
 def compute_prompt_limit_tokens(model_id: str) -> int:
