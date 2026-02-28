@@ -110,15 +110,11 @@ def apply_live_tool_output_budget(
     existing_input_items: Any,
     model_id: str,
     logger: logging.Logger = LOGGER,
-    fraction: float = 0.5,
 ) -> set[str]:
     """Mutate live tool outputs in-place when they exceed remaining context budget."""
     omitted_call_ids: set[str] = set()
     if not outputs:
         return omitted_call_ids
-
-    if not (0 < fraction <= 1):
-        fraction = 0.5
 
     prompt_limit_tokens = compute_prompt_limit_tokens(model_id)
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
@@ -143,10 +139,8 @@ def apply_live_tool_output_budget(
             continue
 
         result_chars = len(output_text)
-        threshold = int(remaining_chars * fraction)
-        should_omit = remaining_chars <= 0 or (remaining_chars > 0 and result_chars > threshold)
 
-        if should_omit:
+        if result_chars > remaining_chars:
             stub = build_live_tool_omission_stub(
                 result_chars=result_chars,
                 remaining_tokens=(remaining_chars // _CHARS_PER_TOKEN_HEURISTIC),
@@ -172,15 +166,11 @@ def apply_replay_tool_output_budget(
     *,
     model_id: str,
     logger: logging.Logger = LOGGER,
-    fraction: float = 0.5,
 ) -> set[str]:
     """Mutate replayed function_call_output entries that exceed remaining budget."""
     omitted_call_ids: set[str] = set()
     if not items:
         return omitted_call_ids
-
-    if not (0 < fraction <= 1):
-        fraction = 0.5
 
     prompt_limit_tokens = compute_prompt_limit_tokens(model_id)
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
@@ -215,10 +205,8 @@ def apply_replay_tool_output_budget(
             continue
 
         result_chars = len(output_text)
-        threshold = int(remaining_chars * fraction)
-        should_omit = remaining_chars <= 0 or (remaining_chars > 0 and result_chars > threshold)
 
-        if should_omit:
+        if result_chars > remaining_chars:
             stub = build_replayed_tool_omission_stub(
                 result_chars=result_chars,
                 remaining_tokens=(remaining_chars // _CHARS_PER_TOKEN_HEURISTIC),

@@ -62,7 +62,7 @@ def test_compute_prompt_limit_falls_back_to_top_provider() -> None:
     assert compute_prompt_limit_tokens("test/model") == 3072
 
 
-def test_live_budget_omits_when_result_exceeds_half_remaining() -> None:
+def test_live_budget_keeps_output_that_fits() -> None:
     ModelFamily.set_dynamic_specs(
         {
             "test.model": {
@@ -71,7 +71,29 @@ def test_live_budget_omits_when_result_exceeds_half_remaining() -> None:
             }
         }
     )
+    # 100 tokens * 4 chars/token = 400 chars budget; 240 chars fits.
     outputs = [{"type": "function_call_output", "call_id": "call-1", "output": "x" * 240}]
+    omitted = apply_live_tool_output_budget(
+        outputs,
+        existing_input_items=[],
+        model_id="test/model",
+    )
+
+    assert not omitted
+    assert outputs[0]["output"] == "x" * 240
+
+
+def test_live_budget_omits_when_result_exceeds_remaining() -> None:
+    ModelFamily.set_dynamic_specs(
+        {
+            "test.model": {
+                "full_model": {"max_prompt_tokens": 100},
+                "context_length": 100,
+            }
+        }
+    )
+    # 100 tokens * 4 chars/token = 400 chars budget; 500 chars does not fit.
+    outputs = [{"type": "function_call_output", "call_id": "call-1", "output": "x" * 500}]
     omitted = apply_live_tool_output_budget(
         outputs,
         existing_input_items=[],
@@ -114,9 +136,12 @@ def test_live_budget_tracks_multiple_outputs_within_iteration() -> None:
             }
         }
     )
+    # 200 tokens * 4 = 800 chars budget.
+    # Tool 1: 500 chars — fits (800 remaining), leaves 300.
+    # Tool 2: 400 chars — exceeds 300 remaining, gets stubbed.
     outputs = [
-        {"type": "function_call_output", "call_id": "call-1", "output": "a" * 300},
-        {"type": "function_call_output", "call_id": "call-2", "output": "b" * 260},
+        {"type": "function_call_output", "call_id": "call-1", "output": "a" * 500},
+        {"type": "function_call_output", "call_id": "call-2", "output": "b" * 400},
     ]
     omitted = apply_live_tool_output_budget(
         outputs,
@@ -125,7 +150,7 @@ def test_live_budget_tracks_multiple_outputs_within_iteration() -> None:
     )
 
     assert "call-1" not in omitted
-    assert outputs[0]["output"] == "a" * 300
+    assert outputs[0]["output"] == "a" * 500
     assert "call-2" in omitted
     assert outputs[1]["output"].startswith("[Tool result omitted due to context budget.")
 
