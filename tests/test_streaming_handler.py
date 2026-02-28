@@ -3923,6 +3923,234 @@ class TestAdaptiveToolBudgeting:
         assert not output_items
 
     @pytest.mark.asyncio
+    async def test_pipeline_tool_reasoning_timing_boundary_emitted(self, monkeypatch, pipe_instance_async):
+        """Pipeline tool mode emits an OWUI timing boundary after tool execution when reasoning was streamed."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
+
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Pipeline",
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        events_by_call = [
+            [
+                {"type": "response.reasoning_text.delta", "delta": "Thinking about the right tool."},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                },
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        call_index = 0
+        order: list[str] = []
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            order.append("tool_execute_done")
+            return [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "tool-ok",
+                    "status": "completed",
+                }
+            ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+            if event.get("type") == "chat:message:delta":
+                if event.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER:
+                    order.append("timing_boundary")
+            if event.get("type") == "response.output_item.added":
+                order.append("output_item_added")
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        boundary_deltas = [
+            e
+            for e in emitted
+            if e.get("type") == "chat:message:delta"
+            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
+        ]
+        assert len(boundary_deltas) == 1
+        output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        assert output_items
+        assert "tool_execute_done" in order
+        assert "timing_boundary" in order
+        assert "output_item_added" in order
+        assert order.index("tool_execute_done") < order.index("timing_boundary")
+        assert order.index("timing_boundary") < order.index("output_item_added")
+
+    @pytest.mark.asyncio
+    async def test_pipeline_tool_reasoning_timing_boundary_not_emitted_without_reasoning(self, monkeypatch, pipe_instance_async):
+        """No OWUI timing boundary is emitted when the tool loop has no reasoning text."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
+
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Pipeline",
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "tool-ok", "status": "completed"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert not any(
+            e.get("type") == "chat:message:delta"
+            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
+            for e in emitted
+        )
+
+    @pytest.mark.asyncio
+    async def test_open_webui_mode_no_pipeline_timing_boundary(self, monkeypatch, pipe_instance_async):
+        """Open-WebUI tool mode must never emit the pipeline timing boundary marker."""
+        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
+
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Open-WebUI",
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        events = [
+            {"type": "response.reasoning_text.delta", "delta": "Thinking about a tool call."},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": "{}",
+                        }
+                    ],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert not any(
+            e.get("type") == "chat:message:delta"
+            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
+            for e in emitted
+        )
+
+    @pytest.mark.asyncio
     async def test_empty_response_fallback_after_tool_iterations(self, monkeypatch, pipe_instance_async):
         """Emit fallback assistant message when tool loops end with no assistant growth."""
         pipe = pipe_instance_async

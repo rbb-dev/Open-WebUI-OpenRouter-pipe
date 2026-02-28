@@ -122,6 +122,10 @@ except (TypeError, ValueError):
 # Import our transform function for Responses API → Chat Completions conversion
 from ..api.transforms import _responses_input_to_chat_messages
 
+# Single-space sentinel: truthy/non-empty (closes OWUI reasoning timing), but stripped
+# by OWUI content serialization so it does not create persistent visible artifacts.
+OWUI_REASONING_TIMING_BOUNDARY_MARKER = " "
+
 
 def _chat_messages_to_responses_input(messages: list) -> list:
     """
@@ -411,6 +415,7 @@ class StreamingHandler:
         reasoning_buffer = ""
         reasoning_completed_emitted = False
         reasoning_stream_active = False
+        reasoning_since_timing_boundary = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, str] = {}
         reasoning_stream_has_incremental: set[str] = set()
@@ -769,6 +774,29 @@ class StreamingHandler:
             if generation_started_at is None:
                 generation_started_at = now
 
+        async def _emit_reasoning_timing_boundary(loop_index: int) -> None:
+            """Emit an OWUI-compatible text boundary so reasoning duration closes after tool latency."""
+            nonlocal reasoning_since_timing_boundary
+            if (
+                not body.stream
+                or (event_emitter is None)
+                or (not thinking_box_enabled)
+                or owui_tool_passthrough
+                or (not reasoning_since_timing_boundary)
+            ):
+                return
+            await event_emitter(
+                {
+                    "type": "chat:message:delta",
+                    "data": {"content": OWUI_REASONING_TIMING_BOUNDARY_MARKER},
+                }
+            )
+            reasoning_since_timing_boundary = False
+            self.logger.debug(
+                "Emitted OWUI reasoning timing boundary (loop_index=%d)",
+                loop_index,
+            )
+
         def _extract_call_id(item: Any) -> str:
             """Best-effort call_id extraction for tool call/output items."""
             if not isinstance(item, dict):
@@ -958,6 +986,7 @@ class StreamingHandler:
                                     allow_misaligned=is_incremental,
                                 )
                             if append:
+                                reasoning_since_timing_boundary = True
                                 note_generation_activity()
 
                                 if event_emitter and thinking_box_enabled:
@@ -1149,6 +1178,7 @@ class StreamingHandler:
                                             allow_misaligned=False,
                                         )
                                     if append:
+                                        reasoning_since_timing_boundary = True
                                         note_generation_activity()
                                         reasoning_stream_active = True
                                         await event_emitter(
@@ -1499,6 +1529,8 @@ class StreamingHandler:
                                     normalized_snapshot,
                                     allow_misaligned=False,
                                 )
+                            if append:
+                                reasoning_since_timing_boundary = True
                             if append and event_emitter and thinking_box_enabled:
                                 reasoning_stream_active = True
                                 note_model_activity()
@@ -1874,6 +1906,8 @@ class StreamingHandler:
                                         "_pipe_failed": True,
                                     }
                                 )
+
+                        await _emit_reasoning_timing_boundary(loop_index)
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
                         omitted_call_ids = apply_live_tool_output_budget(
