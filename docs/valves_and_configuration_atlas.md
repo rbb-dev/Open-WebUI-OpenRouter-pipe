@@ -106,6 +106,11 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 | `PERSIST_TOOL_RESULTS` | `bool` | `True` | Persist tool call results across conversation turns. When disabled, tool results stay ephemeral. |
 | `TOOL_OUTPUT_RETENTION_TURNS` | `int` | `10` | How many turns tool outputs remain replayable/available before being eligible for pruning. |
 
+Behavior note (no valve):
+- Pipeline mode applies dynamic, model-aware tool output budgeting. Oversized live/replayed `function_call_output` payloads can be replaced with omission stubs so the model stays in-context.
+- On continuation turns, when estimated prompt usage is near saturation (~90% of prompt budget), the pipe strips `tools`, `tool_choice`, and `plugins` for that request to force synthesis.
+- Failed/omitted tool outputs remain model-visible for continuation, but are not persisted and not rendered as tool cards.
+
 ### Persistence, encryption, and compression
 
 | Valve | Type | Default (verified) | Purpose / notes |

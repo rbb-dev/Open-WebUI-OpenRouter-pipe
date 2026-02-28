@@ -9,6 +9,7 @@ import json
 from typing import Any, TYPE_CHECKING
 
 from ..api.transforms import _filter_replayable_input_items
+from ..core.context_budget import apply_replay_tool_output_budget
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -79,7 +80,15 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
             stripped_any = True
         normalized.append(stripped)
 
-    if removed or stripped_any or (sanitized is not items):
+    api_model = getattr(body, "api_model", None)
+    model_for_budget = api_model if isinstance(api_model, str) and api_model.strip() else str(getattr(body, "model", "") or "")
+    omitted_call_ids = apply_replay_tool_output_budget(
+        normalized,
+        model_id=model_for_budget,
+        logger=pipe.logger,
+    )
+
+    if removed or stripped_any or omitted_call_ids or (sanitized is not items):
         if removed:
             pipe.logger.debug(
                 "Sanitized provider input: removed %d non-replayable artifact(s).",
@@ -87,4 +96,9 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
             )
         if stripped_any:
             pipe.logger.debug("Sanitized provider input: stripped extra tool item fields.")
+        if omitted_call_ids:
+            pipe.logger.debug(
+                "Sanitized provider input: omitted %d replayed tool output(s) by context budget.",
+                len(omitted_call_ids),
+            )
         body.input = normalized

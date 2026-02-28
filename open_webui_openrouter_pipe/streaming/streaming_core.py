@@ -83,6 +83,11 @@ from ..api.transforms import (
 
 # Import config classes
 from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
+from ..core.context_budget import (
+    apply_live_tool_output_budget,
+    compute_prompt_limit_tokens,
+    estimate_serialized_tokens,
+)
 
 # Import Open WebUI models
 try:
@@ -369,6 +374,11 @@ class StreamingHandler:
         emitted_tool_call_items: set[str] = set()
         emitted_tool_output_items: set[str] = set()
         emitted_response_output_items = False
+        synthesis_guard_notified = False
+        incomplete_warning_emitted = False
+        tool_loops_executed = False
+        assistant_len_before_tool_loops = 0
+        has_actionable_continuation = False
         session_log_reason: str = ""
 
         raw_tools = tools or {}
@@ -394,6 +404,7 @@ class StreamingHandler:
         model_block = metadata.get("model")
         openwebui_model = model_block.get("id", "") if isinstance(model_block, dict) else ""
         assistant_message = ""
+        assistant_len_before_tool_loops = len(assistant_message)
         pending_ulids: list[str] = []
         pending_items: list[dict[str, Any]] = []
         total_usage: dict[str, Any] = {}
@@ -758,6 +769,15 @@ class StreamingHandler:
             if generation_started_at is None:
                 generation_started_at = now
 
+        def _extract_call_id(item: Any) -> str:
+            """Best-effort call_id extraction for tool call/output items."""
+            if not isinstance(item, dict):
+                return ""
+            candidate = item.get("call_id") or item.get("id")
+            if isinstance(candidate, str):
+                return candidate.strip()
+            return ""
+
         async def _emit_annotation_citations(raw_annotations: Any) -> None:
             """Emit citations from a final annotation dump if no stream citations were seen."""
             nonlocal annotation_citations_emitted
@@ -820,6 +840,30 @@ class StreamingHandler:
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
                 _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                 _strip_disable_model_settings_params(request_payload)
+
+                if loop_index > 0 and not owui_tool_passthrough:
+                    prompt_limit_tokens = compute_prompt_limit_tokens(model_for_cache)
+                    estimated_prompt_tokens = estimate_serialized_tokens(request_payload)
+                    if prompt_limit_tokens > 0 and estimated_prompt_tokens >= int(prompt_limit_tokens * 0.9):
+                        stripped_fields: list[str] = []
+                        for key in ("tools", "tool_choice", "plugins"):
+                            if key in request_payload:
+                                request_payload.pop(key, None)
+                                stripped_fields.append(key)
+                        if stripped_fields:
+                            self.logger.warning(
+                                "Context saturation guard triggered (%d/%d tokens): stripped %s for synthesis mode.",
+                                estimated_prompt_tokens,
+                                prompt_limit_tokens,
+                                ",".join(stripped_fields),
+                            )
+                            if not synthesis_guard_notified:
+                                synthesis_guard_notified = True
+                                await self._pipe._event_emitter_handler._emit_notification(
+                                    event_emitter,
+                                    "Context is near capacity; paused additional tool calls so the model can synthesize a final answer.",
+                                    level="warning",
+                                )
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                 is_streaming = bool(request_payload.get("stream"))
@@ -1540,6 +1584,25 @@ class StreamingHandler:
                         )
                     break
 
+                incomplete_details = final_response.get("incomplete_details")
+                response_status = final_response.get("status")
+                is_incomplete = response_status == "incomplete" or incomplete_details is not None
+                if is_incomplete and not incomplete_warning_emitted:
+                    incomplete_warning_emitted = True
+                    reason = ""
+                    if isinstance(incomplete_details, dict):
+                        raw_reason = incomplete_details.get("reason") or incomplete_details.get("type")
+                        if isinstance(raw_reason, str):
+                            reason = raw_reason.strip()
+                    warning_msg = "Model response ended incomplete; attempting best-effort continuation."
+                    if reason:
+                        warning_msg = f"{warning_msg} Reason: {reason}."
+                    await self._pipe._event_emitter_handler._emit_notification(
+                        event_emitter,
+                        warning_msg,
+                        level="warning",
+                    )
+
                 # Extract usage information from OpenAI response and pass-through to Open WebUI
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
@@ -1615,6 +1678,7 @@ class StreamingHandler:
                             "call_id": call_id,
                             "output": reason,
                             "status": "completed",
+                            "_pipe_failed": True,
                         }
                         normalized_output = normalize_persisted_item(output_item)
                         if normalized_output:
@@ -1640,11 +1704,11 @@ class StreamingHandler:
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
-                if call_items:
-                    if loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
+                if call_items or invalid_call_outputs:
+                    if call_items and loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
                         loop_limit_reached = True
 
-                    if owui_tool_passthrough:
+                    if call_items and owui_tool_passthrough:
                         tool_calls_payload: list[dict[str, Any]] = []
                         exposed_to_origin: dict[str, str] = {}
                         if isinstance(metadata, dict):
@@ -1780,291 +1844,321 @@ class StreamingHandler:
 
                         break
 
-                    # Build and emit in-progress tool items as Responses API events so
-                    # OWUI can render tool cards via serialize_output.
+                    has_actionable_continuation = bool(call_items or invalid_call_outputs)
                     show_tool_cards = valves.SHOW_TOOL_CARDS
-                    if show_tool_cards and event_emitter and body.stream and call_items:
+
+                    if call_items:
+                        if not tool_loops_executed:
+                            assistant_len_before_tool_loops = len(assistant_message)
+                        tool_loops_executed = True
                         try:
+                            function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
+                                call_items,
+                                tool_registry,
+                            )
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Tool execution failed; continuing loop with model-visible error outputs: %s",
+                                exc,
+                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                            )
+                            function_outputs = []
                             for call in call_items:
-                                call_id = call.get("call_id") or call.get("id") or ""
-                                tool_name = (call.get("name") or "").strip()
-                                raw_args = call.get("arguments") or "{}"
-                                if not call_id or call_id in emitted_tool_call_items:
-                                    continue
-                                emitted_tool_call_items.add(call_id)
-                                if not tool_name:
-                                    continue
-                                args_text = (
-                                    raw_args.strip()
-                                    if isinstance(raw_args, str)
-                                    else json.dumps(raw_args, ensure_ascii=False)
+                                call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
+                                function_outputs.append(
+                                    {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": f"Tool execution failed before completion: {exc}",
+                                        "status": "failed",
+                                        "_pipe_failed": True,
+                                    }
                                 )
-                                item = {
-                                    "type": "function_call",
-                                    "id": call_id,
-                                    "call_id": call_id,
-                                    "name": tool_name,
-                                    "arguments": args_text,
-                                    "status": "in_progress",
-                                }
-                                emitted_response_output_items = True
-                                await event_emitter(
-                                    {"type": "response.output_item.added", "item": item}
-                                )
-                        except Exception as exc:
-                            self.logger.debug("Failed to emit in-progress tool cards: %s", exc)
 
-                    function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(call_items, tool_registry)
-
-                    # Emit completed tool outputs as Responses API events so OWUI
-                    # can render tool cards via serialize_output.
-                    if show_tool_cards and event_emitter and body.stream and call_items and function_outputs:
-                        try:
-                            for call, output in zip(call_items, function_outputs):
-                                call_id = call.get("call_id") or call.get("id") or ""
-                                tool_name = (call.get("name") or "").strip()
-                                if not call_id or call_id in emitted_tool_output_items:
-                                    continue
-                                emitted_tool_output_items.add(call_id)
-                                if not tool_name:
-                                    continue
-                                result_str = output.get("output") or ""
-                                if not isinstance(result_str, str):
-                                    result_str = str(result_str)
-                                # Extract files/embeds from tool output (populated by process_tool_result)
-                                tool_files = output.get("files") or []
-                                tool_embeds = output.get("embeds") or []
-                                output_item = {
-                                    "type": "function_call_output",
-                                    "id": f"fco-{uuid.uuid4().hex}",
-                                    "call_id": call_id,
-                                    "output": [{"type": "input_text", "text": result_str}],
-                                    "status": "completed",
-                                }
-                                if tool_files:
-                                    output_item["files"] = tool_files
-                                if tool_embeds:
-                                    output_item["embeds"] = tool_embeds
-                                emitted_response_output_items = True
-                                await event_emitter(
-                                    {"type": "response.output_item.added", "item": output_item}
-                                )
-                        except Exception as exc:
-                            self.logger.debug("Failed to emit completed tool cards: %s", exc)
-
-                    # Extract citations from tool results (OpenWebUI parity)
-                    # Collection happens regardless of event_emitter (needed for source context)
-                    collected_sources: list[dict[str, Any]] = []
-                    if get_citation_source_from_tool_result is not None:
-                        for call, output in zip(call_items, function_outputs):
-                            tool_name = (call.get("name") or "").strip()
-                            if output.get("status") != "completed":
+                        all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
+                        omitted_call_ids = apply_live_tool_output_budget(
+                            all_function_outputs,
+                            existing_input_items=body.input,
+                            model_id=model_for_cache,
+                            logger=self.logger,
+                        )
+                        failed_call_ids: set[str] = set()
+                        for output in all_function_outputs:
+                            call_id = _extract_call_id(output)
+                            if not call_id:
                                 continue
+                            status = output.get("status") if isinstance(output, dict) else None
+                            if output.get("_pipe_failed") or (isinstance(status, str) and status not in {"completed"}):
+                                failed_call_ids.add(call_id)
+                        suppressed_call_ids = omitted_call_ids | failed_call_ids
+
+                        # Emit tool cards only for successful, non-omitted outputs.
+                        if show_tool_cards and event_emitter and body.stream and call_items and function_outputs:
                             try:
-                                tool_params = _safe_json_loads(call.get("arguments") or "{}")
-                                tool_result = output.get("output") or ""
-                                call_id = call.get("call_id") or call.get("id") or ""
-                                citations = get_citation_source_from_tool_result(
-                                    tool_name=tool_name,
-                                    tool_params=tool_params if isinstance(tool_params, dict) else {},
-                                    tool_result=tool_result,
-                                    tool_id=call_id,
-                                )
-                                for source in citations:
-                                    collected_sources.append(source)
-                                    # Emit citation only if event_emitter available
-                                    if event_emitter:
-                                        await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
-                                        self.logger.debug(
-                                            "Emitted citation from tool=%s: %s",
-                                            tool_name,
-                                            source.get("source", {}).get("name", "unknown"),
+                                for call, output in zip(call_items, function_outputs):
+                                    call_id = _extract_call_id(call) or _extract_call_id(output)
+                                    if not call_id or call_id in suppressed_call_ids:
+                                        continue
+                                    tool_name = (call.get("name") or "").strip()
+                                    raw_args = call.get("arguments") or "{}"
+                                    if not tool_name:
+                                        continue
+                                    args_text = (
+                                        raw_args.strip()
+                                        if isinstance(raw_args, str)
+                                        else json.dumps(raw_args, ensure_ascii=False)
+                                    )
+                                    if call_id not in emitted_tool_call_items:
+                                        emitted_tool_call_items.add(call_id)
+                                        emitted_response_output_items = True
+                                        await event_emitter(
+                                            {
+                                                "type": "response.output_item.added",
+                                                "item": {
+                                                    "type": "function_call",
+                                                    "id": call_id,
+                                                    "call_id": call_id,
+                                                    "name": tool_name,
+                                                    "arguments": args_text,
+                                                    "status": "in_progress",
+                                                },
+                                            }
                                         )
+
+                                    if call_id in emitted_tool_output_items:
+                                        continue
+                                    emitted_tool_output_items.add(call_id)
+                                    result_str = output.get("output") or ""
+                                    if not isinstance(result_str, str):
+                                        result_str = str(result_str)
+                                    tool_files = output.get("files") or []
+                                    tool_embeds = output.get("embeds") or []
+                                    output_item = {
+                                        "type": "function_call_output",
+                                        "id": f"fco-{uuid.uuid4().hex}",
+                                        "call_id": call_id,
+                                        "output": [{"type": "input_text", "text": result_str}],
+                                        "status": "completed",
+                                    }
+                                    if tool_files:
+                                        output_item["files"] = tool_files
+                                    if tool_embeds:
+                                        output_item["embeds"] = tool_embeds
+                                    emitted_response_output_items = True
+                                    await event_emitter(
+                                        {"type": "response.output_item.added", "item": output_item}
+                                    )
                             except Exception as exc:
-                                self.logger.warning(
-                                    "Failed to extract citations from tool=%s: %s",
-                                    tool_name,
+                                self.logger.debug("Failed to emit completed tool cards: %s", exc)
+
+                        # Extract citations from successful tool results.
+                        collected_sources: list[dict[str, Any]] = []
+                        if get_citation_source_from_tool_result is not None:
+                            for call, output in zip(call_items, function_outputs):
+                                call_id = _extract_call_id(call) or _extract_call_id(output)
+                                if not call_id or call_id in suppressed_call_ids:
+                                    continue
+                                tool_name = (call.get("name") or "").strip()
+                                if output.get("status") != "completed":
+                                    continue
+                                try:
+                                    tool_params = _safe_json_loads(call.get("arguments") or "{}")
+                                    tool_result = output.get("output") or ""
+                                    citations = get_citation_source_from_tool_result(
+                                        tool_name=tool_name,
+                                        tool_params=tool_params if isinstance(tool_params, dict) else {},
+                                        tool_result=tool_result,
+                                        tool_id=call_id,
+                                    )
+                                    for source in citations:
+                                        collected_sources.append(source)
+                                        if event_emitter:
+                                            await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
+                                            self.logger.debug(
+                                                "Emitted citation from tool=%s: %s",
+                                                tool_name,
+                                                source.get("source", {}).get("name", "unknown"),
+                                            )
+                                except Exception as exc:
+                                    self.logger.warning(
+                                        "Failed to extract citations from tool=%s: %s",
+                                        tool_name,
+                                        exc,
+                                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    )
+
+                        # RAG-style source context injection for non-native function calling.
+                        is_native_fc = metadata.get("params", {}).get("function_calling") == "native"
+                        self.logger.debug(
+                            "Source context check: collected_sources=%d, native_fc=%s",
+                            len(collected_sources),
+                            is_native_fc,
+                        )
+                        if collected_sources and not is_native_fc:
+                            try:
+                                user_message = ""
+                                for item in reversed(body.input):
+                                    if isinstance(item, dict):
+                                        if item.get("role") == "user":
+                                            content = item.get("content")
+                                            if isinstance(content, str):
+                                                user_message = content
+                                                break
+                                            elif isinstance(content, list):
+                                                for block in content:
+                                                    if isinstance(block, dict) and block.get("type") in ("text", "input_text"):
+                                                        user_message = block.get("text") or ""
+                                                        break
+                                                if user_message:
+                                                    break
+                                self.logger.debug(
+                                    "User message extraction: found=%s, input_items=%d",
+                                    bool(user_message),
+                                    len(body.input) if hasattr(body.input, '__len__') else -1,
+                                )
+                                if user_message:
+                                    input_before = len(body.input)
+                                    body.input = _apply_source_context_responses_api(
+                                        list(body.input),
+                                        collected_sources,
+                                        user_message,
+                                        request_context=request_context,
+                                    )
+                                    has_source_tags = any(
+                                        '<source' in str(item.get('content', ''))
+                                        for item in body.input if isinstance(item, dict)
+                                    )
+                                    self.logger.debug(
+                                        "Applied source context: input=%d->%d items, sources=%d, has_source_tags=%s",
+                                        input_before,
+                                        len(body.input),
+                                        len(collected_sources),
+                                        has_source_tags,
+                                    )
+                            except Exception as exc:
+                                self.logger.debug(
+                                    "Failed to apply source context: %s",
                                     exc,
                                     exc_info=self.logger.isEnabledFor(logging.DEBUG),
                                 )
 
-                    # RAG-style source context injection for non-native function calling.
-                    # When function_calling is "native", tool results go via function_call_output
-                    # and RAG injection would duplicate tokens. Only inject when NOT native.
-                    is_native_fc = metadata.get("params", {}).get("function_calling") == "native"
-                    self.logger.debug(
-                        "Source context check: collected_sources=%d, native_fc=%s",
-                        len(collected_sources),
-                        is_native_fc,
-                    )
-                    if collected_sources and not is_native_fc:
-                        try:
-                            # Extract the last user message for context
-                            user_message = ""
-                            for item in reversed(body.input):
-                                if isinstance(item, dict):
-                                    if item.get("role") == "user":
-                                        content = item.get("content")
-                                        if isinstance(content, str):
-                                            user_message = content
-                                            break
-                                        elif isinstance(content, list):
-                                            for block in content:
-                                                # Handle both Chat Completions (type=text) and Responses API (type=input_text)
-                                                if isinstance(block, dict) and block.get("type") in ("text", "input_text"):
-                                                    user_message = block.get("text") or ""
-                                                    break
-                                            if user_message:
-                                                break
-                            self.logger.debug(
-                                "User message extraction: found=%s, input_items=%d",
-                                bool(user_message),
-                                len(body.input) if hasattr(body.input, '__len__') else -1,
-                            )
-                            if user_message:
-                                # Use adapter function that transforms to/from Chat Completions
-                                # This delegates to OWUI's apply_source_context_to_messages
-                                input_before = len(body.input)
-                                body.input = _apply_source_context_responses_api(
-                                    list(body.input),
-                                    collected_sources,
-                                    user_message,
-                                    request_context=request_context,
-                                )
-                                # Verify source context was injected
-                                has_source_tags = any(
-                                    '<source' in str(item.get('content', ''))
-                                    for item in body.input if isinstance(item, dict)
-                                )
-                                self.logger.debug(
-                                    "Applied source context: input=%d->%d items, sources=%d, has_source_tags=%s",
-                                    input_before,
-                                    len(body.input),
-                                    len(collected_sources),
-                                    has_source_tags,
-                                )
-                        except Exception as exc:
-                            self.logger.debug(
-                                "Failed to apply source context: %s",
-                                exc,
-                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                            )
+                        if persist_tools_enabled:
+                            persist_payloads: list[dict] = []
+                            for idx, output in enumerate(function_outputs):
+                                call_id = _extract_call_id(output)
+                                if call_id and call_id in suppressed_call_ids:
+                                    continue
+                                if idx < len(call_items):
+                                    persist_payloads.append(call_items[idx])
+                                persist_payloads.append(output)
 
-                    all_function_outputs = function_outputs + invalid_call_outputs
-
-                    if persist_tools_enabled:
-                        self.logger.debug("💾 Persisting %d tool results", len(all_function_outputs))
-                        persist_payloads: list[dict] = []
-                        for idx, output in enumerate(function_outputs):
-                            if idx < len(call_items):
-                                persist_payloads.append(call_items[idx])
-                            persist_payloads.append(output)
-                        if invalid_call_outputs:
-                            persist_payloads.extend(invalid_call_outputs)
-
-                        if persist_payloads:
-                            self.logger.debug("🔍 Processing %d persist_payloads", len(persist_payloads))
-                            for idx, payload in enumerate(persist_payloads, start=1):
-                                payload_type = payload.get("type")
-                                self.logger.debug(
-                                    "🔍 [%d/%d] Payload type=%s",
-                                    idx,
-                                    len(persist_payloads),
-                                    payload_type,
-                                )
-                                normalized_payload = normalize_persisted_item(payload)
-                                if not normalized_payload:
-                                    self.logger.warning(
-                                        "❌ [%d/%d] Normalization returned None for type=%s",
+                            if persist_payloads:
+                                self.logger.debug("💾 Persisting %d tool results", len(persist_payloads))
+                                for idx, payload in enumerate(persist_payloads, start=1):
+                                    payload_type = payload.get("type")
+                                    self.logger.debug(
+                                        "🔍 [%d/%d] Payload type=%s",
                                         idx,
                                         len(persist_payloads),
                                         payload_type,
                                     )
-                                    continue
-                                self.logger.debug(
-                                    "✅ [%d/%d] Normalized successfully (type=%s)",
-                                    idx,
-                                    len(persist_payloads),
-                                    payload_type,
-                                )
-                                row = self._pipe._artifact_store._make_db_row(
-                                    chat_id, message_id, openwebui_model, normalized_payload
-                                )
-                                if not row:
-                                    self.logger.warning(
-                                        "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
+                                    normalized_payload = normalize_persisted_item(payload)
+                                    if not normalized_payload:
+                                        self.logger.warning(
+                                            "❌ [%d/%d] Normalization returned None for type=%s",
+                                            idx,
+                                            len(persist_payloads),
+                                            payload_type,
+                                        )
+                                        continue
+                                    self.logger.debug(
+                                        "✅ [%d/%d] Normalized successfully (type=%s)",
                                         idx,
                                         len(persist_payloads),
-                                        chat_id,
-                                        message_id,
                                         payload_type,
                                     )
-                                    continue
+                                    row = self._pipe._artifact_store._make_db_row(
+                                        chat_id, message_id, openwebui_model, normalized_payload
+                                    )
+                                    if not row:
+                                        self.logger.warning(
+                                            "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
+                                            idx,
+                                            len(persist_payloads),
+                                            chat_id,
+                                            message_id,
+                                            payload_type,
+                                        )
+                                        continue
+                                    self.logger.debug(
+                                        "✅ [%d/%d] Row created; enqueueing for persistence",
+                                        idx,
+                                        len(persist_payloads),
+                                    )
+                                    pending_items.append(row)
                                 self.logger.debug(
-                                    "✅ [%d/%d] Row created; enqueueing for persistence",
-                                    idx,
-                                    len(persist_payloads),
+                                    "📦 Total pending_items after loop: %d", len(pending_items)
                                 )
-                                pending_items.append(row)
-                            self.logger.debug(
-                                "📦 Total pending_items after loop: %d", len(pending_items)
-                            )
+                                if thinking_tasks:
+                                    cancel_thinking()
+                                await _flush_pending("function_outputs")
+
+                        for output in all_function_outputs:
+                            result_text = wrap_code_block(output.get("output", ""))
                             if thinking_tasks:
                                 cancel_thinking()
-                            await _flush_pending("function_outputs")
-
-                    for output in all_function_outputs:
-                        result_text = wrap_code_block(output.get("output", ""))
-                        if thinking_tasks:
-                            cancel_thinking()
-                        self.logger.debug("Received tool result\n%s", result_text)
-                    body.input.extend(all_function_outputs)
-                    _sanitize_request_input(self._pipe, body)
-                elif invalid_call_outputs:
-                    # No valid tool calls, but we still need to pass back error outputs.
-                    all_function_outputs = list(invalid_call_outputs)
-                    if persist_tools_enabled:
-                        self.logger.debug("💾 Persisting %d tool results", len(all_function_outputs))
-                        persist_payloads = list(all_function_outputs)
-                        if persist_payloads:
-                            for idx, payload in enumerate(persist_payloads, start=1):
-                                payload_type = payload.get("type")
-                                normalized_payload = normalize_persisted_item(payload)
-                                if not normalized_payload:
-                                    self.logger.warning(
-                                        "❌ [%d/%d] Normalization returned None for type=%s",
-                                        idx,
-                                        len(persist_payloads),
-                                        payload_type,
-                                    )
-                                    continue
-                                row = self._pipe._artifact_store._make_db_row(
-                                    chat_id, message_id, openwebui_model, normalized_payload
-                                )
-                                if not row:
-                                    self.logger.warning(
-                                        "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
-                                        idx,
-                                        len(persist_payloads),
-                                        chat_id,
-                                        message_id,
-                                        payload_type,
-                                    )
-                                    continue
-                                pending_items.append(row)
+                            self.logger.debug("Received tool result\n%s", result_text)
+                        body.input.extend(all_function_outputs)
+                        _sanitize_request_input(self._pipe, body)
+                    elif invalid_call_outputs:
+                        # No valid tool calls, but we still pass error outputs to the model only.
+                        if not tool_loops_executed:
+                            assistant_len_before_tool_loops = len(assistant_message)
+                        tool_loops_executed = True
+                        all_function_outputs = list(invalid_call_outputs)
+                        apply_live_tool_output_budget(
+                            all_function_outputs,
+                            existing_input_items=body.input,
+                            model_id=model_for_cache,
+                            logger=self.logger,
+                        )
+                        for output in all_function_outputs:
+                            result_text = wrap_code_block(output.get("output", ""))
                             if thinking_tasks:
                                 cancel_thinking()
-                            await _flush_pending("function_outputs")
-
-                    for output in all_function_outputs:
-                        result_text = wrap_code_block(output.get("output", ""))
-                        if thinking_tasks:
-                            cancel_thinking()
-                        self.logger.debug("Received tool result\n%s", result_text)
-                    body.input.extend(all_function_outputs)
-                    _sanitize_request_input(self._pipe, body)
+                            self.logger.debug("Received tool result\n%s", result_text)
+                        body.input.extend(all_function_outputs)
+                        _sanitize_request_input(self._pipe, body)
+                    else:
+                        break
                 else:
+                    has_actionable_continuation = False
                     break
+
+            if (
+                tool_loops_executed
+                and not loop_limit_reached
+                and len(assistant_message) <= assistant_len_before_tool_loops
+                and not has_actionable_continuation
+            ):
+                await self._pipe._event_emitter_handler._emit_notification(
+                    event_emitter,
+                    "No assistant content was produced after tool execution; sending fallback guidance.",
+                    level="warning",
+                )
+                fallback = (
+                    "I couldn't produce a final answer after running tools. "
+                    "Please retry with a narrower tool query or a shorter context window."
+                )
+                delta = f"\n\n{fallback}" if assistant_message else fallback
+                assistant_message = f"{assistant_message}{delta}" if assistant_message else fallback
+                if event_emitter:
+                    await event_emitter(
+                        {
+                            "type": "chat:message:delta",
+                            "data": {"content": delta},
+                        }
+                    )
 
             if loop_limit_reached:
                 limit_value = valves.MAX_FUNCTION_CALL_LOOPS

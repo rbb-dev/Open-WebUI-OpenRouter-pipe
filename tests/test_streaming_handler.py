@@ -3621,6 +3621,410 @@ class TestLoopLimitAndFunctionExecution:
 
 
 # =============================================================================
+# Adaptive Tool Budgeting Tests
+# =============================================================================
+
+
+class TestAdaptiveToolBudgeting:
+    """Tests for dynamic tool budgeting and synthesis safeguards."""
+
+    @pytest.mark.asyncio
+    async def test_critical_threshold_strips_tools_choice_and_plugins(self, monkeypatch, pipe_instance_async):
+        """When continuation payload nears budget saturation, force synthesis mode."""
+        pipe = pipe_instance_async
+        body = ResponsesBody.model_validate(
+            {
+                "model": "test/model",
+                "stream": True,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "x" * 320}],
+                    }
+                ],
+                "tools": [
+                    {"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}
+                ],
+                "tool_choice": "auto",
+                "plugins": [{"id": "web"}],
+            }
+        )
+        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                },
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            captured_requests.append(json.loads(json.dumps(request_body)))
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "short-tool-output"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(
+            "open_webui_openrouter_pipe.streaming.streaming_core.compute_prompt_limit_tokens",
+            lambda _model_id: 100,
+        )
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) >= 2
+        second_request = captured_requests[1]
+        assert "tools" not in second_request
+        assert "tool_choice" not in second_request
+        assert "plugins" not in second_request
+        notifications = [e for e in emitted if e.get("type") == "notification"]
+        assert any("near capacity" in str(e).lower() for e in notifications)
+
+    @pytest.mark.asyncio
+    async def test_failed_tool_outputs_are_model_visible_not_persisted_or_carded(self, monkeypatch, pipe_instance_async):
+        """Tool execution exceptions should not crash and should stay model-only."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Pipeline",
+                "PERSIST_TOOL_RESULTS": True,
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Recovered answer."},
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            captured_requests.append(json.loads(json.dumps(request_body)))
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute_raises(_calls, _registry):
+            raise RuntimeError("simulated tool failure")
+
+        persisted_rows: list[dict] = []
+
+        async def mock_persist(rows):
+            persisted_rows.extend(rows)
+            return [f"ulid-{i}" for i in range(len(rows))]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute_raises)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert "Recovered answer." in result
+        assert len(captured_requests) >= 2
+        second_input = captured_requests[1].get("input") or []
+        error_outputs = [
+            item
+            for item in second_input
+            if isinstance(item, dict)
+            and item.get("type") == "function_call_output"
+            and "failed before completion" in str(item.get("output", ""))
+        ]
+        assert error_outputs, "Expected model-visible tool failure output"
+        assert not persisted_rows
+        output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        assert not output_items
+
+    @pytest.mark.asyncio
+    async def test_omitted_tool_outputs_are_not_persisted_or_carded(self, monkeypatch, pipe_instance_async):
+        """Budget-omitted tool outputs should remain model-visible only."""
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {
+                "test.model": {
+                    "full_model": {"max_prompt_tokens": 20},
+                    "context_length": 20,
+                }
+            }
+        )
+        body = ResponsesBody.model_validate(
+            {
+                "model": "test/model",
+                "stream": True,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "x" * 260}],
+                    }
+                ],
+            }
+        )
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Pipeline",
+                "PERSIST_TOOL_RESULTS": True,
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        captured_requests: list[dict[str, Any]] = []
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            captured_requests.append(json.loads(json.dumps(request_body)))
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "y" * 220}]
+
+        persisted_rows: list[dict] = []
+
+        async def mock_persist(rows):
+            persisted_rows.extend(rows)
+            return [f"ulid-{i}" for i in range(len(rows))]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) >= 2
+        second_input = captured_requests[1].get("input") or []
+        omitted_outputs = [
+            item
+            for item in second_input
+            if isinstance(item, dict)
+            and item.get("type") == "function_call_output"
+            and str(item.get("output", "")).startswith("[Tool result omitted due to context budget.")
+        ]
+        assert omitted_outputs, "Expected omitted tool output stub to be model-visible"
+        assert not persisted_rows
+        output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        assert not output_items
+
+    @pytest.mark.asyncio
+    async def test_empty_response_fallback_after_tool_iterations(self, monkeypatch, pipe_instance_async):
+        """Emit fallback assistant message when tool loops end with no assistant growth."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2})
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            ],
+            [
+                {"type": "response.completed", "response": {"output": [], "usage": {}}},
+            ],
+        ]
+
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert "couldn't produce a final answer after running tools" in result.lower()
+        notifications = [e for e in emitted if e.get("type") == "notification"]
+        assert any("no assistant content" in str(e).lower() for e in notifications)
+
+    @pytest.mark.asyncio
+    async def test_incomplete_response_emits_warning_notification(self, monkeypatch, pipe_instance_async):
+        """Warn users when provider marks the response incomplete."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {
+                "type": "response.completed",
+                "response": {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        notifications = [e for e in emitted if e.get("type") == "notification"]
+        assert any("incomplete" in str(e).lower() for e in notifications)
+
+
+# =============================================================================
 # Validate Base64 Size Tests
 # =============================================================================
 

@@ -1814,6 +1814,61 @@ def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
     ]
 
 
+@pytest.mark.asyncio
+async def test_from_completions_preserves_truncation(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import CompletionsBody, ResponsesBody
+
+    completions = CompletionsBody(
+        model="test",
+        messages=[{"role": "user", "content": "hello"}],
+        truncation="auto",
+    )
+
+    responses = await ResponsesBody.from_completions(
+        completions,
+        transformer_context=minimal_pipe,
+    )
+    assert responses.truncation == "auto"
+
+
+def test_sanitize_request_input_applies_replay_budget_idempotently(pipe_instance):
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.models.registry import ModelFamily
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    ModelFamily.set_dynamic_specs(
+        {
+            "test.model": {
+                "full_model": {"max_prompt_tokens": 32},
+                "context_length": 32,
+            }
+        }
+    )
+
+    oversized_output = "x" * 600
+    body = ResponsesBody.model_validate(
+        {
+            "model": "test/model",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": oversized_output,
+                }
+            ],
+            "stream": True,
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+    first_output = body.input[0]["output"]
+    assert first_output.startswith("[Replayed tool result omitted due to context budget.")
+
+    _sanitize_request_input(pipe_instance, body)
+    second_output = body.input[0]["output"]
+    assert second_output == first_output
+
+
 # ============================================================================
 # Streaming - Parse Failure Resilience (C3 fix verification)
 #
@@ -2074,4 +2129,3 @@ async def test_streaming_consecutive_malformed_at_start(pipe_instance_async):
     assert len(text_deltas) >= 1
     assert "Finally" in "".join(e["delta"] for e in text_deltas)
     assert any(e.get("type") == "response.completed" for e in events)
-

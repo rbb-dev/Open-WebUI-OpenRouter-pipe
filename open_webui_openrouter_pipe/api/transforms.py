@@ -81,6 +81,7 @@ class ResponsesBody(BaseModel):
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     plugins: Optional[List[Dict[str, Any]]] = None
+    truncation: Optional[str] = None
     text: Optional[Dict[str, Any]] = None
     parallel_tool_calls: Optional[bool] = None
     transforms: Optional[List[str]] = None
@@ -293,7 +294,7 @@ class ResponsesBody(BaseModel):
             "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
 
             # Fields not documented in OpenRouter's Responses API reference
-            "store", "truncation",
+            "store",
             "user",
         }
         sanitized_params = {}
@@ -412,6 +413,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "tools",
     "tool_choice",
     "plugins",
+    "truncation",
     "preset",
     "text",
     "parallel_tool_calls",
