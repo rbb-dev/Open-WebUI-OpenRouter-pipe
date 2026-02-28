@@ -1134,21 +1134,22 @@ class Pipe:
         except RuntimeError:
             loop = None
 
+        coro = self.close()
         if loop and loop.is_running():
             try:
-                task = loop.create_task(self.close(), name="openrouter-pipe-close")
+                task = loop.create_task(coro, name="openrouter-pipe-close")
                 task.add_done_callback(_consume_background_task_exception)
             except RuntimeError:
-                pass
+                coro.close()
         else:
             try:
                 new_loop = asyncio.new_event_loop()
                 try:
-                    new_loop.run_until_complete(self.close())
+                    new_loop.run_until_complete(coro)
                 finally:
                     new_loop.close()
             except RuntimeError:
-                pass
+                coro.close()
 
     # =============================================================================
     # UTILITY METHODS
