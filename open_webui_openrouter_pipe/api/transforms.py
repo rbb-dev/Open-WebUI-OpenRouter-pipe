@@ -547,7 +547,10 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
             function["description"] = tool["description"]
         if isinstance(tool.get("parameters"), dict):
             function["parameters"] = tool["parameters"]
-        out.append({"type": "function", "function": function})
+        entry: dict[str, Any] = {"type": "function", "function": function}
+        if isinstance(tool.get("cache_control"), dict):
+            entry["cache_control"] = tool["cache_control"]
+        out.append(entry)
     return out
 
 
@@ -585,6 +588,8 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
             spec["description"] = description.strip()
         if isinstance(parameters, dict):
             spec["parameters"] = parameters
+        if isinstance(tool.get("cache_control"), dict):
+            spec["cache_control"] = tool["cache_control"]
 
         out.append(spec)
 

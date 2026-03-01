@@ -850,10 +850,12 @@ class StreamingHandler:
                 model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
                 items = getattr(body, "input", None)
                 if isinstance(items, list):
+                    tools_list = getattr(body, "tools", None)
                     _maybe_apply_anthropic_prompt_caching(
                         items,
                         model_id=model_for_cache,
                         valves=valves,
+                        tools=tools_list if isinstance(tools_list, list) else None,
                     )
                 request_payload = body.model_dump(exclude_none=True)
                 if api_model_override:

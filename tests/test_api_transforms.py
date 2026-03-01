@@ -622,6 +622,34 @@ class TestResponsesToolsToChatTools:
         result = _responses_tools_to_chat_tools(tools)
         assert result[0]["function"]["parameters"] == {"type": "object"}
 
+    def test_cache_control_preserved(self):
+        """Test cache_control dict is preserved on the outer tool entry."""
+        tools = [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "parameters": {"type": "object"},
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        result = _responses_tools_to_chat_tools(tools)
+        assert result[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in result[0]["function"]
+
+    def test_cache_control_absent_when_missing(self):
+        """Test cache_control is not added when not present on source."""
+        tools = [{"type": "function", "name": "tool"}]
+        result = _responses_tools_to_chat_tools(tools)
+        assert "cache_control" not in result[0]
+
+    def test_cache_control_non_dict_ignored(self):
+        """Test non-dict cache_control is not preserved."""
+        tools = [
+            {"type": "function", "name": "tool", "cache_control": "ephemeral"}
+        ]
+        result = _responses_tools_to_chat_tools(tools)
+        assert "cache_control" not in result[0]
+
 
 class TestChatToolsToResponsesTools:
     """Tests for _chat_tools_to_responses_tools()."""
@@ -721,6 +749,38 @@ class TestChatToolsToResponsesTools:
         tools = [{"type": "function", "name": "tool", "description": "   "}]
         result = _chat_tools_to_responses_tools(tools)
         assert "description" not in result[0]
+
+    def test_cache_control_preserved(self):
+        """Test cache_control dict is preserved on the output spec."""
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "tool", "parameters": {"type": "object"}},
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        result = _chat_tools_to_responses_tools(tools)
+        assert result[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_control_absent_when_missing(self):
+        """Test cache_control is not added when not present on source."""
+        tools = [
+            {"type": "function", "function": {"name": "tool"}}
+        ]
+        result = _chat_tools_to_responses_tools(tools)
+        assert "cache_control" not in result[0]
+
+    def test_cache_control_non_dict_ignored(self):
+        """Test non-dict cache_control is not preserved."""
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "tool"},
+                "cache_control": "ephemeral",
+            }
+        ]
+        result = _chat_tools_to_responses_tools(tools)
+        assert "cache_control" not in result[0]
 
 
 # ============================================================================

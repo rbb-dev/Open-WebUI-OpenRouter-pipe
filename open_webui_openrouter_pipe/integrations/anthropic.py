@@ -25,17 +25,25 @@ def _maybe_apply_anthropic_prompt_caching(
     *,
     model_id: str,
     valves: "Pipe.Valves",
+    tools: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Apply Anthropic prompt caching to input items.
+    """Apply Anthropic prompt caching to input items and optionally tools.
 
-    When enabled via valves, this function adds cache_control markers to appropriate
-    input_text blocks in the last few system and user messages to enable Anthropic's
-    prompt caching feature.
+    When enabled via valves, this function adds cache_control markers to:
+    - The last tool definition (when tools are present)
+    - The last system/developer message
+    - The last 2-3 user messages (3 without tools, 2 with tools)
+
+    Anthropic allows a maximum of 4 cache_control breakpoints per request.
+    The budget is allocated adaptively:
+    - With tools:    1 tool + 1 system + 2 user = 4
+    - Without tools: 1 system + 3 user = 4
 
     Args:
         input_items: List of input items to potentially modify in-place
         model_id: The model identifier to check if it's an Anthropic model
         valves: Valve configuration containing caching settings
+        tools: Optional list of tool definitions to potentially modify in-place
     """
     if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
         return
@@ -46,6 +54,22 @@ def _maybe_apply_anthropic_prompt_caching(
     cache_control_payload: dict[str, Any] = {"type": "ephemeral"}
     if isinstance(ttl, str) and ttl:
         cache_control_payload["ttl"] = ttl
+
+    # Mark the last tool definition with cache_control (tools are earliest
+    # in Anthropic's cache prefix order: tools → system → messages).
+    has_tools = isinstance(tools, list) and len(tools) > 0
+    if has_tools:
+        assert tools is not None  # help type narrowing
+        for tool in reversed(tools):
+            if not isinstance(tool, dict):
+                continue
+            existing_cc = tool.get("cache_control")
+            if existing_cc is None:
+                tool["cache_control"] = dict(cache_control_payload)
+            elif isinstance(existing_cc, dict):
+                if cache_control_payload.get("ttl") and "ttl" not in existing_cc:
+                    existing_cc["ttl"] = cache_control_payload["ttl"]
+            break
 
     system_message_indices: list[int] = []
     user_message_indices: list[int] = []
@@ -60,15 +84,14 @@ def _maybe_apply_anthropic_prompt_caching(
         elif role == "user":
             user_message_indices.append(idx)
 
+    # Adaptive user message breakpoint budget: 3 without tools, 2 with tools.
+    max_user_breakpoints = 2 if has_tools else 3
+
     target_indices: list[int] = []
     if system_message_indices:
         target_indices.append(system_message_indices[-1])
-    if user_message_indices:
-        target_indices.append(user_message_indices[-1])
-    if len(user_message_indices) > 1:
-        target_indices.append(user_message_indices[-2])
-    if len(user_message_indices) > 2:
-        target_indices.append(user_message_indices[-3])
+    for i in range(min(max_user_breakpoints, len(user_message_indices))):
+        target_indices.append(user_message_indices[-(i + 1)])
 
     seen: set[int] = set()
     for msg_idx in target_indices:

@@ -840,13 +840,18 @@ class RequestOrchestrator:
                     and isinstance(api_model_label, str)
                     and _is_anthropic_model_id(api_model_label)
                     and exc.status == 400
-                    and Pipe._input_contains_cache_control(getattr(responses_body, "input", None))
+                    and (
+                        self._pipe._input_contains_cache_control(getattr(responses_body, "input", None))
+                        or self._pipe._input_contains_cache_control(getattr(responses_body, "tools", None))
+                    )
                 ):
                     self.logger.warning(
                         "Prompt caching payload rejected by provider; retrying without cache_control (model=%s).",
                         api_model_label,
                     )
-                    Pipe._strip_cache_control_from_input(responses_body.input)
+                    self._pipe._strip_cache_control_from_input(responses_body.input)
+                    if isinstance(responses_body.tools, list):
+                        self._pipe._strip_cache_control_from_input(responses_body.tools)
                     anthropic_prompt_cache_retry_attempted = True
                     continue
 

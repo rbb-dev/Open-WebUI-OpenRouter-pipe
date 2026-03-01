@@ -1064,3 +1064,184 @@ async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch, p
     assert result == "ok"
     request_body = captured.get("request_body") or {}
     assert Pipe._input_contains_cache_control(request_body.get("input"))
+
+
+# ============================================================================
+# Tool cache_control injection — adaptive breakpoint budget
+# ============================================================================
+
+
+def _make_input_items(
+    *,
+    system: bool = True,
+    user_count: int = 4,
+) -> list[dict[str, Any]]:
+    """Build a list of Responses API input items for testing."""
+    items: list[dict[str, Any]] = []
+    if system:
+        items.append({
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": "SYSTEM"}],
+        })
+    for i in range(user_count):
+        items.append({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": f"user-{i + 1}"}],
+        })
+        if i < user_count - 1:
+            items.append({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "input_text", "text": f"assistant-{i + 1}"}],
+            })
+    return items
+
+
+def _count_cache_control_on_input(items: list[dict]) -> int:
+    """Count how many input_text blocks have cache_control set."""
+    count = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and "cache_control" in block:
+                count += 1
+    return count
+
+
+def test_with_tools_injects_cache_control_on_last_tool(pipe_instance):
+    """When tools are present, the last tool gets cache_control."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=4)
+    tools = [
+        {"type": "function", "name": "tool_a", "parameters": {}},
+        {"type": "function", "name": "tool_b", "parameters": {}},
+    ]
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=tools,
+    )
+    # Last tool should have cache_control (default TTL is "5m")
+    assert tools[-1].get("cache_control") == {"type": "ephemeral", "ttl": "5m"}
+    # First tool should NOT have cache_control
+    assert "cache_control" not in tools[0]
+
+
+def test_with_tools_limits_user_breakpoints_to_2(pipe_instance):
+    """When tools are present, only 2 user messages get breakpoints (not 3)."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=4)
+    tools = [{"type": "function", "name": "tool_a", "parameters": {}}]
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=tools,
+    )
+    # Budget: 1 tool + 1 system + 2 user = 4 total
+    user_messages = [
+        i for i in items
+        if isinstance(i, dict) and i.get("type") == "message" and i.get("role") == "user"
+    ]
+    users_with_cc = [m for m in user_messages if _last_input_text_cache_control(m) is not None]
+    assert len(users_with_cc) == 2
+
+
+def test_without_tools_allows_3_user_breakpoints(pipe_instance):
+    """Without tools, 3 user messages get breakpoints (existing behavior)."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=4)
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves,
+    )
+    # Budget: 1 system + 3 user = 4 total
+    user_messages = [
+        i for i in items
+        if isinstance(i, dict) and i.get("type") == "message" and i.get("role") == "user"
+    ]
+    users_with_cc = [m for m in user_messages if _last_input_text_cache_control(m) is not None]
+    assert len(users_with_cc) == 3
+
+
+def test_tools_none_treated_as_no_tools(pipe_instance):
+    """tools=None should behave the same as no tools (3 user breakpoints)."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=4)
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=None,
+    )
+    user_messages = [
+        i for i in items
+        if isinstance(i, dict) and i.get("type") == "message" and i.get("role") == "user"
+    ]
+    users_with_cc = [m for m in user_messages if _last_input_text_cache_control(m) is not None]
+    assert len(users_with_cc) == 3
+
+
+def test_empty_tools_list_treated_as_no_tools(pipe_instance):
+    """An empty tools list should behave the same as no tools."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=4)
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=[],
+    )
+    user_messages = [
+        i for i in items
+        if isinstance(i, dict) and i.get("type") == "message" and i.get("role") == "user"
+    ]
+    users_with_cc = [m for m in user_messages if _last_input_text_cache_control(m) is not None]
+    assert len(users_with_cc) == 3
+
+
+def test_tool_existing_cache_control_not_overwritten(pipe_instance):
+    """Existing cache_control on a tool should not be overwritten."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    items = _make_input_items(user_count=1)
+    tools = [
+        {
+            "type": "function",
+            "name": "tool_a",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        },
+    ]
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=tools,
+    )
+    # Existing cache_control should be preserved, not overwritten
+    assert tools[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_tool_cache_control_ttl_merged(pipe_instance):
+    """When tool has cache_control without ttl, ttl from valves is merged."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(update={
+        "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+        "ANTHROPIC_PROMPT_CACHE_TTL": "1h",
+    })
+    items = _make_input_items(user_count=1)
+    tools = [
+        {"type": "function", "name": "tool_a", "cache_control": {"type": "ephemeral"}},
+    ]
+    _maybe_apply_anthropic_prompt_caching(
+        items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=tools,
+    )
+    assert tools[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_strip_cache_control_from_tools():
+    """Pipe._strip_cache_control_from_input removes cache_control from tools."""
+    tools = [
+        {"type": "function", "name": "tool_a", "cache_control": {"type": "ephemeral"}},
+        {"type": "function", "name": "tool_b"},
+    ]
+    assert Pipe._input_contains_cache_control(tools)
+    Pipe._strip_cache_control_from_input(tools)
+    assert not Pipe._input_contains_cache_control(tools)
+    assert "cache_control" not in tools[0]
