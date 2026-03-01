@@ -4744,6 +4744,125 @@ def test_apply_gemini_thinking_config_sets_budget():
         pipe.shutdown()
 
 
+# ============================================================================
+# Anthropic verbosity mapping (xhigh → verbosity: "max")
+# ============================================================================
+
+
+def test_apply_anthropic_verbosity_xhigh_claude_opus():
+    """xhigh effort on Claude Opus sets verbosity: 'max'."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="xhigh")
+        body = ResponsesBody(model="anthropic/claude-opus-4-6", input=[])
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity == "max"
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_xhigh_claude_sonnet():
+    """xhigh effort on Claude Sonnet sets verbosity: 'max'."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-sonnet-4.5": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="xhigh")
+        body = ResponsesBody(model="anthropic/claude-sonnet-4.5", input=[])
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity == "max"
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_high_does_not_set():
+    """Non-xhigh effort on Claude does NOT set verbosity."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="high")
+        body = ResponsesBody(model="anthropic/claude-opus-4-6", input=[])
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity is None
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_non_claude_model():
+    """xhigh effort on non-Claude model does NOT set verbosity."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "openai.gpt-5": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="xhigh")
+        body = ResponsesBody(model="openai/gpt-5", input=[])
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity is None
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_user_set_not_overridden():
+    """User-set verbosity is not overridden even with xhigh effort."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="xhigh")
+        body = ResponsesBody(model="anthropic/claude-opus-4-6", input=[])
+        body.verbosity = "low"
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity == "low"
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_request_level_effort():
+    """Request-level reasoning.effort takes priority over valve for verbosity mapping."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        # Valve says "high" but request says "xhigh" — should set verbosity
+        valves = pipe.Valves(REASONING_EFFORT="high")
+        body = ResponsesBody(model="anthropic/claude-opus-4-6", input=[])
+        body.reasoning = {"effort": "xhigh", "enabled": True}
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity == "max"
+    finally:
+        pipe.shutdown()
+
+
+def test_apply_anthropic_verbosity_non_opus_sonnet_skipped():
+    """Claude models that aren't Opus/Sonnet don't get verbosity mapping."""
+    pipe = Pipe()
+    ModelFamily.set_dynamic_specs({
+        "anthropic.claude-3-haiku": {"supported_parameters": ["reasoning"]},
+    })
+    try:
+        valves = pipe.Valves(REASONING_EFFORT="xhigh")
+        body = ResponsesBody(model="anthropic/claude-3-haiku", input=[])
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
+        assert body.verbosity is None
+    finally:
+        pipe.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
     """Test that task model reasoning valve applies to owned models.

@@ -648,6 +648,19 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
     return False
 
 # -----------------------------------------------------------------------------
+# Anthropic Reasoning Helpers
+# -----------------------------------------------------------------------------
+
+def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
+    """Return True for Claude Opus/Sonnet models that support verbosity mapping."""
+    lowered = (normalized_model_id or "").lower()
+    return (
+        lowered.startswith("anthropic.claude-opus-")
+        or lowered.startswith("anthropic.claude-sonnet-")
+    )
+
+
+# -----------------------------------------------------------------------------
 # Gemini Reasoning Helpers
 # -----------------------------------------------------------------------------
 

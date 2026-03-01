@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 from .registry import ModelFamily
 from ..core.errors import OpenRouterAPIError
 
+# Valve effort value that triggers verbosity: "max" for Claude models.
+_XHIGH_EFFORT = "xhigh"
+_MAX_VERBOSITY = "max"
+
 
 class ReasoningConfigManager:
     """Manages reasoning model configuration and retry logic.
@@ -151,6 +155,41 @@ class ReasoningConfigManager:
         responses_body.thinking_config = thinking_config
         responses_body.reasoning = None
         setattr(responses_body, "include_reasoning", None)
+
+    def _apply_anthropic_verbosity(self, responses_body: "ResponsesBody", valves: "Pipe.Valves") -> None:
+        """Map xhigh effort to verbosity: "max" for Claude Opus/Sonnet models.
+
+        OpenRouter's ``verbosity`` parameter maps to Anthropic's
+        ``output_config.effort``.  The ``"max"`` level is only supported by
+        Claude 4.6 Opus/Sonnet and later, but older Claude models gracefully
+        fall back to ``"high"`` on the OpenRouter side, so the broad pattern
+        match (``anthropic.claude-opus-*`` / ``anthropic.claude-sonnet-*``) is
+        safe.
+
+        This is intentionally a no-op when the user has already set
+        ``verbosity`` explicitly (e.g. via a custom parameter), to avoid
+        overriding their choice.
+        """
+        from .registry import _is_claude_reasoning_model
+
+        # Don't override if the user already set verbosity explicitly.
+        if responses_body.verbosity is not None:
+            return
+
+        normalized = ModelFamily.base_model(responses_body.model)
+        if not _is_claude_reasoning_model(normalized):
+            return
+
+        # Determine effective effort: request-level reasoning.effort takes
+        # priority, then fall back to the valve default.
+        effort = ""
+        if isinstance(responses_body.reasoning, dict):
+            effort = (responses_body.reasoning.get("effort") or "").strip().lower()
+        if not effort:
+            effort = (valves.REASONING_EFFORT or "").strip().lower()
+
+        if effort == _XHIGH_EFFORT:
+            responses_body.verbosity = _MAX_VERBOSITY
 
     def _should_retry_without_reasoning(
         self,

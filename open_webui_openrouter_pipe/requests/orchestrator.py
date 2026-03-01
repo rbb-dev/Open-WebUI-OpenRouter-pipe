@@ -488,6 +488,7 @@ class RequestOrchestrator:
         _sanitize_request_input(self._pipe, responses_body)
         self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
         self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+        self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
         # Inject provider routing from filter-injected metadata
@@ -621,6 +622,7 @@ class RequestOrchestrator:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
                 self._pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(responses_body, task_effort)
                 self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+                self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
 
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
@@ -900,6 +902,7 @@ class RequestOrchestrator:
                                 responses_body.reasoning["effort"] = fallback_effort
                                 reasoning_effort_retry_attempted = True
                                 self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+                                self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
                                 continue
 
                 if (
