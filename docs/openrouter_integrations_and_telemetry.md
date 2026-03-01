@@ -10,8 +10,9 @@ This document covers behaviors that are specific to the OpenRouter Responses API
 
 - The pipe targets the OpenRouter base URL configured by `BASE_URL` (default `https://openrouter.ai/api/v1`), using the `/responses` endpoint.
 - Requests include OpenRouter-identifying headers:
-  - `X-Title` (pipe title)
+  - `X-OpenRouter-Title` (pipe title)
   - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme)
+  - `X-OpenRouter-Categories` (pipe category identifier for analytics attribution)
 - Optional provider beta headers:
   - For `anthropic/...` models, when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
 
@@ -44,6 +45,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
+| `trace` | OpenRouter Broadcast observability metadata; a JSON object forwarded as-is to OpenRouter's tracing destinations (Datadog, Langfuse, LangSmith, webhook, etc.). This pipe supports `openrouter_trace` as an OWUI convenience mapping to this field. |
 | `transforms` | OpenRouter transforms list (for example automatic middle-out trimming when enabled). |
 
 Operational note:
@@ -62,6 +64,7 @@ The pipe accepts the following Advanced Model Parameters:
 | Advanced param | Type | Applies to | What it does |
 | --- | --- | --- | --- |
 | `model_fallback` | `str` (CSV) | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list into the OpenRouter `models` array (order-preserving, de-duplicated). |
+| `openrouter_trace` | `str` (JSON) | Requests | Convenience mapping for OpenRouter Broadcast observability: parses a JSON object and writes it as the OpenRouter `trace` field. See §2.4. |
 | `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping the OpenRouter web-search plugin and related request fields. |
 | `disable_model_metadata_sync` | `bool-ish` | Model metadata sync | Master switch: the pipe will not “manage” this model’s settings at all (capabilities, icon, description, auto-attached integrations, default-on integrations). |
 | `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
@@ -91,7 +94,109 @@ Example Open WebUI custom parameter value:
 openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
 ```
 
-### 2.4 `disable_native_websearch` → disable OpenRouter web search plugin
+### 2.4 `openrouter_trace` → OpenRouter `trace` (Broadcast / Observability)
+
+OpenRouter's [Broadcast](https://openrouter.ai/docs/guides/features/broadcast) feature sends traces from your LLM requests to observability backends — Datadog, Langfuse, LangSmith, or any webhook endpoint. The `trace` field is a top-level JSON object in the request body that lets you attach tracing metadata to each request.
+
+This pipe supports `openrouter_trace` as a per-model custom parameter that maps to the OpenRouter `trace` field:
+
+- Custom param: `openrouter_trace` (JSON string)
+- Pipe behavior:
+  - Parses the JSON string into a dict (Open WebUI's `custom_params` handler auto-parses JSON strings, so the value typically arrives as a dict already).
+  - If the value is still a raw JSON string (edge case), the pipe attempts `json.loads()` as a fallback.
+  - Merges with any existing `trace` dict already in the request (model-level values take precedence on key conflicts).
+  - Writes the merged dict to `trace` in the outgoing OpenRouter payload.
+  - Removes `openrouter_trace` from the outgoing payload.
+  - Invalid values (non-JSON strings, arrays, empty dicts, non-dict types) are silently ignored.
+
+#### OpenRouter `trace` field reference
+
+OpenRouter recognizes the following special keys in the `trace` object. These map to OpenTelemetry (OTLP) span attributes in the Broadcast payload:
+
+| Key | OTLP Mapping | Description |
+| --- | --- | --- |
+| `trace_id` | `traceId` | Group multiple requests into a single trace. |
+| `trace_name` | Span `name` | Custom name for the root span. |
+| `span_name` | Span `name` | Name for intermediate spans in the hierarchy. |
+| `generation_name` | Span `name` | Name for the LLM generation span. |
+| `parent_span_id` | `parentSpanId` | Link to an existing span in your trace hierarchy. |
+
+Any additional keys are forwarded as custom metadata, appearing in the OTLP payload under the `trace.metadata.*` namespace.
+
+The `user` and `session_id` request fields (configured separately via identifier valves) map to `user.id` and `session.id` in the OTLP span attributes.
+
+#### How to configure in Open WebUI
+
+1. Open the model editor in Open WebUI (Admin → Models → Edit).
+2. Scroll to **Advanced Parameters** → **Custom Parameters**.
+3. Click **Add** and create a key-value pair:
+
+   ```
+   Key:   openrouter_trace
+   Value: {"trace_name": "Customer Support Pipeline", "generation_name": "support-chat"}
+   ```
+
+4. Save the model.
+
+All requests using this model will now include the `trace` field in the OpenRouter payload.
+
+#### Example: Full trace configuration
+
+The following custom parameter value demonstrates all OpenRouter trace fields plus custom metadata:
+
+```json
+{"trace_id": "order_processing_001", "trace_name": "Order Processing Pipeline", "generation_name": "Extract Order Details", "order_id": "ORD-12345", "priority": "high"}
+```
+
+This results in the following OpenRouter request body (other fields omitted):
+
+```json
+{
+  "model": "openai/gpt-4o",
+  "messages": [{"role": "user", "content": "Process this order..."}],
+  "trace": {
+    "trace_id": "order_processing_001",
+    "trace_name": "Order Processing Pipeline",
+    "generation_name": "Extract Order Details",
+    "order_id": "ORD-12345",
+    "priority": "high"
+  }
+}
+```
+
+In the Broadcast payload sent to your observability backend (Datadog, Langfuse, webhook, etc.), the custom metadata keys appear under `trace.metadata.*`:
+
+```json
+{
+  "resourceSpans": [{
+    "scopeSpans": [{
+      "spans": [{
+        "attributes": [
+          {"key": "gen_ai.request.model", "value": {"stringValue": "openai/gpt-4o"}},
+          {"key": "trace.metadata.order_id", "value": {"stringValue": "ORD-12345"}},
+          {"key": "trace.metadata.priority", "value": {"stringValue": "high"}}
+        ]
+      }]
+    }]
+  }]
+}
+```
+
+#### Merging behavior
+
+If a request already contains a `trace` field (for example, from a client-side tool or another transform), the `openrouter_trace` model parameter is **merged** into it. Model-level values take precedence when the same key exists in both:
+
+```
+Existing trace:       {"trace_id": "from_client", "session": "abc123"}
+openrouter_trace:     {"trace_name": "My Pipeline", "trace_id": "from_model"}
+→ Final trace:        {"trace_id": "from_model", "trace_name": "My Pipeline", "session": "abc123"}
+```
+
+#### Direct `trace` passthrough
+
+If you send `trace` directly in the request body (without using the `openrouter_trace` model parameter), it passes through the pipe's allowlist filter unchanged — no special configuration required. The `openrouter_trace` convenience parameter is only needed when you want to configure trace metadata per-model in Open WebUI's model settings.
+
+### 2.5 `disable_native_websearch` → disable OpenRouter web search plugin
 Open WebUI can attach per-model custom parameters (model settings → `custom_params`). This pipe supports a boolean custom parameter to **disable OpenRouter’s built-in web search** for specific models.
 
 - Custom param: `disable_native_websearch` (bool-ish; accepts `true/false`, `1/0`, etc.)
@@ -105,7 +210,7 @@ This is useful when OpenRouter Search is enabled by default (via the model’s D
 Note: Open WebUI’s built-in **Web Search** is separate (OWUI-native) and is not controlled by this parameter.
 See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
 
-### 2.5 `disable_model_metadata_sync` → opt out of all model metadata sync for a model
+### 2.6 `disable_model_metadata_sync` → opt out of all model metadata sync for a model
 This is a per-model “master kill switch” for the pipe’s Open WebUI model metadata sync behavior.
 
 - Custom param: `disable_model_metadata_sync` (bool-ish)
@@ -113,34 +218,34 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
   - Skips all metadata writes for that model, even if sync valves are enabled (`UPDATE_MODEL_*`, `AUTO_ATTACH_*`, `AUTO_DEFAULT_*`).
   - This preserves operator-edited settings (icons, descriptions, capabilities, and integration toggle defaults).
 
-### 2.6 `disable_capability_updates` → preserve capability checkboxes
+### 2.7 `disable_capability_updates` → preserve capability checkboxes
 - Custom param: `disable_capability_updates` (bool-ish)
 - Pipe behavior (when truthy):
   - Leaves `meta.capabilities` as-is for that model (no checkbox overwrites), even when `UPDATE_MODEL_CAPABILITIES=True`.
 
-### 2.7 `disable_image_updates` → preserve the model icon
+### 2.8 `disable_image_updates` → preserve the model icon
 - Custom param: `disable_image_updates` (bool-ish)
 - Pipe behavior (when truthy):
   - Leaves `meta.profile_image_url` as-is for that model, even when `UPDATE_MODEL_IMAGES=True`.
 
-### 2.8 `disable_description_updates` → preserve the model description
+### 2.9 `disable_description_updates` → preserve the model description
 - Custom param: `disable_description_updates` (bool-ish)
 - Pipe behavior (when truthy):
   - Leaves `meta.description` as-is for that model, even when `UPDATE_MODEL_DESCRIPTIONS=True`.
 
-### 2.9 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Search toggle wiring
+### 2.10 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Search toggle wiring
 - Custom param: `disable_openrouter_search_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the OpenRouter Search filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_ORS_FILTER=True`.
   - As a consequence, default-on seeding is also avoided (the pipe will not mark a filter as default unless it is attached).
 
-### 2.10 `disable_openrouter_search_default_on` → preserve default-on behavior
+### 2.11 `disable_openrouter_search_default_on` → preserve default-on behavior
 - Custom param: `disable_openrouter_search_default_on` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not seed OpenRouter Search into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=True`.
   - The OpenRouter Search toggle may still be auto-attached if `AUTO_ATTACH_ORS_FILTER=True` and the model supports it.
 
-### 2.11 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
+### 2.12 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
 - Custom param: `disable_direct_uploads_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.

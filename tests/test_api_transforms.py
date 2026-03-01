@@ -34,6 +34,7 @@ from open_webui_openrouter_pipe.api.transforms import (
     _get_disable_param,
     _sanitize_openrouter_metadata,
     _apply_model_fallback_to_payload,
+    _apply_openrouter_trace_to_payload,
     _apply_disable_native_websearch_to_payload,
     _apply_identifier_valves_to_payload,
     _strip_disable_model_settings_params,
@@ -1601,6 +1602,152 @@ class TestApplyModelFallbackToPayload:
 
 
 # ============================================================================
+# _apply_openrouter_trace_to_payload Tests
+# ============================================================================
+
+
+class TestApplyOpenrouterTraceToPayload:
+    """Tests for _apply_openrouter_trace_to_payload()."""
+
+    def test_non_dict_is_noop(self):
+        """Non-dict input is silently ignored."""
+        _apply_openrouter_trace_to_payload("not a dict")
+        _apply_openrouter_trace_to_payload(None)
+
+    def test_no_trace_key_is_noop(self):
+        """No changes when openrouter_trace is absent."""
+        payload = {"model": "gpt-4", "messages": []}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+        assert "openrouter_trace" not in payload
+
+    def test_dict_trace_applied(self):
+        """Dict value is popped and written as trace."""
+        payload = {
+            "model": "openai/gpt-4o",
+            "openrouter_trace": {
+                "trace_id": "order_processing_001",
+                "trace_name": "Order Processing Pipeline",
+                "generation_name": "Extract Order Details",
+                "order_id": "ORD-12345",
+                "priority": "high",
+            },
+        }
+        _apply_openrouter_trace_to_payload(payload)
+
+        assert "openrouter_trace" not in payload
+        assert payload["trace"] == {
+            "trace_id": "order_processing_001",
+            "trace_name": "Order Processing Pipeline",
+            "generation_name": "Extract Order Details",
+            "order_id": "ORD-12345",
+            "priority": "high",
+        }
+
+    def test_json_string_auto_parsed(self):
+        """JSON string value is parsed into a dict."""
+        payload = {
+            "model": "gpt-4",
+            "openrouter_trace": '{"trace_name": "My Pipeline", "generation_name": "chat"}',
+        }
+        _apply_openrouter_trace_to_payload(payload)
+
+        assert "openrouter_trace" not in payload
+        assert payload["trace"] == {
+            "trace_name": "My Pipeline",
+            "generation_name": "chat",
+        }
+
+    def test_invalid_json_string_ignored(self):
+        """Invalid JSON string is ignored with no trace written."""
+        payload = {"model": "gpt-4", "openrouter_trace": "not valid json"}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+        assert "openrouter_trace" not in payload
+
+    def test_empty_string_ignored(self):
+        """Empty string value is ignored."""
+        payload = {"model": "gpt-4", "openrouter_trace": ""}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_whitespace_only_string_ignored(self):
+        """Whitespace-only string value is ignored."""
+        payload = {"model": "gpt-4", "openrouter_trace": "   "}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_json_array_string_rejected(self):
+        """JSON array string is rejected (must be an object)."""
+        payload = {"model": "gpt-4", "openrouter_trace": '["a", "b"]'}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_empty_dict_ignored(self):
+        """Empty dict value is ignored."""
+        payload = {"model": "gpt-4", "openrouter_trace": {}}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_non_dict_non_string_ignored(self):
+        """Non-dict, non-string value (e.g. int) is ignored."""
+        payload = {"model": "gpt-4", "openrouter_trace": 42}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_merges_with_existing_trace(self):
+        """Model-level trace merges with existing trace (model-level wins)."""
+        payload = {
+            "model": "gpt-4",
+            "trace": {
+                "trace_id": "existing_trace",
+                "session": "abc123",
+            },
+            "openrouter_trace": {
+                "trace_name": "My Pipeline",
+                "trace_id": "override_trace",
+            },
+        }
+        _apply_openrouter_trace_to_payload(payload)
+
+        assert "openrouter_trace" not in payload
+        assert payload["trace"] == {
+            "trace_id": "override_trace",
+            "trace_name": "My Pipeline",
+            "session": "abc123",
+        }
+
+    def test_none_value_is_noop(self):
+        """Explicit None value is treated as absent."""
+        payload = {"model": "gpt-4", "openrouter_trace": None}
+        _apply_openrouter_trace_to_payload(payload)
+        assert "trace" not in payload
+
+    def test_openrouter_trace_fields_passthrough(self):
+        """All OpenRouter documented trace fields are preserved."""
+        payload = {
+            "model": "gpt-4",
+            "openrouter_trace": {
+                "trace_id": "my-trace-001",
+                "trace_name": "Order Processing Pipeline",
+                "span_name": "validate-order",
+                "generation_name": "Extract Order Details",
+                "parent_span_id": "parent-span-abc",
+                "custom_metadata_key": "custom_value",
+            },
+        }
+        _apply_openrouter_trace_to_payload(payload)
+
+        trace = payload["trace"]
+        assert trace["trace_id"] == "my-trace-001"
+        assert trace["trace_name"] == "Order Processing Pipeline"
+        assert trace["span_name"] == "validate-order"
+        assert trace["generation_name"] == "Extract Order Details"
+        assert trace["parent_span_id"] == "parent-span-abc"
+        assert trace["custom_metadata_key"] == "custom_value"
+
+
+# ============================================================================
 # _apply_disable_native_websearch_to_payload Tests
 # ============================================================================
 
@@ -2592,3 +2739,25 @@ def test_filter_openrouter_request_drops_invalid_top_k() -> None:
     payload = {"model": "openai/gpt-5", "input": [], "top_k": "nope"}
     filtered = _filter_openrouter_request(payload)
     assert "top_k" not in filtered
+
+
+def test_filter_openrouter_request_preserves_trace() -> None:
+    """Trace field passes through the Responses API allowlist."""
+    payload = {
+        "model": "openai/gpt-4o",
+        "input": [{"role": "user", "content": "Hi"}],
+        "trace": {"trace_name": "My Pipeline", "generation_name": "chat"},
+    }
+    filtered = _filter_openrouter_request(payload)
+    assert filtered["trace"] == {"trace_name": "My Pipeline", "generation_name": "chat"}
+
+
+def test_filter_openrouter_chat_request_preserves_trace() -> None:
+    """Trace field passes through the Chat Completions API allowlist."""
+    payload = {
+        "model": "openai/gpt-4o",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "trace": {"trace_id": "abc123"},
+    }
+    filtered = _filter_openrouter_chat_request(payload)
+    assert filtered["trace"] == {"trace_id": "abc123"}

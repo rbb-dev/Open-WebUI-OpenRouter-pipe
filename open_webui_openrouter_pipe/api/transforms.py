@@ -420,6 +420,8 @@ ALLOWED_OPENROUTER_FIELDS = {
     "user",
     "session_id",
     "transforms",
+    # OpenRouter observability (Broadcast)
+    "trace",
     # OpenRouter routing extras (same as chat/completions)
     "provider",
     "route",
@@ -463,6 +465,8 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "user",
     "session_id",
     "metadata",
+    # OpenRouter observability (Broadcast)
+    "trace",
     # OpenRouter routing extras (best-effort pass-through).
     "provider",
     "route",
@@ -1219,6 +1223,77 @@ def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging
     if raw_fallback not in (None, "", []):
         logger.debug("Applied model_fallback -> models (%d fallback(s))", len(fallback_models))
 
+
+
+# -----------------------------------------------------------------------------
+# OpenRouter Trace (Broadcast / Observability)
+# -----------------------------------------------------------------------------
+
+def _apply_openrouter_trace_to_payload(
+    payload: dict[str, Any],
+    *,
+    logger: logging.Logger = LOGGER,
+) -> None:
+    """Map OWUI custom ``openrouter_trace`` model param to OpenRouter ``trace``.
+
+    Admins can add an ``openrouter_trace`` key in the model's
+    *Custom Parameters* section (Advanced → Custom Parameters).  The value
+    should be a JSON object, e.g.::
+
+        {"trace_name": "My Pipeline", "generation_name": "chat"}
+
+    Open WebUI's ``apply_model_params_to_body_openai`` auto-parses JSON
+    strings in ``custom_params``, so by the time we receive the payload the
+    value is already a ``dict``.
+
+    This helper **pops** ``openrouter_trace`` and writes it as ``trace``,
+    merging with any pre-existing ``trace`` dict already in the payload.
+    """
+    if not isinstance(payload, dict):
+        return
+
+    trace_data = payload.pop("openrouter_trace", None)
+    if trace_data is None:
+        return
+
+    # If OWUI didn't auto-parse (e.g. the value is still a raw JSON string),
+    # attempt manual parsing as a convenience fallback.
+    if isinstance(trace_data, str):
+        trace_data = trace_data.strip()
+        if not trace_data:
+            return
+        try:
+            import json as _json
+            parsed = _json.loads(trace_data)
+        except (ValueError, TypeError):
+            logger.warning(
+                "openrouter_trace value is not valid JSON — ignored: %.120s",
+                trace_data,
+            )
+            return
+        if not isinstance(parsed, dict):
+            logger.warning(
+                "openrouter_trace must be a JSON object, got %s — ignored",
+                type(parsed).__name__,
+            )
+            return
+        trace_data = parsed
+
+    if not isinstance(trace_data, dict) or not trace_data:
+        return
+
+    # Merge with any existing trace dict (model-level values win on conflict).
+    existing_trace = payload.get("trace")
+    if isinstance(existing_trace, dict):
+        merged = {**existing_trace, **trace_data}
+    else:
+        merged = trace_data
+
+    payload["trace"] = merged
+    logger.debug(
+        "Applied openrouter_trace -> trace (%d key(s))",
+        len(merged),
+    )
 
 
 # -----------------------------------------------------------------------------

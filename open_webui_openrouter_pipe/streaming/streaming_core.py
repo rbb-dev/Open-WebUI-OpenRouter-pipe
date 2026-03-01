@@ -76,6 +76,7 @@ from ..models.registry import (
 from ..api.transforms import (
     _apply_identifier_valves_to_payload,
     _apply_model_fallback_to_payload,
+    _apply_openrouter_trace_to_payload,
     _apply_disable_native_websearch_to_payload,
     _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
@@ -866,6 +867,7 @@ class StreamingHandler:
                     logger=self.logger,
                 )
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
+                _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
                 _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                 _strip_disable_model_settings_params(request_payload)
 
