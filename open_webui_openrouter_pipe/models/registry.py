@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 
 import aiohttp
 
-from ..core.config import _OPENROUTER_TITLE, _OPENROUTER_REFERER
+from ..core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER
 from .blocklists import is_direct_upload_blocklisted
 from ..core.timing_logger import timed
 
@@ -227,7 +227,8 @@ class OpenRouterModelRegistry:
         url = base_url.rstrip("/") + "/models"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "X-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
@@ -588,7 +589,8 @@ class OpenRouterModelRegistry:
         url = base_url.rstrip("/") + "/endpoints/zdr"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "X-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)

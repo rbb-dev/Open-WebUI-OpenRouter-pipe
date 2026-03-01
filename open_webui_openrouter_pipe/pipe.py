@@ -98,6 +98,7 @@ from .core.config import (
     EncryptedStr,
     _PIPE_RUNTIME_ID,
     _OPENROUTER_TITLE,
+    _OPENROUTER_CATEGORIES,
     _OPENROUTER_REFERER,
     _select_openrouter_http_referer,
 )
@@ -2293,7 +2294,8 @@ class Pipe:
         url = base_url.rstrip("/") + "/models?limit=1"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "X-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": _OPENROUTER_REFERER,
         }
         async for attempt in AsyncRetrying(

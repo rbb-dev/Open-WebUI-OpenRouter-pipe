@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
 import aiohttp
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ...core.config import _OPENROUTER_TITLE, _select_openrouter_http_referer
+from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
 from ...core.timing_logger import timed, timing_mark
 from ...requests.debug import (
     _debug_print_error_response,
@@ -120,7 +120,8 @@ class ChatCompletionsAdapter:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-            "X-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
         self._pipe._maybe_apply_anthropic_beta_headers(
@@ -618,7 +619,8 @@ class ChatCompletionsAdapter:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "X-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Title": _OPENROUTER_TITLE,
+            "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
         self._pipe._maybe_apply_anthropic_beta_headers(
