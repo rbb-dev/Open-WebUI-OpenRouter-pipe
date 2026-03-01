@@ -511,6 +511,16 @@ class TestResponsesPayloadToChatCompletionsPayload:
         assert result["messages"][0]["content"] == "Be helpful"
         assert result["messages"][1]["role"] == "user"
 
+    def test_trace_preserved_in_responses_to_chat(self):
+        """trace should survive responses→chat conversion."""
+        payload = {
+            "model": "gpt-4",
+            "input": [{"type": "message", "role": "user", "content": "Hi"}],
+            "trace": {"trace_id": "abc123", "generation_name": "test"},
+        }
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert result["trace"] == {"trace_id": "abc123", "generation_name": "test"}
+
 
 # ============================================================================
 # Tool Conversion Tests
@@ -2761,3 +2771,87 @@ def test_filter_openrouter_chat_request_preserves_trace() -> None:
     }
     filtered = _filter_openrouter_chat_request(payload)
     assert filtered["trace"] == {"trace_id": "abc123"}
+
+
+# ============================================================================
+# Task 4 — Responses allowlist: new OpenRouter Responses-specific fields
+# ============================================================================
+
+
+class TestFilterOpenrouterRequestResponsesExtensions:
+    """Verify all OpenRouter Responses-specific extensions pass through the allowlist."""
+
+    NEW_RESPONSES_FIELDS = {
+        "background": True,
+        "frequency_penalty": 0.5,
+        "image_config": {"quality": "high"},
+        "include": ["usage"],
+        "max_tool_calls": 10,
+        "modalities": ["text"],
+        "presence_penalty": 0.3,
+        "previous_response_id": "resp_abc123",
+        "prompt": "Hello world",
+        "prompt_cache_key": "cache_xyz",
+        "safety_identifier": "safe_001",
+        "service_tier": "auto",
+        "store": False,
+        "top_logprobs": 5,
+    }
+
+    @pytest.mark.parametrize("field,value", list(NEW_RESPONSES_FIELDS.items()))
+    def test_responses_extension_field_passes_through(self, field, value):
+        """Each new Responses-extension field should survive the allowlist filter."""
+        payload = {"model": "openai/gpt-4o", "input": [], field: value}
+        result = _filter_openrouter_request(payload)
+        assert field in result, f"{field!r} was stripped by the allowlist"
+        assert result[field] == value
+
+    def test_all_new_fields_pass_together(self):
+        """All 14 new Responses-extension fields pass through in a single payload."""
+        payload = {"model": "openai/gpt-4o", "input": [], **self.NEW_RESPONSES_FIELDS}
+        result = _filter_openrouter_request(payload)
+        for field, value in self.NEW_RESPONSES_FIELDS.items():
+            assert field in result, f"{field!r} missing after filter"
+            assert result[field] == value
+
+    def test_store_false_preserved(self):
+        """store: false is a privacy signal and must not be stripped."""
+        payload = {"model": "openai/gpt-4o", "input": [], "store": False}
+        result = _filter_openrouter_request(payload)
+        assert result["store"] is False
+
+
+class TestFromCompletionsPreservesStoreAndUser:
+    """Verify store and user survive chat→responses conversion."""
+
+    @pytest.mark.asyncio
+    async def test_store_survives_conversion(self, pipe_instance_async):
+        """store: false should not be dropped during from_completions."""
+        pipe = pipe_instance_async
+        completions = CompletionsBody(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Hi"}],
+            store=False,
+        )
+        result = await ResponsesBody.from_completions(
+            completions, transformer_context=pipe,
+        )
+        # store is an extra field (not explicitly on ResponsesBody),
+        # but from_completions must no longer drop it.
+        dumped = result.model_dump(exclude_none=True)
+        assert "store" in dumped, "store was dropped during from_completions"
+        assert dumped["store"] is False
+
+    @pytest.mark.asyncio
+    async def test_user_survives_conversion(self, pipe_instance_async):
+        """user should not be dropped during from_completions."""
+        pipe = pipe_instance_async
+        completions = CompletionsBody(
+            model="gpt-4",
+            messages=[{"role": "user", "content": "Hi"}],
+            user="user_abc123",
+        )
+        result = await ResponsesBody.from_completions(
+            completions, transformer_context=pipe,
+        )
+        assert result.user == "user_abc123"

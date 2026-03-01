@@ -292,10 +292,6 @@ class ResponsesBody(BaseModel):
 
             # Fields that are dropped and manually handled later in the pipe()
             "extra_tools", # Not a real OpenAI parm. Upstream filters may use it to add tools. The are appended to body["tools"] later in the pipe()
-
-            # Fields not documented in OpenRouter's Responses API reference
-            "store",
-            "user",
         }
         sanitized_params = {}
         for key, value in completions_dict.items():
@@ -422,6 +418,21 @@ ALLOWED_OPENROUTER_FIELDS = {
     "transforms",
     # OpenRouter observability (Broadcast)
     "trace",
+    # OpenRouter Responses-specific extensions
+    "background",
+    "frequency_penalty",
+    "image_config",
+    "include",
+    "max_tool_calls",
+    "modalities",
+    "presence_penalty",
+    "previous_response_id",
+    "prompt",
+    "prompt_cache_key",
+    "safety_identifier",
+    "service_tier",
+    "store",
+    "top_logprobs",
     # OpenRouter routing extras (same as chat/completions)
     "provider",
     "route",
@@ -1037,7 +1048,7 @@ def _responses_payload_to_chat_completions_payload(
     chat_payload: dict[str, Any] = {}
 
     # Core routing and identifiers
-    for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms"):
+    for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms", "trace"):
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 

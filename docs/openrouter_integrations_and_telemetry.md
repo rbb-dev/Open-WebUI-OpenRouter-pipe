@@ -47,10 +47,24 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
 | `trace` | OpenRouter Broadcast observability metadata; a JSON object forwarded as-is to OpenRouter's tracing destinations (Datadog, Langfuse, LangSmith, webhook, etc.). This pipe supports `openrouter_trace` as an OWUI convenience mapping to this field. |
 | `transforms` | OpenRouter transforms list (for example automatic middle-out trimming when enabled). |
+| `background` | Run the request in the background (OpenRouter extension). |
+| `frequency_penalty` | Frequency penalty for sampling (-2 to 2). |
+| `image_config` | Image generation configuration (OpenRouter extension). |
+| `include` | Response include directives (e.g. request usage breakdowns). |
+| `max_tool_calls` | Limit the number of tool call iterations (OpenRouter extension). |
+| `modalities` | Output modalities (e.g. `["text"]`, `["text", "audio"]`). |
+| `presence_penalty` | Presence penalty for sampling (-2 to 2). |
+| `previous_response_id` | Chain a response to a previous response (conversation continuation). |
+| `prompt` | Direct prompt input (alternative to structured `input`). |
+| `prompt_cache_key` | Cache key for prompt caching (OpenRouter extension). |
+| `safety_identifier` | Safety configuration identifier (OpenRouter extension). |
+| `service_tier` | Service tier selection (default: `"auto"`). |
+| `store` | Privacy signal — send `false` to tell the provider not to store your prompt/completion data. OpenRouter only accepts `false` for this field. |
+| `top_logprobs` | Number of top log probabilities to return (0–20). |
 
 Operational note:
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
-- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `top_logprobs`, `preset`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
+- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
 - When a `preset` parameter is present in the request body, the pipe automatically forces `/chat/completions` because presets only work on that endpoint. For presets that work with `/responses`, use the VARIANT_MODELS approach with `@preset/slug` syntax instead. See [Model Variants & Presets](model_variants_and_presets.md#presets).
 
 ### 2.2 Advanced Model Parameters (per-model overrides)
