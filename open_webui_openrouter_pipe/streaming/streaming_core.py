@@ -86,8 +86,6 @@ from ..api.transforms import (
 from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
 from ..core.context_budget import (
     apply_live_tool_output_budget,
-    compute_prompt_limit_tokens,
-    estimate_serialized_tokens,
 )
 
 # Import Open WebUI models
@@ -379,7 +377,6 @@ class StreamingHandler:
         emitted_tool_call_items: set[str] = set()
         emitted_tool_output_items: set[str] = set()
         emitted_response_output_items = False
-        synthesis_guard_notified = False
         incomplete_warning_emitted = False
         tool_loops_executed = False
         assistant_len_before_tool_loops = 0
@@ -872,30 +869,6 @@ class StreamingHandler:
                 _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
                 _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                 _strip_disable_model_settings_params(request_payload)
-
-                if loop_index > 0 and not owui_tool_passthrough:
-                    prompt_limit_tokens = compute_prompt_limit_tokens(model_for_cache)
-                    estimated_prompt_tokens = estimate_serialized_tokens(request_payload)
-                    if prompt_limit_tokens > 0 and estimated_prompt_tokens >= int(prompt_limit_tokens * 0.9):
-                        stripped_fields: list[str] = []
-                        for key in ("tools", "tool_choice", "plugins"):
-                            if key in request_payload:
-                                request_payload.pop(key, None)
-                                stripped_fields.append(key)
-                        if stripped_fields:
-                            self.logger.warning(
-                                "Context saturation guard triggered (%d/%d tokens): stripped %s for synthesis mode.",
-                                estimated_prompt_tokens,
-                                prompt_limit_tokens,
-                                ",".join(stripped_fields),
-                            )
-                            if not synthesis_guard_notified:
-                                synthesis_guard_notified = True
-                                await self._pipe._event_emitter_handler._emit_notification(
-                                    event_emitter,
-                                    "Context is near capacity; paused additional tool calls so the model can synthesize a final answer.",
-                                    level="warning",
-                                )
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                 is_streaming = bool(request_payload.get("stream"))

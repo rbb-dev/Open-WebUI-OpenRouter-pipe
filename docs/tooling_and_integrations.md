@@ -122,8 +122,8 @@ In long tool loops, the request can become context-saturated (large replayed art
 The pipe now applies **adaptive, model-aware budgeting** instead of fixed output caps:
 
 - It derives prompt limits from model metadata (`max_prompt_tokens`, then `context_length`/`max_completion_tokens`, with safe fallbacks).
-- It estimates request/input size and omits oversized `function_call_output` payloads by replacing them with a short model-visible stub that explains what happened.
-- At critical saturation (about 90% prompt budget on continuation turns), it strips `tools`, `tool_choice`, and `plugins` for that request to force synthesis instead of opening more tool branches.
+- It estimates request/input size and omits oversized `function_call_output` payloads by replacing them with a short model-visible stub that advises the model to retry with a narrower query.
+- The model retains full tool access throughout the conversation and can recover from oversized results by retrying with tighter parameters.
 
 This keeps the loop alive, informs the model in-band, and lets the model decide whether to summarize, stop tools, or ask for narrower tool queries.
 
@@ -131,7 +131,6 @@ This keeps the loop alive, informs the model in-band, and lets the model decide 
 
 - Some tool outputs may be replaced by an omission stub when they would likely exceed remaining context budget.
 - Failed or omitted tool outputs are still provided to the model for continuity, but they are **not** persisted and **not** shown as tool cards.
-- Users may see a warning toast when the pipe switches into synthesis mode due to high context saturation.
 - If tool loops complete without any assistant content growth and no actionable continuation remains, the pipe emits a fallback assistant message instead of staying silent.
 
 ### Operator guidance

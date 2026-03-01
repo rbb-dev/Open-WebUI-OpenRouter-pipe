@@ -3629,8 +3629,8 @@ class TestAdaptiveToolBudgeting:
     """Tests for dynamic tool budgeting and synthesis safeguards."""
 
     @pytest.mark.asyncio
-    async def test_critical_threshold_strips_tools_choice_and_plugins(self, monkeypatch, pipe_instance_async):
-        """When continuation payload nears budget saturation, force synthesis mode."""
+    async def test_tools_preserved_on_continuation_turns(self, monkeypatch, pipe_instance_async):
+        """Tool definitions remain available on all continuation turns."""
         pipe = pipe_instance_async
         body = ResponsesBody.model_validate(
             {
@@ -3691,10 +3691,6 @@ class TestAdaptiveToolBudgeting:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.streaming.streaming_core.compute_prompt_limit_tokens",
-            lambda _model_id: 100,
-        )
 
         emitted: list[dict] = []
 
@@ -3713,11 +3709,8 @@ class TestAdaptiveToolBudgeting:
 
         assert len(captured_requests) >= 2
         second_request = captured_requests[1]
-        assert "tools" not in second_request
-        assert "tool_choice" not in second_request
-        assert "plugins" not in second_request
-        notifications = [e for e in emitted if e.get("type") == "notification"]
-        assert any("near capacity" in str(e).lower() for e in notifications)
+        assert "tools" in second_request
+        assert "tool_choice" in second_request
 
     @pytest.mark.asyncio
     async def test_failed_tool_outputs_are_model_visible_not_persisted_or_carded(self, monkeypatch, pipe_instance_async):
