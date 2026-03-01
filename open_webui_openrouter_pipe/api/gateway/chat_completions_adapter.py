@@ -231,30 +231,25 @@ class ChatCompletionsAdapter:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._circuit_breaker.record_failure(breaker_key)
-                        special_statuses = {400, 401, 402, 403, 404, 408, 429}
-                        if resp.status in special_statuses:
-                            extra_meta: dict[str, Any] = {}
-                            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                            if retry_after:
-                                extra_meta["retry_after"] = retry_after
-                                extra_meta["retry_after_seconds"] = retry_after
-                            rate_scope = (
-                                resp.headers.get("X-RateLimit-Scope")
-                                or resp.headers.get("x-ratelimit-scope")
-                            )
-                            if rate_scope:
-                                extra_meta["rate_limit_type"] = rate_scope
-                            reason_text = resp.reason or "HTTP error"
-                            raise _build_openrouter_api_error(
-                                resp.status,
-                                reason_text,
-                                error_body,
-                                requested_model=chat_payload.get("model"),
-                                extra_metadata=extra_meta or None,
-                            )
-                        raise RuntimeError(f"OpenRouter request failed ({resp.status}): {resp.reason}")
-
-                    resp.raise_for_status()
+                        extra_meta: dict[str, Any] = {}
+                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                        if retry_after:
+                            extra_meta["retry_after"] = retry_after
+                            extra_meta["retry_after_seconds"] = retry_after
+                        rate_scope = (
+                            resp.headers.get("X-RateLimit-Scope")
+                            or resp.headers.get("x-ratelimit-scope")
+                        )
+                        if rate_scope:
+                            extra_meta["rate_limit_type"] = rate_scope
+                        reason_text = resp.reason or "HTTP error"
+                        raise _build_openrouter_api_error(
+                            resp.status,
+                            reason_text,
+                            error_body,
+                            requested_model=chat_payload.get("model"),
+                            extra_metadata=extra_meta or None,
+                        )
 
                     buf = bytearray()
                     event_data_parts: list[bytes] = []
@@ -652,29 +647,25 @@ class ChatCompletionsAdapter:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)
                         if breaker_key:
                             self._pipe._circuit_breaker.record_failure(breaker_key)
-                        special_statuses = {400, 401, 402, 403, 404, 408, 429}
-                        if resp.status in special_statuses:
-                            extra_meta: dict[str, Any] = {}
-                            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                            if retry_after:
-                                extra_meta["retry_after"] = retry_after
-                                extra_meta["retry_after_seconds"] = retry_after
-                            rate_scope = (
-                                resp.headers.get("X-RateLimit-Scope")
-                                or resp.headers.get("x-ratelimit-scope")
-                            )
-                            if rate_scope:
-                                extra_meta["rate_limit_type"] = rate_scope
-                            reason_text = resp.reason or "HTTP error"
-                            raise _build_openrouter_api_error(
-                                resp.status,
-                                reason_text,
-                                error_body,
-                                requested_model=chat_payload.get("model"),
-                                extra_metadata=extra_meta or None,
-                            )
-                        raise RuntimeError(f"OpenRouter request failed ({resp.status}): {resp.reason}")
-                    resp.raise_for_status()
+                        extra_meta: dict[str, Any] = {}
+                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+                        if retry_after:
+                            extra_meta["retry_after"] = retry_after
+                            extra_meta["retry_after_seconds"] = retry_after
+                        rate_scope = (
+                            resp.headers.get("X-RateLimit-Scope")
+                            or resp.headers.get("x-ratelimit-scope")
+                        )
+                        if rate_scope:
+                            extra_meta["rate_limit_type"] = rate_scope
+                        reason_text = resp.reason or "HTTP error"
+                        raise _build_openrouter_api_error(
+                            resp.status,
+                            reason_text,
+                            error_body,
+                            requested_model=chat_payload.get("model"),
+                            extra_metadata=extra_meta or None,
+                        )
                     try:
                         data = await resp.json()
                     except Exception:

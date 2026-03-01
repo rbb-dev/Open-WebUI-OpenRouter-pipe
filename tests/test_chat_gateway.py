@@ -432,7 +432,9 @@ async def test_chat_completions_streaming_error_with_retry_after(pipe_instance_a
 
 @pytest.mark.asyncio
 async def test_chat_completions_streaming_error_500(pipe_instance_async):
-    """Test error handling for 500 status (not in special_statuses)."""
+    """Test error handling for 500 status — now raises OpenRouterAPIError."""
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -444,7 +446,7 @@ async def test_chat_completions_streaming_error_500(pipe_instance_async):
             status=500,
         )
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(OpenRouterAPIError) as exc_info:
             events = []
             async for event in pipe.send_openai_chat_completions_streaming_request(
                 session,
@@ -457,7 +459,7 @@ async def test_chat_completions_streaming_error_500(pipe_instance_async):
 
         await session.close()
 
-    assert "500" in str(exc_info.value)
+    assert exc_info.value.status == 500
 
 
 @pytest.mark.asyncio
@@ -883,7 +885,9 @@ async def test_chat_completions_nonstreaming_error_with_retry_after(pipe_instanc
 
 @pytest.mark.asyncio
 async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
-    """Test non-streaming 500 error handling."""
+    """Test non-streaming 500 error handling — now raises OpenRouterAPIError."""
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -895,7 +899,7 @@ async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
             status=500,
         )
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(OpenRouterAPIError) as exc_info:
             await pipe.send_openai_chat_completions_nonstreaming_request(
                 session,
                 {"model": "openai/gpt-4o", "input": []},
@@ -906,7 +910,7 @@ async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
 
         await session.close()
 
-    assert "500" in str(exc_info.value)
+    assert exc_info.value.status == 500
 
 
 @pytest.mark.asyncio

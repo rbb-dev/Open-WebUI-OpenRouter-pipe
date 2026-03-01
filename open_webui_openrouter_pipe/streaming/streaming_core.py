@@ -2243,7 +2243,22 @@ class StreamingHandler:
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
             session_log_reason = str(e)
-            await self._pipe._ensure_error_formatter()._emit_error(event_emitter, f"Error: {str(e)}", show_error_message=True, show_error_log_citation=True, done=True)
+            # Detect server errors (e.g. aiohttp.ClientResponseError with 5xx status)
+            exc_status = getattr(e, "status", None)
+            if isinstance(exc_status, int) and exc_status >= 500:
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    event_emitter,
+                    template=self._pipe.valves.SERVICE_ERROR_TEMPLATE,
+                    variables={"status_code": exc_status, "reason": str(e)},
+                    log_message=f"Server error in streaming loop: {e}",
+                )
+            else:
+                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    event_emitter,
+                    template=self._pipe.valves.INTERNAL_ERROR_TEMPLATE,
+                    variables={"error_type": type(e).__name__},
+                    log_message=f"Unexpected error in streaming loop: {e}",
+                )
 
         finally:
             cancel_thinking()

@@ -119,8 +119,12 @@ class ErrorFormatter:
             return self.valves.INSUFFICIENT_CREDITS_TEMPLATE
         if status == 408:
             return self.valves.SERVER_TIMEOUT_TEMPLATE
+        if status == 413:
+            return self.valves.PAYLOAD_TOO_LARGE_TEMPLATE
         if status == 429:
             return self.valves.RATE_LIMIT_TEMPLATE
+        if status is not None and status >= 500:
+            return self.valves.SERVICE_ERROR_TEMPLATE
         return self.valves.OPENROUTER_ERROR_TEMPLATE
 
     # ======================================================================

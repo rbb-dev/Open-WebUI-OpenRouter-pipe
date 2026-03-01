@@ -396,6 +396,7 @@ def _build_error_template_values(
         "rate_limit_type": error.metadata.get("rate_limit_type") or "",
         "required_cost": error.metadata.get("required_cost") or "",
         "account_balance": error.metadata.get("account_balance") or "",
+        "status_code": error.status or "",
         "diagnostics": "\n".join(diagnostics),
     }
     return replacements

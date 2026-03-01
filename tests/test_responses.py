@@ -435,10 +435,12 @@ async def test_responses_streaming_error_408_timeout(pipe_instance_async):
 
 @pytest.mark.asyncio
 async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
-    """Test generic 4xx error (lines 146-149).
+    """Test generic 4xx error — all 4xx now raise OpenRouterAPIError.
 
-    Uses 405 (Method Not Allowed) since 404 is now in special_statuses.
+    Uses 405 (Method Not Allowed) as a representative non-special 4xx code.
     """
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -453,10 +455,10 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
             payload=error_response,
-            status=405,  # Not in special_statuses (404 is now special)
+            status=405,
         )
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(OpenRouterAPIError) as exc_info:
             async for _ in pipe.send_openai_responses_streaming_request(
                 session,
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
@@ -468,7 +470,7 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
 
         await session.close()
 
-    assert "405" in str(exc_info.value)
+    assert exc_info.value.status == 405
 
 
 # ============================================================================
@@ -960,10 +962,12 @@ async def test_responses_nonstreaming_error_429_with_headers(pipe_instance_async
 
 @pytest.mark.asyncio
 async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
-    """Test non-streaming generic 4xx error (lines 478-480).
+    """Test non-streaming generic 4xx error — all 4xx now raise OpenRouterAPIError.
 
-    Uses 405 (Method Not Allowed) since 404 is now in special_statuses.
+    Uses 405 (Method Not Allowed) as a representative non-special 4xx code.
     """
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -978,10 +982,10 @@ async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
             payload=error_response,
-            status=405,  # Not in special_statuses (404 is now special)
+            status=405,
         )
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(OpenRouterAPIError) as exc_info:
             await pipe.send_openai_responses_nonstreaming_request(
                 session,
                 {"model": "openai/gpt-4o", "input": []},
@@ -992,7 +996,7 @@ async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
 
         await session.close()
 
-    assert "405" in str(exc_info.value)
+    assert exc_info.value.status == 405
 
 
 @pytest.mark.asyncio

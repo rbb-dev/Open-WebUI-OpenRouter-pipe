@@ -414,6 +414,31 @@ DEFAULT_SERVER_TIMEOUT_TEMPLATE = (
     "{{/if}}\n"
 )
 
+DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE = (
+    "### 📦 Request Too Large\n\n"
+    "The request payload exceeds the size limit accepted by OpenRouter.\n\n"
+    "**Error ID:** `{error_id}`\n"
+    "{{#if openrouter_code}}\n"
+    "**Status:** {openrouter_code}\n"
+    "{{/if}}\n"
+    "{{#if openrouter_message}}\n"
+    "**Details:** {openrouter_message}\n"
+    "{{/if}}\n"
+    "{{#if model_identifier}}\n"
+    "**Model:** `{model_identifier}`\n"
+    "{{/if}}\n"
+    "{{#if timestamp}}\n"
+    "**Time:** {timestamp}\n"
+    "{{/if}}\n\n"
+    "**What to do:**\n"
+    "- Shorten your prompt or reduce the conversation history\n"
+    "- Remove or compress large attachments\n"
+    "- Try a model with a larger context window\n"
+    "{{#if support_email}}\n"
+    "\n**Support:** {support_email}\n"
+    "{{/if}}\n"
+)
+
 DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE = (
     "### 🧰 Tool step limit reached\n\n"
     "This chat needed more tool rounds than allowed, so it stopped early to prevent infinite loops.\n\n"
@@ -1209,6 +1234,14 @@ class Valves(BaseModel):
         description=(
             "Markdown template for HTTP 408 errors returned by OpenRouter (server-side timeout). Supports the common context variables plus "
             "{openrouter_message}, {openrouter_code}, and support contact placeholders."
+        ),
+    )
+
+    PAYLOAD_TOO_LARGE_TEMPLATE: str = Field(
+        default=DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE,
+        description=(
+            "Markdown template for HTTP 413 errors when the request payload exceeds size limits. Supports {error_id}, {timestamp}, {openrouter_code}, "
+            "{openrouter_message}, {model_identifier}, {support_email}, and other shared context variables."
         ),
     )
 

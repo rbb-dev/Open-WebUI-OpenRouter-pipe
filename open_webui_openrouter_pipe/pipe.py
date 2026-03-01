@@ -1771,43 +1771,40 @@ class Pipe:
                 )
                 return ""
 
-            handled_statuses = {400, 401, 402, 403, 408, 429}
-            if status_code in handled_statuses:
-                body_text = None
-                if e.response is not None:
-                    try:
-                        raw_bytes = await e.response.aread()
-                        body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
-                    except Exception:
-                        body_text = None
-                extra_meta: dict[str, Any] = {}
-                if e.response is not None:
-                    retry_after = e.response.headers.get("Retry-After") or e.response.headers.get("retry-after")
-                    if retry_after:
-                        extra_meta["retry_after"] = retry_after
-                        extra_meta["retry_after_seconds"] = retry_after
-                    rate_scope = (
-                        e.response.headers.get("X-RateLimit-Scope")
-                        or e.response.headers.get("x-ratelimit-scope")
-                    )
-                    if rate_scope:
-                        extra_meta["rate_limit_type"] = rate_scope
-                error = _build_openrouter_api_error(
-                    status=status_code,
-                    reason=reason_phrase or "HTTP error",
-                    body_text=body_text,
-                    requested_model=body.get("model"),
-                    extra_metadata=extra_meta or None,
+            # All 4xx — build rich error with auto-selected template
+            body_text = None
+            if e.response is not None:
+                try:
+                    raw_bytes = await e.response.aread()
+                    body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
+                except Exception:
+                    body_text = None
+            extra_meta: dict[str, Any] = {}
+            if e.response is not None:
+                retry_after = e.response.headers.get("Retry-After") or e.response.headers.get("retry-after")
+                if retry_after:
+                    extra_meta["retry_after"] = retry_after
+                    extra_meta["retry_after_seconds"] = retry_after
+                rate_scope = (
+                    e.response.headers.get("X-RateLimit-Scope")
+                    or e.response.headers.get("x-ratelimit-scope")
                 )
-                await self._ensure_error_formatter()._report_openrouter_error(
-                    error,
-                    event_emitter=__event_emitter__,
-                    normalized_model_id=body.get("model"),
-                    api_model_id=None,
-                )
-                return ""
-
-            raise
+                if rate_scope:
+                    extra_meta["rate_limit_type"] = rate_scope
+            error = _build_openrouter_api_error(
+                status=status_code or 0,
+                reason=reason_phrase or "HTTP error",
+                body_text=body_text,
+                requested_model=body.get("model"),
+                extra_metadata=extra_meta or None,
+            )
+            await self._ensure_error_formatter()._report_openrouter_error(
+                error,
+                event_emitter=__event_emitter__,
+                normalized_model_id=body.get("model"),
+                api_model_id=None,
+            )
+            return ""
 
         # Generic catch-all
         except Exception as e:
