@@ -83,7 +83,7 @@ from ..api.transforms import (
 )
 
 # Import config classes
-from ..core.config import EncryptedStr, DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
+from ..core.config import EncryptedStr, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
 from ..core.context_budget import (
     apply_live_tool_output_budget,
 )
@@ -840,7 +840,13 @@ class StreamingHandler:
         was_cancelled = False
         loop_limit_reached = False
         try:
-            for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS):
+            for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
+                # The +1 iteration is reserved exclusively for the synthesis
+                # turn after stub injection.  If we reach it without having
+                # injected stubs, exit the loop normally.
+                if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:
+                    break
+
                 final_response: dict[str, Any] | None = None
                 _sanitize_request_input(self._pipe, body)
                 api_model_override = getattr(body, "api_model", None)
@@ -1860,16 +1866,12 @@ class StreamingHandler:
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
                         tool_loops_executed = True
-                        try:
-                            function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
-                                call_items,
-                                tool_registry,
-                            )
-                        except Exception as exc:
-                            self.logger.warning(
-                                "Tool execution failed; continuing loop with model-visible error outputs: %s",
-                                exc,
-                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+
+                        if loop_limit_reached:
+                            limit = valves.MAX_FUNCTION_CALL_LOOPS
+                            self.logger.info(
+                                "Tool-call loop limit reached (%d/%d); injecting stubs for %d pending call(s).",
+                                limit, limit, len(call_items),
                             )
                             function_outputs = []
                             for call in call_items:
@@ -1878,11 +1880,37 @@ class StreamingHandler:
                                     {
                                         "type": "function_call_output",
                                         "call_id": call_id,
-                                        "output": f"Tool execution failed before completion: {exc}",
-                                        "status": "failed",
-                                        "_pipe_failed": True,
+                                        "output": (
+                                            f"TOOL_CALL_SKIPPED: tool-call loop limit reached ({limit}/{limit}); "
+                                            "call not executed, so no output is available. "
+                                            "Respond to the user using existing context (no further tool calls)."
+                                        ),
                                     }
                                 )
+                        else:
+                            try:
+                                function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
+                                    call_items,
+                                    tool_registry,
+                                )
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Tool execution failed; continuing loop with model-visible error outputs: %s",
+                                    exc,
+                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                )
+                                function_outputs = []
+                                for call in call_items:
+                                    call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
+                                    function_outputs.append(
+                                        {
+                                            "type": "function_call_output",
+                                            "call_id": call_id,
+                                            "output": f"Tool execution failed before completion: {exc}",
+                                            "status": "failed",
+                                            "_pipe_failed": True,
+                                        }
+                                    )
 
                         await _emit_reasoning_timing_boundary(loop_index)
 
@@ -2148,7 +2176,6 @@ class StreamingHandler:
 
             if (
                 tool_loops_executed
-                and not loop_limit_reached
                 and len(assistant_message) <= assistant_len_before_tool_loops
                 and not has_actionable_continuation
             ):
@@ -2170,35 +2197,6 @@ class StreamingHandler:
                             "data": {"content": delta},
                         }
                     )
-
-            if loop_limit_reached:
-                limit_value = valves.MAX_FUNCTION_CALL_LOOPS
-                await self._pipe._event_emitter_handler._emit_notification(
-                    event_emitter,
-                    f"Tool step limit reached (MAX_FUNCTION_CALL_LOOPS={limit_value}). "
-                    "Increase the limit or simplify the request to continue.",
-                    level="warning",
-                )
-                try:
-                    notice = _render_error_template(
-                        valves.MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
-                        {"max_function_call_loops": str(limit_value)},
-                    )
-                except Exception:
-                    notice = _render_error_template(
-                        DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
-                        {"max_function_call_loops": str(limit_value)},
-                    )
-                if notice:
-                    delta = f"\n\n{notice}" if assistant_message else notice
-                    assistant_message = f"{assistant_message}{delta}" if assistant_message else notice
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "chat:message:delta",
-                                "data": {"content": delta},
-                            }
-                        )
 
         # Catch any exceptions during the streaming loop and emit an error
         except asyncio.CancelledError:

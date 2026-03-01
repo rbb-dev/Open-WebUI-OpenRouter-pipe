@@ -138,4 +138,4 @@ Operator tools you can use immediately:
 | Users see DB/persistence warnings | Database unavailable or migrations missing. | Check DB connectivity; breakers heal automatically once writes succeed. |
 | Redis queue never drains | Flush lock stuck or DB writes failing. | Inspect logs for DB errors; restart one worker to release locks; consider disabling Redis until resolved. |
 | Attachments ignored | Selected model lacks the capability, or size/count valves were exceeded. | Pick a capable model or adjust relevant multimodal valves. |
-| Tool loops stop early | `MAX_FUNCTION_CALL_LOOPS` reached. | Reduce tool loop requirements or raise the valve with caution. |
+| Tool loops stop early | `MAX_FUNCTION_CALL_LOOPS` reached (Pipeline mode only). The model receives stub responses for pending calls and gets a synthesis turn. | Raise the valve if the model needs more rounds, or simplify the request. |

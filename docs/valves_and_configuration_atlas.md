@@ -92,7 +92,7 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 | `TOOL_EXECUTION_MODE` | `Literal["Pipeline","Open-WebUI"]` | `Pipeline` | Select the tool execution backend. `Pipeline` executes tool calls inside the pipe (batching/breakers/special backends). `Open-WebUI` bypasses the internal executor and returns tool calls to Open WebUI to execute; tool result persistence in the pipe is disabled in this mode. |
 | `SHOW_TOOL_CARDS` | `bool` | `False` | Show collapsible cards in chat with tool name, arguments, and results. When disabled (default), tools run silently without visual status indicators. Only applies when `TOOL_EXECUTION_MODE="Pipeline"`. |
 | `ENABLE_STRICT_TOOL_CALLING` | `bool` | `True` | When True, converts Open WebUI registry tools to strict JSON Schema for more predictable function calling. Applies only when `TOOL_EXECUTION_MODE="Pipeline"` (pass-through forwards schemas as-is). |
-| `MAX_FUNCTION_CALL_LOOPS` | `int` | `25` | Maximum number of full “model → tools → model” execution cycles allowed per request. |
+| `MAX_FUNCTION_CALL_LOOPS` | `int` | `25` | Maximum number of full “model → tools → model” execution cycles allowed per request. Applies only when `TOOL_EXECUTION_MODE=”Pipeline”`. When the limit is reached, pending tool calls receive stub responses so the model can synthesize a final answer. |
 | `MAX_PARALLEL_TOOLS_GLOBAL` | `int` | `200` | Maximum number of tool executions allowed concurrently per process. |
 | `MAX_PARALLEL_TOOLS_PER_REQUEST` | `int` | `5` | Maximum number of tool executions allowed concurrently per request. |
 | `BREAKER_MAX_FAILURES` | `int` | `5` | Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. Set higher to reduce trip frequency in noisy environments. |
@@ -108,7 +108,7 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 
 Behavior note (no valve):
 - Pipeline mode applies dynamic, model-aware tool output budgeting. Oversized live/replayed `function_call_output` payloads can be replaced with omission stubs so the model stays in-context.
-- On continuation turns, when estimated prompt usage is near saturation (~90% of prompt budget), the pipe strips `tools`, `tool_choice`, and `plugins` for that request to force synthesis.
+- When `MAX_FUNCTION_CALL_LOOPS` is reached, pending tool calls receive stub responses advising the model to synthesize from existing context, and the model gets one additional generation turn.
 - Failed/omitted tool outputs remain model-visible for continuation, but are not persisted and not rendered as tool cards.
 
 ### Persistence, encryption, and compression
@@ -296,7 +296,6 @@ Notes:
 | `CONNECTION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for connection failures. |
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
 | `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
-| `MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the request reaches `MAX_FUNCTION_CALL_LOOPS` while the model is still requesting additional tool/function calls. |
 | `MODEL_RESTRICTED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the requested model is blocked by `MODEL_ID` and/or model filter valves. |
 
 **Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).

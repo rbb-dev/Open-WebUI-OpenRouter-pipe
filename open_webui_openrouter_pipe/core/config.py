@@ -439,17 +439,6 @@ DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE = (
     "{{/if}}\n"
 )
 
-DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE = (
-    "### 🧰 Tool step limit reached\n\n"
-    "This chat needed more tool rounds than allowed, so it stopped early to prevent infinite loops.\n\n"
-    "{{#if max_function_call_loops}}\n"
-    "**Current limit:** `{max_function_call_loops}`\n"
-    "{{/if}}\n\n"
-    "**What you can do:**\n"
-    "- Increase the *Max Function Call Loops* valve (e.g. 25-50) and retry\n"
-    "- Simplify the request or reduce tool chaining\n"
-)
-
 DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
     "### 🚫 Model restricted\n\n"
     "This pipe rejected the requested model due to configuration restrictions.\n\n"
@@ -985,11 +974,13 @@ class Valves(BaseModel):
     MAX_FUNCTION_CALL_LOOPS: int = Field(
         default=25,
         description=(
-            "Maximum number of full execution cycles (loops) allowed per request. "
-            "Each loop involves the model generating one or more function/tool calls, "
-            "executing all requested functions, and feeding the results back into the model. "
-            "Looping stops when this limit is reached or when the model no longer requests "
-            "additional tool or function calls."
+            "Maximum number of full execution cycles (loops) allowed per request when "
+            "TOOL_EXECUTION_MODE is 'Pipeline'. Each loop involves the model generating "
+            "one or more function/tool calls, executing all requested functions, and feeding "
+            "the results back into the model. When the limit is reached, pending tool calls "
+            "receive stub responses so the model can synthesize a final answer. "
+            "Has no effect when TOOL_EXECUTION_MODE is 'Open-WebUI' (loop control is managed "
+            "by Open WebUI in that mode)."
         )
     )
 
@@ -1303,13 +1294,6 @@ class Valves(BaseModel):
         )
     )
 
-    MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE: str = Field(
-        default=DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE,
-        description=(
-            "Markdown template emitted when a request reaches MAX_FUNCTION_CALL_LOOPS while the model is still "
-            "requesting additional tool/function calls. Available variables: {max_function_call_loops}."
-        ),
-    )
     MODEL_RESTRICTED_TEMPLATE: str = Field(
         default=DEFAULT_MODEL_RESTRICTED_TEMPLATE,
         description=(

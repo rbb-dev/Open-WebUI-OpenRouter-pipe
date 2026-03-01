@@ -22,7 +22,7 @@ The pipe runs the tool loop itself:
 
 - Provider returns `function_call` items.
 - The pipe executes those tools (Open WebUI registry tools + Direct Tool Servers where available).
-- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools (or `MAX_FUNCTION_CALL_LOOPS` is reached).
+- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools or `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn).
 
 **You gain:**
 - Pipe-level concurrency controls, batching, retries/timeouts, and breaker protections around tool execution.
@@ -97,13 +97,13 @@ Tool execution happens in the request loop that follows each Responses API call:
 4. The pipe executes the tools and converts each result into `function_call_output` items.
 5. The `function_call` items (normalized) and their outputs are appended to the next request’s `input[]`, and the loop continues until either:
    - no more `function_call` items are returned, or
-   - `MAX_FUNCTION_CALL_LOOPS` is reached.
+   - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn to synthesize a final answer.
 
 Notes:
 
 - If a tool name is missing or not present in the tool registry, the pipe returns a structured `function_call_output` indicating the failure.
 - The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.
-- When `MAX_FUNCTION_CALL_LOOPS` is reached while the model is still requesting more tool rounds, the pipe emits a user-facing warning (toast + markdown message) explaining that the response stopped early and suggesting increasing the limit.
+- `MAX_FUNCTION_CALL_LOOPS` only applies when `TOOL_EXECUTION_MODE=”Pipeline”`. In Open-WebUI mode, loop control is managed by Open WebUI.
 
 ---
 

@@ -63,7 +63,7 @@ At a high level, a request follows this shape:
 
 4. **Tool-call loop (between Responses calls)**
    - When a Responses run completes, the pipe inspects the returned `output` items.
-   - `function_call` items are executed locally against the Open WebUI tool registry, converted into `function_call_output` items, appended to the next request’s `input[]`, and the loop continues until no further tool calls are produced or `MAX_FUNCTION_CALL_LOOPS` is reached.
+   - `function_call` items are executed locally against the Open WebUI tool registry, converted into `function_call_output` items, appended to the next request’s `input[]`, and the loop continues until no further tool calls are produced or `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn). Applies only when `TOOL_EXECUTION_MODE="Pipeline"`.
 
 5. **Persistence (optional)**
    - Depending on valves, artifacts (reasoning/tool outputs) are persisted to SQL storage (optionally encrypted and/or compressed) and may be cached in Redis in multi-worker configurations.

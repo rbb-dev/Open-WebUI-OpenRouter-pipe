@@ -3255,7 +3255,7 @@ class TestLoopLimitAndFunctionExecution:
 
     @pytest.mark.asyncio
     async def test_loop_limit_reached(self, monkeypatch, pipe_instance_async):
-        """Test behavior when MAX_FUNCTION_CALL_LOOPS limit is reached."""
+        """Stub responses are injected and the model gets a synthesis turn."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={
@@ -3270,29 +3270,47 @@ class TestLoopLimitAndFunctionExecution:
             "get_weather": {"callable": mock_tool, "spec": {"name": "get_weather"}},
         }
 
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
+        call_count = [0]
+        captured_requests: list[dict] = []
 
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        # First call: model requests a tool. Second call (synthesis): model responds with text.
+        async def fake_stream(self, session, request_body, **_kwargs):
+            captured_requests.append(request_body)
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "get_weather",
+                                "arguments": '{"city":"NYC"}',
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            else:
+                # Synthesis turn: yield delta events (the handler accumulates
+                # assistant_message from delta events, not completed output).
+                yield {"type": "response.output_text.delta", "delta": "Based on what I gathered, here is the answer."}
+                yield {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                }
 
-        async def mock_execute(calls, registry):
-            return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", fake_stream)
 
-        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        execute_called = [False]
+        original_execute = pipe._ensure_tool_executor()._execute_function_calls
+
+        async def spy_execute(calls, registry):
+            execute_called[0] = True
+            return await original_execute(calls, registry)
+
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", spy_execute)
 
         emitted: list[dict] = []
         async def emitter(event):
@@ -3308,8 +3326,17 @@ class TestLoopLimitAndFunctionExecution:
             user_id="user-123",
         )
 
-        notifications = [e for e in emitted if e.get("type") == "notification"]
-        assert any("limit" in str(e).lower() for e in notifications) or "limit" in result.lower() or "MAX_FUNCTION_CALL_LOOPS" in result
+        # Tools should NOT have been executed (stubs injected instead)
+        assert not execute_called[0], "Tools should not be executed when loop limit is reached"
+        # Model got a second API call (synthesis turn)
+        assert call_count[0] == 2, f"Expected 2 API calls (tool + synthesis), got {call_count[0]}"
+        # Stub should be in the second request's input
+        second_input = captured_requests[1].get("input", [])
+        stub_outputs = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
+        assert stub_outputs, "Expected stub function_call_output in synthesis request"
+        assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
+        # Result should contain model's synthesis, not an error template
+        assert "Based on what I gathered" in result
 
     @pytest.mark.asyncio
     async def test_function_execution_with_persist_tools(self, monkeypatch, pipe_instance_async):
@@ -3415,9 +3442,14 @@ class TestLoopLimitAndFunctionExecution:
             "MAX_FUNCTION_CALL_LOOPS": 2,
         })
 
-        events_by_call = [
-            [
-                {
+        captured_requests: list[dict[str, Any]] = []
+        call_count = [0]
+
+        async def streaming(self, session, request_body, **_kwargs):
+            captured_requests.append(dict(request_body))
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
@@ -3429,25 +3461,12 @@ class TestLoopLimitAndFunctionExecution:
                         ],
                         "usage": {},
                     },
-                },
-            ],
-            [
-                {
+                }
+            else:
+                yield {
                     "type": "response.completed",
                     "response": {"output": [], "usage": {}},
-                },
-            ],
-        ]
-
-        captured_requests: list[dict[str, Any]] = []
-        call_index = 0
-
-        async def streaming(self, session, request_body, **_kwargs):
-            nonlocal call_index
-            captured_requests.append(dict(request_body))
-            for event in events_by_call[call_index]:
-                yield event
-            call_index += 1
+                }
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
 
@@ -3482,9 +3501,14 @@ class TestLoopLimitAndFunctionExecution:
             "MAX_FUNCTION_CALL_LOOPS": 2,
         })
 
-        events_by_call = [
-            [
-                {
+        captured_requests: list[dict[str, Any]] = []
+        call_count = [0]
+
+        async def streaming(self, session, request_body, **_kwargs):
+            captured_requests.append(dict(request_body))
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
@@ -3502,25 +3526,12 @@ class TestLoopLimitAndFunctionExecution:
                         ],
                         "usage": {},
                     },
-                },
-            ],
-            [
-                {
+                }
+            else:
+                yield {
                     "type": "response.completed",
                     "response": {"output": [], "usage": {}},
-                },
-            ],
-        ]
-
-        captured_requests: list[dict[str, Any]] = []
-        call_index = 0
-
-        async def streaming(self, session, request_body, **_kwargs):
-            nonlocal call_index
-            captured_requests.append(dict(request_body))
-            for event in events_by_call[call_index]:
-                yield event
-            call_index += 1
+                }
 
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-good", "output": "sunny"}]
@@ -3558,9 +3569,14 @@ class TestLoopLimitAndFunctionExecution:
             "MAX_FUNCTION_CALL_LOOPS": 2,
         })
 
-        events_by_call = [
-            [
-                {
+        captured_requests: list[dict[str, Any]] = []
+        call_count = [0]
+
+        async def streaming(self, session, request_body, **_kwargs):
+            captured_requests.append(dict(request_body))
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
@@ -3572,19 +3588,12 @@ class TestLoopLimitAndFunctionExecution:
                         ],
                         "usage": {},
                     },
-                },
-            ],
-        ]
-
-        captured_requests: list[dict[str, Any]] = []
-        call_index = 0
-
-        async def streaming(self, session, request_body, **_kwargs):
-            nonlocal call_index
-            captured_requests.append(dict(request_body))
-            for event in events_by_call[call_index]:
-                yield event
-            call_index += 1
+                }
+            else:
+                yield {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                }
 
         captured_calls: list[list[dict[str, Any]]] = []
 
@@ -5247,12 +5256,8 @@ def test_anthropic_interleaved_thinking_header_applied(pipe_instance):
 
 
 @pytest.mark.asyncio
-async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance_async):
-    """Test function call loop limit warning.
-
-    FIX: Removed inappropriate mock on _execute_function_calls.
-    Now exercises real tool execution path with proper tool callable.
-    """
+async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance_async):
+    """When MAX_FUNCTION_CALL_LOOPS is reached, stubs are injected and model gets a synthesis turn."""
     pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test-loops",
@@ -5261,84 +5266,76 @@ async def test_function_call_loop_limit_emits_warning(monkeypatch, pipe_instance
     )
     valves = pipe.valves.model_copy(update={"MAX_FUNCTION_CALL_LOOPS": 1})
 
-    # Set real model capabilities using ModelFamily.set_dynamic_specs
     ModelFamily.set_dynamic_specs({
         "openrouter.test-loops": {
             "features": {"function_calling": True}
         }
     })
 
-    events = [
-        {
-            "type": "response.completed",
-            "response": {
-                "output": [
-                    {
-                        "type": "function_call",
-                        "id": "call-1",
-                        "call_id": "call-1",
-                        "name": "lookup",
-                        "arguments": "{}",
-                    },
-                ],
-                "usage": {},
-            },
-        },
-    ]
+    call_count = [0]
+    captured_requests: list[dict] = []
 
     async def fake_stream(self, session, request_body, **_kwargs):
-        assert request_body["model"] == body.model
-        for event in events:
-            yield event
+        captured_requests.append(request_body)
+        call_count[0] += 1
+        if call_count[0] == 1:
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "call-1",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": "{}",
+                        },
+                    ],
+                    "usage": {},
+                },
+            }
+        else:
+            # Synthesis turn: yield delta events (handler builds assistant_message from deltas).
+            yield {"type": "response.output_text.delta", "delta": "Synthesized answer."}
+            yield {
+                "type": "response.completed",
+                "response": {"output": [], "usage": {}},
+            }
 
-    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", fake_stream)
 
-    # Provide a real tool callable instead of mocking _execute_function_calls
-    async def mock_lookup_tool(**kwargs):
-        return "ok"
+    execute_called = [False]
+
+    async def spy_execute(calls, registry):
+        execute_called[0] = True
+        return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
+
+    monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", spy_execute)
 
     emitted: list[dict] = []
 
     async def emitter(event):
         emitted.append(event)
 
-    # Set up tool execution context with worker (required since legacy fallback removed)
-    loop = asyncio.get_running_loop()
-    context = _ToolExecutionContext(
-        queue=asyncio.Queue(),
-        per_request_semaphore=asyncio.Semaphore(1),
-        global_semaphore=None,
-        timeout=5.0,
-        batch_timeout=None,
-        idle_timeout=None,
+    result = await pipe._streaming_handler._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": lambda **kw: "ok"}},
+        session=cast(Any, object()),
         user_id="user-123",
-        event_emitter=emitter,
-        batch_cap=4,
     )
-    executor = pipe._ensure_tool_executor()
-    worker = asyncio.create_task(executor._tool_worker_loop(context))
-    context.workers.append(worker)
-    token = pipe._TOOL_CONTEXT.set(context)
-    try:
-        await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "sandbox"}},
-            tools={"lookup": {"type": "function", "spec": {"name": "lookup"}, "callable": mock_lookup_tool}},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-    finally:
-        await context.queue.put(None)
-        await worker
-        pipe._TOOL_CONTEXT.reset(token)
 
-    notifications = [e for e in emitted if e.get("type") == "notification"]
-    assert notifications, "Expected a notification when MAX_FUNCTION_CALL_LOOPS is reached"
-    assert "MAX_FUNCTION_CALL_LOOPS" in notifications[-1]["data"]["content"]
-    chat_deltas = [e for e in emitted if e.get("type") == "chat:message:delta"]
-    assert any("Tool step limit reached" in (m.get("data", {}).get("content") or "") for m in chat_deltas)
+    # Tools should NOT have been executed
+    assert not execute_called[0], "Tools should not be executed when loop limit is reached"
+    # Model got a synthesis turn
+    assert call_count[0] == 2, f"Expected 2 API calls, got {call_count[0]}"
+    # Stub present in synthesis request
+    second_input = captured_requests[1].get("input", [])
+    stub_outputs = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
+    assert stub_outputs, "Expected stub function_call_output in synthesis request"
+    assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
 
 
 # ===== From integration/test_streaming_queue_integration.py =====
@@ -6451,65 +6448,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert isinstance(result, dict)
-
-    @pytest.mark.asyncio
-    async def test_loop_limit_error_template_fallback(self, monkeypatch, pipe_instance_async):
-        """Test loop limit reached with error template fallback (lines 1577-1578)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={
-            "TOOL_EXECUTION_MODE": "Pipeline",
-            "MAX_FUNCTION_CALL_LOOPS": 1,
-            "MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE": "{invalid_template}",  # Bad template
-        })
-
-        async def mock_tool(**kwargs):
-            return '{"result": "ok"}'
-
-        tool_registry = {
-            "test_tool": {"callable": mock_tool, "spec": {"name": "test_tool"}},
-        }
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "test_tool",
-                            "arguments": "{}",
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_execute(calls, registry):
-            return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
-
-        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools=tool_registry,
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        # Should use default template when custom template fails
-        assert "limit" in result.lower() or "max" in result.lower() or any("limit" in str(e).lower() for e in emitted)
 
     @pytest.mark.asyncio
     async def test_session_log_cancelled_status(self, monkeypatch, pipe_instance_async):
@@ -8338,70 +8276,6 @@ class TestFunctionCallRawTextConversion:
         assert "test_func()" in caplog.text or result is not None
 
 
-class TestMaxFunctionCallLoopsTemplateException:
-    """Test for MAX_FUNCTION_CALL_LOOPS template exception (lines 1577-1578)."""
-
-    @pytest.mark.asyncio
-    async def test_max_function_call_loops_with_custom_template(self, monkeypatch, pipe_instance_async):
-        """Test max function call loops message is emitted with template rendering."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        # Use a valid template that includes the placeholder
-        valves = pipe.valves.model_copy(update={
-            "TOOL_EXECUTION_MODE": "Pipeline",
-            "MAX_FUNCTION_CALL_LOOPS": 1,
-            "MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE": "Max loops {{max_function_call_loops}} reached!",
-        })
-
-        async def mock_tool(**kwargs):
-            return json.dumps({"result": "tool_output"})
-
-        tool_registry = {
-            "get_weather": {"callable": mock_tool, "spec": {"name": "get_weather"}},
-        }
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_execute(calls, registry):
-            return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
-
-        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools=tool_registry,
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        # The result should contain the rendered template message
-        assert "Max loops 1 reached!" in result or "loop" in result.lower() or result
-
-
 class TestSessionLogSegmentPersistException:
     """Test for session log segment persist exception (lines 1711-1712)."""
 
@@ -9620,94 +9494,6 @@ class TestPersistToolsNormalizationNone:
         # Should log warning about normalization returning None
         has_warning = any("Normalization returned None" in record.message for record in caplog.records)
         assert has_warning or result is not None
-
-
-class TestLoopLimitTemplateException:
-    """Tests for exception rendering loop limit template (lines 1577-1578).
-
-    Note: This test exercises the exception handler path at lines 1577-1578.
-    The handler catches exceptions from _render_error_template and tries to
-    use a default template. The test verifies the code path is exercised.
-    """
-
-    @pytest.mark.asyncio
-    async def test_loop_limit_template_exception_exercises_handler(self, monkeypatch, pipe_instance_async):
-        """Test loop limit exception handler is exercised (lines 1577-1578)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={
-            "TOOL_EXECUTION_MODE": "Pipeline",
-            "MAX_FUNCTION_CALL_LOOPS": 1,
-        })
-
-        async def mock_tool(**kwargs):
-            return json.dumps({"result": "tool_output"})
-
-        tool_registry = {
-            "get_weather": {"callable": mock_tool, "spec": {"name": "get_weather"}},
-        }
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_execute(calls, registry):
-            return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
-
-        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
-
-        # Make _render_error_template raise an exception on first call to exercise
-        # the exception handler at lines 1577-1578
-        from open_webui_openrouter_pipe.core import utils
-        from open_webui_openrouter_pipe.core.config import DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE
-        original_render = utils._render_error_template
-        call_count = [0]
-        def failing_render(template, values):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise ValueError("Simulated template rendering error")
-            # Return original for the fallback call
-            return original_render(DEFAULT_MAX_FUNCTION_CALL_LOOPS_REACHED_TEMPLATE, values)
-
-        monkeypatch.setattr(
-            "open_webui_openrouter_pipe.streaming.streaming_core._render_error_template",
-            failing_render
-        )
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        # The test should complete without raising, exercising the exception handler
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools=tool_registry,
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
-
-        # Verify the exception handler was exercised (call_count > 1 means fallback was called)
-        assert call_count[0] >= 1  # At least first call happened
-        # Result should contain the limit notice from fallback
-        assert "limit" in result.lower() or result is not None
 
 
 class TestSessionLogSegmentStatus:
