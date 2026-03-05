@@ -67,6 +67,7 @@ class _ToolExecutionContext:
     metadata: dict[str, Any] | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
+    on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
 
 
 class ToolExecutor:
@@ -223,52 +224,47 @@ class ToolExecutor:
         outputs: list[dict[str, Any]] = []
         enqueued_any = False
         breaker_only_skips = True
+        _on_complete = context.on_complete
+
+        async def _append_and_notify(call: dict, result: dict) -> None:
+            outputs.append(result)
+            if _on_complete:
+                with contextlib.suppress(Exception):
+                    await _on_complete(call, result)
 
         for call in calls:
             raw_name = call.get("name")
             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
             if not tool_name:
                 breaker_only_skips = False
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        "Tool call missing name",
-                        status="failed",
-                    )
-                )
+                await _append_and_notify(call, self._build_tool_output(
+                    call, "Tool call missing name", status="failed",
+                ))
                 continue
             tool_cfg = tools.get(tool_name)
             if not tool_cfg:
                 breaker_only_skips = False
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        "Tool not found",
-                        status="failed",
-                    )
-                )
+                await _append_and_notify(call, self._build_tool_output(
+                    call, "Tool not found", status="failed",
+                ))
                 continue
             tool_type = (tool_cfg.get("type") or "function").lower()
             if not self._pipe._circuit_breaker.tool_allows(context.user_id, tool_type):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        f"Tool '{call.get('name')}' skipped due to repeated failures.",
-                        status="skipped",
-                    )
-                )
+                await _append_and_notify(call, self._build_tool_output(
+                    call,
+                    f"Tool '{call.get('name')}' skipped due to repeated failures.",
+                    status="skipped",
+                ))
                 continue
             fn = tool_cfg.get("callable")
             if fn is None:
                 breaker_only_skips = False
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        f"Tool '{call.get('name')}' has no callable configured.",
-                        status="failed",
-                    )
-                )
+                await _append_and_notify(call, self._build_tool_output(
+                    call,
+                    f"Tool '{call.get('name')}' has no callable configured.",
+                    status="failed",
+                ))
                 continue
             try:
                 raw_args_value = call.get("arguments")
@@ -291,13 +287,9 @@ class ToolExecutor:
                 args = self._parse_tool_arguments(raw_args_value)
             except Exception as exc:
                 breaker_only_skips = False
-                outputs.append(
-                    self._build_tool_output(
-                        call,
-                        f"Invalid arguments: {exc}",
-                        status="failed",
-                    )
-                )
+                await _append_and_notify(call, self._build_tool_output(
+                    call, f"Invalid arguments: {exc}", status="failed",
+                ))
                 continue
 
             future: asyncio.Future = loop.create_future()
@@ -360,6 +352,9 @@ class ToolExecutor:
                     f"Tool error: {exc}",
                     status="failed",
                 )
+            if _on_complete:
+                with contextlib.suppress(Exception):
+                    await _on_complete(call, result)
             outputs.append(result)
 
         return outputs

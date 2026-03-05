@@ -3722,8 +3722,8 @@ class TestAdaptiveToolBudgeting:
         assert "tool_choice" in second_request
 
     @pytest.mark.asyncio
-    async def test_failed_tool_outputs_are_model_visible_not_persisted_or_carded(self, monkeypatch, pipe_instance_async):
-        """Tool execution exceptions should not crash and should stay model-only."""
+    async def test_failed_tool_outputs_are_model_visible_not_persisted_but_carded(self, monkeypatch, pipe_instance_async):
+        """Tool execution exceptions show cards (OWUI compat) and are model-visible but not persisted."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(
@@ -3810,11 +3810,18 @@ class TestAdaptiveToolBudgeting:
         assert error_outputs, "Expected model-visible tool failure output"
         assert not persisted_rows
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
-        assert not output_items
+        fc_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call"]
+        fco_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call_output"]
+        assert fc_items, "Expected in-progress function_call card"
+        assert fc_items[0]["item"]["status"] == "in_progress"
+        assert fco_items, "Expected completed function_call_output card with error text"
+        assert fco_items[0]["item"]["status"] == "completed"
+        fco_text = fco_items[0]["item"]["output"][0]["text"]
+        assert "failed before completion" in fco_text
 
     @pytest.mark.asyncio
-    async def test_omitted_tool_outputs_are_not_persisted_or_carded(self, monkeypatch, pipe_instance_async):
-        """Budget-omitted tool outputs should remain model-visible only."""
+    async def test_omitted_tool_outputs_are_not_persisted_but_carded(self, monkeypatch, pipe_instance_async):
+        """Budget-omitted tool outputs show cards (OWUI compat) but are not persisted."""
         from open_webui_openrouter_pipe.models.registry import ModelFamily
 
         pipe = pipe_instance_async
@@ -3922,7 +3929,11 @@ class TestAdaptiveToolBudgeting:
         assert omitted_outputs, "Expected omitted tool output stub to be model-visible"
         assert not persisted_rows
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
-        assert not output_items
+        fc_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call"]
+        fco_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call_output"]
+        assert fc_items, "Expected in-progress function_call card"
+        assert fco_items, "Expected completed function_call_output card"
+        assert fco_items[0]["item"]["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_pipeline_tool_reasoning_timing_boundary_emitted(self, monkeypatch, pipe_instance_async):
@@ -4019,8 +4030,8 @@ class TestAdaptiveToolBudgeting:
         assert "tool_execute_done" in order
         assert "timing_boundary" in order
         assert "output_item_added" in order
-        assert order.index("tool_execute_done") < order.index("timing_boundary")
         assert order.index("timing_boundary") < order.index("output_item_added")
+        assert order.index("timing_boundary") < order.index("tool_execute_done")
 
     @pytest.mark.asyncio
     async def test_pipeline_tool_reasoning_timing_boundary_not_emitted_without_reasoning(self, monkeypatch, pipe_instance_async):

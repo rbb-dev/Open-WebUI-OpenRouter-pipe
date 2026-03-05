@@ -361,12 +361,22 @@ class StreamingHandler:
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS and (not owui_tool_passthrough)
+        # In OWUI passthrough mode, each tool iteration is a separate pipe call.
+        # Detect continuation calls (input already has function_call_output items)
+        # to suppress redundant status emissions (thinking bubbles, cost stats).
+        is_continuation = False
+        if owui_tool_passthrough and isinstance(body.input, list):
+            is_continuation = any(
+                isinstance(item, dict) and item.get("type") == "function_call_output"
+                for item in body.input
+            )
         self.logger.debug(
-            "🔧 TOOL_EXECUTION_MODE=%s owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s",
+            "🔧 TOOL_EXECUTION_MODE=%s owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s is_continuation=%s",
             valves.TOOL_EXECUTION_MODE,
             owui_tool_passthrough,
             valves.PERSIST_TOOL_RESULTS,
             persist_tools_enabled,
+            is_continuation,
         )
         self.logger.debug("Streaming config: direct pass-through (no server batching)")
         streamed_tool_call_ids: set[str] = set()
@@ -723,7 +733,7 @@ class StreamingHandler:
 
         thinking_tasks: list[asyncio.Task] = []
         thinking_cancelled = False
-        if event_emitter:
+        if event_emitter and not is_continuation:
             async def _later(delay: float, msg: str) -> None:
                 """Emit a delayed status update to reassure the user during long thoughts."""
                 try:
@@ -1628,9 +1638,12 @@ class StreamingHandler:
                         1 for i in final_response["output"] if i["type"] == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
+                    # Pass content=None on tool-only turns (assistant_message=="")
+                    # to avoid overwriting displayed reasoning/tool cards in OWUI.
+                    intermediate_content = assistant_message if assistant_message else None
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
-                        content=assistant_message,
+                        content=intermediate_content,
                         usage=total_usage,
                         done=False,
                     )
@@ -1693,7 +1706,6 @@ class StreamingHandler:
                             "call_id": call_id,
                             "output": reason,
                             "status": "completed",
-                            "_pipe_failed": True,
                         }
                         normalized_output = normalize_persisted_item(output_item)
                         if normalized_output:
@@ -1888,6 +1900,71 @@ class StreamingHandler:
                                     }
                                 )
                         else:
+                            if show_tool_cards and event_emitter and body.stream:
+                                await _emit_reasoning_timing_boundary(loop_index)
+                                try:
+                                    for call in call_items:
+                                        call_id = _extract_call_id(call)
+                                        if not call_id:
+                                            continue
+                                        tool_name = (call.get("name") or "").strip()
+                                        raw_args = call.get("arguments") or "{}"
+                                        if not tool_name:
+                                            continue
+                                        args_text = (
+                                            raw_args.strip()
+                                            if isinstance(raw_args, str)
+                                            else json.dumps(raw_args, ensure_ascii=False)
+                                        )
+                                        if call_id not in emitted_tool_call_items:
+                                            emitted_tool_call_items.add(call_id)
+                                            emitted_response_output_items = True
+                                            await event_emitter(
+                                                {
+                                                    "type": "response.output_item.added",
+                                                    "item": {
+                                                        "type": "function_call",
+                                                        "id": call_id,
+                                                        "call_id": call_id,
+                                                        "name": tool_name,
+                                                        "arguments": args_text,
+                                                        "status": "in_progress",
+                                                    },
+                                                }
+                                            )
+                                except Exception as exc:
+                                    self.logger.warning("Failed to emit in-progress tool cards: %s", exc)
+
+                            # Set up per-tool completion callback for incremental card emission.
+                            _tool_ctx = self._pipe._TOOL_CONTEXT.get()
+                            if show_tool_cards and event_emitter and body.stream and _tool_ctx:
+                                async def _on_tool_complete(call: dict, result: dict) -> None:
+                                    cid = _extract_call_id(call) or _extract_call_id(result)
+                                    if not cid or cid in emitted_tool_output_items:
+                                        return
+                                    emitted_tool_output_items.add(cid)
+                                    nonlocal emitted_response_output_items
+                                    emitted_response_output_items = True
+                                    result_str = result.get("output") or ""
+                                    if not isinstance(result_str, str):
+                                        result_str = str(result_str)
+                                    output_item: dict[str, Any] = {
+                                        "type": "function_call_output",
+                                        "id": f"fco-{uuid.uuid4().hex}",
+                                        "call_id": cid,
+                                        "output": [{"type": "input_text", "text": result_str}],
+                                        "status": "completed",
+                                    }
+                                    tool_files = result.get("files") or []
+                                    tool_embeds = result.get("embeds") or []
+                                    if tool_files:
+                                        output_item["files"] = tool_files
+                                    if tool_embeds:
+                                        output_item["embeds"] = tool_embeds
+                                    await event_emitter({"type": "response.output_item.added", "item": output_item})
+
+                                _tool_ctx.on_complete = _on_tool_complete
+
                             try:
                                 function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
                                     call_items,
@@ -1907,12 +1984,14 @@ class StreamingHandler:
                                             "type": "function_call_output",
                                             "call_id": call_id,
                                             "output": f"Tool execution failed before completion: {exc}",
-                                            "status": "failed",
-                                            "_pipe_failed": True,
                                         }
                                     )
+                            finally:
+                                if _tool_ctx and _tool_ctx.on_complete is not None:
+                                    _tool_ctx.on_complete = None
 
-                        await _emit_reasoning_timing_boundary(loop_index)
+                        if loop_limit_reached or not show_tool_cards or not event_emitter or not body.stream:
+                            await _emit_reasoning_timing_boundary(loop_index)
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
                         omitted_call_ids = apply_live_tool_output_budget(
@@ -1921,52 +2000,29 @@ class StreamingHandler:
                             model_id=model_for_cache,
                             logger=self.logger,
                         )
-                        failed_call_ids: set[str] = set()
+
+                        # Build call_id-keyed dicts for reliable downstream lookups
+                        # (replaces fragile positional zip/index matching).
+                        call_by_id: dict[str, dict] = {}
+                        for call in call_items:
+                            cid = _extract_call_id(call)
+                            if cid:
+                                call_by_id[cid] = call
+                        output_by_call_id: dict[str, dict] = {}
                         for output in all_function_outputs:
-                            call_id = _extract_call_id(output)
-                            if not call_id:
-                                continue
-                            status = output.get("status") if isinstance(output, dict) else None
-                            if output.get("_pipe_failed") or (isinstance(status, str) and status not in {"completed"}):
-                                failed_call_ids.add(call_id)
-                        suppressed_call_ids = omitted_call_ids | failed_call_ids
+                            cid = _extract_call_id(output)
+                            if cid:
+                                output_by_call_id[cid] = output
 
-                        # Emit tool cards only for successful, non-omitted outputs.
-                        if show_tool_cards and event_emitter and body.stream and call_items and function_outputs:
+                        # Fallback card emission for any outputs not already emitted
+                        # incrementally by the on_complete callback (e.g. exception/limit paths).
+                        if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
-                                for call, output in zip(call_items, function_outputs):
-                                    call_id = _extract_call_id(call) or _extract_call_id(output)
-                                    if not call_id or call_id in suppressed_call_ids:
+                                for cid, output in output_by_call_id.items():
+                                    if cid in emitted_tool_output_items:
                                         continue
-                                    tool_name = (call.get("name") or "").strip()
-                                    raw_args = call.get("arguments") or "{}"
-                                    if not tool_name:
-                                        continue
-                                    args_text = (
-                                        raw_args.strip()
-                                        if isinstance(raw_args, str)
-                                        else json.dumps(raw_args, ensure_ascii=False)
-                                    )
-                                    if call_id not in emitted_tool_call_items:
-                                        emitted_tool_call_items.add(call_id)
-                                        emitted_response_output_items = True
-                                        await event_emitter(
-                                            {
-                                                "type": "response.output_item.added",
-                                                "item": {
-                                                    "type": "function_call",
-                                                    "id": call_id,
-                                                    "call_id": call_id,
-                                                    "name": tool_name,
-                                                    "arguments": args_text,
-                                                    "status": "in_progress",
-                                                },
-                                            }
-                                        )
-
-                                    if call_id in emitted_tool_output_items:
-                                        continue
-                                    emitted_tool_output_items.add(call_id)
+                                    emitted_tool_output_items.add(cid)
+                                    emitted_response_output_items = True
                                     result_str = output.get("output") or ""
                                     if not isinstance(result_str, str):
                                         result_str = str(result_str)
@@ -1975,7 +2031,7 @@ class StreamingHandler:
                                     output_item = {
                                         "type": "function_call_output",
                                         "id": f"fco-{uuid.uuid4().hex}",
-                                        "call_id": call_id,
+                                        "call_id": cid,
                                         "output": [{"type": "input_text", "text": result_str}],
                                         "status": "completed",
                                     }
@@ -1983,19 +2039,20 @@ class StreamingHandler:
                                         output_item["files"] = tool_files
                                     if tool_embeds:
                                         output_item["embeds"] = tool_embeds
-                                    emitted_response_output_items = True
                                     await event_emitter(
                                         {"type": "response.output_item.added", "item": output_item}
                                     )
                             except Exception as exc:
-                                self.logger.debug("Failed to emit completed tool cards: %s", exc)
+                                self.logger.warning("Failed to emit completed tool cards: %s", exc)
 
                         # Extract citations from successful tool results.
                         collected_sources: list[dict[str, Any]] = []
                         if get_citation_source_from_tool_result is not None:
-                            for call, output in zip(call_items, function_outputs):
-                                call_id = _extract_call_id(call) or _extract_call_id(output)
-                                if not call_id or call_id in suppressed_call_ids:
+                            for cid, output in output_by_call_id.items():
+                                if cid in omitted_call_ids:
+                                    continue
+                                call = call_by_id.get(cid)
+                                if not call:
                                     continue
                                 tool_name = (call.get("name") or "").strip()
                                 if output.get("status") != "completed":
@@ -2007,7 +2064,7 @@ class StreamingHandler:
                                         tool_name=tool_name,
                                         tool_params=tool_params if isinstance(tool_params, dict) else {},
                                         tool_result=tool_result,
-                                        tool_id=call_id,
+                                        tool_id=cid,
                                     )
                                     for source in citations:
                                         collected_sources.append(source)
@@ -2083,12 +2140,13 @@ class StreamingHandler:
 
                         if persist_tools_enabled:
                             persist_payloads: list[dict] = []
-                            for idx, output in enumerate(function_outputs):
-                                call_id = _extract_call_id(output)
-                                if call_id and call_id in suppressed_call_ids:
+                            for output in all_function_outputs:
+                                cid = _extract_call_id(output)
+                                if cid and cid in omitted_call_ids:
                                     continue
-                                if idx < len(call_items):
-                                    persist_payloads.append(call_items[idx])
+                                call = call_by_id.get(cid) if cid else None
+                                if call:
+                                    persist_payloads.append(call)
                                 persist_payloads.append(output)
 
                             if persist_payloads:
@@ -2259,6 +2317,24 @@ class StreamingHandler:
                 reasoning_completed_emitted = True
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
+
+            # Compute terminal early — needed for both status emission and
+            # completion signalling.  In passthrough mode, intermediate
+            # iterations (tool turns) are non-terminal.
+            has_function_calls = False
+            if owui_tool_passthrough and final_response and isinstance(final_response.get("output"), list):
+                with contextlib.suppress(Exception):
+                    has_function_calls = any(
+                        isinstance(item, dict) and item.get("type") == "function_call"
+                        for item in final_response.get("output", [])
+                    )
+            terminal = bool(
+                was_cancelled
+                or error_occurred
+                or (not owui_tool_passthrough)
+                or (owui_tool_passthrough and (not has_function_calls))
+            )
+
             if (not error_occurred) and (not was_cancelled):
                 await self._cleanup_replayed_reasoning(body, valves)
             if (not error_occurred) and (not was_cancelled) and event_emitter:
@@ -2270,24 +2346,28 @@ class StreamingHandler:
                     duration = max(0.0, last_generation_stamp - effective_start)
                     if duration > 0:
                         stream_window = duration
-                description = self._pipe._ensure_error_formatter()._format_final_status_description(
-                    elapsed=elapsed,
-                    total_usage=total_usage,
-                    valves=valves,
-                    stream_duration=stream_window,
-                )
-                try:
-                    await event_emitter(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": description,
-                                "done": True,
-                            },
-                        }
+                # Only emit the final cost/stats status on terminal iterations.
+                # In passthrough mode, intermediate iterations would spam the
+                # status area with per-iteration stats — only show the last one.
+                if terminal:
+                    description = self._pipe._ensure_error_formatter()._format_final_status_description(
+                        elapsed=elapsed,
+                        total_usage=total_usage,
+                        valves=valves,
+                        stream_duration=stream_window,
                     )
-                except Exception as exc:
-                    self.logger.error("Failed to emit final status in finally: %s", exc)
+                    try:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": description,
+                                    "done": True,
+                                },
+                            }
+                        )
+                    except Exception as exc:
+                        self.logger.error("Failed to emit final status in finally: %s", exc)
 
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
@@ -2299,19 +2379,6 @@ class StreamingHandler:
                 resolved_session_id = str(metadata.get("session_id") or "")
                 resolved_chat_id = str(metadata.get("chat_id") or "")
                 resolved_message_id = str(metadata.get("message_id") or "")
-                has_function_calls = False
-                if owui_tool_passthrough and final_response and isinstance(final_response.get("output"), list):
-                    with contextlib.suppress(Exception):
-                        has_function_calls = any(
-                            isinstance(item, dict) and item.get("type") == "function_call"
-                            for item in final_response.get("output", [])
-                        )
-                terminal = bool(
-                    was_cancelled
-                    or error_occurred
-                    or (not owui_tool_passthrough)
-                    or (owui_tool_passthrough and (not has_function_calls))
-                )
                 segment_status = "complete"
                 if was_cancelled:
                     segment_status = "cancelled"
@@ -2350,13 +2417,24 @@ class StreamingHandler:
             if (not error_occurred) and (not was_cancelled):
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
-                final_content = None if emitted_response_output_items else assistant_message
-                await self._pipe._event_emitter_handler._emit_completion(
-                    event_emitter,
-                    content=final_content,
-                    usage=total_usage,
-                    done=True,
-                )
+                if terminal:
+                    final_content = None if emitted_response_output_items else assistant_message
+                    await self._pipe._event_emitter_handler._emit_completion(
+                        event_emitter,
+                        content=final_content,
+                        usage=total_usage,
+                        done=True,
+                    )
+                else:
+                    # Non-terminal iteration (passthrough tool turn): forward usage
+                    # only, no content replacement and no done=True that would
+                    # cause the frontend to finalize the chat prematurely.
+                    await self._pipe._event_emitter_handler._emit_completion(
+                        event_emitter,
+                        content=None,
+                        usage=total_usage,
+                        done=False,
+                    )
 
             # Clear logs
             if request_id:
