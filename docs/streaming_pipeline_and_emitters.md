@@ -102,15 +102,64 @@ This keeps user-facing failures consistent between streaming and non-streaming c
 
 ---
 
-## 6. Server-side delta batching
+## 6. Nagle-inspired adaptive delta coalescing
 
-The SSE pipeline can batch `response.output_text.delta` events (accumulating deltas and yielding combined batches). This reduces UI event volume during bursty model output and helps avoid slow “crawl” symptoms when a model finishes quickly but the UI is still draining tiny deltas.
+### Problem
 
-The batching behavior is controlled by two valves:
-- `STREAMING_DELTA_CHAR_LIMIT`: character threshold for flushing a combined delta.
-- `STREAMING_IDLE_FLUSH_MS`: idle timeout (ms) for flushing buffered deltas.
+During heavy reasoning turns, OWUI's `serialize_output()` is called on every event emitted by the pipe. Each call rebuilds the entire HTML output — an O(n*m) cost. When the model streams hundreds of small reasoning deltas per second, OWUI's UI freezes because it cannot keep up with per-delta processing.
 
-**Operator note:** If you observe slow end-of-stream rendering in the UI, increase `STREAMING_DELTA_CHAR_LIMIT` (for example 256–512) and/or `STREAMING_IDLE_FLUSH_MS` (for example 30–80ms). Setting either value to `0` disables that batching mode.
+### Solution: RFC 896 Nagle algorithm adapted for async generators
+
+The pipe uses a Nagle-inspired coalescing strategy (implemented in `streaming/nagle_coalescer.py`) that **self-regulates based on consumer backpressure** — no tuning parameters needed for the core mechanism.
+
+The key insight from RFC 896: *”inhibit the sending of new TCP segments when previously transmitted data remains unacknowledged.”* In our async generator pipeline:
+
+| TCP concept | Async generator equivalent |
+|---|---|
+| Send segment | `yield` event to consumer |
+| ACK received | Consumer calls `__anext__()` — generator resumes |
+| Data in flight | Generator suspended at `yield` |
+| New data arrives | Events arriving in queue from OpenRouter |
+
+**Behavior:** When OWUI is fast, events pass through with minimal latency (near 1:1). When OWUI is slow (processing a previous yield), events accumulate in the queue and are delivered in larger batches — automatically reducing the number of expensive `serialize_output()` calls.
+
+### Multi-buffer architecture
+
+Two independent buffers prevent reasoning floods from blocking text output:
+
+```text
+events  -->  [bounded micro-drain]  -->  process in order
+                                       |
+                    +------------------+------------------+
+                    v                  v                  v
+              text_buffer       reasoning_buffer    yield immediately
+              (output_text)     (reasoning_text,    (non-batchable:
+                                 reasoning)          tool calls,
+                                                     structural, etc.)
+```
+
+Flush triggers:
+- **Type boundary** — text delta while reasoning has content (or vice versa): force flush
+- **Item_id boundary** — reasoning delta with different `item_id`: force flush
+- **Non-batchable event** — flush both buffers, pass event through
+- **Idle timeout** — `STREAMING_IDLE_FLUSH_MS` flushes buffers when producer pauses
+- **End of micro-drain cycle** — flush if buffered chars >= `STREAMING_NAGLE_MIN_FLUSH_CHARS` (drain is bounded to 32 events and only runs while no output has been produced yet)
+- **End of stream** — unconditional final flush
+
+### Coverage: both streaming paths
+
+- **Responses API path** (`responses_adapter.py`): Uses `NagleCoalescer` directly in the existing consumer loop (already has `event_queue` with workers).
+- **Chat Completions API path** (`chat_completions_adapter.py`): Wrapped with `nagle_coalesce_stream()` which creates a lightweight pump task + queue + bounded micro-drain.
+
+### Valves
+
+| Valve | Default | Effect |
+|---|---|---|
+| `STREAMING_DELTA_CHAR_LIMIT` | 256 | **Toggle.** `> 0` enables Nagle coalescing. `0` (with `IDLE_FLUSH_MS=0`) = passthrough mode (1:1 emission). |
+| `STREAMING_IDLE_FLUSH_MS` | 30 | Idle timeout (ms). Ensures buffered content is delivered even when the producer pauses. |
+| `STREAMING_NAGLE_MIN_FLUSH_CHARS` | 3 | Minimum chars before end-of-cycle flush. `3` smooths single-char jitter. `1` = pure Nagle. `5-10` = aggressive event reduction. |
+
+**Operator note:** The default `NAGLE_MIN_FLUSH_CHARS=3` eliminates single-character jitter in low-backpressure phases while keeping latency imperceptible (the 30ms idle timeout guarantees delivery). Set to `1` for pure Nagle, or `5-10` if OWUI still struggles during heavy reasoning.
 
 ---
 
@@ -119,5 +168,7 @@ The batching behavior is controlled by two valves:
 - Increase throughput (at cost of per-request CPU): raise `SSE_WORKERS_PER_REQUEST` (up to the code-enforced cap).
 - Avoid stalls under tool-heavy loads: keep `STREAMING_CHUNK_QUEUE_MAXSIZE=0` and `STREAMING_EVENT_QUEUE_MAXSIZE=0` unless you have a measured reason to bound them.
 - Improve observability: set `STREAMING_EVENT_QUEUE_WARN_SIZE` low enough to signal stress early, but high enough to avoid constant warnings.
+- Reduce UI freeze during heavy reasoning: increase `STREAMING_NAGLE_MIN_FLUSH_CHARS` (2-5 for moderate reduction, 5-10 for aggressive).
+- Disable all coalescing (debugging): set `STREAMING_DELTA_CHAR_LIMIT=0` and `STREAMING_IDLE_FLUSH_MS=0` for passthrough mode.
 
 All related defaults and ranges are listed in [Valves & Configuration Atlas](valves_and_configuration_atlas.md).

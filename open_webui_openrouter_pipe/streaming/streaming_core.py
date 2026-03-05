@@ -900,6 +900,7 @@ class StreamingHandler:
                         breaker_key=user_id or None,
                         delta_char_limit=valves.STREAMING_DELTA_CHAR_LIMIT,
                         idle_flush_ms=valves.STREAMING_IDLE_FLUSH_MS,
+                        nagle_min_chars=valves.STREAMING_NAGLE_MIN_FLUSH_CHARS,
                         chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
                         chunk_queue_warn_size=valves.STREAMING_CHUNK_QUEUE_WARN_SIZE,
                         event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,

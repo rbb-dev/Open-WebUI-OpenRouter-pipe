@@ -15,6 +15,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 
 from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
 from ...core.timing_logger import timed, timing_mark
+from ...streaming.nagle_coalescer import nagle_coalesce_stream
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -697,6 +698,7 @@ class ChatCompletionsAdapter:
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
+        nagle_min_chars: int = 1,
         chunk_queue_maxsize: int = 100,
         chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
@@ -704,6 +706,8 @@ class ChatCompletionsAdapter:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self._pipe.valves
+        idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
+        passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         model_id = (responses_request_body or {}).get("model") or ""
         endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
 
@@ -739,6 +743,7 @@ class ChatCompletionsAdapter:
                 breaker_key=breaker_key,
                 delta_char_limit=delta_char_limit,
                 idle_flush_ms=idle_flush_ms,
+                nagle_min_chars=nagle_min_chars,
                 chunk_queue_maxsize=chunk_queue_maxsize,
                 chunk_queue_warn_size=chunk_queue_warn_size,
                 event_queue_maxsize=event_queue_maxsize,
@@ -767,7 +772,12 @@ class ChatCompletionsAdapter:
                 yield event
 
         if endpoint == "chat_completions":
-            async for event in _run_chat():
+            async for event in nagle_coalesce_stream(
+                _run_chat(),
+                idle_flush_seconds=idle_flush_seconds,
+                passthrough=passthrough_deltas,
+                min_flush_chars=nagle_min_chars,
+            ):
                 yield event
             return
 
@@ -797,7 +807,12 @@ class ChatCompletionsAdapter:
                     getattr(exc, "openrouter_code", None),
                     exc,
                 )
-                async for event in _run_chat():
+                async for event in nagle_coalesce_stream(
+                    _run_chat(),
+                    idle_flush_seconds=idle_flush_seconds,
+                    passthrough=passthrough_deltas,
+                    min_flush_chars=nagle_min_chars,
+                ):
                     yield event
                 return
             raise
