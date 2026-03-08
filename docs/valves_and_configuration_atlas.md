@@ -129,8 +129,9 @@ Behavior note (no valve):
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of parsed stream events buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for buffered stream events. |
-| `STREAMING_DELTA_CHAR_LIMIT` | `int` | `256` | Maximum characters to buffer before emitting a combined `response.output_text.delta` event in the `/responses` stream. `0` disables batching. |
-| `STREAMING_IDLE_FLUSH_MS` | `int` | `30` | Idle flush timeout (ms) for buffered streaming deltas in the `/responses` pipeline. `0` disables time-based flushing. |
+| `STREAMING_DELTA_CHAR_LIMIT` | `int` | `256` | Nagle coalescing toggle. `> 0` enables adaptive backpressure-driven batching for both text and reasoning deltas. `0` (with `IDLE_FLUSH_MS=0`) = passthrough mode (1:1 emission). See [Streaming Pipeline § 6](streaming_pipeline_and_emitters.md#6-nagle-inspired-adaptive-delta-coalescing). |
+| `STREAMING_IDLE_FLUSH_MS` | `int` | `30` | Idle flush timeout (ms) for the Nagle coalescer. Ensures buffered deltas are delivered when the upstream producer pauses. `0` disables time-based flushing. |
+| `STREAMING_NAGLE_MIN_FLUSH_CHARS` | `int` | `3` | Minimum buffered chars before the Nagle coalescer yields a batch at end-of-cycle. `3` smooths single-char jitter (default). `1` = pure Nagle. `5–10` = aggressive reduction. Idle timeout still guarantees delivery. |
 | `MIDDLEWARE_STREAM_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of per-request items buffered for the middleware streaming bridge (`pipe(stream=True)` generator). `0` means unbounded. |
 | `MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS` | `float` | `1.0` | When `MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0`, maximum seconds to wait while enqueueing an item before aborting the request. Set to `0` to disable the timeout (not recommended). |
 
@@ -305,6 +306,20 @@ Notes:
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `LOG_LEVEL` | `Literal[\"DEBUG\", \"INFO\", \"WARNING\", \"ERROR\", \"CRITICAL\"]` | `env GLOBAL_LOG_LEVEL, else INFO` | Select logging level. Recommend INFO or WARNING for production; use DEBUG for diagnosis. |
+
+### Plugin system
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_PLUGIN_SYSTEM` | `bool` | `False` | Master switch for the plugin system. When False, no plugins are loaded and all plugin hooks are no-ops. Requires pipe reload to take effect. |
+
+**Plugin-exported valves** — Plugins may contribute additional valves via `plugin_valves` (system) and `plugin_user_valves` (per-user). These fields are merged into `Pipe.Valves` / `Pipe.UserValves` at import time using Pydantic `create_model()` and appear in the OWUI Settings UI alongside the pipe's own valves. See [Plugin System — Developer Guide](plugin_system.md#plugin-exported-valves).
+
+The built-in **Pipe Stats Dashboard** plugin exports the following valves when the plugin system is enabled:
+
+| Valve | Type | Default | Scope | Purpose / notes |
+| --- | --- | --- | --- | --- |
+| `PIPE_STATS_ENABLE` | `bool` | `True` | Admin | Show/hide the Pipe Stats Dashboard virtual model in the model selector. |
 
 ---
 

@@ -70,6 +70,9 @@ Optional encrypted session logs for incident response. Request identifiers flow 
 🛡️ **Enterprise Controls**
 Encryption, retention policies, request attribution, and operational hooks your governance program can build on.
 
+🔌 **Plugin System**
+Extend the pipe with custom plugins — inject virtual models, intercept requests, transform payloads before OpenRouter, and post-process responses before delivery. Ships with the Pipe Stats Dashboard plugin as a reference implementation. Disabled by default; enable via valves. See [Plugin System Guide](docs/plugin_system.md).
+
 ---
 
 ## Quick Start

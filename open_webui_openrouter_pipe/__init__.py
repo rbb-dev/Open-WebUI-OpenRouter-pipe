@@ -368,6 +368,11 @@ _LAZY_IMPORTS = {
     # Tool executor
     "_QueuedToolCall": (".tools.tool_executor", "_QueuedToolCall"),
     "_ToolExecutionContext": (".tools.tool_executor", "_ToolExecutionContext"),
+
+    # Plugins
+    "PluginBase": (".plugins.base", "PluginBase"),
+    "PluginContext": (".plugins.base", "PluginContext"),
+    "PluginRegistry": (".plugins.registry", "PluginRegistry"),
 }
 
 

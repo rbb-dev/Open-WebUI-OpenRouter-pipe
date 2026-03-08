@@ -162,7 +162,12 @@ async def test_responses_streaming_with_passthrough_deltas(pipe_instance_async):
 
 @pytest.mark.asyncio
 async def test_responses_streaming_with_delta_batching(pipe_instance_async):
-    """Test streaming with delta batching enabled (lines 280-292)."""
+    """Test streaming with Nagle coalescing enabled.
+
+    With Nagle drain, all 11 characters arrive in the queue before the
+    consumer wakes, so they get batched into fewer events than the original
+    11 single-character deltas.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -184,23 +189,25 @@ async def test_responses_streaming_with_delta_batching(pipe_instance_async):
         )
 
         events = []
-        # Enable batching - batch after 5 chars
+        # delta_char_limit > 0 enables Nagle coalescing
         async for event in pipe.send_openai_responses_streaming_request(
             session,
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            delta_char_limit=5,  # Batch after 5 chars
+            delta_char_limit=5,
         ):
             events.append(event)
 
         await session.close()
 
-    # With batching, should have fewer delta events than input chars
+    # Nagle drain batches all available events — should be fewer than 11
     text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
-    # Should have batched into fewer events
     assert len(text_deltas) < 11
+    # All content must arrive intact
+    combined = "".join(e["delta"] for e in text_deltas)
+    assert combined == "Hello World"
 
 
 # ============================================================================

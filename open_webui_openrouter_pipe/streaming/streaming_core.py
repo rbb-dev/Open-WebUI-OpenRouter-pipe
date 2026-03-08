@@ -900,6 +900,7 @@ class StreamingHandler:
                         breaker_key=user_id or None,
                         delta_char_limit=valves.STREAMING_DELTA_CHAR_LIMIT,
                         idle_flush_ms=valves.STREAMING_IDLE_FLUSH_MS,
+                        nagle_min_chars=valves.STREAMING_NAGLE_MIN_FLUSH_CHARS,
                         chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
                         chunk_queue_warn_size=valves.STREAMING_CHUNK_QUEUE_WARN_SIZE,
                         event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
@@ -2415,10 +2416,35 @@ class StreamingHandler:
                     )
 
             if (not error_occurred) and (not was_cancelled):
+                # Plugin on_response_transform hook (no-op if no subscribers)
+                _original_assistant_message = assistant_message
+                if self._pipe.valves.ENABLE_PLUGIN_SYSTEM:
+                    try:
+                        completion_data: dict[str, Any] = {
+                            "done": terminal,
+                            "content": assistant_message,
+                        }
+                        if total_usage:
+                            completion_data["usage"] = total_usage
+                        await self._pipe._ensure_plugin_registry().dispatch_on_response_transform(
+                            completion_data, str(body.model or ""), metadata,
+                            user_id=str(user_id or ""), user=user_obj,
+                        )
+                        # Pick up any content modifications from plugins
+                        transformed = completion_data.get("content", assistant_message)
+                        if transformed != assistant_message:
+                            assistant_message = transformed
+                    except Exception:
+                        self.logger.debug("Plugin on_response_transform dispatch failed", exc_info=True)
+
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
-                # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
+                # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events —
+                # unless a plugin explicitly modified content via on_response_transform.
                 if terminal:
-                    final_content = None if emitted_response_output_items else assistant_message
+                    if assistant_message != _original_assistant_message:
+                        final_content = assistant_message
+                    else:
+                        final_content = None if emitted_response_output_items else assistant_message
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=final_content,

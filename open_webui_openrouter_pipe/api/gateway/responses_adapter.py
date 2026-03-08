@@ -18,6 +18,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
 from ...core.errors import OpenRouterAPIError, _build_openrouter_api_error
 from ...core.timing_logger import timed, timing_mark
+from ...streaming.nagle_coalescer import NagleCoalescer, _MAX_DRAIN_PER_CYCLE
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -56,6 +57,7 @@ class ResponsesAdapter:
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
+        nagle_min_chars: int = 1,
         chunk_queue_maxsize: int = 100,
         chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
@@ -93,7 +95,6 @@ class ResponsesAdapter:
         chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=chunk_queue_size)
         event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=event_queue_size)
         chunk_sentinel = (None, b"")
-        delta_batch_threshold = max(1, int(delta_char_limit))
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
@@ -288,32 +289,16 @@ class ResponsesAdapter:
         pending_events: dict[int, dict[str, Any] | None] = {}
         next_seq = 0
         done_workers = 0
-        delta_buffer: list[str] = []
-        delta_template: Optional[dict[str, Any]] = None
-        delta_length = 0
+        coalescer = NagleCoalescer(min_flush_chars=nagle_min_chars)
         event_queue_warn_last_ts: float = 0.0
-
-        @timed
-        def flush_delta(force: bool = False) -> Optional[dict[str, Any]]:
-            if passthrough_deltas:
-                return None
-            nonlocal delta_buffer, delta_template, delta_length
-            if delta_buffer and (force or delta_length >= delta_batch_threshold):
-                combined = "".join(delta_buffer)
-                base = dict(delta_template or {"type": "response.output_text.delta"})
-                base["delta"] = combined
-                delta_buffer = []
-                delta_template = None
-                delta_length = 0
-                return base
-            return None
 
         first_event_from_queue = False
         first_yield_done = False
 
         try:
             while True:
-                timeout = idle_flush_seconds if (idle_flush_seconds and delta_buffer) else None
+                # Idle timeout: flush both buffers when producer pauses
+                timeout = idle_flush_seconds if (idle_flush_seconds and coalescer.has_buffered) else None
                 timed_out = False
                 seq: int | None = None
                 event: dict[str, Any] | None = None
@@ -329,14 +314,18 @@ class ResponsesAdapter:
                     timing_mark("consumer_first_event_from_queue")
 
                 if timed_out:
-                    batched = flush_delta(force=True)
-                    if batched:
-                        yield batched
+                    idle_queue: list[dict[str, Any]] = []
+                    coalescer.flush_all_to(idle_queue)  # force=True (default)
+                    for item in idle_queue:
+                        if not first_yield_done:
+                            first_yield_done = True
+                            timing_mark("adapter_first_yield")
+                        yield item
                     continue
 
                 event_queue.task_done()
 
-                # Non-spammy queue monitoring
+                # Non-spammy queue monitoring (once per drain cycle)
                 now = time.perf_counter()
                 if self._pipe._should_warn_event_queue_backlog(
                     event_queue.qsize(),
@@ -357,54 +346,58 @@ class ResponsesAdapter:
                         break
                     continue
 
-                # Store event (including None placeholders from parse failures)
                 pending_events[seq] = event
+
+                yield_queue: list[dict[str, Any]] = []
 
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
-
-                    # Skip parse-failed placeholders (advance seq but don't process)
                     if current is None:
                         continue
-
                     streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
                     if streaming_error is not None:
                         raise streaming_error
-                    etype = current.get("type")
-                    if etype == "response.output_text.delta":
-                        delta_chunk = current.get("delta", "")
-                        if passthrough_deltas:
-                            if delta_chunk:
-                                if not first_yield_done:
-                                    first_yield_done = True
-                                    timing_mark("adapter_first_yield")
-                                yield current
-                            continue
-                        if delta_chunk:
-                            delta_buffer.append(delta_chunk)
-                            delta_length += len(delta_chunk)
-                            if delta_template is None:
-                                delta_template = {k: v for k, v in current.items() if k != "delta"}
-                        batched = flush_delta()
-                        if batched:
-                            yield batched
-                        continue
+                    coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 
-                    batched = flush_delta(force=True)
-                    if batched:
-                        if not first_yield_done:
-                            first_yield_done = True
-                            timing_mark("adapter_first_yield")
-                        yield batched
+                drained = 0
+                while not yield_queue and drained < _MAX_DRAIN_PER_CYCLE:
+                    try:
+                        extra_seq, extra_event = event_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    event_queue.task_done()
+                    if extra_seq is None:
+                        done_workers += 1
+                        continue
+                    drained += 1
+                    pending_events[extra_seq] = extra_event
+                    while next_seq in pending_events:
+                        current = pending_events.pop(next_seq)
+                        next_seq += 1
+                        if current is None:
+                            continue
+                        streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
+                        if streaming_error is not None:
+                            raise streaming_error
+                        coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
+
+                coalescer.flush_all_to(yield_queue, force=False)
+
+                for item in yield_queue:
                     if not first_yield_done:
                         first_yield_done = True
                         timing_mark("adapter_first_yield")
-                    yield current
+                    yield item
 
-            final_delta = flush_delta(force=True)
-            if final_delta:
-                yield final_delta
+                if done_workers >= workers and not pending_events:
+                    break
+
+            # Final flush (unconditional)
+            final_queue: list[dict[str, Any]] = []
+            coalescer.flush_all_to(final_queue)
+            for item in final_queue:
+                yield item
 
             await producer_task
         finally:

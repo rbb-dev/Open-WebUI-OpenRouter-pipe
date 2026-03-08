@@ -410,8 +410,11 @@ class TestTimedAsyncFunction:
         with pytest.raises(ValueError, match="Async error"):
             asyncio.run(async_operation_with_error())
 
-        # Check events - should still have enter AND exit
-        events = tl.get_timing_events("req-async-exc")
+        # Check events - should still have enter AND exit.
+        # Filter to only our function's events — asyncio.run() may trigger
+        # Pipe.__del__ destructors from other tests that leak into this context.
+        all_events = tl.get_timing_events("req-async-exc")
+        events = [e for e in all_events if "async_operation_with_error" in e.get("label", "")]
         assert len(events) == 2
         assert events[0]["event"] == "enter"
         assert events[1]["event"] == "exit"

@@ -1138,16 +1138,30 @@ class Valves(BaseModel):
         default=256,
         ge=0,
         description=(
-            "Maximum number of characters to buffer before emitting a combined response.output_text.delta "
-            "event in the /responses streaming pipeline. 0 disables batching (emit each delta as-is)."
+            "Nagle coalescing toggle for the streaming pipeline. "
+            "When > 0 (default 256), Nagle-style adaptive batching is active: deltas are buffered "
+            "and coalesced based on consumer backpressure, with STREAMING_NAGLE_MIN_FLUSH_CHARS "
+            "controlling the minimum batch size. "
+            "When 0 (and STREAMING_IDLE_FLUSH_MS is also 0), passthrough mode: deltas emit 1:1."
         ),
     )
     STREAMING_IDLE_FLUSH_MS: int = Field(
         default=30,
         ge=0,
         description=(
-            "Idle flush timeout (ms) for buffered streaming deltas in the /responses pipeline. "
-            "0 disables time-based flushing."
+            "Idle flush timeout (ms) for the Nagle coalescer. When the upstream producer pauses, "
+            "buffered deltas are flushed after this interval to prevent stale content. "
+            "0 disables time-based flushing (not recommended — buffers only flush on backpressure drain)."
+        ),
+    )
+    STREAMING_NAGLE_MIN_FLUSH_CHARS: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Minimum buffered chars before the Nagle coalescer will yield a batch at the end of "
+            "a drain cycle. Default 3 smooths out single-character jitter in low-backpressure phases. "
+            "Set to 1 for pure Nagle, 5-10 for aggressive event reduction. The idle timeout "
+            "(STREAMING_IDLE_FLUSH_MS) still guarantees delivery within its interval."
         ),
     )
     MIDDLEWARE_STREAM_QUEUE_MAXSIZE: int = Field(
@@ -1563,6 +1577,12 @@ class Valves(BaseModel):
             "and configure their own provider preferences via UserValves. "
             "Leave empty to disable user provider routing filters."
         ),
+    )
+
+    # ── Plugin Settings ──
+    ENABLE_PLUGIN_SYSTEM: bool = Field(
+        default=False,
+        description="Master switch for the plugin system. When False, all plugin hooks are skipped. Takes effect immediately without restart.",
     )
 
 

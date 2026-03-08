@@ -3476,7 +3476,8 @@ async def test_pipes_returns_cached_models_on_refresh_error(monkeypatch, pipe_in
 
     result = await pipe.pipes()
 
-    assert result == [{"id": "m1", "name": "Model m1"}]
+    # Plugin system may add virtual models (e.g. pipe-stats), so check original model is present
+    assert {"id": "m1", "name": "Model m1"} in result
 
 
 @pytest.mark.asyncio
@@ -3534,7 +3535,8 @@ async def test_pipes_auto_install_filters_handles_exceptions(monkeypatch, pipe_i
 
     result = await pipe.pipes()
 
-    assert result == [{"id": "m1", "name": "Model m1"}]
+    # Plugin system may add virtual models (e.g. pipe-stats), so check original model is present
+    assert {"id": "m1", "name": "Model m1"} in result
     assert "ors" in called
     assert "direct" in called
 

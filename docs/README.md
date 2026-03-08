@@ -115,5 +115,8 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md)
 - [Task Models & Housekeeping](task_models_and_housekeeping.md)
 - [Tooling & Integrations](tooling_and_integrations.md)
+- [Plugin System — Developer Guide](plugin_system.md) — hook-based plugin architecture for extending pipe behavior (model injection, request interception, request/response transformation).
+- [Pipe Stats Dashboard Plugin](plugins_pipe_stats.md) — built-in plugin: virtual model with live SSE dashboard for admin diagnostics.
+- [Think Streaming Plugin](plugins_think_streaming.md) — built-in plugin: live reasoning and tool execution display via SSE-powered iframe embeds.
 - [Test Suite Audit Snapshot](test_suite_audit_snapshot.md) — one-shot snapshot of a completed test audit; not maintained.
 - `CHANGELOG.md` (repo root) — audit trail for changes.

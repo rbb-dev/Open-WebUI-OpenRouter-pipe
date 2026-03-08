@@ -20,3 +20,4 @@ cliff.toml
 plans/
 open_webui_openrouter_pipe_bundled.py
 open_webui_openrouter_pipe_bundled_compressed.py
+scripts/deploy_dev.sh

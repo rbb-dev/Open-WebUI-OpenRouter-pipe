@@ -121,6 +121,7 @@ if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from .requests.orchestrator import RequestOrchestrator
     from .filters import FilterManager
+    from .plugins.registry import PluginRegistry
 
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
@@ -297,6 +298,7 @@ class Pipe:
         self._chat_completions_adapter: Optional["ChatCompletionsAdapter"] = None
         self._request_orchestrator: Optional["RequestOrchestrator"] = None
         self._filter_manager: Optional["FilterManager"] = None
+        self._plugin_registry: Optional["PluginRegistry"] = None
 
         # Circuit breaker state (per-user error tracking)
         self._circuit_breaker = CircuitBreaker(
@@ -696,6 +698,13 @@ class Pipe:
             )
         return self._filter_manager
 
+    def _ensure_plugin_registry(self) -> "PluginRegistry":
+        if self._plugin_registry is None:
+            from .plugins.registry import PluginRegistry
+            self._plugin_registry = PluginRegistry()
+            self._plugin_registry.init_plugins(self)
+        return self._plugin_registry
+
     # =============================================================================
     # ENTRY POINTS
     # =============================================================================
@@ -792,8 +801,18 @@ class Pipe:
             pipe_identifier=self.id,
         )
 
-        # Return simple id/name list - OWUI's get_function_models() only reads these fields
-        return [{"id": m["id"], "name": m["name"]} for m in selected_models]
+        # Plugins see full model data (pricing, capabilities, etc.) — they're trusted code
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                self._ensure_plugin_registry().dispatch_on_models(selected_models)
+            except Exception:
+                self.logger.debug("Plugin on_models dispatch failed", exc_info=True)
+        # Return simple id/name list — OWUI's get_function_models() only reads these fields
+        return [
+            {"id": m["id"], "name": m.get("name", m["id"])}
+            for m in selected_models
+            if isinstance(m, dict) and "id" in m
+        ]
 
     @timed
     async def pipe(
@@ -1042,6 +1061,8 @@ class Pipe:
     @timed
     def shutdown(self) -> None:
         """Public method to shut down background resources."""
+        if self._plugin_registry is not None:
+            self._plugin_registry.dispatch_on_shutdown()
         if self._artifact_store:
             self._artifact_store.close()
         self._session_log_manager.stop_workers()
@@ -1365,6 +1386,33 @@ class Pipe:
             else None
         )
         try:
+            # Plugin on_emitter_wrap hook — wrap stream emitter before request processing.
+            # Must fire before tool_context creation so tool workers use the wrapped emitter.
+            if (
+                self.valves.ENABLE_PLUGIN_SYSTEM
+                and stream_emitter is not None
+                and not job.task
+            ):
+                try:
+                    wrapped = await self._ensure_plugin_registry().dispatch_on_emitter_wrap(
+                        stream_emitter,
+                        raw_emitter=job.event_emitter,
+                        job_metadata={
+                            "user_id": job.user_id,
+                            "chat_id": job.metadata.get("chat_id", ""),
+                            "message_id": job.metadata.get("message_id", ""),
+                            "request_id": job.request_id,
+                        },
+                        valves=job.valves,
+                    )
+                    if wrapped is not None and wrapped is not stream_emitter:
+                        # The wrapper's __getattr__ delegates attribute access
+                        # (e.g. flush_reasoning_status) to the original emitter,
+                        # so no explicit copy is needed here.
+                        stream_emitter = wrapped
+                except Exception:
+                    self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
+
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
                 tokens = self._apply_logging_context(job)
@@ -1591,6 +1639,40 @@ class Pipe:
         pipe_identifier = self.id
         self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
 
+        # Plugin on_request hook — intercept before API key check
+        plugin_result = None
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                plugin_result = await self._ensure_plugin_registry().dispatch_on_request(
+                    body, __user__, __metadata__, __event_emitter__, __task__,
+                    valves=valves,
+                )
+            except Exception:
+                self.logger.debug("Plugin on_request dispatch failed", exc_info=True)
+        if plugin_result is not None:
+            # For streaming requests, emit content via the stream emitter so
+            # _stream() can yield it.  Without this, complete responses only
+            # land on job.future, which _stream() never reads.
+            if bool(body.get("stream")) and __event_emitter__:
+                _pcontent: str | None = None
+                if isinstance(plugin_result, dict):
+                    _pchoices = plugin_result.get("choices")
+                    if isinstance(_pchoices, list) and _pchoices:
+                        _pmsg = _pchoices[0].get("message")
+                        if isinstance(_pmsg, dict):
+                            _pcontent = _pmsg.get("content")
+                elif isinstance(plugin_result, str):
+                    _pcontent = plugin_result
+                if isinstance(_pcontent, str) and _pcontent:
+                    await __event_emitter__(
+                        {"type": "chat:message:delta", "data": {"content": _pcontent}}
+                    )
+                # Always signal stream completion when a plugin intercepts the request
+                await __event_emitter__(
+                    {"type": "chat:completion", "data": {"done": True}}
+                )
+            return plugin_result
+
         task_name = TaskModelAdapter._task_name(__task__)
         if task_name and self._auth_failure_active():
             # Suppress background task calls after an auth failure to avoid log spam
@@ -1696,6 +1778,16 @@ class Pipe:
         features = _extract_feature_flags(__metadata__)
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
+
+        # Plugin on_request_transform hook — modify body before sending to OpenRouter
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                await self._ensure_plugin_registry().dispatch_on_request_transform(
+                    body, str(body.get("model", "")), valves,
+                    user=__user__, metadata=__metadata__,
+                )
+            except Exception:
+                self.logger.debug("Plugin on_request_transform dispatch failed", exc_info=True)
 
         try:
             result = await self._process_transformed_request(
@@ -1900,6 +1992,7 @@ class Pipe:
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
+        nagle_min_chars: int = 1,
         chunk_queue_maxsize: int = 100,
         chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
@@ -1908,6 +2001,7 @@ class Pipe:
         async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
             session, request_body, api_key, base_url, valves=valves, workers=workers,
             breaker_key=breaker_key, delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
+            nagle_min_chars=nagle_min_chars,
             chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size
         ):
@@ -1977,6 +2071,7 @@ class Pipe:
         breaker_key: Optional[str] = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
+        nagle_min_chars: int = 1,
         chunk_queue_maxsize: int = 100,
         chunk_queue_warn_size: int = 1000,
         event_queue_maxsize: int = 100,
@@ -1986,6 +2081,7 @@ class Pipe:
             session, responses_request_body, api_key, base_url, valves=valves,
             endpoint_override=endpoint_override, workers=workers, breaker_key=breaker_key,
             delta_char_limit=delta_char_limit, idle_flush_ms=idle_flush_ms,
+            nagle_min_chars=nagle_min_chars,
             chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size
         ):
@@ -2918,3 +3014,25 @@ class Pipe:
         mapped.pop("LOG_LEVEL", None)
 
         return global_valves.model_copy(update=mapped)
+
+
+# ---------------------------------------------------------------------------
+# Plugin valve integration
+# ---------------------------------------------------------------------------
+# Merge plugin-declared valve fields into Pipe.Valves and Pipe.UserValves at
+# import time so OWUI sees them in the settings UI.  The import triggers
+# @PluginRegistry.register decorators for all plugins, which accumulate their
+# plugin_valves and plugin_user_valves specs.  build_extended_*() then creates
+# subclasses with those fields via pydantic.create_model().
+try:
+    from .plugins.registry import PluginRegistry as _PluginRegistryForValves
+
+    _ExtendedValves = _PluginRegistryForValves.build_extended_valves(Valves)
+    if _ExtendedValves is not Valves:
+        Pipe.Valves = _ExtendedValves  # type: ignore[misc]
+
+    _ExtendedUserValves = _PluginRegistryForValves.build_extended_user_valves(UserValves)
+    if _ExtendedUserValves is not UserValves:
+        Pipe.UserValves = _ExtendedUserValves  # type: ignore[misc]
+except Exception:
+    pass  # Plugin system not available — use base Valves/UserValves
