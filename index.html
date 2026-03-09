@@ -557,7 +557,7 @@
     <div class="header-icon">&#9889;</div>
     <div class="header-text">
       <h1>OpenRouter Pipe &mdash; Bundle Builder</h1>
-      <p>Build a custom pipe bundle with your choice of plugins &mdash; right in your browser. <span style="color:var(--text-muted);font-size:0.75rem">builder v2</span></p>
+      <p>Build a custom pipe bundle with your choice of plugins &mdash; right in your browser. <span style="color:var(--text-muted);font-size:0.75rem">builder v3</span></p>
     </div>
     <a class="header-back" href="https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe" target="_blank">
       <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -982,25 +982,65 @@ async function fetchSourceFiles(ref, tree, selectedPluginDirs) {
 // but the main tab survives and can display the error to the user.
 
 const WORKER_CODE = `
+let _pyodide = null;
+let _pyodideCDN = null;
+
+async function ensurePyodide(cdn) {
+  if (_pyodide) return _pyodide;
+  log('step', 'Loading Python runtime (Pyodide)...');
+  if (!_pyodideCDN) {
+    _pyodideCDN = cdn;
+    importScripts(cdn + 'pyodide.js');
+  }
+  _pyodide = await loadPyodide({ indexURL: cdn });
+  log('done', 'Python runtime loaded');
+  return _pyodide;
+}
+
+function log(level, msg) {
+  self.postMessage({ type: 'log', level, msg });
+}
+function progress(pct) {
+  self.postMessage({ type: 'progress', pct });
+}
+
+// Clean /build directory between runs
+function cleanBuildDir(pyodide) {
+  try {
+    const entries = pyodide.FS.readdir('/build');
+    for (const name of entries) {
+      if (name === '.' || name === '..') continue;
+      try { rmrf(pyodide, '/build/' + name); } catch(e) {}
+    }
+  } catch(e) {
+    // /build doesn't exist yet — first run
+  }
+}
+
+function rmrf(pyodide, path) {
+  let stat;
+  try { stat = pyodide.FS.stat(path); } catch(e) { return; }
+  if (pyodide.FS.isDir(stat.mode)) {
+    for (const name of pyodide.FS.readdir(path)) {
+      if (name === '.' || name === '..') continue;
+      rmrf(pyodide, path + '/' + name);
+    }
+    pyodide.FS.rmdir(path);
+  } else {
+    pyodide.FS.unlink(path);
+  }
+}
+
 self.onmessage = async function(e) {
   const { pyodideCDN, files, pythonCode, outputPath } = e.data;
 
-  function log(level, msg) {
-    self.postMessage({ type: 'log', level, msg });
-  }
-  function progress(pct) {
-    self.postMessage({ type: 'progress', pct });
-  }
-
   try {
-    log('step', 'Loading Python runtime (Pyodide)...');
-    importScripts(pyodideCDN + 'pyodide.js');
-    const pyodide = await loadPyodide({ indexURL: pyodideCDN });
-    log('done', 'Python runtime loaded');
+    const pyodide = await ensurePyodide(pyodideCDN);
     progress(70);
 
-    // Write source files to Pyodide virtual filesystem
+    // Clean and rebuild virtual filesystem
     log('step', 'Setting up virtual filesystem...');
+    cleanBuildDir(pyodide);
     try { pyodide.FS.mkdir('/build'); } catch(e) {}
     const dirs = new Set();
     for (const path of Object.keys(files)) {
@@ -1015,6 +1055,10 @@ self.onmessage = async function(e) {
     for (const [path, content] of Object.entries(files)) {
       pyodide.FS.writeFile('/build/' + path, content);
     }
+
+    // Clear cached bundle_v2 module so it re-imports fresh source
+    pyodide.runPython('import sys\\nfor m in list(sys.modules):\\n if m.startswith("bundle_v2"): del sys.modules[m]');
+
     log('done', 'Virtual filesystem ready');
     progress(75);
 
@@ -1048,18 +1092,45 @@ self.onmessage = async function(e) {
 };
 `;
 
+// Persistent worker — Pyodide loads once, reused across builds
+let _bundlerWorker = null;
+let _bundlerBlobURL = null;
+
+function getBundlerWorker() {
+  if (_bundlerWorker) return _bundlerWorker;
+  const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+  _bundlerBlobURL = URL.createObjectURL(blob);
+  _bundlerWorker = new Worker(_bundlerBlobURL);
+
+  // If the worker crashes, clear it so the next build creates a fresh one
+  _bundlerWorker.onerror = () => {
+    _bundlerWorker = null;
+  };
+  return _bundlerWorker;
+}
+
 function runBundlerInWorker({ files, pythonCode, outputPath, pyodideCDN }) {
   return new Promise((resolve, reject) => {
-    const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
-    const blobURL = URL.createObjectURL(blob);
-    const worker = new Worker(blobURL);
+    let worker;
+    try {
+      worker = getBundlerWorker();
+    } catch (e) {
+      return reject(new Error('Failed to create build worker: ' + e.message));
+    }
     let settled = false;
 
-    function settle() {
-      if (!settled) {
-        settled = true;
+    function settle(destroyWorker) {
+      if (settled) return;
+      settled = true;
+      // Restore default handlers
+      worker.onmessage = null;
+      if (destroyWorker) {
         worker.terminate();
-        URL.revokeObjectURL(blobURL);
+        _bundlerWorker = null;
+        if (_bundlerBlobURL) {
+          URL.revokeObjectURL(_bundlerBlobURL);
+          _bundlerBlobURL = null;
+        }
       }
     }
 
@@ -1075,18 +1146,18 @@ function runBundlerInWorker({ files, pythonCode, outputPath, pyodideCDN }) {
           setProgress(msg.pct);
           break;
         case 'done':
-          settle();
+          settle(false);  // keep worker alive for next build
           resolve(msg.output);
           break;
         case 'error':
-          settle();
+          settle(false);  // keep worker alive — the error was handled in Python
           reject(new Error(msg.msg));
           break;
       }
     };
 
     worker.onerror = (e) => {
-      settle();
+      settle(true);  // destroy crashed worker
       const detail = e.message || 'Unknown error';
       reject(new Error(
         `Python worker crashed: ${detail}\n` +
@@ -1203,10 +1274,26 @@ finally:
 
     if (mode === 'copy') {
       logStep('Copying to clipboard...');
-      await navigator.clipboard.writeText(output);
-      logDone(`Copied to clipboard (${sizeKB} KB)`);
-      activeBtn.textContent = 'Copied!';
-      setTimeout(() => { activeBtn.textContent = 'Build & Copy'; }, 2000);
+      try {
+        await navigator.clipboard.writeText(output);
+        logDone(`Copied to clipboard (${sizeKB} KB)`);
+        activeBtn.textContent = 'Copied!';
+        setTimeout(() => { activeBtn.textContent = 'Build & Copy'; }, 2000);
+      } catch (clipErr) {
+        // Clipboard API fails if tab lost focus during build — fall back to download
+        logErr('Clipboard unavailable (tab lost focus) — downloading instead...');
+        const blob = new Blob([output], { type: 'text/x-python' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        logDone(`Downloaded ${downloadName} (${sizeKB} KB)`);
+        activeBtn.textContent = 'Build & Copy';
+      }
     } else {
       logStep('Preparing download...');
       const blob = new Blob([output], { type: 'text/x-python' });
