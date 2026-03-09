@@ -683,7 +683,6 @@ let state = {
   plugins: [],
   version: '',
   repoTree: null,
-  pyodide: null,
   building: false,
 };
 
@@ -976,22 +975,128 @@ async function fetchSourceFiles(ref, tree, selectedPluginDirs) {
 }
 
 // =========================================================================
-// Pyodide setup
+// Pyodide Web Worker — isolates Wasm from the main tab
 // =========================================================================
+// Running Pyodide in a Worker means that if the Wasm runtime crashes
+// (STATUS_ILLEGAL_INSTRUCTION, OOM, stack overflow), the Worker dies
+// but the main tab survives and can display the error to the user.
 
-async function ensurePyodide() {
-  if (state.pyodide) return state.pyodide;
-  logStep('Loading Python runtime (Pyodide)...');
-  const script = document.createElement('script');
-  script.src = PYODIDE_CDN + 'pyodide.js';
-  await new Promise((resolve, reject) => {
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Failed to load Pyodide'));
-    document.head.appendChild(script);
+const WORKER_CODE = `
+self.onmessage = async function(e) {
+  const { pyodideCDN, files, pythonCode, outputPath } = e.data;
+
+  function log(level, msg) {
+    self.postMessage({ type: 'log', level, msg });
+  }
+  function progress(pct) {
+    self.postMessage({ type: 'progress', pct });
+  }
+
+  try {
+    log('step', 'Loading Python runtime (Pyodide)...');
+    importScripts(pyodideCDN + 'pyodide.js');
+    const pyodide = await loadPyodide({ indexURL: pyodideCDN });
+    log('done', 'Python runtime loaded');
+    progress(70);
+
+    // Write source files to Pyodide virtual filesystem
+    log('step', 'Setting up virtual filesystem...');
+    try { pyodide.FS.mkdir('/build'); } catch(e) {}
+    const dirs = new Set();
+    for (const path of Object.keys(files)) {
+      const parts = path.split('/');
+      for (let i = 1; i <= parts.length - 1; i++) {
+        dirs.add('/build/' + parts.slice(0, i).join('/'));
+      }
+    }
+    for (const dir of Array.from(dirs).sort()) {
+      try { pyodide.FS.mkdir(dir); } catch(e) {}
+    }
+    for (const [path, content] of Object.entries(files)) {
+      pyodide.FS.writeFile('/build/' + path, content);
+    }
+    log('done', 'Virtual filesystem ready');
+    progress(75);
+
+    // Run the Python bundler
+    log('step', 'Running bundler...');
+    pyodide.runPython(pythonCode);
+
+    const buildOk = pyodide.globals.get('_build_ok');
+    const buildOutput = pyodide.globals.get('_build_output');
+
+    if (buildOutput) {
+      for (const line of buildOutput.split('\\n').filter(l => l.trim())) {
+        log('step', line);
+      }
+    }
+
+    if (!buildOk) {
+      self.postMessage({ type: 'error', msg: 'Bundler reported errors \\u2014 check the log above' });
+      return;
+    }
+
+    log('done', 'Bundle built successfully');
+    progress(95);
+
+    const output = pyodide.FS.readFile(outputPath, { encoding: 'utf8' });
+    self.postMessage({ type: 'done', output });
+
+  } catch (err) {
+    self.postMessage({ type: 'error', msg: err.message || String(err) });
+  }
+};
+`;
+
+function runBundlerInWorker({ files, pythonCode, outputPath, pyodideCDN }) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+    const blobURL = URL.createObjectURL(blob);
+    const worker = new Worker(blobURL);
+    let settled = false;
+
+    function settle() {
+      if (!settled) {
+        settled = true;
+        worker.terminate();
+        URL.revokeObjectURL(blobURL);
+      }
+    }
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      switch (msg.type) {
+        case 'log':
+          if (msg.level === 'step') logStep(msg.msg);
+          else if (msg.level === 'done') logDone(msg.msg);
+          else logErr(msg.msg);
+          break;
+        case 'progress':
+          setProgress(msg.pct);
+          break;
+        case 'done':
+          settle();
+          resolve(msg.output);
+          break;
+        case 'error':
+          settle();
+          reject(new Error(msg.msg));
+          break;
+      }
+    };
+
+    worker.onerror = (e) => {
+      settle();
+      const detail = e.message || 'Unknown error';
+      reject(new Error(
+        `Python worker crashed: ${detail}\n` +
+        'This usually means the build exceeded browser memory limits. ' +
+        'Try building from a local copy of index.html, or select fewer plugins.'
+      ));
+    };
+
+    worker.postMessage({ files, pythonCode, outputPath, pyodideCDN });
   });
-  state.pyodide = await loadPyodide({ indexURL: PYODIDE_CDN });
-  logDone('Python runtime loaded');
-  return state.pyodide;
 }
 
 // =========================================================================
@@ -1027,50 +1132,26 @@ async function doBuild(mode = 'download') {
     logDone(`Downloaded ${Object.keys(files).length} files`);
     setProgress(60);
 
-    const pyodide = await ensurePyodide();
-    setProgress(70);
-
-    logStep('Setting up virtual filesystem...');
-    try { pyodide.FS.mkdir('/build'); } catch(e) { /* exists */ }
-    const dirs = new Set();
-    for (const path of Object.keys(files)) {
-      const parts = path.split('/');
-      for (let i = 1; i <= parts.length - 1; i++) {
-        dirs.add('/build/' + parts.slice(0, i).join('/'));
-      }
-    }
-    for (const dir of Array.from(dirs).sort()) {
-      try { pyodide.FS.mkdir(dir); } catch(e) { /* exists */ }
-    }
-    for (const [path, content] of Object.entries(files)) {
-      pyodide.FS.writeFile('/build/' + path, content);
-    }
-
-    // Patch plugins/__init__.py for selected plugins only
-    const pluginsInitPath = `/build/${PACKAGE_NAME}/plugins/__init__.py`;
-    try {
-      let initContent = pyodide.FS.readFile(pluginsInitPath, { encoding: 'utf8' });
+    // Patch plugins/__init__.py for selected plugins only (before sending to Worker)
+    const pluginsInitKey = `${PACKAGE_NAME}/plugins/__init__.py`;
+    if (pluginsInitKey in files) {
+      let initContent = files[pluginsInitKey];
       const selectedDirs = Array.from(state.selectedPlugins);
       const importLines = selectedDirs.map(
         d => `from . import ${d} as _${d}  # noqa: E402, F401`
       ).join('\n');
       initContent = initContent.replace(/^from \. import .*# noqa.*$/gm, '');
       if (importLines) initContent += '\n' + importLines + '\n';
-      pyodide.FS.writeFile(pluginsInitPath, initContent);
-    } catch(e) { /* no plugins infrastructure on this branch */ }
+      files[pluginsInitKey] = initContent;
+    }
 
-    logDone('Virtual filesystem ready');
-    setProgress(75);
-
-    logStep('Running bundler...');
     const compressed = state.bundleType === 'compressed';
     const downloadName = buildDownloadName();
-    // Internal name for Pyodide FS (no version stamp needed)
     const internalName = compressed
       ? `${PACKAGE_NAME}_bundled_compressed.py`
       : `${PACKAGE_NAME}_bundled.py`;
 
-    pyodide.runPython(`
+    const pythonCode = `
 import sys, os
 from pathlib import Path
 from io import StringIO
@@ -1106,21 +1187,18 @@ except Exception as exc:
 finally:
     sys.stdout = _old_stdout
     _build_output = _build_log.getvalue()
-`);
+`;
 
-    const buildOk = pyodide.globals.get('_build_ok');
-    const buildOutput = pyodide.globals.get('_build_output');
-    if (buildOutput) {
-      for (const line of buildOutput.split('\n').filter(l => l.trim())) {
-        logStep(line);
-      }
-    }
-    if (!buildOk) throw new Error('Bundler reported errors — check the log above');
+    logStep('Starting Python bundler (isolated worker)...');
+    setProgress(65);
 
-    logDone('Bundle built successfully');
-    setProgress(95);
+    const output = await runBundlerInWorker({
+      files,
+      pythonCode,
+      outputPath: `/build/${internalName}`,
+      pyodideCDN: PYODIDE_CDN,
+    });
 
-    const output = pyodide.FS.readFile(`/build/${internalName}`, { encoding: 'utf8' });
     const sizeKB = (new Blob([output]).size / 1024).toFixed(1);
 
     if (mode === 'copy') {
