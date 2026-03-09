@@ -585,6 +585,68 @@ def test_prepare_rows_for_storage_non_dict_payload(pipe_instance):
     assert rows[1]["payload"] == 123
 
 
+def test_sanitize_surrogates_strips_lone_surrogates():
+    """_sanitize_surrogates removes lone surrogates that crash json.dumps/UTF-8 encode."""
+    from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+
+    # Lone high surrogate (the exact character from the Exa Search crash)
+    text_with_surrogate = f"Hello \ud835 world"
+    result = ArtifactStore._sanitize_surrogates(text_with_surrogate)
+    assert "\ud835" not in result
+    assert "Hello" in result and "world" in result
+    # Must be safe for JSON + UTF-8
+    import json
+    encoded = json.dumps(result, ensure_ascii=False).encode("utf-8")
+    assert isinstance(encoded, bytes)
+
+
+def test_sanitize_surrogates_preserves_valid_text():
+    """_sanitize_surrogates preserves normal Unicode text including emoji and CJK."""
+    from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+
+    valid = "Hello 🌍 world 你好 café"
+    assert ArtifactStore._sanitize_surrogates(valid) == valid
+
+
+def test_sanitize_surrogates_recursive():
+    """_sanitize_surrogates recursively cleans nested dicts and lists."""
+    from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+
+    payload = {
+        "output": f"result \ud835 text",
+        "nested": {"deep": [f"item \ud800"]},
+    }
+    result = ArtifactStore._sanitize_surrogates(payload)
+    assert "\ud835" not in result["output"]
+    assert "\ud800" not in result["nested"]["deep"][0]
+    # Non-string values pass through
+    assert ArtifactStore._sanitize_surrogates(42) == 42
+    assert ArtifactStore._sanitize_surrogates(None) is None
+
+
+def test_serialize_payload_bytes_with_surrogates(pipe_instance):
+    """_serialize_payload_bytes handles payloads containing lone surrogates."""
+    store = pipe_instance._artifact_store
+    payload = {"output": f"math \ud835 symbols", "type": "function_call_output"}
+    result = store._serialize_payload_bytes(payload)
+    assert isinstance(result, bytes)
+    # Must round-trip through JSON
+    import json
+    parsed = json.loads(result.decode("utf-8"))
+    assert "math" in parsed["output"]
+    assert "\ud835" not in parsed["output"]
+
+
+def test_sanitize_surrogates_strips_null_bytes():
+    """_sanitize_surrogates also removes null bytes (PostgreSQL incompatible)."""
+    from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+
+    text = "before\x00after"
+    result = ArtifactStore._sanitize_surrogates(text)
+    assert "\x00" not in result
+    assert result == "beforeafter"
+
+
 # -----------------------------------------------------------------------------
 # Tests for DB Persist Edge Cases (lines 812, 916, 975, 980)
 # -----------------------------------------------------------------------------
