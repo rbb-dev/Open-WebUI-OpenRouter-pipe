@@ -108,6 +108,9 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [Testing, Bootstrap & Operations](testing_bootstrap_and_operations.md) — test harness, dev bootstrap, and operational runbooks.
 - [Production Readiness Report](production_readiness_report.md) — an assessment-style document (treat as guidance, not a compliance guarantee).
 
+### Tools
+- [Bundle Builder](bundle_builder.md) — browser-based bundle assembly tool: pick a branch, select plugins, build standard or compressed bundles. Runs entirely client-side via Pyodide.
+
 ### Deep technical references (contributors)
 - [Developer Guide & Architecture](developer_guide_and_architecture.md)
 - [Model Catalog & Routing Intelligence](model_catalog_and_routing_intelligence.md)

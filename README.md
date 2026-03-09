@@ -71,7 +71,27 @@ Optional encrypted session logs for incident response. Request identifiers flow 
 Encryption, retention policies, request attribution, and operational hooks your governance program can build on.
 
 🔌 **Plugin System**
-Extend the pipe with custom plugins — inject virtual models, intercept requests, transform payloads before OpenRouter, and post-process responses before delivery. Ships with the Pipe Stats Dashboard plugin as a reference implementation. Disabled by default; enable via valves. See [Plugin System Guide](docs/plugin_system.md).
+Extend the pipe with custom plugins — inject virtual models, intercept requests, transform payloads before OpenRouter, and post-process responses before delivery. Ships with two built-in plugins (see below). Disabled by default; enable via valves. See [Plugin System Guide](docs/plugin_system.md).
+
+---
+
+## Plugins in Action
+
+### Think Streaming — Live Reasoning Display
+
+Watch the model think in real time. Reasoning tokens and tool execution steps stream live into the chat via an SSE-powered iframe — no waiting for "Thought for N seconds" disclosure boxes.
+
+![Think Streaming Plugin](docs/images/plugin_think_streaming.gif)
+
+See [Think Streaming documentation](docs/plugins_think_streaming.md) for details.
+
+### Pipe Stats Dashboard — Admin Diagnostics
+
+A virtual model that turns the chat into a live admin dashboard. Runtime stats, request metrics, and system diagnostics — all SSE-powered and updating in real time.
+
+![Pipe Stats Dashboard Plugin](docs/images/plugin_pipe_stats.gif)
+
+See [Pipe Stats Dashboard documentation](docs/plugins_pipe_stats.md) for details.
 
 ---
 
@@ -115,6 +135,16 @@ https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/download/dev/open
 ```
 
 </details>
+
+### Bundle Builder (custom builds)
+
+Need a build from a specific branch, commit, or with a custom plugin selection? Use the **Bundle Builder** — a browser-based tool that assembles the pipe into a single `.py` file, right in your browser. No server, no uploads, no tracking.
+
+**[Open the Bundle Builder](https://rbb-dev.github.io/Open-WebUI-OpenRouter-pipe/)**
+
+![Bundle Builder](docs/images/bundle_builder.jpeg)
+
+Pick a branch, select which plugins to include, choose standard or compressed format, and hit build. The builder runs the same Python bundler that CI uses, powered by Pyodide (CPython in WebAssembly). See [Bundle Builder documentation](docs/bundle_builder.md) for details.
 
 **2. Enable**
 

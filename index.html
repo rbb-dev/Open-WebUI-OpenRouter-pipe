@@ -1,0 +1,1528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenRouter Pipe — Bundle Builder</title>
+<style>
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-card: #1a1a2e;
+    --bg-card-hover: #1e1e35;
+    --bg-input: #0f0f18;
+    --border: #2a2a40;
+    --border-active: #6366f1;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --accent: #6366f1;
+    --accent-glow: rgba(99, 102, 241, 0.15);
+    --accent-hover: #818cf8;
+    --success: #22c55e;
+    --success-glow: rgba(34, 197, 94, 0.15);
+    --warning: #f59e0b;
+    --error: #ef4444;
+    --gradient-start: #6366f1;
+    --gradient-end: #8b5cf6;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    line-height: 1.6;
+  }
+
+  /* --- Header --- */
+  .header {
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.03) 0%, transparent 100%);
+    padding: 2rem 0;
+  }
+  .header-inner {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+  .header-icon {
+    width: 56px; height: 56px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.75rem;
+    flex-shrink: 0;
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.2);
+  }
+  .header-text h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 0%, #c7d2fe 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .header-text p {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-top: 0.15rem;
+  }
+  .header-back {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  .header-back:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+    background: var(--bg-card-hover);
+  }
+  .header-back svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+  }
+
+  /* --- Main content --- */
+  .main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  /* --- Section --- */
+  .section {
+    margin-bottom: 2rem;
+  }
+  .section-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+  }
+
+  /* --- How it works --- */
+  .how-it-works {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0;
+  }
+  .how-step {
+    flex: 1;
+    min-width: 140px;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.75rem 1rem;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+  }
+  .how-step .step-num {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    color: white;
+    font-size: 0.72rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .how-step .step-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .how-step .step-text strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  /* --- Source panel (two-column) --- */
+  .source-panel {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 1rem;
+    align-items: start;
+  }
+  .source-selectors {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .selector-group label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.3rem;
+  }
+  .styled-select {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    padding-right: 1.75rem;
+  }
+  .styled-select:hover, .styled-select:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+  .styled-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+
+  /* --- Commit detail card --- */
+  .commit-detail {
+    padding: 1.15rem 1.35rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    margin-top: 23px; /* align top with dropdown, not label */
+  }
+  .commit-detail.loading {
+    justify-content: center;
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+  }
+  .commit-badges {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.65rem;
+  }
+  .commit-badges .cbadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  .cbadge.sha {
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent-hover);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+  }
+  .cbadge.ver {
+    background: var(--success-glow);
+    color: var(--success);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+  }
+  .cbadge.branch-tag {
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--warning);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  .cbadge.plugins {
+    background: rgba(99, 102, 241, 0.08);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+  .commit-msg {
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+    line-height: 1.45;
+  }
+  .commit-body {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-bottom: 0.5rem;
+    white-space: pre-wrap;
+  }
+  .commit-meta {
+    margin-top: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  /* --- Plugin cards --- */
+  .plugin-grid {
+    display: grid;
+    gap: 0.75rem;
+  }
+  .plugin-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1.15rem 1.25rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .plugin-card:hover {
+    border-color: var(--border-active);
+    background: var(--bg-card-hover);
+  }
+  .plugin-card.selected {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .plugin-toggle {
+    width: 20px; height: 20px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    background: var(--bg-input);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+    transition: all 0.2s;
+  }
+  .plugin-card.selected .plugin-toggle {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .plugin-toggle svg {
+    width: 12px; height: 12px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .plugin-card.selected .plugin-toggle svg { opacity: 1; }
+  .plugin-info { flex: 1; }
+  .plugin-info h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.2rem;
+  }
+  .plugin-info p {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .plugin-meta {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+  .plugin-meta span {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  /* --- Bundle format radio --- */
+  .format-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .format-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    cursor: pointer;
+    padding: 0.1rem 0;
+  }
+  .format-option input[type="radio"] {
+    appearance: none;
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-input);
+    flex-shrink: 0;
+    margin-top: 1px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .format-option input[type="radio"]:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: inset 0 0 0 3px var(--bg-primary);
+  }
+  .format-option .format-label {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .format-option .format-desc {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.05rem;
+  }
+
+  /* --- Build button --- */
+  .build-section {
+    text-align: center;
+    padding: 1.5rem 0;
+  }
+  .build-btn {
+    padding: 0.85rem 2.5rem;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s;
+    letter-spacing: 0.02em;
+    box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+    position: relative;
+    overflow: hidden;
+  }
+  .build-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 30px rgba(99, 102, 241, 0.4);
+  }
+  .build-btn:active:not(:disabled) {
+    transform: translateY(0);
+  }
+  .build-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .build-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .copy-btn {
+    padding: 0.85rem 2rem;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s;
+    letter-spacing: 0.02em;
+    box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+    position: relative;
+    overflow: hidden;
+  }
+  .copy-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 30px rgba(99, 102, 241, 0.4);
+  }
+  .copy-btn:active:not(:disabled) {
+    transform: translateY(0);
+  }
+  .copy-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .download-name {
+    margin-top: 0.65rem;
+    font-size: 0.72rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--text-muted);
+  }
+
+  /* --- Progress --- */
+  .progress-area {
+    margin-top: 1.5rem;
+    display: none;
+    text-align: left;
+  }
+  .progress-area.visible { display: block; }
+  .progress-bar-track {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-input);
+    overflow: hidden;
+    margin-bottom: 0.75rem;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+  .progress-log {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.7;
+  }
+  .progress-log .step { color: var(--text-secondary); }
+  .progress-log .step::before { content: '>'; color: var(--accent); margin-right: 0.5rem; }
+  .progress-log .done { color: var(--success); }
+  .progress-log .done::before { content: '\2713'; margin-right: 0.5rem; }
+  .progress-log .err { color: var(--error); }
+  .progress-log .err::before { content: '\2717'; margin-right: 0.5rem; }
+
+  /* --- Footer --- */
+  .footer {
+    border-top: 1px solid var(--border);
+    padding: 1.5rem 2rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+  .footer a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .footer a:hover { text-decoration: underline; }
+
+  /* --- Loading skeleton --- */
+  .skeleton {
+    background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-card-hover) 50%, var(--bg-card) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 8px;
+    height: 60px;
+    border: 1px solid var(--border);
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  /* --- No plugins notice --- */
+  .no-plugins {
+    padding: 1.5rem;
+    border-radius: 12px;
+    border: 1px dashed var(--border);
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+  }
+
+  /* --- Responsive --- */
+  @media (max-width: 700px) {
+    .header-inner { flex-direction: column; text-align: center; }
+    .source-panel { grid-template-columns: 1fr; }
+    .main { padding: 1.5rem 1rem; }
+    .how-it-works { flex-direction: column; }
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <div class="header-icon">&#9889;</div>
+    <div class="header-text">
+      <h1>OpenRouter Pipe &mdash; Bundle Builder</h1>
+      <p>Build a custom pipe bundle with your choice of plugins &mdash; right in your browser. <span style="color:var(--text-muted);font-size:0.75rem">builder v0.1.4</span></p>
+    </div>
+    <a class="header-back" href="https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe" target="_blank">
+      <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      Repository
+    </a>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- How it works -->
+  <div class="section">
+    <div class="how-it-works">
+      <div class="how-step">
+        <div class="step-num">1</div>
+        <div class="step-text"><strong>Pick a source</strong><br>Choose a branch and optionally pin to a specific commit.</div>
+      </div>
+      <div class="how-step">
+        <div class="step-num">2</div>
+        <div class="step-text"><strong>Select plugins</strong><br>Toggle plugins on or off. The core pipe is always included.</div>
+      </div>
+      <div class="how-step">
+        <div class="step-num">3</div>
+        <div class="step-text"><strong>Build &amp; download</strong><br>One click. Bundle is built locally and downloaded.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Source: branch + commit selector with detail panel -->
+  <div class="section">
+    <div class="source-panel">
+      <div class="source-selectors">
+        <div class="selector-group">
+          <label>Branch</label>
+          <select class="styled-select" id="branch-select">
+            <option value="">Loading branches...</option>
+          </select>
+        </div>
+        <div class="selector-group">
+          <label>Commit</label>
+          <select class="styled-select" id="commit-select">
+            <option value="">Latest</option>
+          </select>
+        </div>
+      </div>
+      <div class="commit-detail loading" id="commit-detail">
+        Select a branch to see commit details.
+      </div>
+    </div>
+  </div>
+
+  <!-- Plugins -->
+  <div class="section">
+    <div class="section-label">Plugins</div>
+    <div class="plugin-grid" id="plugin-grid">
+      <div class="skeleton"></div>
+    </div>
+  </div>
+
+  <!-- Bundle format -->
+  <div class="section">
+    <div class="section-label">Bundle Format</div>
+    <div class="format-options" id="format-options">
+      <label class="format-option">
+        <input type="radio" name="bundle-format" value="raw" checked>
+        <div>
+          <div class="format-label">Standard</div>
+          <div class="format-desc">Single readable .py file &mdash; best for most users. Easy to review, edit, and debug.</div>
+        </div>
+      </label>
+      <label class="format-option">
+        <input type="radio" name="bundle-format" value="compressed">
+        <div>
+          <div class="format-label">Compressed</div>
+          <div class="format-desc">Compact single file &mdash; same functionality, ~70% smaller. Best when file size matters.</div>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <!-- Build -->
+  <div class="build-section">
+    <div class="build-actions">
+      <button class="build-btn" id="build-btn" disabled>Build &amp; Download</button>
+      <button class="copy-btn" id="copy-btn" disabled>Build &amp; Copy</button>
+    </div>
+    <div class="download-name" id="download-name"></div>
+    <div class="progress-area" id="progress-area">
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-log" id="progress-log"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  Built with Pyodide &mdash; Python runs entirely in your browser. No server, no uploads, no tracking.<br>
+  <a href="https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe" target="_blank">github.com/rbb-dev/Open-WebUI-OpenRouter-pipe</a>
+</div>
+
+<script>
+// =========================================================================
+// Config
+// =========================================================================
+const REPO_OWNER = 'rbb-dev';
+const REPO_NAME = 'Open-WebUI-OpenRouter-pipe';
+const GITHUB_API = 'https://api.github.com';
+const GITHUB_RAW = 'https://raw.githubusercontent.com';
+const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.27.5/full/';
+const PACKAGE_NAME = 'open_webui_openrouter_pipe';
+
+// =========================================================================
+// State
+// =========================================================================
+let state = {
+  branch: 'main',
+  commitSha: '',       // empty = latest (branch HEAD)
+  commits: [],         // cached commit objects from GitHub API
+  bundleType: 'raw',
+  selectedPlugins: new Set(),
+  plugins: [],
+  version: '',
+  repoTree: null,
+  building: false,
+};
+
+// =========================================================================
+// DOM Helpers
+// =========================================================================
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function logStep(msg) {
+  const log = $('#progress-log');
+  const div = document.createElement('div');
+  div.className = 'step';
+  div.textContent = msg;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+function logDone(msg) {
+  const log = $('#progress-log');
+  const div = document.createElement('div');
+  div.className = 'done';
+  div.textContent = msg;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+function logErr(msg) {
+  const log = $('#progress-log');
+  const div = document.createElement('div');
+  div.className = 'err';
+  div.textContent = msg;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+function setProgress(pct) {
+  $('#progress-fill').style.width = pct + '%';
+}
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// =========================================================================
+// GitHub API
+// =========================================================================
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+async function fetchText(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Fetch error: ${res.status} ${res.statusText}`);
+  return res.text();
+}
+
+async function getRepoTree(ref) {
+  const data = await fetchJSON(
+    `${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/trees/${ref}?recursive=1`
+  );
+  return data.tree;
+}
+
+function rawURL(ref, path) {
+  return `${GITHUB_RAW}/${REPO_OWNER}/${REPO_NAME}/${ref}/${path}`;
+}
+
+function effectiveRef() {
+  return state.commitSha || state.branch;
+}
+
+async function fetchBranches() {
+  return fetchJSON(
+    `${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/branches?per_page=100`
+  );
+}
+
+async function fetchCommits(branch, count = 25) {
+  return fetchJSON(
+    `${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/commits?sha=${encodeURIComponent(branch)}&per_page=${count}`
+  );
+}
+
+function formatCommitDate(isoDate) {
+  const d = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 30) return `${diffDays}d ago`;
+  return d.toLocaleDateString();
+}
+
+// =========================================================================
+// Download filename builder
+// =========================================================================
+
+function buildDownloadName() {
+  const base = PACKAGE_NAME + '_bundled';
+  const suffix = state.bundleType === 'compressed' ? '_compressed' : '';
+  const branchTag = state.branch !== 'main' ? `_${state.branch.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  const ver = state.version && state.version !== 'unknown' ? `_v${state.version}` : '';
+  return `${base}${suffix}${branchTag}${ver}.py`;
+}
+
+function updateDownloadName() {
+  const name = buildDownloadName();
+  $('#download-name').textContent = name;
+}
+
+// =========================================================================
+// Version & Plugin Discovery
+// =========================================================================
+
+async function detectVersion(ref) {
+  const text = await fetchText(rawURL(ref, `${PACKAGE_NAME}/__init__.py`));
+  const match = text.match(/__version__\s*=\s*["']([^"']+)["']/);
+  return match ? match[1] : 'unknown';
+}
+
+function discoverPlugins(tree) {
+  const pluginPrefix = `${PACKAGE_NAME}/plugins/`;
+  const infra = new Set(['base.py', 'registry.py', '__init__.py']);
+  const pluginDirs = new Set();
+
+  for (const entry of tree) {
+    if (entry.type !== 'blob') continue;
+    if (!entry.path.startsWith(pluginPrefix)) continue;
+    const rest = entry.path.slice(pluginPrefix.length);
+    const parts = rest.split('/');
+    if (parts.length >= 2 && !infra.has(parts[0])) {
+      pluginDirs.add(parts[0]);
+    }
+  }
+  return Array.from(pluginDirs);
+}
+
+async function getPluginMetadata(ref, pluginDir) {
+  const pluginPath = `${PACKAGE_NAME}/plugins/${pluginDir}/plugin.py`;
+  try {
+    const source = await fetchText(rawURL(ref, pluginPath));
+    const id = (source.match(/plugin_id\s*=\s*["']([^"']+)["']/) || [])[1] || pluginDir;
+    const name = (source.match(/plugin_name\s*=\s*["']([^"']+)["']/) || [])[1] || pluginDir;
+    const version = (source.match(/plugin_version\s*=\s*["']([^"']+)["']/) || [])[1] || '0.0.0';
+    const docMatch = source.match(/"""([\s\S]*?)"""/);
+    const description = docMatch ? docMatch[1].trim().split('\n')[0] : 'No description available.';
+    const hooksMatch = source.match(/hooks\s*=\s*\{([^}]+)\}/);
+    const hookCount = hooksMatch ? (hooksMatch[1].match(/"/g) || []).length / 2 : 0;
+    return { id, name, version, description, dir: pluginDir, hookCount };
+  } catch {
+    return {
+      id: pluginDir, name: pluginDir, version: '0.0.0',
+      description: 'Plugin detected but metadata could not be read.',
+      dir: pluginDir, hookCount: 0,
+    };
+  }
+}
+
+// =========================================================================
+// UI Rendering
+// =========================================================================
+
+function renderCommitDetail(commitObj) {
+  const panel = $('#commit-detail');
+  if (!commitObj) {
+    panel.className = 'commit-detail loading';
+    panel.innerHTML = 'No commit data available.';
+    return;
+  }
+
+  panel.className = 'commit-detail';
+  const sha7 = commitObj.sha.slice(0, 7);
+  const fullMsg = commitObj.commit.message || '';
+  const lines = fullMsg.split('\n');
+  const title = lines[0];
+  const body = lines.slice(1).join('\n').trim();
+  const author = commitObj.commit.author.name || 'unknown';
+  const date = formatCommitDate(commitObj.commit.author.date);
+  const ver = state.version && state.version !== 'unknown' ? state.version : null;
+
+  let html = '<div class="commit-badges">';
+  html += `<span class="cbadge sha">${sha7}</span>`;
+  if (ver) html += `<span class="cbadge ver">v${ver}</span>`;
+  html += `<span class="cbadge branch-tag">${escHtml(state.branch)}</span>`;
+  const pluginCount = state.plugins.length;
+  html += `<span class="cbadge plugins">${pluginCount} plugin${pluginCount !== 1 ? 's' : ''}</span>`;
+  html += '</div>';
+  html += `<div class="commit-msg">${escHtml(title)}</div>`;
+  if (body) html += `<div class="commit-body">${escHtml(body)}</div>`;
+  html += `<div class="commit-meta">${escHtml(author)} &middot; ${date}</div>`;
+
+  panel.innerHTML = html;
+}
+
+function renderPlugins() {
+  const grid = $('#plugin-grid');
+  if (state.plugins.length === 0) {
+    grid.innerHTML = '<div class="no-plugins">No plugins found on this branch. The core pipe will be built without plugins.</div>';
+    return;
+  }
+  grid.innerHTML = state.plugins.map(p => `
+    <div class="plugin-card ${state.selectedPlugins.has(p.dir) ? 'selected' : ''}" data-dir="${p.dir}">
+      <div class="plugin-toggle">
+        <svg viewBox="0 0 12 12" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="2,6 5,9 10,3"></polyline>
+        </svg>
+      </div>
+      <div class="plugin-info">
+        <h3>${escHtml(p.name)}</h3>
+        <p>${escHtml(p.description)}</p>
+        <div class="plugin-meta">
+          <span>v${escHtml(p.version)}</span>
+          <span>${p.hookCount} hook${p.hookCount !== 1 ? 's' : ''}</span>
+          <span>${escHtml(p.dir)}/</span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  grid.querySelectorAll('.plugin-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const dir = card.dataset.dir;
+      if (state.selectedPlugins.has(dir)) {
+        state.selectedPlugins.delete(dir);
+        card.classList.remove('selected');
+      } else {
+        state.selectedPlugins.add(dir);
+        card.classList.add('selected');
+      }
+    });
+  });
+}
+
+// =========================================================================
+// File fetching for Pyodide
+// =========================================================================
+
+async function fetchSourceFiles(ref, tree, selectedPluginDirs) {
+  const files = {};
+  const packagePrefix = PACKAGE_NAME + '/';
+  const pluginsPrefix = PACKAGE_NAME + '/plugins/';
+  const infra = new Set(['__init__.py', 'base.py', 'registry.py']);
+  const pathsToFetch = [];
+
+  for (const entry of tree) {
+    if (entry.type !== 'blob') continue;
+    if (!entry.path.endsWith('.py')) continue;
+
+    if (entry.path === PACKAGE_NAME + '.py') {
+      pathsToFetch.push(entry.path);
+      continue;
+    }
+    if (entry.path === 'scripts/bundle_v2.py') {
+      pathsToFetch.push(entry.path);
+      continue;
+    }
+    if (!entry.path.startsWith(packagePrefix)) continue;
+
+    if (entry.path.startsWith(pluginsPrefix)) {
+      const rest = entry.path.slice(pluginsPrefix.length);
+      const parts = rest.split('/');
+      if (parts.length === 1 && infra.has(parts[0])) {
+        pathsToFetch.push(entry.path);
+        continue;
+      }
+      if (parts.length >= 1) {
+        if (selectedPluginDirs.has(parts[0])) pathsToFetch.push(entry.path);
+        continue;
+      }
+    }
+    pathsToFetch.push(entry.path);
+  }
+
+  const batchSize = 20;
+  let fetched = 0;
+  for (let i = 0; i < pathsToFetch.length; i += batchSize) {
+    const batch = pathsToFetch.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map(async (path) => [path, await fetchText(rawURL(ref, path))])
+    );
+    for (const [path, text] of results) files[path] = text;
+    fetched += batch.length;
+    setProgress(Math.round((fetched / pathsToFetch.length) * 50) + 10);
+    logStep(`Fetched ${fetched}/${pathsToFetch.length} files`);
+  }
+  return files;
+}
+
+// =========================================================================
+// Pyodide Web Worker — isolates Wasm from the main tab
+// =========================================================================
+// Running Pyodide in a Worker means that if the Wasm runtime crashes
+// (STATUS_ILLEGAL_INSTRUCTION, OOM, stack overflow), the Worker dies
+// but the main tab survives and can display the error to the user.
+
+const WORKER_CODE = `
+let _pyodide = null;
+let _pyodideCDN = null;
+
+async function ensurePyodide(cdn) {
+  if (_pyodide) return _pyodide;
+  log('step', 'Loading Python runtime (Pyodide)...');
+  if (!_pyodideCDN) {
+    _pyodideCDN = cdn;
+    importScripts(cdn + 'pyodide.js');
+  }
+  _pyodide = await loadPyodide({ indexURL: cdn });
+  log('done', 'Python runtime loaded');
+  return _pyodide;
+}
+
+function log(level, msg) {
+  self.postMessage({ type: 'log', level, msg });
+}
+function progress(pct) {
+  self.postMessage({ type: 'progress', pct });
+}
+
+// Clean /build directory between runs
+function cleanBuildDir(pyodide) {
+  try {
+    const entries = pyodide.FS.readdir('/build');
+    for (const name of entries) {
+      if (name === '.' || name === '..') continue;
+      try { rmrf(pyodide, '/build/' + name); } catch(e) {}
+    }
+  } catch(e) {
+    // /build doesn't exist yet — first run
+  }
+}
+
+function rmrf(pyodide, path) {
+  let stat;
+  try { stat = pyodide.FS.stat(path); } catch(e) { return; }
+  if (pyodide.FS.isDir(stat.mode)) {
+    for (const name of pyodide.FS.readdir(path)) {
+      if (name === '.' || name === '..') continue;
+      rmrf(pyodide, path + '/' + name);
+    }
+    pyodide.FS.rmdir(path);
+  } else {
+    pyodide.FS.unlink(path);
+  }
+}
+
+self.onmessage = async function(e) {
+  const { action, pyodideCDN, files, pythonCode, outputPath } = e.data;
+
+  // Preload: just load Pyodide, no build
+  if (action === 'preload') {
+    try {
+      await ensurePyodide(pyodideCDN);
+      self.postMessage({ type: 'preloaded' });
+    } catch (err) {
+      log('err', 'Pyodide preload failed: ' + (err.message || String(err)));
+    }
+    return;
+  }
+
+  try {
+    const pyodide = await ensurePyodide(pyodideCDN);
+    progress(70);
+
+    // Clean and rebuild virtual filesystem
+    log('step', 'Setting up virtual filesystem...');
+    cleanBuildDir(pyodide);
+    try { pyodide.FS.mkdir('/build'); } catch(e) {}
+    const dirs = new Set();
+    for (const path of Object.keys(files)) {
+      const parts = path.split('/');
+      for (let i = 1; i <= parts.length - 1; i++) {
+        dirs.add('/build/' + parts.slice(0, i).join('/'));
+      }
+    }
+    for (const dir of Array.from(dirs).sort()) {
+      try { pyodide.FS.mkdir(dir); } catch(e) {}
+    }
+    for (const [path, content] of Object.entries(files)) {
+      pyodide.FS.writeFile('/build/' + path, content);
+    }
+
+    // Clear cached bundle_v2 module so it re-imports fresh source
+    pyodide.runPython('import sys\\nfor m in list(sys.modules):\\n if m.startswith("bundle_v2"): del sys.modules[m]');
+
+    log('done', 'Virtual filesystem ready');
+    progress(75);
+
+    // Run the Python bundler
+    log('step', 'Running bundler...');
+    pyodide.runPython(pythonCode);
+
+    const buildOk = pyodide.globals.get('_build_ok');
+    const buildOutput = pyodide.globals.get('_build_output');
+
+    if (buildOutput) {
+      for (const line of buildOutput.split('\\n').filter(l => l.trim())) {
+        log('step', line);
+      }
+    }
+
+    if (!buildOk) {
+      self.postMessage({ type: 'error', msg: 'Bundler reported errors \\u2014 check the log above' });
+      return;
+    }
+
+    log('done', 'Bundle built successfully');
+    progress(95);
+
+    const output = pyodide.FS.readFile(outputPath, { encoding: 'utf8' });
+    self.postMessage({ type: 'done', output });
+
+  } catch (err) {
+    self.postMessage({ type: 'error', msg: err.message || String(err) });
+  }
+};
+`;
+
+// Persistent worker — Pyodide loads once, reused across builds
+let _bundlerWorker = null;
+let _bundlerBlobURL = null;
+
+function getBundlerWorker() {
+  if (_bundlerWorker) return _bundlerWorker;
+  const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+  _bundlerBlobURL = URL.createObjectURL(blob);
+  _bundlerWorker = new Worker(_bundlerBlobURL);
+
+  // If the worker crashes, clear it so the next build creates a fresh one
+  _bundlerWorker.onerror = () => {
+    _bundlerWorker = null;
+  };
+  return _bundlerWorker;
+}
+
+function runBundlerInWorker({ files, pythonCode, outputPath, pyodideCDN }) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = getBundlerWorker();
+    } catch (e) {
+      return reject(new Error('Failed to create build worker: ' + e.message));
+    }
+    let settled = false;
+
+    function settle(destroyWorker) {
+      if (settled) return;
+      settled = true;
+      // Restore default handlers
+      worker.onmessage = null;
+      if (destroyWorker) {
+        worker.terminate();
+        _bundlerWorker = null;
+        if (_bundlerBlobURL) {
+          URL.revokeObjectURL(_bundlerBlobURL);
+          _bundlerBlobURL = null;
+        }
+      }
+    }
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      switch (msg.type) {
+        case 'log':
+          if (msg.level === 'step') logStep(msg.msg);
+          else if (msg.level === 'done') logDone(msg.msg);
+          else logErr(msg.msg);
+          break;
+        case 'progress':
+          setProgress(msg.pct);
+          break;
+        case 'done':
+          settle(false);  // keep worker alive for next build
+          resolve(msg.output);
+          break;
+        case 'error':
+          settle(false);  // keep worker alive — the error was handled in Python
+          reject(new Error(msg.msg));
+          break;
+      }
+    };
+
+    worker.onerror = (e) => {
+      settle(true);  // destroy crashed worker
+      const detail = e.message || 'Unknown error';
+      reject(new Error(
+        `Python worker crashed: ${detail}\n` +
+        'This usually means the build exceeded browser memory limits. ' +
+        'Try building from a local copy of index.html, or select fewer plugins.'
+      ));
+    };
+
+    worker.postMessage({ files, pythonCode, outputPath, pyodideCDN });
+  });
+}
+
+// =========================================================================
+// Build
+// =========================================================================
+
+async function doBuild(mode = 'download') {
+  if (state.building) return;
+  state.building = true;
+  const dlBtn = $('#build-btn');
+  const cpBtn = $('#copy-btn');
+  dlBtn.disabled = true;
+  cpBtn.disabled = true;
+  const activeBtn = mode === 'copy' ? cpBtn : dlBtn;
+  activeBtn.textContent = 'Building...';
+
+  const progress = $('#progress-area');
+  progress.classList.add('visible');
+  $('#progress-log').innerHTML = '';
+  setProgress(0);
+
+  try {
+    const ref = effectiveRef();
+    logStep(`Fetching repository tree (${ref.slice(0, 8)})...`);
+    setProgress(5);
+    const tree = await getRepoTree(ref);
+    state.repoTree = tree;
+    logDone('Repository tree loaded');
+    setProgress(10);
+
+    logStep('Downloading source files...');
+    const files = await fetchSourceFiles(ref, tree, state.selectedPlugins);
+    logDone(`Downloaded ${Object.keys(files).length} files`);
+    setProgress(60);
+
+    // Patch plugins/__init__.py for selected plugins only (before sending to Worker)
+    const pluginsInitKey = `${PACKAGE_NAME}/plugins/__init__.py`;
+    if (pluginsInitKey in files) {
+      let initContent = files[pluginsInitKey];
+      const selectedDirs = Array.from(state.selectedPlugins);
+      const importLines = selectedDirs.map(
+        d => `from . import ${d} as _${d}  # noqa: E402, F401`
+      ).join('\n');
+      initContent = initContent.replace(/^from \. import .*# noqa.*$/gm, '');
+      if (importLines) initContent += '\n' + importLines + '\n';
+      files[pluginsInitKey] = initContent;
+    }
+
+    const compressed = state.bundleType === 'compressed';
+    const downloadName = buildDownloadName();
+    const internalName = compressed
+      ? `${PACKAGE_NAME}_bundled_compressed.py`
+      : `${PACKAGE_NAME}_bundled.py`;
+
+    const pythonCode = `
+import sys, os
+from pathlib import Path
+from io import StringIO
+
+os.chdir('/build')
+if '/build/scripts' not in sys.path:
+    sys.path.insert(0, '/build/scripts')
+
+for mod_name in list(sys.modules):
+    if mod_name.startswith('bundle_v2'):
+        del sys.modules[mod_name]
+
+_build_log = StringIO()
+_old_stdout = sys.stdout
+sys.stdout = _build_log
+
+try:
+    import bundle_v2
+    bundle_v2.PROJECT_ROOT = Path('/build')
+    bundle_v2.PACKAGE_DIR = Path('/build/${PACKAGE_NAME}')
+    bundle_v2.STUB_FILE = Path('/build/${PACKAGE_NAME}.py')
+    bundle_v2.DEFAULT_OUTPUT_RAW = Path('/build/output_bundled.py')
+    bundle_v2.DEFAULT_OUTPUT_COMPRESSED = Path('/build/output_bundled_compressed.py')
+
+    output_path = Path('/build/${internalName}')
+    bundle_v2.bundle(output_path=output_path, compressed=${compressed ? 'True' : 'False'})
+    _build_ok = True
+except SystemExit:
+    _build_ok = False
+except Exception as exc:
+    _build_log.write(f"\\nERROR: {exc}\\n")
+    _build_ok = False
+finally:
+    sys.stdout = _old_stdout
+    _build_output = _build_log.getvalue()
+`;
+
+    logStep('Starting Python bundler (isolated worker)...');
+    setProgress(65);
+
+    const output = await runBundlerInWorker({
+      files,
+      pythonCode,
+      outputPath: `/build/${internalName}`,
+      pyodideCDN: PYODIDE_CDN,
+    });
+
+    const sizeKB = (new Blob([output]).size / 1024).toFixed(1);
+
+    if (mode === 'copy') {
+      logStep('Copying to clipboard...');
+      try {
+        await navigator.clipboard.writeText(output);
+        logDone(`Copied to clipboard (${sizeKB} KB)`);
+        activeBtn.textContent = 'Copied!';
+        setTimeout(() => { activeBtn.textContent = 'Build & Copy'; }, 2000);
+      } catch (clipErr) {
+        // Clipboard API fails if tab lost focus during build — fall back to download
+        logErr('Clipboard unavailable (tab lost focus) — downloading instead...');
+        const blob = new Blob([output], { type: 'text/x-python' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        logDone(`Downloaded ${downloadName} (${sizeKB} KB)`);
+        activeBtn.textContent = 'Build & Copy';
+      }
+    } else {
+      logStep('Preparing download...');
+      const blob = new Blob([output], { type: 'text/x-python' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      logDone(`Download started: ${downloadName} (${sizeKB} KB)`);
+    }
+    setProgress(100);
+
+  } catch (err) {
+    logErr('Build failed: ' + (err.message || String(err)));
+    console.error(err);
+  } finally {
+    state.building = false;
+    dlBtn.disabled = false;
+    cpBtn.disabled = false;
+    dlBtn.textContent = 'Build & Download';
+    if (mode !== 'copy') cpBtn.textContent = 'Build & Copy';
+  }
+}
+
+// =========================================================================
+// Initialization
+// =========================================================================
+
+async function populateBranches() {
+  const branchSelect = $('#branch-select');
+  branchSelect.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const branches = await fetchBranches();
+    const priority = { main: 0, dev: 1 };
+    branches.sort((a, b) => {
+      const pa = priority[a.name] ?? 99;
+      const pb = priority[b.name] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return a.name.localeCompare(b.name);
+    });
+    branchSelect.innerHTML = branches.map(
+      b => `<option value="${b.name}"${b.name === 'main' ? ' selected' : ''}>${b.name}</option>`
+    ).join('');
+  } catch (err) {
+    branchSelect.innerHTML = '<option value="main">main</option><option value="dev">dev</option>';
+    console.warn('Failed to fetch branches:', err);
+  }
+}
+
+async function populateCommits(branch) {
+  const commitSelect = $('#commit-select');
+  commitSelect.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const commits = await fetchCommits(branch);
+    state.commits = commits;
+    const options = ['<option value="">(latest)</option>'];
+    for (const c of commits) {
+      const sha7 = c.sha.slice(0, 7);
+      const msg = (c.commit.message || '').split('\n')[0].slice(0, 55);
+      const date = formatCommitDate(c.commit.author.date);
+      const label = `${sha7} \u2014 ${msg} (${date})`;
+      options.push(`<option value="${c.sha}">${escHtml(label)}</option>`);
+    }
+    commitSelect.innerHTML = options.join('');
+    // Show HEAD commit detail
+    if (commits.length > 0) renderCommitDetail(commits[0]);
+  } catch (err) {
+    state.commits = [];
+    commitSelect.innerHTML = '<option value="">(latest)</option>';
+    console.warn('Failed to fetch commits:', err);
+  }
+}
+
+function findCommit(sha) {
+  if (!sha) return state.commits[0] || null; // HEAD
+  return state.commits.find(c => c.sha === sha) || null;
+}
+
+async function loadBranch(branch) {
+  state.branch = branch;
+  state.commitSha = '';
+  state.selectedPlugins.clear();
+
+  $('#commit-select').value = '';
+  $('#plugin-grid').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+  $('#build-btn').disabled = true;
+  $('#copy-btn').disabled = true;
+  $('#commit-detail').className = 'commit-detail loading';
+  $('#commit-detail').innerHTML = 'Loading...';
+
+  populateCommits(branch);
+
+  try {
+    const ref = effectiveRef();
+    const [tree, version] = await Promise.all([
+      getRepoTree(ref),
+      detectVersion(ref),
+    ]);
+
+    state.repoTree = tree;
+    state.version = version;
+
+    const pluginDirs = discoverPlugins(tree);
+    const plugins = await Promise.all(
+      pluginDirs.map(dir => getPluginMetadata(ref, dir))
+    );
+    state.plugins = plugins;
+    for (const p of plugins) state.selectedPlugins.add(p.dir);
+
+
+    renderPlugins();
+    updateDownloadName();
+    // Re-render commit detail now that version is known
+    renderCommitDetail(findCommit(state.commitSha));
+    $('#build-btn').disabled = false;
+    $('#copy-btn').disabled = false;
+
+  } catch (err) {
+    $('#commit-detail').className = 'commit-detail loading';
+    $('#commit-detail').innerHTML = 'Error: ' + (err.message || String(err));
+    $('#plugin-grid').innerHTML = `<div class="no-plugins">Failed to load branch "${escHtml(branch)}". It may not exist or GitHub API rate limit was hit.</div>`;
+  }
+}
+
+async function loadCommit(sha) {
+  state.commitSha = sha;
+  state.selectedPlugins.clear();
+
+  $('#plugin-grid').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+  $('#build-btn').disabled = true;
+  $('#copy-btn').disabled = true;
+  $('#commit-detail').className = 'commit-detail loading';
+  $('#commit-detail').innerHTML = 'Loading...';
+
+  // Show commit detail immediately from cache
+  renderCommitDetail(findCommit(sha));
+
+  try {
+    const ref = effectiveRef();
+    const [tree, version] = await Promise.all([
+      getRepoTree(ref),
+      detectVersion(ref),
+    ]);
+
+    state.repoTree = tree;
+    state.version = version;
+
+    const pluginDirs = discoverPlugins(tree);
+    const plugins = await Promise.all(
+      pluginDirs.map(dir => getPluginMetadata(ref, dir))
+    );
+    state.plugins = plugins;
+    for (const p of plugins) state.selectedPlugins.add(p.dir);
+
+
+    renderPlugins();
+    updateDownloadName();
+    // Re-render with version now available
+    renderCommitDetail(findCommit(sha));
+    $('#build-btn').disabled = false;
+    $('#copy-btn').disabled = false;
+
+  } catch (err) {
+    $('#commit-detail').className = 'commit-detail loading';
+    $('#commit-detail').innerHTML = 'Error: ' + (err.message || String(err));
+    $('#plugin-grid').innerHTML = '<div class="no-plugins">Failed to load commit. GitHub API rate limit may have been hit.</div>';
+  }
+}
+
+// =========================================================================
+// Event Bindings
+// =========================================================================
+
+$('#branch-select').addEventListener('change', (e) => {
+  const branch = e.target.value;
+  if (branch) loadBranch(branch);
+});
+
+$('#commit-select').addEventListener('change', (e) => {
+  const sha = e.target.value;
+  if (sha) {
+    loadCommit(sha);
+  } else {
+    // Reset to branch HEAD
+    state.commitSha = '';
+    renderCommitDetail(findCommit(''));
+    updateDownloadName();
+    // Reload tree for branch HEAD if version might differ
+    loadBranch(state.branch);
+  }
+});
+
+$('#format-options').addEventListener('change', (e) => {
+  if (e.target.name === 'bundle-format') {
+    state.bundleType = e.target.value;
+    updateDownloadName();
+  }
+});
+
+$('#build-btn').addEventListener('click', () => doBuild('download'));
+$('#copy-btn').addEventListener('click', () => doBuild('copy'));
+
+// =========================================================================
+// Boot
+// =========================================================================
+(async () => {
+  await populateBranches();
+  loadBranch('main');
+
+  // Preload Pyodide in the background while the user configures their build
+  try {
+    const w = getBundlerWorker();
+    w.postMessage({ action: 'preload', pyodideCDN: PYODIDE_CDN });
+  } catch(e) { /* non-critical */ }
+})();
+</script>
+</body>
+</html>

@@ -2,6 +2,8 @@
 
 > Reference for extending the Pipe Stats Dashboard plugin with custom commands.
 
+![Pipe Stats Dashboard](images/plugin_pipe_stats.gif)
+
 ---
 
 ## Overview

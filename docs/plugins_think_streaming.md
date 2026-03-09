@@ -2,6 +2,8 @@
 
 > Live reasoning and tool execution display via SSE-powered iframe embeds.
 
+![Think Streaming](images/plugin_think_streaming.gif)
+
 ---
 
 ## Overview
