@@ -15,6 +15,7 @@ from .auth import ACCESS_DENIED_MD
 from .command_registry import CommandRegistry
 from .context import CommandContext
 from .ephemeral_keys import EphemeralKeyStore
+from .._utils import configure_keystore_redis, extract_task_name, extract_user_message
 from .sse_stats import register_sse_route
 from .stats_publisher import run_stats_publisher
 
@@ -57,6 +58,9 @@ class PipeStatsDashboardPlugin(PluginBase):
         self.ctx = ctx
         self._get_pipe = lambda: getattr(ctx, "pipe", None)  # noqa: E731
 
+        # Wire Redis into key store for cross-worker key sharing
+        configure_keystore_redis(self._key_store, ctx.pipe)
+
         # Register the SSE endpoint for live dashboard stats
         register_sse_route(self._key_store, self._get_pipe)
 
@@ -92,6 +96,8 @@ class PipeStatsDashboardPlugin(PluginBase):
             log.debug("Stats publisher task created (ns=%s)", namespace)
 
     def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
+        if not hasattr(self, "ctx"):
+            return
         if not self.ctx.valves.PIPE_STATS_ENABLE:
             return
         _display_name = "Pipe Stats Dashboard"
@@ -100,6 +106,9 @@ class PipeStatsDashboardPlugin(PluginBase):
         # Write a clean display name into OWUI's Models table so the UI shows
         # "Pipe Stats Dashboard" instead of the ugly concatenated format.
         self._ensure_model_overlay(_display_name, _description)
+        # Lazy Redis retry — on_init may fire before Redis is ready
+        if self._key_store._redis_client is None:
+            configure_keystore_redis(self._key_store, self.ctx.pipe)
         # Ensure the stats publisher is running — on_models fires on every
         # model-list request, so this catches workers that missed on_init.
         if hasattr(self, "_get_pipe"):
@@ -228,36 +237,8 @@ class PipeStatsDashboardPlugin(PluginBase):
             return True
         return False
 
-    @staticmethod
-    def _extract_task_name(task: Any) -> str:
-        """Extract task name from OWUI task metadata."""
-        if isinstance(task, str):
-            return task.strip()
-        if isinstance(task, dict):
-            name = task.get("type") or task.get("task") or task.get("name")
-            return name.strip() if isinstance(name, str) else ""
-        return ""
-
-    @staticmethod
-    def _extract_user_message(body: dict[str, Any]) -> str:
-        """Extract the last user message content from the request body."""
-        messages = body.get("messages")
-        if not isinstance(messages, list):
-            return ""
-        # Walk backwards to find the last user message
-        for msg in reversed(messages):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    return content.strip()
-                # Handle multimodal content (list of parts)
-                if isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            text = part.get("text", "")
-                            if isinstance(text, str):
-                                return text.strip()
-        return ""
+    _extract_task_name = staticmethod(extract_task_name)
+    _extract_user_message = staticmethod(extract_user_message)
 
     @staticmethod
     def _build_task_fallback(task_name: str) -> str:
@@ -278,3 +259,7 @@ class PipeStatsDashboardPlugin(PluginBase):
             return json.dumps({"emoji": ""})
         # Unknown task type — return empty JSON object as safe default
         return "{}"
+
+    def on_shutdown(self, **kwargs: Any) -> None:
+        if self._publisher_task is not None and not self._publisher_task.done():
+            self._publisher_task.cancel()

@@ -362,31 +362,15 @@ class TestThinkStreamingEmitterWrapper:
         assert len(result["output"]) == 2000
 
 
-# ── EphemeralKeyStore max_keys parameter Tests ──
+# ── EphemeralKeyStore elastic growth Tests ──
 
 
-class TestEphemeralKeyStoreMaxKeys:
-    def test_custom_max_keys(self):
-        store = EphemeralKeyStore(max_keys=5)
-        keys = [store.generate() for _ in range(5)]
-        assert store.active_count == 5
-
-        # 6th key should evict oldest
-        new_key = store.generate()
-        assert store.active_count == 5
-        assert store.validate(new_key) is True
-        assert store.validate(keys[0]) is False
-
-    def test_default_max_keys_unchanged(self):
-        """Default max_keys should still be 10 (backward compat)."""
+class TestEphemeralKeyStoreElastic:
+    def test_grows_beyond_old_defaults(self):
+        """Store should hold any number of keys — TTL is the only eviction."""
         store = EphemeralKeyStore()
-        assert store._max_keys == 10
-
-    def test_large_max_keys(self):
-        store = EphemeralKeyStore(max_keys=100)
-        keys = [store.generate() for _ in range(50)]
-        assert store.active_count == 50
-        # No eviction yet
+        keys = [store.generate() for _ in range(200)]
+        assert store.active_count == 200
         for k in keys:
             assert store.validate(k) is True
 
@@ -503,10 +487,10 @@ class TestThinkStreamingPluginValves:
             job_metadata={"user_id": "u1", "request_id": "r1"},
         )
 
-        # With user valve absent, default should be True → plugin should proceed
-        assert result is not None, (
-            "Plugin should return a wrapper when user valve is absent "
-            "(default=True)"
+        # With user valve absent, default should be False (opt-in) → plugin should NOT wrap
+        assert result is None, (
+            "Plugin should return None when user valve is absent "
+            "(declared default=False, opt-in)"
         )
 
     @pytest.mark.asyncio

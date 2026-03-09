@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from open_webui_openrouter_pipe.plugins.pipe_stats.ephemeral_keys import (
     EphemeralKeyStore,
     _PS_EK_DEFAULT_TTL,
-    _PS_EK_MAX_KEYS,
 )
 from open_webui_openrouter_pipe.plugins.pipe_stats.runtime_stats import (
     collect_fast_stats,
@@ -49,7 +48,7 @@ class TestEphemeralKeyStore:
         # Record initial timestamp
         ts_before = store._keys[key]
         # Advance time slightly
-        with patch("open_webui_openrouter_pipe.plugins.pipe_stats.ephemeral_keys.time") as mock_time:
+        with patch("open_webui_openrouter_pipe.plugins._utils.time") as mock_time:
             mock_time.monotonic.return_value = time.monotonic() + 10
             store.validate(key)
             # Timestamp should be updated to the new time
@@ -81,16 +80,14 @@ class TestEphemeralKeyStore:
         store.generate()
         assert store.active_count == 2
 
-    def test_max_keys_eviction(self):
-        """When at capacity, oldest key should be evicted."""
+    def test_no_key_cap(self):
+        """Keys should grow elastically — no hard cap, TTL is the only eviction."""
         store = EphemeralKeyStore()
-        keys = [store.generate() for _ in range(_PS_EK_MAX_KEYS)]
-        assert store.active_count == _PS_EK_MAX_KEYS
-        # Generate one more — oldest should be evicted
-        new_key = store.generate()
-        assert store.active_count == _PS_EK_MAX_KEYS
-        assert store.validate(new_key) is True
-        assert store.validate(keys[0]) is False  # Oldest was evicted
+        keys = [store.generate() for _ in range(500)]
+        assert store.active_count == 500
+        # All keys still valid
+        for k in keys:
+            assert store.validate(k) is True
 
     def test_cleanup_purges_expired(self):
         """Expired keys should be cleaned up automatically."""
@@ -116,6 +113,142 @@ class TestEphemeralKeyStore:
         store = EphemeralKeyStore()
         keys = {store.generate() for _ in range(10)}
         assert len(keys) == 10
+
+
+# ── Async EphemeralKeyStore Tests ──
+
+
+class TestEphemeralKeyStoreAsync:
+    """Tests for the async API (async_generate, async_validate, async_revoke)."""
+
+    @pytest.mark.asyncio
+    async def test_async_generate_without_redis(self):
+        """Without Redis, async_generate behaves like sync generate."""
+        store = EphemeralKeyStore()
+        key = await store.async_generate()
+        assert isinstance(key, str)
+        assert len(key) == 64
+        assert store.validate(key) is True
+
+    @pytest.mark.asyncio
+    async def test_async_validate_without_redis(self):
+        """Without Redis, async_validate checks local dict only."""
+        store = EphemeralKeyStore()
+        key = await store.async_generate()
+        assert await store.async_validate(key) is True
+        assert await store.async_validate("nonexistent") is False
+
+    @pytest.mark.asyncio
+    async def test_async_revoke_without_redis(self):
+        """Without Redis, async_revoke removes from local dict."""
+        store = EphemeralKeyStore()
+        key = await store.async_generate()
+        await store.async_revoke(key)
+        assert store.validate(key) is False
+
+    @pytest.mark.asyncio
+    async def test_async_generate_with_redis(self):
+        """With Redis configured, async_generate writes to both local and Redis."""
+        store = EphemeralKeyStore(ttl=120)
+        redis_client = Mock()
+        redis_client.set = AsyncMock()
+        store.configure_redis(redis_client, "test-ns")
+
+        key = await store.async_generate()
+        assert len(key) == 64
+        assert store.validate(key) is True
+        redis_client.set.assert_awaited_once_with(
+            f"test-ns:ephemeral:{key}", "1", ex=120,
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_validate_local_hit_refreshes_redis(self):
+        """Local hit should also refresh the Redis TTL."""
+        store = EphemeralKeyStore(ttl=120)
+        redis_client = Mock()
+        redis_client.expire = AsyncMock()
+        store.configure_redis(redis_client, "test-ns")
+
+        key = store.generate()  # Local-only key
+        result = await store.async_validate(key)
+        assert result is True
+        redis_client.expire.assert_awaited_once_with(
+            f"test-ns:ephemeral:{key}", 120,
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_validate_redis_fallback(self):
+        """Local miss should fall back to Redis; on hit, import to local."""
+        store = EphemeralKeyStore(ttl=120)
+        redis_client = Mock()
+        redis_client.exists = AsyncMock(return_value=1)
+        redis_client.expire = AsyncMock()
+        store.configure_redis(redis_client, "test-ns")
+
+        # Key not in local store, but exists in Redis
+        result = await store.async_validate("cross-worker-key")
+        assert result is True
+        # Should now be imported into local dict
+        assert "cross-worker-key" in store._keys
+        redis_client.exists.assert_awaited_once()
+        redis_client.expire.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_async_validate_redis_miss(self):
+        """Key missing from both local and Redis should return False."""
+        store = EphemeralKeyStore(ttl=120)
+        redis_client = Mock()
+        redis_client.exists = AsyncMock(return_value=0)
+        store.configure_redis(redis_client, "test-ns")
+
+        result = await store.async_validate("missing-key")
+        assert result is False
+        assert "missing-key" not in store._keys
+
+    @pytest.mark.asyncio
+    async def test_async_revoke_with_redis(self):
+        """async_revoke should delete from both local and Redis."""
+        store = EphemeralKeyStore()
+        redis_client = Mock()
+        redis_client.set = AsyncMock()
+        redis_client.delete = AsyncMock()
+        store.configure_redis(redis_client, "test-ns")
+
+        key = await store.async_generate()
+        await store.async_revoke(key)
+        assert store.validate(key) is False
+        redis_client.delete.assert_called_once_with(f"test-ns:ephemeral:{key}")
+
+    @pytest.mark.asyncio
+    async def test_async_generate_redis_failure_falls_back(self):
+        """If Redis write fails, key should still exist locally."""
+        store = EphemeralKeyStore()
+        redis_client = Mock()
+        redis_client.set = Mock(side_effect=ConnectionError("Redis down"))
+        store.configure_redis(redis_client, "test-ns")
+
+        key = await store.async_generate()
+        assert len(key) == 64
+        assert store.validate(key) is True
+
+    @pytest.mark.asyncio
+    async def test_async_validate_redis_failure_returns_false(self):
+        """If Redis check fails on local miss, return False gracefully."""
+        store = EphemeralKeyStore()
+        redis_client = Mock()
+        redis_client.exists = Mock(side_effect=ConnectionError("Redis down"))
+        store.configure_redis(redis_client, "test-ns")
+
+        result = await store.async_validate("some-key")
+        assert result is False
+
+    def test_configure_redis(self):
+        """configure_redis should set the client and prefix."""
+        store = EphemeralKeyStore()
+        client = Mock()
+        store.configure_redis(client, "myapp")
+        assert store._redis_client is client
+        assert store._redis_prefix == "myapp:ephemeral"
 
 
 # ── Runtime Stats Tests ──

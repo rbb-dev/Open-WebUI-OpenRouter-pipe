@@ -26,5 +26,7 @@ del importlib, pkgutil
 
 # Explicit imports — redundant in package mode (already loaded by pkgutil above)
 # but essential in compressed-bundle mode where pkgutil returns nothing.
+from . import config_cmd as _config_cmd  # noqa: E402, F401
+from . import health_cmd as _health_cmd  # noqa: E402, F401
 from . import help_cmd as _help_cmd  # noqa: E402, F401
 from . import stats_cmd as _stats_cmd  # noqa: E402, F401

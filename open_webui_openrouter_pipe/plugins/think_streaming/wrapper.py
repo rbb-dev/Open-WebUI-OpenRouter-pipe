@@ -58,15 +58,6 @@ class ThinkStreamingEmitterWrapper:
             await self._original(event)
             return
 
-        # Thinking status events → copy + pass through
-        if etype == "status":
-            data = event.get("data", {})
-            desc = data.get("description", "") if isinstance(data, dict) else ""
-            if self._is_thinking_status(desc):
-                self._route(event)
-                await self._original(event)
-                return
-
         # Tool card events → emit iframe on first event, copy to SSE queue,
         # AND pass through to OWUI.
         if etype == "response.output_item.added":
@@ -132,9 +123,6 @@ class ThinkStreamingEmitterWrapper:
         if etype == "reasoning:completed":
             data = event.get("data", {})
             return {"type": "thinking_done", "content": data.get("content", "")}
-        if etype == "status":
-            data = event.get("data", {})
-            return {"type": "thinking_status", "text": data.get("description", "")}
         if etype == "response.output_item.added":
             item = event.get("item", {})
             if not isinstance(item, dict):
@@ -161,23 +149,6 @@ class ThinkStreamingEmitterWrapper:
                     simplified["output"] = output[:2000]  # Cap to avoid huge payloads
                 return simplified
         return {"type": "unknown"}
-
-    @staticmethod
-    def _is_thinking_status(desc: str) -> bool:
-        """Check if a status description is thinking-related.
-
-        Matches the output patterns of ``ReasoningStatusThrottle`` from
-        ``streaming_core.py``.  These status messages are emitted via
-        ``_maybe_emit_reasoning_status`` and always describe reasoning
-        activity.
-
-        Conservative default: only suppress events that we are certain
-        are thinking status.  This can be refined once we see the exact
-        output patterns in production.
-        """
-        if not desc:
-            return False
-        return False
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the original emitter.

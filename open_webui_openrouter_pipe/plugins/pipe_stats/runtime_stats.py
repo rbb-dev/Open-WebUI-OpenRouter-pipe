@@ -14,6 +14,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from ._collectors import collect_concurrency, collect_queues, collect_rate_limits, collect_sessions
 from .formatters import (
     build_model_name_map,
     format_ago,
@@ -61,116 +62,19 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def collect_fast_stats(pipe: Pipe) -> dict[str, Any]:
-    """Lightweight metrics collected every tick."""
-    stats: dict[str, Any] = {
+    """Lightweight metrics collected every tick.
+
+    Delegates to shared collectors in ``_collectors`` for concurrency,
+    queues, rate limits, and sessions.
+    """
+    return {
         "uptime_s": round(time.monotonic() - _PS_RT_PROCESS_START, 1),
         "pid": os.getpid(),
+        "concurrency": collect_concurrency(pipe),
+        "queues": collect_queues(pipe),
+        "rate_limits": collect_rate_limits(pipe),
+        "sessions": collect_sessions(),
     }
-
-    # ── Concurrency ──
-    sem = getattr(pipe, "_global_semaphore", None)
-    sem_limit = getattr(pipe, "_semaphore_limit", 0) or 0
-    tool_sem = getattr(pipe, "_tool_global_semaphore", None)
-    tool_limit = getattr(pipe, "_tool_global_limit", 0) or 0
-    # Fall back to valve config when semaphores aren't materialized yet
-    # (lazy init on first request — avoids misleading "0 / 0" display)
-    if not sem_limit:
-        valves = getattr(pipe, "valves", None)
-        sem_limit = getattr(valves, "MAX_CONCURRENT_REQUESTS", 0) or 0
-    if not tool_limit:
-        valves = getattr(pipe, "valves", None)
-        tool_limit = getattr(valves, "MAX_PARALLEL_TOOLS_GLOBAL", 0) or 0
-    stats["concurrency"] = {
-        "active_requests": max(0, sem_limit - sem._value) if sem else 0,
-        "max_requests": sem_limit,
-        "active_tools": max(0, tool_limit - tool_sem._value) if tool_sem else 0,
-        "max_tools": tool_limit,
-    }
-
-    # ── Queues ──
-    rq = getattr(pipe, "_request_queue", None)
-    lq = getattr(pipe, "_log_queue", None)
-    slm = getattr(pipe, "_session_log_manager", None)
-    archive_q = getattr(slm, "_queue", None) if slm else None
-    stats["queues"] = {
-        "requests": rq.qsize() if rq else 0,
-        "requests_max": getattr(pipe, "_QUEUE_MAXSIZE", 1000),
-        "logs": lq.qsize() if lq else 0,
-        "archive": archive_q.qsize() if archive_q else 0,
-    }
-
-    # ── Rate Limits (summary — no per-user data) ──
-    cb = getattr(pipe, "_circuit_breaker", None)
-    if cb:
-        threshold = getattr(cb, "_threshold", 0)
-        window = getattr(cb, "_window_seconds", 0.0)
-        now = time.time()
-        cutoff = now - window if window else 0
-
-        # Request breakers
-        records = getattr(cb, "_breaker_records", {})
-        tracked = 0
-        with_failures = 0
-        tripped = 0
-        for dq in records.values():
-            recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
-            if recent > 0:
-                tracked += 1
-                with_failures += 1
-            else:
-                tracked += 1
-            if recent >= threshold:
-                tripped += 1
-
-        # Tool breakers
-        tool_breakers = getattr(cb, "_tool_breakers", {})
-        tool_tracked = 0
-        tool_tripped = 0
-        for user_tools in tool_breakers.values():
-            for dq in user_tools.values():
-                recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
-                tool_tracked += 1
-                if recent >= threshold:
-                    tool_tripped += 1
-
-        # Auth failures (class-level)
-        from ...core.circuit_breaker import CircuitBreaker
-        auth_active = 0
-        with CircuitBreaker._AUTH_FAILURE_LOCK:
-            for until in CircuitBreaker._AUTH_FAILURE_UNTIL.values():
-                if now < until:
-                    auth_active += 1
-
-        stats["rate_limits"] = {
-            "tracked_users": tracked,
-            "users_with_failures": with_failures,
-            "tripped_users": tripped,
-            "threshold": threshold,
-            "window_s": round(window, 1),
-            "tool_tracked": tool_tracked,
-            "tool_tripped": tool_tripped,
-            "auth_failures_active": auth_active,
-        }
-    else:
-        stats["rate_limits"] = {
-            "tracked_users": 0,
-            "users_with_failures": 0,
-            "tripped_users": 0,
-            "threshold": 0,
-            "window_s": 0,
-            "tool_tracked": 0,
-            "tool_tripped": 0,
-            "auth_failures_active": 0,
-        }
-
-    # ── Sessions ──
-    try:
-        from ...core.logging_system import SessionLogger
-        stats["sessions"] = {"active": len(SessionLogger.logs)}
-    except Exception:
-        stats["sessions"] = {"active": 0}
-
-    return stats
 
 
 # ---------------------------------------------------------------------------

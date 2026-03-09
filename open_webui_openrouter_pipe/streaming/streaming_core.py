@@ -2415,27 +2415,30 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
-            if (not error_occurred) and (not was_cancelled):
-                # Plugin on_response_transform hook (no-op if no subscribers)
-                _original_assistant_message = assistant_message
-                if self._pipe.valves.ENABLE_PLUGIN_SYSTEM:
-                    try:
-                        completion_data: dict[str, Any] = {
-                            "done": terminal,
-                            "content": assistant_message,
-                        }
-                        if total_usage:
-                            completion_data["usage"] = total_usage
-                        await self._pipe._ensure_plugin_registry().dispatch_on_response_transform(
-                            completion_data, str(body.model or ""), metadata,
-                            user_id=str(user_id or ""), user=user_obj,
-                        )
-                        # Pick up any content modifications from plugins
+            # Plugin on_response_transform hook (always fires so plugins
+            # can clean up resources even on error/cancel).
+            _original_assistant_message = assistant_message
+            if self._pipe.valves.ENABLE_PLUGIN_SYSTEM:
+                _request_status = "cancelled" if was_cancelled else ("error" if error_occurred else "complete")
+                try:
+                    completion_data: dict[str, Any] = {
+                        "done": terminal,
+                        "content": assistant_message,
+                        "status": _request_status,
+                    }
+                    if total_usage:
+                        completion_data["usage"] = total_usage
+                    await self._pipe._ensure_plugin_registry().dispatch_on_response_transform(
+                        completion_data, str(body.model or ""), metadata,
+                        user_id=str(user_id or ""), user=user_obj,
+                    )
+                    # Pick up content modifications only on success
+                    if not error_occurred and not was_cancelled:
                         transformed = completion_data.get("content", assistant_message)
                         if transformed != assistant_message:
                             assistant_message = transformed
-                    except Exception:
-                        self.logger.debug("Plugin on_response_transform dispatch failed", exc_info=True)
+                except Exception:
+                    self.logger.debug("Plugin on_response_transform dispatch failed", exc_info=True)
 
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events —

@@ -604,7 +604,10 @@ class TestTimingScopeContextManager:
         with tl.timing_scope("my_scope"):
             pass  # Do something
 
-        events = tl.get_timing_events("req-scope-enabled")
+        # Filter to only our scope's events — Pipe.__del__ destructors from
+        # other tests can leak timing events into this context via ContextVar.
+        all_events = tl.get_timing_events("req-scope-enabled")
+        events = [e for e in all_events if e.get("label") == "my_scope"]
         # Should have enter and exit events
         assert len(events) == 2
         assert events[0]["event"] == "enter"

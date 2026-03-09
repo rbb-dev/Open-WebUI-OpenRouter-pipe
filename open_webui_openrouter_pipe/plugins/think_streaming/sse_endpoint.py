@@ -13,12 +13,10 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..pipe_stats.ephemeral_keys import EphemeralKeyStore
+    from .._utils import EphemeralKeyStore
     from .session import SessionRegistry
 
 _ts_sse_log = logging.getLogger(__name__)
-
-_ts_registered = False
 
 
 def register_think_streaming_route(
@@ -30,26 +28,12 @@ def register_think_streaming_route(
     Returns ``True`` if registered (or already exists), ``False`` if
     the OWUI app could not be imported.
     """
-    global _ts_registered
-    if _ts_registered:
-        return True
+    from .._utils import register_sse_endpoint
 
-    try:
+    async def _think_streaming_sse(key: str) -> Any:
         from starlette.responses import PlainTextResponse, StreamingResponse
 
-        from .._utils import ensure_route_before_spa, get_owui_app
-    except ImportError:
-        _ts_sse_log.debug("Dependencies not available — Think Streaming endpoint not registered")
-        return False
-
-    app = get_owui_app()
-    if app is None:
-        _ts_sse_log.debug("OWUI app not available — Think Streaming endpoint not registered")
-        return False
-
-    @app.get("/api/pipe/think_streaming/{key}")
-    async def _think_streaming_sse(key: str) -> Any:
-        if not key_store.validate(key):
+        if not await key_store.async_validate(key):
             return PlainTextResponse("Invalid or expired key", status_code=403)
         session = session_registry.get(key)
         if session is None:
@@ -63,10 +47,11 @@ def register_think_streaming_route(
             },
         )
 
-    ensure_route_before_spa(app)
-    _ts_registered = True
-    _ts_sse_log.debug("Think Streaming SSE endpoint registered at /api/pipe/think_streaming/{key}")
-    return True
+    return register_sse_endpoint(
+        "/api/pipe/think_streaming/{key}",
+        _think_streaming_sse,
+        logger=_ts_sse_log,
+    )
 
 
 async def _generate(
@@ -88,7 +73,7 @@ async def _generate(
                 # Send heartbeat to keep the connection alive
                 yield ": heartbeat\n\n"
                 # Check if the key is still valid
-                if not key_store.validate(key):
+                if not await key_store.async_validate(key):
                     break
                 continue
 

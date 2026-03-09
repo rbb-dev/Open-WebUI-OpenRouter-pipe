@@ -7,11 +7,12 @@
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Plugin Lifecycle](#plugin-lifecycle)
-3. [Understanding Hook Points](#understanding-hook-points)
-4. [Creating a Plugin](#creating-a-plugin)
-5. [Plugin-Exported Valves](#plugin-exported-valves)
-6. [Hook Reference](#hook-reference)
+2. [Shared Plugin Infrastructure](#shared-plugin-infrastructure)
+3. [Plugin Lifecycle](#plugin-lifecycle)
+4. [Understanding Hook Points](#understanding-hook-points)
+5. [Creating a Plugin](#creating-a-plugin)
+6. [Plugin-Exported Valves](#plugin-exported-valves)
+7. [Hook Reference](#hook-reference)
    - [on_init](#on_init)
    - [on_models](#on_models)
    - [on_request](#on_request)
@@ -19,16 +20,16 @@
    - [on_emitter_wrap](#on_emitter_wrap)
    - [on_response_transform](#on_response_transform)
    - [on_shutdown](#on_shutdown)
-7. [Hook Dispatch Semantics](#hook-dispatch-semantics)
-8. [Priority System](#priority-system)
-9. [PluginContext — Accessing Pipe Internals](#plugincontext--accessing-pipe-internals)
-10. [Streaming Compatibility](#streaming-compatibility)
-11. [Error Isolation](#error-isolation)
-12. [Bundle Compatibility](#bundle-compatibility)
-13. [Complete Example: Counter Plugin](#complete-example-counter-plugin)
-14. [Pipe Internals Reference](#pipe-internals-reference)
-15. [Testing Plugins](#testing-plugins)
-16. [See Also](#see-also)
+8. [Hook Dispatch Semantics](#hook-dispatch-semantics)
+9. [Priority System](#priority-system)
+10. [PluginContext — Accessing Pipe Internals](#plugincontext--accessing-pipe-internals)
+11. [Streaming Compatibility](#streaming-compatibility)
+12. [Error Isolation](#error-isolation)
+13. [Bundle Compatibility](#bundle-compatibility)
+14. [Complete Example: Counter Plugin](#complete-example-counter-plugin)
+15. [Pipe Internals Reference](#pipe-internals-reference)
+16. [Testing Plugins](#testing-plugins)
+17. [See Also](#see-also)
 
 ---
 
@@ -56,10 +57,59 @@ The plugin system consists of three layers:
 |------|---------|
 | `plugins/base.py` | `PluginBase` class and `PluginContext` |
 | `plugins/registry.py` | `PluginRegistry` — registration, init, dispatch |
-| `plugins/_utils.py` | Shared utilities: `get_owui_app()`, `ensure_route_before_spa()` |
+| `plugins/_utils.py` | Shared utilities: `get_owui_app()`, `ensure_route_before_spa()`, `register_sse_endpoint()`, `EphemeralKeyStore` |
 | `plugins/__init__.py` | Auto-discovery via `pkgutil` + explicit imports |
 | `plugins/pipe_stats/` | Built-in plugin: admin diagnostics virtual model with live SSE dashboard |
 | `plugins/think_streaming/` | Built-in plugin: live reasoning and tool execution display via SSE iframe |
+
+---
+
+## Shared Plugin Infrastructure
+
+`plugins/_utils.py` provides reusable building blocks for plugins that need SSE endpoints or authenticated sessions. These utilities are shared across all built-in plugins and available to custom plugins.
+
+### `register_sse_endpoint(path, handler, *, logger)`
+
+Registers a `GET` endpoint on OWUI's FastAPI app with idempotency, route reordering, and error handling. Replaces the boilerplate pattern of importing the OWUI app, checking for Starlette, registering the route, and calling `ensure_route_before_spa()`.
+
+```python
+from .._utils import register_sse_endpoint
+
+async def _my_sse_handler(key: str) -> Any:
+    from starlette.responses import StreamingResponse
+    # ... validate key, build generator ...
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+register_sse_endpoint("/api/pipe/my_plugin/{key}", _my_sse_handler, logger=log)
+```
+
+Returns `True` if registered (or already exists), `False` if the OWUI app or Starlette is unavailable. Tracks registered paths in a module-level set — subsequent calls with the same path are no-ops.
+
+### `EphemeralKeyStore`
+
+In-memory key store with optional Redis dual-write for multi-worker deployments. Keys are 256-bit cryptographic tokens (`secrets.token_hex(32)`) with TTL-based expiry and configurable capacity limits.
+
+**Sync API** (process-local only):
+- `generate()` → `str` — create a new key
+- `validate(key)` → `bool` — check and refresh key timestamp
+- `revoke(key)` — delete a key
+
+**Async API** (local + Redis dual-write):
+- `await async_generate()` → `str` — create key locally and write to Redis
+- `await async_validate(key)` → `bool` — check local first, fall back to Redis on miss, import cross-worker keys to local dict
+- `await async_revoke(key)` — delete from both local and Redis
+
+**Redis configuration:**
+```python
+store = EphemeralKeyStore(ttl=300, max_keys=10)
+# Later, when Redis is available:
+store.configure_redis(redis_client, namespace="openrouter")
+# Keys stored at {namespace}:ephemeral:{token} with TTL matching store._ttl
+```
+
+When Redis is not configured, async methods behave identically to their sync counterparts. All existing sync callers and tests continue to work unchanged.
+
+**Multi-worker behavior:** In multi-worker deployments (where OWUI requires Redis), keys generated on Worker A are written to Redis. When Worker B receives the SSE request, `async_validate` checks local (miss), then Redis (hit), imports the key to Worker B's local dict, and refreshes the Redis TTL. Subsequent validations on Worker B are fast-path local hits.
 
 ---
 

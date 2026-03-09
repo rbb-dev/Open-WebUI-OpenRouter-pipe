@@ -23,10 +23,9 @@ import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    pass
+from ._collectors import collect_concurrency, collect_queues, collect_rate_limits, collect_sessions
 
 _ps_pub_log = logging.getLogger(__name__)
 
@@ -45,113 +44,40 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     Only includes data that is *unique* to this process — shared data
     (models, storage, config, plugins) is read locally by the SSE
     reader and doesn't need Redis sync.
+
+    Delegates to shared collectors and maps full keys to compact Redis keys.
     """
-    pid = os.getpid()
-    uptime_s = round(time.monotonic() - _PS_PUB_PROCESS_START, 1)
-
-    # Concurrency
-    sem = getattr(pipe, "_global_semaphore", None)
-    sem_limit = getattr(pipe, "_semaphore_limit", 0) or 0
-    tool_sem = getattr(pipe, "_tool_global_semaphore", None)
-    tool_limit = getattr(pipe, "_tool_global_limit", 0) or 0
-    # Fall back to valve config when semaphores aren't materialized yet
-    if not sem_limit:
-        valves = getattr(pipe, "valves", None)
-        sem_limit = getattr(valves, "MAX_CONCURRENT_REQUESTS", 0) or 0
-    if not tool_limit:
-        valves = getattr(pipe, "valves", None)
-        tool_limit = getattr(valves, "MAX_PARALLEL_TOOLS_GLOBAL", 0) or 0
-
-    concurrency = {
-        "ar": max(0, sem_limit - sem._value) if sem else 0,
-        "mr": sem_limit,
-        "at": max(0, tool_limit - tool_sem._value) if tool_sem else 0,
-        "mt": tool_limit,
-    }
-
-    # Queues
-    rq = getattr(pipe, "_request_queue", None)
-    lq = getattr(pipe, "_log_queue", None)
-    slm = getattr(pipe, "_session_log_manager", None)
-    archive_q = getattr(slm, "_queue", None) if slm else None
-
-    queues = {
-        "rq": rq.qsize() if rq else 0,
-        "rm": getattr(pipe, "_QUEUE_MAXSIZE", 1000),
-        "lq": lq.qsize() if lq else 0,
-        "aq": archive_q.qsize() if archive_q else 0,
-    }
-
-    # Rate limits (summary counts only)
-    cb = getattr(pipe, "_circuit_breaker", None)
-    if cb:
-        threshold = getattr(cb, "_threshold", 0)
-        window = getattr(cb, "_window_seconds", 0.0)
-        now = time.time()
-        cutoff = now - window if window else 0
-
-        records = getattr(cb, "_breaker_records", {})
-        tracked = len(records)
-        with_failures = 0
-        tripped = 0
-        for dq in records.values():
-            recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
-            if recent > 0:
-                with_failures += 1
-            if recent >= threshold:
-                tripped += 1
-
-        tool_breakers = getattr(cb, "_tool_breakers", {})
-        tool_tracked = 0
-        tool_tripped = 0
-        for user_tools in tool_breakers.values():
-            for dq in user_tools.values():
-                recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
-                tool_tracked += 1
-                if recent >= threshold:
-                    tool_tripped += 1
-
-        auth_active = 0
-        try:
-            from ...core.circuit_breaker import CircuitBreaker
-            with CircuitBreaker._AUTH_FAILURE_LOCK:
-                for until in CircuitBreaker._AUTH_FAILURE_UNTIL.values():
-                    if now < until:
-                        auth_active += 1
-        except Exception:
-            pass
-
-        rate_limits = {
-            "tu": tracked,
-            "fu": with_failures,
-            "tr": tripped,
-            "th": threshold,
-            "ws": round(window, 1),
-            "tt": tool_tracked,
-            "tp": tool_tripped,
-            "aa": auth_active,
-        }
-    else:
-        rate_limits = {
-            "tu": 0, "fu": 0, "tr": 0, "th": 0,
-            "ws": 0, "tt": 0, "tp": 0, "aa": 0,
-        }
-
-    # Sessions
-    sessions = 0
-    try:
-        from ...core.logging_system import SessionLogger
-        sessions = len(SessionLogger.logs)
-    except Exception:
-        pass
+    c = collect_concurrency(pipe)
+    q = collect_queues(pipe)
+    rl = collect_rate_limits(pipe)
+    s = collect_sessions()
 
     return {
-        "pid": pid,
-        "up": uptime_s,
-        "c": concurrency,
-        "q": queues,
-        "rl": rate_limits,
-        "s": sessions,
+        "pid": os.getpid(),
+        "up": round(time.monotonic() - _PS_PUB_PROCESS_START, 1),
+        "c": {
+            "ar": c["active_requests"],
+            "mr": c["max_requests"],
+            "at": c["active_tools"],
+            "mt": c["max_tools"],
+        },
+        "q": {
+            "rq": q["requests"],
+            "rm": q["requests_max"],
+            "lq": q["logs"],
+            "aq": q["archive"],
+        },
+        "rl": {
+            "tu": rl["tracked_users"],
+            "fu": rl["users_with_failures"],
+            "tr": rl["tripped_users"],
+            "th": rl["threshold"],
+            "ws": rl["window_s"],
+            "tt": rl["tool_tracked"],
+            "tp": rl["tool_tripped"],
+            "aa": rl["auth_failures_active"],
+        },
+        "s": s["active"],
     }
 
 

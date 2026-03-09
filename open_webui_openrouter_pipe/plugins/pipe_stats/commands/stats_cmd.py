@@ -37,14 +37,14 @@ def _get_stats_plugin(pipe: Any) -> Any | None:
     return None
 
 
-def _get_ephemeral_key(pipe: Any) -> str | None:
+async def _get_ephemeral_key(pipe: Any) -> str | None:
     """Generate an ephemeral key from the Pipe Stats Dashboard plugin's key store."""
     plugin = _get_stats_plugin(pipe)
     if plugin is None:
         return None
     store = getattr(plugin, "_key_store", None)
     if store is not None:
-        return store.generate()
+        return await store.async_generate()
     return None
 
 
@@ -666,7 +666,7 @@ def _build_dashboard_shell(dash_id: str, ephemeral_key: str) -> str:
 async def handle_stats(ctx: CommandContext) -> str:
     """Display a fully dynamic HTML dashboard powered by SSE."""
     dash_id = "dash-" + secrets.token_hex(4)
-    ephemeral_key = _get_ephemeral_key(ctx.pipe)
+    ephemeral_key = await _get_ephemeral_key(ctx.pipe)
     if not ephemeral_key:
         return "Dashboard requires the pipe-stats plugin with ephemeral key support."
     dashboard_html = _build_dashboard_shell(dash_id, ephemeral_key)

@@ -24,7 +24,7 @@ from typing import Any
 from pydantic import Field
 
 from ..base import PluginBase, PluginContext
-from ..pipe_stats.ephemeral_keys import EphemeralKeyStore
+from .._utils import EphemeralKeyStore, configure_keystore_redis
 from ..registry import PluginRegistry
 from .session import SessionRegistry
 from .sse_endpoint import register_think_streaming_route
@@ -77,7 +77,7 @@ def _build_think_streaming_html(ephemeral_key: str) -> str:
 html, body {{ background: transparent; }}
 body {{
   line-height: 1.5; color: var(--ts-text);
-  padding: 4px 0 2px;
+  padding: 4px;
 }}
 .ts-box {{
   position: relative; overflow-y: auto;
@@ -97,6 +97,7 @@ body {{
 .ts-label {{
   font-size: 0.75em; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--ts-text-muted);
+  margin-left: 4px;
 }}
 .ts-lines-select {{
   font-family: inherit; font-size: 0.75em; color: var(--ts-text-muted);
@@ -421,7 +422,13 @@ class ThinkStreamingPlugin(PluginBase):
         "on_emitter_wrap": 50,
         "on_response_transform": 50,
     }
-    plugin_valves = {}
+    plugin_valves = {
+        "THINK_STREAMING_USER_ENABLE": (bool, Field(
+            default=False,
+            title="Enable UI enhancement plugin",
+            description="Show live thinking and tool execution in an interactive embed during streaming.",
+        )),
+    }
     plugin_user_valves = {
         "THINK_STREAMING_USER_ENABLE": (bool, Field(
             default=False,
@@ -432,7 +439,7 @@ class ThinkStreamingPlugin(PluginBase):
 
     def __init__(self) -> None:
         super().__init__()
-        self._key_store = EphemeralKeyStore(ttl=600.0, max_keys=100)
+        self._key_store = EphemeralKeyStore(ttl=600.0)
         self._session_registry = SessionRegistry(max_sessions=100, ttl=600.0)
         self._request_sessions: dict[str, str] = {}  # request_id → ephemeral_key
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -440,18 +447,21 @@ class ThinkStreamingPlugin(PluginBase):
     def on_init(self, ctx: PluginContext, **kwargs: Any) -> None:
         self.ctx = ctx
 
+        # Wire Redis into key store for cross-worker key sharing
+        configure_keystore_redis(self._key_store, self.ctx.pipe)
+
         # Register the SSE endpoint
         register_think_streaming_route(self._key_store, self._session_registry)
 
         # Start background cleanup task
         self._maybe_start_cleanup()
 
-        # Warn if multi-worker detected
+        # Warn if multi-worker and no Redis (sessions are process-local)
         workers = os.environ.get("UVICORN_WORKERS", "1")
-        if workers != "1":
+        if workers != "1" and self._key_store._redis_client is None:
             _ts_plugin_log.warning(
-                "Think Streaming requires UVICORN_WORKERS=1 (detected %s). "
-                "SSE sessions are process-local and may not work with multiple workers.",
+                "Think Streaming: multi-worker detected (%s) but no Redis. "
+                "SSE sessions are process-local and may not work reliably.",
                 workers,
             )
 
@@ -495,15 +505,19 @@ class ThinkStreamingPlugin(PluginBase):
         job_metadata = kwargs.get("job_metadata", {})
 
         # Check user valve — lives on UserValves, may be absent from merged Valves
-        if not getattr(valves, "THINK_STREAMING_USER_ENABLE", True):
+        if not getattr(valves, "THINK_STREAMING_USER_ENABLE", False):
             return None
 
         # Prevent double-wrapping
         if getattr(stream_emitter, "_think_streaming_active", False):
             return None
 
+        # Lazy Redis configuration (handles case where Redis initialises after on_init)
+        if self._key_store._redis_client is None:
+            configure_keystore_redis(self._key_store, self.ctx.pipe)
+
         # Create session
-        key = self._key_store.generate()
+        key = await self._key_store.async_generate()
         user_id = job_metadata.get("user_id", "")
         session = self._session_registry.create(key, user_id=user_id)
 

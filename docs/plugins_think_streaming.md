@@ -109,27 +109,31 @@ The plugin dynamically registers a FastAPI endpoint on OWUI's own web applicatio
 
 ```python
 # sse_endpoint.py — simplified
-from .._utils import get_owui_app, ensure_route_before_spa
+from .._utils import register_sse_endpoint
 
-app = get_owui_app()  # Import OWUI's FastAPI app instance
-
-@app.get("/api/pipe/think_streaming/{key}")
 async def _think_streaming_sse(key: str):
     # Validate ephemeral key, look up session, stream events
+    if not await key_store.async_validate(key):
+        return PlainTextResponse("Invalid or expired key", status_code=403)
     session = session_registry.get(key)
     return StreamingResponse(
         _generate(session, key_store, key),
         media_type="text/event-stream",
     )
 
-ensure_route_before_spa(app)  # Push SPA catch-all to end of route list
+register_sse_endpoint(
+    "/api/pipe/think_streaming/{key}",
+    _think_streaming_sse,
+    logger=log,
+)
 ```
 
 **What just happened:**
 
-1. The pipe imported OWUI's FastAPI `app` object (they share the same process)
+1. `register_sse_endpoint()` imported OWUI's FastAPI `app` object (they share the same process)
 2. It registered a new GET route on that app — OWUI's web server now serves this endpoint
-3. `ensure_route_before_spa()` pushed OWUI's SPA catch-all mount (`SPAStaticFiles` at `/`) to the end of the route list, so the new route gets matched first
+3. It pushed OWUI's SPA catch-all mount (`SPAStaticFiles` at `/`) to the end of the route list, so the new route gets matched first
+4. The handler uses `async_validate()` which checks local dict first, then Redis — enabling cross-worker key validation
 
 The pipe now has a live HTTP endpoint. It uses this to serve Server-Sent Events (SSE) to an iframe embed:
 
@@ -174,12 +178,12 @@ The iframe's `EventSource` connects to the pipe's SSE endpoint. The emitter wrap
 
 This is a general-purpose technique for any pipe plugin that needs to serve custom data to the browser:
 
-1. Import OWUI's FastAPI app
-2. Register your route
-3. Reorder routes so yours matches before the SPA catch-all
+1. Define an async handler function
+2. Call `register_sse_endpoint(path, handler)` — it handles OWUI app import, route registration, idempotency, and SPA reordering
+3. Use `EphemeralKeyStore` for authentication (with automatic Redis dual-write in multi-worker deployments)
 4. Emit an iframe or other HTML that connects to your endpoint
 
-The Pipe Stats Dashboard plugin uses exactly the same pattern for its live dashboard. Any future plugin that needs a real-time data channel can reuse `get_owui_app()` and `ensure_route_before_spa()` from `plugins/_utils.py`.
+The Pipe Stats Dashboard plugin uses exactly the same pattern for its live dashboard. Both plugins share `register_sse_endpoint()` and `EphemeralKeyStore` from `plugins/_utils.py`.
 
 ---
 
@@ -310,14 +314,14 @@ The `SessionRegistry` manages active sessions with layered cleanup:
 
 ## Ephemeral Key Authentication
 
-SSE connections use the same `EphemeralKeyStore` pattern as the Pipe Stats Dashboard, but with a separate instance (higher capacity for per-request sessions):
+SSE connections use the same `EphemeralKeyStore` class (from `plugins/_utils.py`) as the Pipe Stats Dashboard, but with a separate instance and higher capacity for per-request sessions:
 
 | Setting | Pipe Stats | Think Streaming |
 |---|---|---|
 | TTL | 300s (5 min) | 600s (10 min) |
 | Max keys | 10 | 100 |
 
-Keys are 256-bit cryptographic tokens generated via `secrets.token_hex(32)`. Each key is validated once on SSE connection. Invalid or expired keys return HTTP 403.
+Keys are 256-bit cryptographic tokens generated via `secrets.token_hex(32)`. Both plugins call `configure_redis()` on their key store during `on_init()` when Redis is available, enabling cross-worker key validation in multi-worker deployments. Key generation uses `await async_generate()` and validation uses `await async_validate()` — which checks local dict first, then falls back to Redis on miss.
 
 ---
 
@@ -332,7 +336,7 @@ The plugin is designed to degrade gracefully in every failure scenario:
 | Queue fills up | Events dropped (no block); OWUI still gets everything |
 | OWUI app not importable | Plugin init skips SSE registration; wrapper still passes through |
 | Page refresh | SSE endpoint expired; iframe hides; native OWUI boxes render from DB |
-| Multi-worker deployment | Warning logged at init; SSE sessions are process-local |
+| Multi-worker deployment | Keys shared via Redis; SSE sessions remain process-local (warning logged if Redis unavailable) |
 | Plugin valve disabled | `on_emitter_wrap` returns `None`; no wrapping occurs |
 
 ---
@@ -364,9 +368,8 @@ The iframe reports its content height to the parent via `postMessage({type: 'ifr
 
 ## Limitations
 
-- **Single-worker only**: SSE sessions and `asyncio.Queue` instances are process-local. In multi-worker deployments, the SSE request may hit a different worker than the one running the streaming loop. The plugin logs a warning at init if `UVICORN_WORKERS > 1`.
+- **SSE sessions are process-local**: While ephemeral keys are now shared across workers via Redis, the `asyncio.Queue` instances and `SessionRegistry` remain process-local. In multi-worker deployments, the SSE request may hit a different worker than the one running the streaming loop. The plugin logs a warning at init when Redis is not available and `UVICORN_WORKERS > 1`. When Redis is available, key validation works cross-worker, but the session data itself must be on the same worker as the streaming loop.
 - **Requires `allow-same-origin`**: CSS injection into the parent document requires the OWUI instance to have `allow-same-origin` enabled on iframes.
-- **`_is_thinking_status()` always returns `False`**: The thinking status filter is conservative — it doesn't suppress any `status` events. This can be refined once the exact `ReasoningStatusThrottle` output patterns are confirmed in production.
 - **Tool output capped at 2000 characters**: Large tool outputs are truncated in the SSE payload to prevent memory issues.
 
 ---

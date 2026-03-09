@@ -1145,7 +1145,6 @@ class Pipe:
                 await self._cleanup_task
             self._cleanup_task = None
 
-    @timed
     def __del__(self) -> None:
         """Best-effort cleanup hook for garbage collection."""
         if getattr(self, "_closed", False):

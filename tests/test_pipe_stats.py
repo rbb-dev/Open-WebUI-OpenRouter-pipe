@@ -781,7 +781,8 @@ class TestStatsDashboardShell:
         ids = {"dash-" + secrets.token_hex(4) for _ in range(20)}
         assert len(ids) == 20
 
-    def test_get_ephemeral_key_from_pipe(self):
+    @pytest.mark.asyncio
+    async def test_get_ephemeral_key_from_pipe(self):
         """_get_ephemeral_key traverses plugin registry to get a key."""
         from open_webui_openrouter_pipe.plugins.pipe_stats.commands.stats_cmd import (
             _get_ephemeral_key,
@@ -790,15 +791,16 @@ class TestStatsDashboardShell:
         registry = PluginRegistry()
         registry.init_plugins(pipe)
         pipe._plugin_registry = registry
-        key = _get_ephemeral_key(pipe)
+        key = await _get_ephemeral_key(pipe)
         assert key is not None
         assert len(key) == 64
 
-    def test_get_ephemeral_key_none_without_registry(self):
+    @pytest.mark.asyncio
+    async def test_get_ephemeral_key_none_without_registry(self):
         """_get_ephemeral_key returns None if no plugin registry."""
         from open_webui_openrouter_pipe.plugins.pipe_stats.commands.stats_cmd import (
             _get_ephemeral_key,
         )
         pipe = Mock()
         pipe._plugin_registry = None
-        assert _get_ephemeral_key(pipe) is None
+        assert await _get_ephemeral_key(pipe) is None

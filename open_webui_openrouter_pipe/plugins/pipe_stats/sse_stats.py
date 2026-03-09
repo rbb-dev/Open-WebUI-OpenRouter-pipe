@@ -36,11 +36,10 @@ from .stats_publisher import (
 )
 
 if TYPE_CHECKING:
-    from .ephemeral_keys import EphemeralKeyStore
+    from .._utils import EphemeralKeyStore
 
 _ps_sse_log = logging.getLogger(__name__)
 
-_ps_sse_registered = False
 
 # How long the "active" flag lives in Redis (seconds).
 # Renewed every tick by the SSE generator.
@@ -112,31 +111,17 @@ def register_sse_route(
     Returns ``True`` if the route was registered (or already exists),
     ``False`` if the OWUI app could not be imported.
     """
-    global _ps_sse_registered
-    if _ps_sse_registered:
-        return True
+    from .._utils import register_sse_endpoint
 
-    try:
+    async def _pipe_stats_sse(key: str) -> Any:
         from starlette.responses import StreamingResponse
 
-        from .._utils import ensure_route_before_spa, get_owui_app
-    except ImportError:
-        _ps_sse_log.debug("OWUI app not available — SSE stats endpoint not registered")
-        return False
-
-    app = get_owui_app()
-    if app is None:
-        _ps_sse_log.debug("OWUI app not available — SSE stats endpoint not registered")
-        return False
-
-    @app.get("/api/pipe/stats/{key}")
-    async def _pipe_stats_sse(key: str) -> StreamingResponse:
-        async def _generate():  # type: ignore[return]
+        async def _generate():  # type: ignore[return-type]
             tick = 0
             redis_mode = False
             namespace = ""
 
-            while key_store.validate(key):
+            while await key_store.async_validate(key):
                 pipe = get_pipe()
                 if pipe is None:
                     break
@@ -241,8 +226,8 @@ def register_sse_route(
             },
         )
 
-    ensure_route_before_spa(app)
-
-    _ps_sse_registered = True
-    _ps_sse_log.debug("SSE stats endpoint registered at /api/pipe/stats/{key}")
-    return True
+    return register_sse_endpoint(
+        "/api/pipe/stats/{key}",
+        _pipe_stats_sse,
+        logger=_ps_sse_log,
+    )
