@@ -3561,7 +3561,7 @@ class TestLoopLimitAndFunctionExecution:
 
     @pytest.mark.asyncio
     async def test_tool_call_without_call_id_is_normalized(self, monkeypatch, pipe_instance_async):
-        """Test tool call without call_id is normalized and executed."""
+        """Test message -> function_call order is preserved and call_id is normalized."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={
@@ -3573,13 +3573,18 @@ class TestLoopLimitAndFunctionExecution:
         call_count = [0]
 
         async def streaming(self, session, request_body, **_kwargs):
-            captured_requests.append(dict(request_body))
+            captured_requests.append(json.loads(json.dumps(request_body)))
             call_count[0] += 1
             if call_count[0] == 1:
                 yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": "I will check that.",
+                            },
                             {
                                 "type": "function_call",
                                 "name": "get_weather",
@@ -3599,7 +3604,7 @@ class TestLoopLimitAndFunctionExecution:
 
         async def mock_execute(calls, registry):
             captured_calls.append(list(calls))
-            return []
+            return [{"type": "function_call_output", "call_id": calls[0]["call_id"], "output": "sunny"}]
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
@@ -3621,12 +3626,93 @@ class TestLoopLimitAndFunctionExecution:
         call_id = normalized_call.get("call_id")
         assert isinstance(call_id, str) and call_id
         second_input = captured_requests[1].get("input", [])
+        assert [
+            item.get("type")
+            for item in second_input
+            if isinstance(item, dict)
+        ] == ["message", "function_call", "function_call_output"]
         persisted_call = next(
             (item for item in second_input if isinstance(item, dict) and item.get("type") == "function_call"),
             None,
         )
         assert persisted_call
         assert persisted_call.get("call_id") == call_id
+
+    @pytest.mark.asyncio
+    async def test_tool_continuation_preserves_reasoning_function_call_message_order(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """Test reasoning -> function_call -> message order is preserved in continuation input."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 2,
+        })
+
+        captured_requests: list[dict[str, Any]] = []
+        captured_calls: list[list[dict[str, Any]]] = []
+        call_count = [0]
+
+        async def streaming(self, session, request_body, **_kwargs):
+            captured_requests.append(json.loads(json.dumps(request_body)))
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "id": "rs_123",
+                                "encrypted_content": "encrypted-blob",
+                            },
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "get_weather",
+                                "arguments": '{"city":"NYC"}',
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": "I have the tool call ready.",
+                            },
+                        ],
+                        "usage": {},
+                    },
+                }
+            else:
+                yield {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                }
+
+        async def mock_execute(calls, registry):
+            captured_calls.append(list(calls))
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={"get_weather": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) == 2
+        assert captured_calls
+        second_input = captured_requests[1].get("input", [])
+        assert [
+            item.get("type")
+            for item in second_input
+            if isinstance(item, dict)
+        ] == ["reasoning", "function_call", "message", "function_call_output"]
 
 
 # =============================================================================

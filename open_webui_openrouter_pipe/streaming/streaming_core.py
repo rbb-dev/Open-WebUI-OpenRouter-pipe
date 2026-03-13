@@ -215,17 +215,15 @@ def _apply_source_context_responses_api(
     Apply source context to messages in Responses API format.
 
     Uses adapter pattern:
-    1. Separate messages from non-message items (function_call, function_call_output)
+    1. Collect message items and remember their original indices
     2. Convert messages: Responses API input → Chat Completions messages
     3. Apply OWUI's apply_source_context_to_messages()
     4. Convert back: Chat Completions → Responses API input
-    5. Reassemble: modified messages first, then non-message items appended
+    5. Reinsert transformed messages into their original slots
 
-    Note: Non-message items (function_call, function_call_output) are appended
-    after transformed messages. For typical input (messages only), order is preserved.
-
-    This delegates all citation logic to OWUI's implementation while preserving
-    function_call and function_call_output items that must stay in the input.
+    Non-message items remain untouched and in their original positions. If the
+    OWUI round-trip changes the number of message items, the original input is
+    returned unchanged to avoid corrupting the request structure.
     """
     _logger = logging.getLogger("open_webui_openrouter_pipe.streaming.source_context")
 
@@ -240,21 +238,19 @@ def _apply_source_context_responses_api(
         _logger.warning("request_context is None - cannot apply source context")
         return input_items
 
-    # Step 1: Separate messages from non-message items (function_call, function_call_output, etc.)
-    # We need to preserve non-message items exactly as they were
-    messages_only: list[dict] = []
-    non_message_items: list[tuple[int, dict]] = []  # (original_index, item)
+    # Step 1: Collect message items and preserve their original indices.
+    messages_only: list[dict[str, Any]] = []
+    message_indices: list[int] = []
 
     for idx, item in enumerate(input_items):
         if isinstance(item, dict) and item.get("type") == "message":
+            message_indices.append(idx)
             messages_only.append(item)
-        elif isinstance(item, dict):
-            non_message_items.append((idx, item))
 
     _logger.debug(
-        "Separated input: %d messages, %d non-message items (function_call/output)",
+        "Separated input: %d messages, %d non-message items",
         len(messages_only),
-        len(non_message_items),
+        len(input_items) - len(message_indices),
     )
 
     if not messages_only:
@@ -281,17 +277,23 @@ def _apply_source_context_responses_api(
     modified_messages = _chat_messages_to_responses_input(modified_chat_messages)
     _logger.debug("Converted %d Chat Completions messages → %d Responses API messages", len(modified_chat_messages), len(modified_messages))
 
-    # Step 5: Reassemble - messages first, then non-message items in their relative order
-    # This preserves the expected structure: messages, then function_call items, then function_call_output items
-    result = list(modified_messages)
-    for _, item in non_message_items:
-        result.append(item)
+    if len(modified_messages) != len(message_indices):
+        _logger.warning(
+            "Source context transform changed message count (%d -> %d); skipping source context for this turn.",
+            len(message_indices),
+            len(modified_messages),
+        )
+        return input_items
+
+    # Step 5: Reinsert transformed messages into their original slots.
+    result = list(input_items)
+    for idx, message in zip(message_indices, modified_messages):
+        result[idx] = message
 
     _logger.debug(
-        "Reassembled result: %d total items (%d messages + %d non-message)",
+        "Reassembled result: %d total items with %d transformed message(s) reinserted",
         len(result),
         len(modified_messages),
-        len(non_message_items),
     )
 
     return result
@@ -1673,20 +1675,24 @@ class StreamingHandler:
                 # Per Responses API spec: the full output (reasoning, messages, function_calls)
                 # must be passed back on tool continuations to preserve the model's context.
                 # See: https://cookbook.openai.com/examples/responses_api/reasoning_items
-                reasoning_items: list[dict[str, Any]] = []
-                message_items: list[dict[str, Any]] = []
+                continuation_input_items: list[dict[str, Any]] = []
+                reasoning_count = 0
+                message_count = 0
                 call_items: list[dict[str, Any]] = []
                 invalid_call_outputs: list[dict[str, Any]] = []
                 for item in final_response.get("output", []):
                     item_type = item.get("type")
                     if item_type == "reasoning" and item.get("encrypted_content"):
-                        reasoning_items.append(item)
+                        continuation_input_items.append(item)
+                        reasoning_count += 1
                     elif item_type == "message":
-                        message_items.append(item)
+                        continuation_input_items.append(item)
+                        message_count += 1
                     elif item_type == "function_call":
                         normalized_call = normalize_persisted_item(item)
                         if normalized_call:
                             call_items.append(normalized_call)
+                            continuation_input_items.append(normalized_call)
                             continue
                         raw_call_id = item.get("call_id") or item.get("id")
                         call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
@@ -1719,15 +1725,24 @@ class StreamingHandler:
 
                 if (call_items or invalid_call_outputs) and not owui_tool_passthrough:
                     note_model_activity()  # Cancel thinking tasks when function calls begin
-                    # Per spec: pass back full output in order — reasoning, messages, calls
-                    if reasoning_items:
-                        body.input.extend(reasoning_items)
-                        self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
-                    if message_items:
-                        body.input.extend(message_items)
-                        self.logger.debug("💬 Preserving %d message item(s) for tool continuation", len(message_items))
+                    # Preserve retained provider output items in their original order.
+                    if continuation_input_items:
+                        body.input.extend(continuation_input_items)
+                    if reasoning_count:
+                        self.logger.debug(
+                            "🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation",
+                            reasoning_count,
+                        )
+                    if message_count:
+                        self.logger.debug(
+                            "💬 Preserving %d message item(s) for tool continuation",
+                            message_count,
+                        )
                     if call_items:
-                        body.input.extend(call_items)
+                        self.logger.debug(
+                            "📞 Preserving %d function_call item(s) for tool continuation",
+                            len(call_items),
+                        )
                     _sanitize_request_input(self._pipe, body)
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
