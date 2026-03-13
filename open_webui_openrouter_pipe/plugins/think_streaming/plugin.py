@@ -193,7 +193,7 @@ body {{
   linesSel.onchange = function() {{ setBoxLines(box, parseInt(this.value, 10)); reportHeight(); }};
   toolLinesSel.onchange = function() {{ setBoxLines(toolBox, parseInt(this.value, 10)); reportHeight(); }};
   setBoxLines(box, 10);
-  // Tool box has no max-height — expanded details auto-size the iframe
+  setBoxLines(toolBox, 10);
 
   // Find this iframe element in the parent document
   function findMyIframe() {{
