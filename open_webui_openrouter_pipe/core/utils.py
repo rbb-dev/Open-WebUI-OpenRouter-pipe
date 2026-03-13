@@ -37,6 +37,8 @@ _T = TypeVar("_T")
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 _MARKER_SUFFIX = "]: #"  # Suffix for artifact markers in text
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
+_PHASE_MARKER_RE = re.compile(r"^\[P:([a-z_]+)\]: #$")
+_PHASE_MARKER_VALUES = frozenset({"commentary", "final_answer", "null"})
 
 # -----------------------------------------------------------------------------
 # Stable IDs (for cross-worker locks)
@@ -336,6 +338,65 @@ def split_text_by_markers(text: str) -> list[dict]:
     return segments
 
 
+def _extract_phase_marker_value(line: str) -> str | None:
+    """Return the encoded phase token embedded in a hidden phase marker line."""
+    if not line:
+        return None
+    match = _PHASE_MARKER_RE.match(line.strip())
+    if not match:
+        return None
+    token = match.group(1)
+    if token not in _PHASE_MARKER_VALUES:
+        return None
+    return token
+
+
+def split_text_by_phase_markers(text: str) -> list[dict[str, Any]]:
+    """Split text into chunks labelled by trailing hidden phase markers."""
+    if not text:
+        return []
+
+    segments: list[dict[str, Any]] = []
+    last = 0
+    for span in _iter_phase_marker_spans(text):
+        segments.append(
+            {
+                "text": text[last:span["start"]],
+                "phase": None if span["phase_token"] == "null" else span["phase_token"],
+                "phase_present": True,
+            }
+        )
+        last = span["end"]
+    if last < len(text):
+        segments.append({"text": text[last:], "phase": None, "phase_present": False})
+    return segments
+
+
+def strip_hidden_marker_lines(text: str) -> str:
+    """Remove hidden phase and ULID marker lines from free-form text."""
+    if not text:
+        return ""
+
+    kept_segments: list[str] = []
+    removed = False
+    for segment in text.splitlines(True):
+        stripped = segment.strip()
+        if not stripped:
+            kept_segments.append(segment)
+            continue
+        if _extract_phase_marker_value(stripped) is not None:
+            removed = True
+            continue
+        if _extract_marker_ulid(stripped):
+            removed = True
+            continue
+        kept_segments.append(segment)
+
+    if not removed:
+        return text
+    return "".join(kept_segments)
+
+
 # -----------------------------------------------------------------------------
 # Configuration and Environment Helpers
 # -----------------------------------------------------------------------------
@@ -567,6 +628,14 @@ def _serialize_marker(ulid: str) -> str:
     return f"[{ulid}{_MARKER_SUFFIX}"
 
 
+def _serialize_phase_marker(phase: str | None) -> str:
+    """Return the hidden marker representation for ``phase``."""
+    marker_value = "null" if phase is None else phase.strip()
+    if marker_value not in _PHASE_MARKER_VALUES:
+        raise ValueError(f"Unsupported phase marker value: {marker_value!r}")
+    return f"[P:{marker_value}{_MARKER_SUFFIX}"
+
+
 def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
     """Return ordered ULID marker spans."""
     if not text:
@@ -585,6 +654,32 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
                     "start": start,
                     "end": start + len(stripped),
                     "marker": marker_ulid,
+                }
+            )
+        cursor += len(segment)
+
+    spans.sort(key=lambda span: span["start"])
+    return spans
+
+
+def _iter_phase_marker_spans(text: str) -> list[dict[str, Any]]:
+    """Return ordered hidden phase marker spans."""
+    if not text:
+        return []
+
+    spans: list[dict[str, Any]] = []
+    cursor = 0
+    for segment in text.splitlines(True):
+        stripped = segment.strip()
+        phase_token = _extract_phase_marker_value(stripped)
+        if phase_token is not None:
+            offset = segment.find(stripped)
+            start = cursor + (offset if offset >= 0 else 0)
+            spans.append(
+                {
+                    "start": start,
+                    "end": start + len(stripped),
+                    "phase_token": phase_token,
                 }
             )
         cursor += len(segment)

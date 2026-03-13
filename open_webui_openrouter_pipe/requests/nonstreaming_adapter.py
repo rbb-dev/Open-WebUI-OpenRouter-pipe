@@ -85,7 +85,6 @@ class NonStreamingAdapter:
                 valves=effective_valves,
             )
             output_items = response.get("output") if isinstance(response, dict) else None
-            assistant_text_parts: list[str] = []
             if isinstance(output_items, list):
                 for item in output_items:
                     if not isinstance(item, dict):
@@ -97,15 +96,14 @@ class NonStreamingAdapter:
                                 if isinstance(block, dict) and block.get("type") == "output_text":
                                     text_val = block.get("text")
                                     if isinstance(text_val, str) and text_val:
-                                        assistant_text_parts.append(text_val)
+                                        yield {"type": "response.output_text.delta", "delta": text_val}
+                        yield {"type": "response.output_item.done", "item": item}
+                        continue
                     if item.get("type") in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call"}:
                         yield {"type": "response.output_item.done", "item": item}
                     if item.get("type") == "function_call":
                         yield {"type": "response.output_item.added", "item": dict(item, status="in_progress")}
                         yield {"type": "response.output_item.done", "item": dict(item, status="completed")}
-            assistant_text = "".join(assistant_text_parts)
-            if assistant_text:
-                yield {"type": "response.output_text.delta", "delta": assistant_text}
             yield {"type": "response.completed", "response": response if isinstance(response, dict) else {}}
 
         @timed

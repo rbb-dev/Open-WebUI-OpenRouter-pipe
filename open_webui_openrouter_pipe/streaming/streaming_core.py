@@ -63,6 +63,7 @@ from ..core.utils import (
     merge_usage_stats,
     _render_error_template,
     _serialize_marker,
+    _serialize_phase_marker,
     _safe_json_loads,
 )
 # Imports from models.registry
@@ -124,6 +125,44 @@ from ..api.transforms import _responses_input_to_chat_messages
 # Single-space sentinel: truthy/non-empty (closes OWUI reasoning timing), but stripped
 # by OWUI content serialization so it does not create persistent visible artifacts.
 OWUI_REASONING_TIMING_BOUNDARY_MARKER = " "
+
+
+def _append_hidden_marker_block(text: str, marker: str) -> str:
+    """Append a hidden marker line to text using the same spacing as ULID markers."""
+    if text:
+        if not text.endswith("\n"):
+            text += "\n"
+        if not text.endswith("\n\n"):
+            text += "\n"
+    text += marker
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _append_hidden_marker_lines(text: str, markers: list[str]) -> str:
+    """Append multiple hidden marker lines to text."""
+    updated = text
+    for marker in markers:
+        updated = _append_hidden_marker_block(updated, marker)
+    return updated
+
+
+def _phase_marker_for_output_item(item: dict[str, Any]) -> str | None:
+    """Return the hidden phase marker for a stored assistant output item."""
+    if item.get("type") != "message" or item.get("role") != "assistant":
+        return None
+    if "phase" not in item:
+        return None
+
+    phase_value = item.get("phase")
+    if phase_value is None:
+        return _serialize_phase_marker(None)
+    if isinstance(phase_value, str):
+        normalized_phase = phase_value.strip()
+        if normalized_phase in {"commentary", "final_answer"}:
+            return _serialize_phase_marker(normalized_phase)
+    return None
 
 
 def _chat_messages_to_responses_input(messages: list) -> list:
@@ -784,6 +823,17 @@ class StreamingHandler:
             if generation_started_at is None:
                 generation_started_at = now
 
+        async def _append_assistant_hidden_markers(markers: list[str]) -> None:
+            """Append hidden markers via the assistant delta stream OWUI persists into output."""
+            nonlocal assistant_message
+            if not markers:
+                return
+            msg_before = len(assistant_message)
+            assistant_message = _append_hidden_marker_lines(assistant_message, markers)
+            marker_delta = assistant_message[msg_before:]
+            if marker_delta and body.stream and event_emitter:
+                await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
+
         async def _emit_reasoning_timing_boundary(loop_index: int) -> None:
             """Emit an OWUI-compatible text boundary so reasoning duration closes after tool latency."""
             nonlocal reasoning_since_timing_boundary
@@ -1305,6 +1355,9 @@ class StreamingHandler:
                                         break
                             if not annotation_citations_emitted:
                                 await _emit_annotation_citations(item.get("annotations"))
+                            phase_marker = _phase_marker_for_output_item(item)
+                            if phase_marker:
+                                await _append_assistant_hidden_markers([phase_marker])
                             continue
 
                         should_persist = False
@@ -2430,6 +2483,13 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
+            if not was_cancelled:
+                await _flush_pending("finalize")
+                if pending_ulids:
+                    await _append_assistant_hidden_markers(
+                        [_serialize_marker(ulid) for ulid in pending_ulids]
+                    )
+
             if (not error_occurred) and (not was_cancelled):
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
@@ -2473,6 +2533,7 @@ class StreamingHandler:
                         level="warning",
                     )
             assistant_annotations: list[Any] = []
+            assistant_reasoning_details: list[Any] = []
             if final_response and isinstance(final_response.get("output"), list):
                 for item in final_response.get("output", []):
                     if not isinstance(item, dict):
@@ -2483,8 +2544,10 @@ class StreamingHandler:
                         continue
                     raw_annotations = item.get("annotations")
                     if isinstance(raw_annotations, list) and raw_annotations:
-                        assistant_annotations = list(raw_annotations)
-                    break
+                        assistant_annotations.extend(raw_annotations)
+                    raw_reasoning_details = item.get("reasoning_details")
+                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
+                        assistant_reasoning_details.extend(raw_reasoning_details)
 
             if (not was_cancelled) and chat_id and message_id and assistant_annotations and Chats is not None:
                 try:
@@ -2498,20 +2561,6 @@ class StreamingHandler:
                         "Unable to save file annotations for this response. Output was delivered successfully.",
                         level="warning",
                     )
-
-            assistant_reasoning_details: list[Any] = []
-            if final_response and isinstance(final_response.get("output"), list):
-                for item in final_response.get("output", []):
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") != "message":
-                        continue
-                    if item.get("role") != "assistant":
-                        continue
-                    raw_reasoning_details = item.get("reasoning_details")
-                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
-                        assistant_reasoning_details = list(raw_reasoning_details)
-                    break
 
             if (not was_cancelled) and chat_id and message_id and assistant_reasoning_details and Chats is not None:
                 try:
@@ -2530,20 +2579,6 @@ class StreamingHandler:
                         "Unable to save reasoning details for this response. Output was delivered successfully.",
                         level="warning",
                     )
-
-            if not was_cancelled:
-                await _flush_pending("finalize")
-                if pending_ulids:
-                    marker_lines = [_serialize_marker(ulid) for ulid in pending_ulids]
-                    ulid_block = "\n".join(marker_lines)
-                    if assistant_message:
-                        if not assistant_message.endswith("\n"):
-                            assistant_message += "\n"
-                        if not assistant_message.endswith("\n\n"):
-                            assistant_message += "\n"
-                    assistant_message += ulid_block
-                    if not assistant_message.endswith("\n"):
-                        assistant_message += "\n"
 
         # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
         return assistant_message

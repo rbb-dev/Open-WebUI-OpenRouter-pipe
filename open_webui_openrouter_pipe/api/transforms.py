@@ -35,7 +35,7 @@ from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
 from ..core.config import LOGGER
-from ..core.utils import _coerce_bool, _parse_model_fallback_csv
+from ..core.utils import _coerce_bool, _parse_model_fallback_csv, strip_hidden_marker_lines
 from ..requests.transformer import transform_messages_to_input
 
 # -----------------------------------------------------------------------------
@@ -759,7 +759,7 @@ def _responses_input_to_chat_messages(
     if input_value is None:
         return []
     if isinstance(input_value, str):
-        text = input_value.strip()
+        text = strip_hidden_marker_lines(input_value).strip()
         return [{"role": "user", "content": text}] if text else []
     if not isinstance(input_value, list):
         return []
@@ -803,7 +803,10 @@ def _responses_input_to_chat_messages(
                 )
 
                 if isinstance(raw_content, str):
-                    msg: dict[str, Any] = {"role": role, "content": raw_content}
+                    msg: dict[str, Any] = {
+                        "role": role,
+                        "content": strip_hidden_marker_lines(raw_content),
+                    }
                     if msg_annotations:
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
@@ -820,8 +823,11 @@ def _responses_input_to_chat_messages(
                         if btype in {"input_text", "output_text"}:
                             text = block.get("text")
                             if isinstance(text, str) and text:
+                                cleaned = strip_hidden_marker_lines(text)
+                                if not cleaned:
+                                    continue
                                 blocks_out.append(
-                                    _to_text_block(text, cache_control=block.get("cache_control"))
+                                    _to_text_block(cleaned, cache_control=block.get("cache_control"))
                                 )
                             continue
                         if btype == "input_image":
@@ -896,7 +902,7 @@ def _responses_input_to_chat_messages(
             msg["role"] = role  # Normalize role
 
             if isinstance(raw_content, str):
-                msg["content"] = raw_content
+                msg["content"] = strip_hidden_marker_lines(raw_content)
                 messages.append(msg)
                 continue
 
@@ -913,6 +919,10 @@ def _responses_input_to_chat_messages(
                         transformed["type"] = "text"  # Only change type
                         text = transformed.get("text")
                         if isinstance(text, str) and text:
+                            cleaned = strip_hidden_marker_lines(text)
+                            if not cleaned:
+                                continue
+                            transformed["text"] = cleaned
                             blocks_out.append(transformed)
                         continue
 

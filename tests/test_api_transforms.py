@@ -304,6 +304,25 @@ class TestResponsesPayloadToChatCompletionsPayload:
         assert result["messages"][0]["role"] == "system"
         assert "helpful assistant" in str(result["messages"][0]["content"])
 
+    def test_phase_metadata_is_stripped_on_chat_completions_boundary(self):
+        """Unsupported assistant phase metadata is dropped in degraded chat mode."""
+        payload = {
+            "model": "openai/gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "Thinking..."}],
+                }
+            ],
+        }
+        result = _responses_payload_to_chat_completions_payload(payload)
+
+        assert result["messages"][0]["role"] == "assistant"
+        assert result["messages"][0]["content"] == [{"type": "text", "text": "Thinking..."}]
+        assert "phase" not in result["messages"][0]
+
     def test_converts_max_output_tokens(self):
         """Test that max_output_tokens becomes max_tokens."""
         payload = {
@@ -1165,6 +1184,14 @@ class TestResponsesInputToChatMessages:
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "Hello, world!"
 
+    def test_string_input_strips_hidden_transport_markers(self):
+        """Task/chat-history strings should not leak hidden marker lines to chat completions."""
+        result = _responses_input_to_chat_messages(
+            "ASSISTANT: Visible answer\n[P:final_answer]: #\n\n[0001H74WE6NX0KKR9ZC7]: #\n"
+        )
+
+        assert result == [{"role": "user", "content": "ASSISTANT: Visible answer"}]
+
     def test_empty_string_input(self):
         """Test empty string input returns empty list."""
         result = _responses_input_to_chat_messages("   ")
@@ -1196,6 +1223,30 @@ class TestResponsesInputToChatMessages:
         input_value = [{"type": "message", "role": "user", "content": "Plain text"}]
         result = _responses_input_to_chat_messages(input_value)
         assert result[0]["content"] == "Plain text"
+
+    def test_message_blocks_strip_hidden_transport_markers(self):
+        """Structured text blocks should drop hidden marker lines before /chat/completions."""
+        input_value = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<chat_history>\nASSISTANT: Visible answer\n[P:final_answer]: #\n\n[0001H74WE6NX0KKR9ZC7]: #\n</chat_history>",
+                    }
+                ],
+            }
+        ]
+
+        result = _responses_input_to_chat_messages(input_value)
+
+        assert result[0]["content"] == [
+            {
+                "type": "text",
+                "text": "<chat_history>\nASSISTANT: Visible answer\n\n</chat_history>",
+            }
+        ]
 
     def test_message_with_annotations(self):
         """Test message annotations are preserved."""

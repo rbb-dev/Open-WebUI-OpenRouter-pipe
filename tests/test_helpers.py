@@ -52,6 +52,7 @@ from open_webui_openrouter_pipe.core.utils import (
     _retry_after_seconds,
     _select_best_effort_fallback,
     _stable_crockford_id,
+    strip_hidden_marker_lines,
 )
 
 
@@ -442,6 +443,23 @@ class TestMarkerSystem:
         """split_text_by_markers with empty text returns empty list."""
         segments = split_text_by_markers("")
         assert segments == []
+
+    def test_strip_hidden_marker_lines_removes_phase_and_ulid_markers(self):
+        """Hidden transport markers are removed while visible text stays intact."""
+        ulid = "0" * ULID_LENGTH
+        text = (
+            "Visible assistant text.\n\n"
+            "[P:final_answer]: #\n\n"
+            f"[{ulid}]: #\n"
+        )
+
+        assert strip_hidden_marker_lines(text) == "Visible assistant text.\n\n\n"
+
+    def test_strip_hidden_marker_lines_leaves_regular_text_unchanged(self):
+        """Normal text that is not a hidden marker should be preserved."""
+        text = "Explain the literal string [P:final_answer]: # inline."
+
+        assert strip_hidden_marker_lines(text) == text
 
 
 # -----------------------------------------------------------------------------

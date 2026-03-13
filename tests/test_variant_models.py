@@ -6,7 +6,12 @@ import pytest
 from unittest.mock import patch
 
 from open_webui_openrouter_pipe.pipe import Pipe, EncryptedStr
-from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+from open_webui_openrouter_pipe.models.registry import (
+    ModelFamily,
+    OpenRouterModelRegistry,
+    PHASE_SUPPORTED_MODELS,
+    supports_phase_model,
+)
 
 
 class TestVariantModelsExpansion:
@@ -193,6 +198,40 @@ class TestAPIModelIDPreservation:
 
         result = OpenRouterModelRegistry.api_model_id("nonexistent.model:exacto")
         assert result is None
+
+
+class TestPhaseModelSupport:
+    """Tests for hard-coded GPT-5.4 phase-capable model gating."""
+
+    def test_phase_supported_model_constant_matches_doc(self):
+        assert PHASE_SUPPORTED_MODELS == (
+            "openai/gpt-5.3-codex",
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-pro",
+        )
+
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("openai/gpt-5.4", True),
+            ("openai/gpt-5.4:exacto", True),
+            ("openai/gpt-5.4@preset/email-copywriter", True),
+            ("openai/gpt-5.4-2026-03-05", True),
+            ("openai/gpt-5.4-pro", True),
+            ("openai/gpt-5.3-codex", True),
+            ("openai/gpt-4o", False),
+            ("x-ai/grok-4.1-fast", False),
+        ],
+    )
+    def test_supports_phase_model(self, model_id: str, expected: bool):
+        assert supports_phase_model(model_id) is expected
+
+    def test_supports_phase_model_with_pipe_prefix(self):
+        token = ModelFamily._PIPE_ID.set("openrouter")
+        try:
+            assert supports_phase_model("openrouter.openai.gpt-5.4:exacto")
+        finally:
+            ModelFamily._PIPE_ID.reset(token)
 
 
 class TestVariantModelsIntegration:
