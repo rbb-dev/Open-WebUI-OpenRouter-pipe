@@ -1741,6 +1741,14 @@ def test_auto_context_trimming_disabled_via_valve(minimal_pipe):
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
     apply_context_transforms(responses, auto_context_trimming=False)
     assert responses.transforms is None
+    assert responses.truncation == "disabled"
+
+
+def test_auto_context_trimming_disabled_preserves_explicit_truncation(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
+    responses = ResponsesBody(model="test", input=_STUBBED_INPUT, truncation="auto")
+    apply_context_transforms(responses, auto_context_trimming=False)
+    assert responses.truncation == "auto"
 
 
 # ===== From test_responses_input_hardening.py =====

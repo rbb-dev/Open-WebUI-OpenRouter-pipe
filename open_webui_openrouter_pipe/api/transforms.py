@@ -1608,21 +1608,13 @@ def _filter_replayable_input_items(
 
 
 def apply_context_transforms(responses_body: "ResponsesBody", *, auto_context_trimming: bool) -> None:
-    """Attach OpenRouter's middle-out transform when auto trimming is enabled.
-
-    Args:
-        responses_body: The responses body to potentially modify
-        auto_context_trimming: Whether auto context trimming is enabled
-
-    Note:
-        Only sets transforms if auto_context_trimming is True AND responses_body.transforms is None.
-        This preserves any explicitly set transforms.
-    """
+    """Set context trimming fields when not already explicitly configured."""
     if not auto_context_trimming:
+        if responses_body.truncation is None:
+            responses_body.truncation = "disabled"
         return
-    if responses_body.transforms is not None:
-        return
-    responses_body.transforms = ["middle-out"]
+    if responses_body.transforms is None:
+        responses_body.transforms = ["middle-out"]
 
 
 def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tuple[str, str]]:
