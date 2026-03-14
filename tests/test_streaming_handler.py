@@ -3561,7 +3561,7 @@ class TestLoopLimitAndFunctionExecution:
 
     @pytest.mark.asyncio
     async def test_tool_call_without_call_id_is_normalized(self, monkeypatch, pipe_instance_async):
-        """Test tool call without call_id is normalized and executed."""
+        """Test message -> function_call order is preserved and call_id is normalized."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={
@@ -3573,13 +3573,18 @@ class TestLoopLimitAndFunctionExecution:
         call_count = [0]
 
         async def streaming(self, session, request_body, **_kwargs):
-            captured_requests.append(dict(request_body))
+            captured_requests.append(json.loads(json.dumps(request_body)))
             call_count[0] += 1
             if call_count[0] == 1:
                 yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": "I will check that.",
+                            },
                             {
                                 "type": "function_call",
                                 "name": "get_weather",
@@ -3599,7 +3604,7 @@ class TestLoopLimitAndFunctionExecution:
 
         async def mock_execute(calls, registry):
             captured_calls.append(list(calls))
-            return []
+            return [{"type": "function_call_output", "call_id": calls[0]["call_id"], "output": "sunny"}]
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
@@ -3621,12 +3626,93 @@ class TestLoopLimitAndFunctionExecution:
         call_id = normalized_call.get("call_id")
         assert isinstance(call_id, str) and call_id
         second_input = captured_requests[1].get("input", [])
+        assert [
+            item.get("type")
+            for item in second_input
+            if isinstance(item, dict)
+        ] == ["message", "function_call", "function_call_output"]
         persisted_call = next(
             (item for item in second_input if isinstance(item, dict) and item.get("type") == "function_call"),
             None,
         )
         assert persisted_call
         assert persisted_call.get("call_id") == call_id
+
+    @pytest.mark.asyncio
+    async def test_tool_continuation_preserves_reasoning_function_call_message_order(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """Test reasoning -> function_call -> message order is preserved in continuation input."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={
+            "TOOL_EXECUTION_MODE": "Pipeline",
+            "MAX_FUNCTION_CALL_LOOPS": 2,
+        })
+
+        captured_requests: list[dict[str, Any]] = []
+        captured_calls: list[list[dict[str, Any]]] = []
+        call_count = [0]
+
+        async def streaming(self, session, request_body, **_kwargs):
+            captured_requests.append(json.loads(json.dumps(request_body)))
+            call_count[0] += 1
+            if call_count[0] == 1:
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "id": "rs_123",
+                                "encrypted_content": "encrypted-blob",
+                            },
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "get_weather",
+                                "arguments": '{"city":"NYC"}',
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": "I have the tool call ready.",
+                            },
+                        ],
+                        "usage": {},
+                    },
+                }
+            else:
+                yield {
+                    "type": "response.completed",
+                    "response": {"output": [], "usage": {}},
+                }
+
+        async def mock_execute(calls, registry):
+            captured_calls.append(list(calls))
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "sunny"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={"get_weather": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert len(captured_requests) == 2
+        assert captured_calls
+        second_input = captured_requests[1].get("input", [])
+        assert [
+            item.get("type")
+            for item in second_input
+            if isinstance(item, dict)
+        ] == ["reasoning", "function_call", "message", "function_call_output"]
 
 
 # =============================================================================
@@ -8546,6 +8632,336 @@ class TestAnnotationsAndReasoningDetailsExtraction:
         )
 
         assert result == "Hello"
+
+
+class TestPhaseMarkerPersistence:
+    """Tests for hidden phase markers riding the assistant delta stream."""
+
+    @pytest.mark.asyncio
+    async def test_phase_markers_append_to_assistant_deltas_and_metadata_aggregate(self, monkeypatch, pipe_instance_async):
+        """Assistant phase markers are appended via chat deltas while metadata still aggregates."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        commentary_item = {
+            "id": "msg-commentary",
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": "Working..."}],
+            "annotations": [{"type": "file_reference", "file_id": "file-1"}],
+            "reasoning_details": [{"type": "summary_text", "text": "First"}],
+        }
+        null_phase_item = {
+            "id": "msg-null",
+            "type": "message",
+            "role": "assistant",
+            "phase": None,
+            "content": [{"type": "output_text", "text": "Done."}],
+            "annotations": [{"type": "file_reference", "file_id": "file-2"}],
+            "reasoning_details": [{"type": "summary_text", "text": "Second"}],
+        }
+        no_phase_item = {
+            "id": "msg-no-phase",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "No phase"}],
+            "annotations": [{"type": "file_reference", "file_id": "file-3"}],
+            "reasoning_details": [{"type": "summary_text", "text": "Third"}],
+        }
+
+        events = [
+            {"type": "response.output_text.delta", "delta": "Working..."},
+            {"type": "response.output_item.done", "item": commentary_item},
+            {"type": "response.output_text.delta", "delta": "No phase"},
+            {"type": "response.output_item.done", "item": no_phase_item},
+            {"type": "response.output_text.delta", "delta": "Done."},
+            {"type": "response.output_item.done", "item": null_phase_item},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        commentary_item,
+                        no_phase_item,
+                        null_phase_item,
+                    ],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        upsert_calls: list[tuple[str, str, dict[str, Any]]] = []
+        from open_webui.models.chats import Chats
+
+        def tracking_upsert(chat_id, message_id, data):
+            upsert_calls.append((chat_id, message_id, data))
+
+        monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+        await asyncio.sleep(0)
+
+        assert result.startswith("Working...")
+        assert result.count("[P:") == 2
+        marker_deltas = [
+            event["data"]["content"]
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+            and "[P:" in event.get("data", {}).get("content", "")
+        ]
+        assert marker_deltas == [
+            "\n\n[P:commentary]: #\n",
+            "\n\n[P:null]: #\n",
+        ]
+        annotation_call = next(call for call in upsert_calls if "annotations" in call[2])
+        reasoning_call = next(call for call in upsert_calls if "reasoning_details" in call[2])
+        assert annotation_call[2]["annotations"] == [
+            {"type": "file_reference", "file_id": "file-1"},
+            {"type": "file_reference", "file_id": "file-3"},
+            {"type": "file_reference", "file_id": "file-2"},
+        ]
+        assert reasoning_call[2]["reasoning_details"] == [
+            {"type": "summary_text", "text": "First"},
+            {"type": "summary_text", "text": "Third"},
+            {"type": "summary_text", "text": "Second"},
+        ]
+        assert not any("phase_items" in call[2] for call in upsert_calls)
+        assert not any("output" in call[2] for call in upsert_calls)
+
+    @pytest.mark.asyncio
+    async def test_ulid_tail_markers_append_to_final_assistant_delta(self, monkeypatch, pipe_instance_async):
+        """Persisted artifact ULIDs are appended through the assistant delta stream."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        reasoning_item = {
+            "id": "rs-1",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "Think"}],
+        }
+        assistant_item = {
+            "id": "msg-final",
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "Answer"}],
+        }
+
+        events = [
+            {"type": "response.output_text.delta", "delta": "Answer"},
+            {"type": "response.output_item.done", "item": reasoning_item},
+            {"type": "response.output_item.done", "item": assistant_item},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [reasoning_item, assistant_item],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        marker_ulid = "01HZX3J7M9X2Y4K5N6P7Q8R9ST"
+        async def fake_db_persist(rows):
+            assert rows
+            return [marker_ulid]
+
+        monkeypatch.setattr(
+            pipe._artifact_store,
+            "_make_db_row",
+            lambda *args, **kwargs: {"payload": "reasoning"},
+        )
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", fake_db_persist)
+
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves.model_copy(update={"PERSIST_REASONING_TOKENS": "next_reply"}),
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+        await asyncio.sleep(0)
+
+        assert result.startswith("Answer")
+        chat_deltas = [
+            event["data"]["content"]
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+        ]
+        assert chat_deltas[-2] == "\n\n[P:final_answer]: #\n"
+        assert chat_deltas[-1] == f"\n[{marker_ulid}]: #\n"
+        assert result.endswith(
+            f"\n\n[P:final_answer]: #\n\n[{marker_ulid}]: #\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_phase_does_not_emit_marker_deltas(self, monkeypatch, pipe_instance_async):
+        """Assistant items without phase or persisted artifacts do not add hidden markers."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        message_item = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello"}],
+        }
+
+        events = [
+            {"type": "response.output_text.delta", "delta": "Hello"},
+            {"type": "response.output_item.done", "item": message_item},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [message_item],
+                    "usage": {},
+                },
+            },
+        ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+        await asyncio.sleep(0)
+
+        assert result == "Hello"
+        chat_deltas = [
+            event["data"]["content"]
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+        ]
+        assert chat_deltas == ["Hello"]
+
+    @pytest.mark.asyncio
+    async def test_phase_marker_delta_emits_alongside_tool_cards(self, monkeypatch, pipe_instance_async):
+        """Phase markers share the assistant delta stream while tool cards stay on output_item events."""
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(
+            update={
+                "TOOL_EXECUTION_MODE": "Pipeline",
+                "SHOW_TOOL_CARDS": True,
+                "MAX_FUNCTION_CALL_LOOPS": 2,
+            }
+        )
+
+        final_reasoning = {
+            "id": "rs-final",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "Think"}],
+        }
+        final_message = {
+            "id": "msg-final",
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "Done."}],
+        }
+
+        events_by_call = [
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "lookup",
+                                "arguments": "{}",
+                            }
+                        ],
+                        "usage": {},
+                    },
+                }
+            ],
+            [
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {"type": "response.output_item.done", "item": final_reasoning},
+                {"type": "response.output_item.done", "item": final_message},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [final_reasoning, final_message],
+                        "usage": {},
+                    },
+                },
+            ],
+        ]
+
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = call_index
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "ok", "status": "completed"}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert "Done." in result
+        added_events = [event for event in emitted if event.get("type") == "response.output_item.added"]
+        chat_deltas = [
+            event["data"]["content"]
+            for event in emitted
+            if event.get("type") == "chat:message:delta"
+        ]
+        assert [event.get("item", {}).get("type") for event in added_events] == [
+            "function_call",
+            "function_call_output",
+        ]
+        assert chat_deltas[-2:] == ["Done.", "\n\n[P:final_answer]: #\n"]
+        assert result.endswith("\n\n[P:final_answer]: #\n")
 
 
 class TestPersistToolsNormalizationReturnsNone:

@@ -5980,7 +5980,7 @@ class TestApplySourceContextResponsesApi:
         original_owui_fn = sc._owui_apply_source_context
 
         # Mock the OWUI function to return messages unchanged
-        def mock_apply_source_context(_request, messages, _sources, _user_msg):
+        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
             return messages  # Return input unchanged
 
         try:
@@ -6015,6 +6015,12 @@ class TestApplySourceContextResponsesApi:
                 input_items, sources, "Search", request_context=mock_request
             )
 
+            assert [
+                item.get("type")
+                for item in result
+                if isinstance(item, dict)
+            ] == ["message", "function_call", "function_call_output"]
+
             # Count item types
             function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
             function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
@@ -6026,6 +6032,116 @@ class TestApplySourceContextResponsesApi:
             assert function_outputs[0]["call_id"] == "call_test123"
         finally:
             # Restore original value
+            sc._owui_apply_source_context = original_owui_fn
+
+    def test_function_reinserts_transformed_messages_into_original_slots_with_mock(self):
+        """Test transformed messages are written back into their original positions."""
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        original_owui_fn = sc._owui_apply_source_context
+
+        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
+            transformed_messages = []
+            for idx, message in enumerate(messages):
+                transformed = dict(message)
+                transformed["content"] = f"ctx-{idx}: {message.get('content', '')}"
+                transformed_messages.append(transformed)
+            return transformed_messages
+
+        try:
+            sc._owui_apply_source_context = mock_apply_source_context
+
+            input_items = [
+                {
+                    "type": "message",
+                    "role": "system",
+                    "content": "system prompt",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_test123",
+                    "name": "search_web",
+                    "arguments": '{"query": "test"}',
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Search for test",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_test123",
+                    "output": '{"results": []}',
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": "Working on it",
+                },
+            ]
+            sources = [{"document": ["test"], "metadata": [{}]}]
+
+            result = sc._apply_source_context_responses_api(
+                input_items,
+                sources,
+                "Search for test",
+                request_context=MagicMock(),
+            )
+
+            assert [
+                item.get("type")
+                for item in result
+                if isinstance(item, dict)
+            ] == ["message", "function_call", "message", "function_call_output", "message"]
+            assert result[1] == input_items[1]
+            assert result[3] == input_items[3]
+            assert "ctx-0" in str(result[0].get("content"))
+            assert "ctx-1" in str(result[2].get("content"))
+            assert "ctx-2" in str(result[4].get("content"))
+        finally:
+            sc._owui_apply_source_context = original_owui_fn
+
+    def test_function_returns_original_when_message_count_changes(self, caplog):
+        """Test mismatched message counts skip source context instead of reordering input."""
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        original_owui_fn = sc._owui_apply_source_context
+
+        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
+            return list(messages) + [{"role": "assistant", "content": "extra message"}]
+
+        try:
+            sc._owui_apply_source_context = mock_apply_source_context
+
+            input_items = [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Search",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_test123",
+                    "name": "search_web",
+                    "arguments": '{"query": "test"}',
+                },
+            ]
+            sources = [{"document": ["test"], "metadata": [{}]}]
+
+            with caplog.at_level(
+                logging.WARNING,
+                logger="open_webui_openrouter_pipe.streaming.source_context",
+            ):
+                result = sc._apply_source_context_responses_api(
+                    input_items,
+                    sources,
+                    "Search",
+                    request_context=MagicMock(),
+                )
+
+            assert result == input_items
+            assert "changed message count" in caplog.text
+        finally:
             sc._owui_apply_source_context = original_owui_fn
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
@@ -6531,4 +6647,3 @@ class TestToolExecutionContextFields:
         assert context.request is None
         assert context.user is None
         assert context.metadata is None
-

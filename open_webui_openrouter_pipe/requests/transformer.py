@@ -28,6 +28,8 @@ from ..tools.tool_schema import (
 from ..core.utils import (
     _extract_plain_text_content,
     contains_marker,
+    strip_hidden_marker_lines,
+    split_text_by_phase_markers,
     split_text_by_markers,
 )
 
@@ -48,7 +50,7 @@ from ..core.config import (
 )
 
 # Import from registry
-from ..models.registry import ModelFamily
+from ..models.registry import ModelFamily, supports_phase_model
 
 # Import status messages
 from ..core.errors import StatusMessages
@@ -110,6 +112,8 @@ async def transform_messages_to_input(
     max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
     target_model_id = model_id or openwebui_model_id or ""
     vision_lookup_id = capability_model_id or target_model_id
+    phase_lookup_id = capability_model_id or target_model_id
+    phase_supported = supports_phase_model(phase_lookup_id)
     if vision_lookup_id:
         vision_supported = ModelFamily.supports("vision", vision_lookup_id)
     else:
@@ -228,6 +232,10 @@ async def transform_messages_to_input(
     if pruning_turns > 0 and total_turns > pruning_turns:
         prune_before_turn = total_turns - pruning_turns
 
+    def _sanitize_free_text(text: str) -> str:
+        """Strip hidden transport markers from non-assistant free text."""
+        return strip_hidden_marker_lines(text)
+
     for idx, msg in enumerate(messages):
         raw_role = msg.get("role")
         role = (raw_role or "").lower()
@@ -246,24 +254,32 @@ async def transform_messages_to_input(
             blocks: list[dict[str, Any]] = []
 
             if isinstance(raw_content, str):
-                blocks.append({"type": "input_text", "text": raw_content})
+                cleaned = _sanitize_free_text(raw_content)
+                if cleaned or raw_content == "":
+                    blocks.append({"type": "input_text", "text": cleaned})
             elif isinstance(raw_content, list):
                 for entry in raw_content:
                     if isinstance(entry, str):
-                        blocks.append({"type": "input_text", "text": entry})
+                        cleaned = _sanitize_free_text(entry)
+                        if cleaned:
+                            blocks.append({"type": "input_text", "text": cleaned})
                         continue
                     if isinstance(entry, dict):
                         text_val = entry.get("text")
                         if not isinstance(text_val, str):
                             text_val = entry.get("content")
                         if isinstance(text_val, str):
-                            blocks.append({"type": "input_text", "text": text_val})
+                            cleaned = _sanitize_free_text(text_val)
+                            if cleaned:
+                                blocks.append({"type": "input_text", "text": cleaned})
             elif isinstance(raw_content, dict):
                 text_val = raw_content.get("text")
                 if not isinstance(text_val, str):
                     text_val = raw_content.get("content")
                 if isinstance(text_val, str):
-                    blocks.append({"type": "input_text", "text": text_val})
+                    cleaned = _sanitize_free_text(text_val)
+                    if cleaned:
+                        blocks.append({"type": "input_text", "text": cleaned})
 
             if blocks:
                 openai_input.append(
@@ -307,7 +323,8 @@ async def transform_messages_to_input(
         if role == "user":
             content_blocks = msg.get("content") or []
             if isinstance(content_blocks, str):
-                content_blocks = [{"type": "text", "text": content_blocks}]
+                cleaned = _sanitize_free_text(content_blocks)
+                content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
 
             async def _to_input_image(block: dict) -> Optional[dict[str, Any]]:
                 """Convert Open WebUI image block into Responses format.
@@ -1214,6 +1231,14 @@ async def transform_messages_to_input(
                         result = transformer(block)
                     if result is None:
                         continue
+                    if isinstance(result, dict):
+                        text_value = result.get("text")
+                        if isinstance(text_value, str):
+                            result = dict(result)
+                            cleaned = _sanitize_free_text(text_value)
+                            if not cleaned:
+                                continue
+                            result["text"] = cleaned
                     if is_image_block and result:
                         user_images_used += 1
                     converted_blocks.append(result)
@@ -1305,6 +1330,29 @@ async def transform_messages_to_input(
             ]
         else:
             last_assistant_images = []
+
+        def _append_assistant_text_chunks(text: str) -> None:
+            chunk_items: list[dict[str, Any]] = []
+            for phase_chunk in split_text_by_phase_markers(text):
+                cleaned_text = phase_chunk["text"].strip()
+                if not cleaned_text:
+                    continue
+                item_out: dict[str, Any] = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": cleaned_text}],
+                }
+                if phase_supported and phase_chunk.get("phase_present"):
+                    item_out["phase"] = phase_chunk.get("phase")
+                chunk_items.append(item_out)
+
+            if not chunk_items:
+                return
+            if msg_annotations:
+                chunk_items[-1]["annotations"] = msg_annotations
+            if msg_reasoning_details:
+                chunk_items[-1]["reasoning_details"] = msg_reasoning_details
+            openai_input.extend(chunk_items)
 
         # If tool_calls are provided explicitly (native OWUI tool execution flow),
         # do not attempt DB artifact replay for this message to avoid duplicate injection.
@@ -1399,30 +1447,11 @@ async def transform_messages_to_input(
                                 retention_turns=pruning_turns,
                             )
                         openai_input.append(item)
-                elif segment["type"] == "text" and segment["text"].strip():
-                    item_out = {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": segment["text"].strip()}]
-                    }
-                    if msg_annotations:
-                        item_out["annotations"] = msg_annotations
-                    if msg_reasoning_details:
-                        item_out["reasoning_details"] = msg_reasoning_details
-                    openai_input.append(item_out)
+                elif segment["type"] == "text":
+                    _append_assistant_text_chunks(segment["text"])
         else:
             # Plain assistant text (no markers detected)
-            if assistant_text:
-                item_out = {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": assistant_text}],
-                }
-                if msg_annotations:
-                    item_out["annotations"] = msg_annotations
-                if msg_reasoning_details:
-                    item_out["reasoning_details"] = msg_reasoning_details
-                openai_input.append(item_out)
+            _append_assistant_text_chunks(assistant_text)
 
         # Native OWUI tool calling: assistant.tool_calls -> Responses function_call items.
         if msg_tool_calls:

@@ -301,6 +301,65 @@ async def test_nonstreaming_responses_function_call(pipe_instance_async):
     assert any(e.get("item", {}).get("type") == "function_call" for e in item_added)
 
 
+@pytest.mark.asyncio
+async def test_nonstreaming_responses_preserves_assistant_message_boundaries(pipe_instance_async):
+    """Assistant messages stay ordered as delta/done pairs in non-streaming responses mode."""
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    commentary_item = {
+        "type": "message",
+        "role": "assistant",
+        "phase": "commentary",
+        "content": [{"type": "output_text", "text": "Working..."}],
+    }
+    final_item = {
+        "type": "message",
+        "role": "assistant",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "Done."}],
+    }
+    response_json = {
+        "id": "resp_phase",
+        "output": [commentary_item, final_item],
+        "usage": {"input_tokens": 7, "output_tokens": 3},
+    }
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            payload=response_json,
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {"model": "openai/gpt-5.4", "input": [{"role": "user", "content": "Hi"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+            endpoint_override="responses",
+        ):
+            events.append(event)
+
+        await session.close()
+
+    text_deltas = [e.get("delta") for e in events if e.get("type") == "response.output_text.delta"]
+    message_done = [
+        e.get("item", {})
+        for e in events
+        if e.get("type") == "response.output_item.done"
+        and e.get("item", {}).get("type") == "message"
+    ]
+    assert text_deltas == ["Working...", "Done."]
+    assert [item.get("phase") for item in message_done] == ["commentary", "final_answer"]
+    assert [item.get("content", [{}])[0].get("text") for item in message_done] == [
+        "Working...",
+        "Done.",
+    ]
+
+
 # ============================================================================
 # _run_chat Reasoning Tests (lines 138, 141, 154-158)
 # ============================================================================

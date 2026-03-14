@@ -178,6 +178,20 @@ class TestSystemMessages:
         assert result[0]["content"] == [{"type": "input_text", "text": ""}]
 
     @pytest.mark.asyncio
+    async def test_system_message_strips_hidden_transport_markers(self, pipe_instance):
+        """Hidden transport markers are stripped from non-assistant system text."""
+        messages = [
+            {
+                "role": "system",
+                "content": "History\n[P:final_answer]: #\n\n[0001H74WE6NX0KKR9ZC7]: #\n",
+            }
+        ]
+
+        result = await transform_messages_to_input(pipe_instance, messages)
+
+        assert result[0]["content"] == [{"type": "input_text", "text": "History\n\n"}]
+
+    @pytest.mark.asyncio
     async def test_system_message_list_with_non_text_entries(self, pipe_instance):
         """System message list with non-text entries filters them out."""
         messages = [
@@ -262,6 +276,34 @@ class TestUserMessages:
         # Unknown types use identity transform
         assert result[0]["content"][0]["type"] == "custom_type"
         assert result[0]["content"][0]["data"] == "custom data"
+
+    @pytest.mark.asyncio
+    async def test_user_message_strips_hidden_transport_markers_from_chat_history_text(
+        self,
+        pipe_instance,
+    ):
+        """Flattened helper prompts should not leak hidden transport markers upstream."""
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "<chat_history>\n"
+                    "ASSISTANT: Visible answer\n"
+                    "[P:final_answer]: #\n\n"
+                    "[0001H74WE6NX0KKR9ZC7]: #\n"
+                    "</chat_history>"
+                ),
+            }
+        ]
+
+        result = await transform_messages_to_input(pipe_instance, messages)
+
+        assert result[0]["content"] == [
+            {
+                "type": "input_text",
+                "text": "<chat_history>\nASSISTANT: Visible answer\n\n</chat_history>",
+            }
+        ]
 
 
 # =============================================================================
@@ -408,6 +450,122 @@ class TestAssistantMessages:
 
         assert "reasoning_details" in result[0]
         assert result[0]["reasoning_details"][0]["type"] == "thinking"
+
+    @pytest.mark.asyncio
+    async def test_assistant_message_replays_phase_markers_as_separate_messages(self, pipe_instance):
+        """Inline phase markers rebuild separate assistant message items."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Thinking...\n[P:commentary]: #\nDone.\n[P:final_answer]: #\n",
+                "annotations": [{"type": "url_citation", "url": "https://example.com"}],
+                "reasoning_details": [{"type": "summary_text", "text": "Hidden"}],
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert len(result) == 2
+        assert [item.get("phase") for item in result] == ["commentary", "final_answer"]
+        assert [item["content"][0]["text"] for item in result] == ["Thinking...", "Done."]
+        assert "annotations" not in result[0]
+        assert result[1]["annotations"] == [{"type": "url_citation", "url": "https://example.com"}]
+        assert result[1]["reasoning_details"] == [{"type": "summary_text", "text": "Hidden"}]
+
+    @pytest.mark.asyncio
+    async def test_assistant_message_explicit_null_phase_marker_round_trips(self, pipe_instance):
+        """Explicit null phase markers round-trip to ``phase: null``."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Fallback assistant text\n[P:null]: #",
+                "annotations": [{"type": "citation", "ref": "1"}],
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert len(result) == 1
+        assert result[0]["type"] == "message"
+        assert result[0]["role"] == "assistant"
+        assert result[0]["content"] == [{"type": "output_text", "text": "Fallback assistant text"}]
+        assert result[0]["phase"] is None
+        assert result[0]["annotations"] == [{"type": "citation", "ref": "1"}]
+
+    @pytest.mark.asyncio
+    async def test_assistant_message_unknown_phase_marker_remains_literal_text(self, pipe_instance):
+        """Unknown phase marker bodies are treated as ordinary assistant text."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Fallback assistant text\n[P:not_a_real_phase]: #",
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert len(result) == 1
+        assert result[0]["content"] == [
+            {"type": "output_text", "text": "Fallback assistant text\n[P:not_a_real_phase]: #"}
+        ]
+        assert "phase" not in result[0]
+
+    @pytest.mark.asyncio
+    async def test_assistant_message_replays_phase_chunks_without_phase_for_unsupported_model(
+        self,
+        pipe_instance,
+    ):
+        """Phase markers still strip cleanly, but non-supported models do not receive `phase`."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Thinking...\n[P:commentary]: #\nDone.\n[P:final_answer]: #\n",
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            model_id="x-ai/grok-4.1-fast",
+        )
+
+        assert len(result) == 2
+        assert [item["content"][0]["text"] for item in result] == ["Thinking...", "Done."]
+        assert all("phase" not in item for item in result)
+
+    @pytest.mark.asyncio
+    async def test_assistant_message_replays_phase_markers_with_capability_model_override(
+        self,
+        pipe_instance,
+    ):
+        """Capability model overrides should enable phase replay for transformed model ids."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Thinking...\n[P:commentary]: #\nDone.\n[P:final_answer]: #\n",
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            model_id="virtual.custom-model:exacto",
+            capability_model_id="openai/gpt-5.4",
+        )
+
+        assert [item.get("phase") for item in result] == ["commentary", "final_answer"]
 
     @pytest.mark.asyncio
     async def test_assistant_message_empty_content_not_added(self, pipe_instance):
@@ -1448,6 +1606,7 @@ class TestMarkerBasedArtifactReplay:
     # Valid 20-char Crockford ULID: 0123456789ABCDEFGHJKMNPQRSTVWXYZ (no I, L, O, U)
     VALID_MARKER = "0123456789ABCDEFGHJK"  # Exactly 20 chars of valid Crockford
     SECOND_MARKER = "ABCDEFGHJKMNPQRSTVWX"  # Another valid 20-char marker
+    THIRD_MARKER = "MNPQRSTVWXYZ01234567"  # Another valid 20-char marker
 
     @pytest.mark.asyncio
     async def test_assistant_with_marker_no_loader(self, pipe_instance):
@@ -1498,6 +1657,151 @@ class TestMarkerBasedArtifactReplay:
 
         # Should have text segments and the loaded artifact
         assert len(result) >= 2
+
+    @pytest.mark.asyncio
+    async def test_phase_markers_inserted_before_marker_artifacts(self, pipe_instance):
+        """Phase-marked text replays before persisted artifacts."""
+        marker_reasoning = self.VALID_MARKER
+        marker_call = self.SECOND_MARKER
+        marker_output = self.THIRD_MARKER
+        marker_text = (
+            f"Thinking...\n"
+            f"[P:commentary]: #\n"
+            f"Done.\n"
+            f"[P:final_answer]: #\n"
+            f"[{marker_reasoning}]: #\n"
+            f"[{marker_call}]: #\n"
+            f"[{marker_output}]: #"
+        )
+
+        async def mock_artifact_loader(chat_id, message_id, markers):
+            result = {}
+            if marker_reasoning in markers:
+                result[marker_reasoning] = {
+                    "type": "reasoning",
+                    "content": "Reasoning trace",
+                }
+            if marker_call in markers:
+                result[marker_call] = {
+                    "type": "function_call",
+                    "call_id": "call_phase",
+                    "name": "lookup",
+                    "arguments": "{}",
+                }
+            if marker_output in markers:
+                result[marker_output] = {
+                    "type": "function_call_output",
+                    "call_id": "call_phase",
+                    "output": "Tool output",
+                }
+            return result
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": marker_text,
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            chat_id="test_chat",
+            openwebui_model_id="test_model",
+            artifact_loader=mock_artifact_loader,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert [item["type"] for item in result] == [
+            "message",
+            "message",
+            "reasoning",
+            "function_call",
+            "function_call_output",
+        ]
+        assert [item.get("phase") for item in result[:2]] == ["commentary", "final_answer"]
+        assert [item["content"][0]["text"] for item in result[:2]] == ["Thinking...", "Done."]
+        assert result[2]["content"] == [{"type": "reasoning_text", "text": "Reasoning trace"}]
+        assert result[3]["call_id"] == "call_phase"
+        assert result[4]["call_id"] == "call_phase"
+
+    @pytest.mark.asyncio
+    async def test_phase_markers_parse_across_multiple_text_segments(self, pipe_instance):
+        """Phase markers still parse when ULID markers split the text into multiple segments."""
+        marker_one = self.VALID_MARKER
+        marker_two = self.SECOND_MARKER
+        marker_text = (
+            f"Intro\n"
+            f"[P:commentary]: #\n"
+            f"[{marker_one}]: #\n"
+            f"Tail\n"
+            f"[P:final_answer]: #\n"
+            f"[{marker_two}]: #\n"
+        )
+
+        async def mock_artifact_loader(chat_id, message_id, markers):
+            result = {}
+            if marker_one in markers:
+                result[marker_one] = {"type": "reasoning", "content": "Artifact one"}
+            if marker_two in markers:
+                result[marker_two] = {"type": "reasoning", "content": "Artifact two"}
+            return result
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": marker_text,
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            chat_id="test_chat",
+            openwebui_model_id="test_model",
+            artifact_loader=mock_artifact_loader,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert [item["type"] for item in result] == ["message", "reasoning", "message", "reasoning"]
+        assert [item.get("phase") for item in result if item["type"] == "message"] == [
+            "commentary",
+            "final_answer",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_null_phase_marker_before_artifacts_replays_as_phase_none(self, pipe_instance):
+        """Explicit null phase markers replay before trailing artifacts."""
+        marker = self.VALID_MARKER
+        marker_text = f"Recovered from metadata\n[P:null]: #\n[{marker}]: #"
+
+        async def mock_artifact_loader(chat_id, message_id, markers):
+            return {
+                marker: {
+                    "type": "reasoning",
+                    "content": "Reasoning trace",
+                }
+            }
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": marker_text,
+            }
+        ]
+
+        result = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            chat_id="test_chat",
+            openwebui_model_id="test_model",
+            artifact_loader=mock_artifact_loader,
+            model_id="openai/gpt-5.4",
+        )
+
+        assert [item["type"] for item in result] == ["message", "reasoning"]
+        assert result[0]["phase"] is None
+        assert result[0]["content"] == [{"type": "output_text", "text": "Recovered from metadata"}]
 
     @pytest.mark.asyncio
     async def test_assistant_with_reasoning_artifact(self, pipe_instance):

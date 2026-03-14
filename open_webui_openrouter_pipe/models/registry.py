@@ -44,6 +44,13 @@ def sanitize_model_id(model_id: str) -> str:
     return f"{head}.{tail.replace('/', '.')}"
 
 
+PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.4",
+    "openai/gpt-5.4-pro",
+)
+
+
 # -----------------------------------------------------------------------------
 # ModelFamily Class
 # -----------------------------------------------------------------------------
@@ -143,6 +150,22 @@ class ModelFamily:
         """Return the stored spec for ``model_id`` or an empty dict."""
         norm = cls.base_model(model_id)
         return cls._DYNAMIC_SPECS.get(norm) or {}
+
+
+_PHASE_SUPPORTED_MODELS_BASE = frozenset(
+    ModelFamily.base_model(model_id) for model_id in PHASE_SUPPORTED_MODELS
+)
+
+
+def supports_phase_model(model_id: str) -> bool:
+    """Return True when the model is one of the documented phase-capable ids."""
+    candidate = (model_id or "").strip()
+    if "@" in candidate:
+        candidate, _ = candidate.split("@", 1)
+    normalized = ModelFamily.base_model(candidate)
+    if ":" in normalized:
+        normalized, _ = normalized.rsplit(":", 1)
+    return bool(normalized) and normalized in _PHASE_SUPPORTED_MODELS_BASE
 
 # -----------------------------------------------------------------------------
 # OpenRouterModelRegistry Class

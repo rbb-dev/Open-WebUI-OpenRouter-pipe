@@ -63,6 +63,7 @@ from ..core.utils import (
     merge_usage_stats,
     _render_error_template,
     _serialize_marker,
+    _serialize_phase_marker,
     _safe_json_loads,
 )
 # Imports from models.registry
@@ -124,6 +125,44 @@ from ..api.transforms import _responses_input_to_chat_messages
 # Single-space sentinel: truthy/non-empty (closes OWUI reasoning timing), but stripped
 # by OWUI content serialization so it does not create persistent visible artifacts.
 OWUI_REASONING_TIMING_BOUNDARY_MARKER = " "
+
+
+def _append_hidden_marker_block(text: str, marker: str) -> str:
+    """Append a hidden marker line to text using the same spacing as ULID markers."""
+    if text:
+        if not text.endswith("\n"):
+            text += "\n"
+        if not text.endswith("\n\n"):
+            text += "\n"
+    text += marker
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _append_hidden_marker_lines(text: str, markers: list[str]) -> str:
+    """Append multiple hidden marker lines to text."""
+    updated = text
+    for marker in markers:
+        updated = _append_hidden_marker_block(updated, marker)
+    return updated
+
+
+def _phase_marker_for_output_item(item: dict[str, Any]) -> str | None:
+    """Return the hidden phase marker for a stored assistant output item."""
+    if item.get("type") != "message" or item.get("role") != "assistant":
+        return None
+    if "phase" not in item:
+        return None
+
+    phase_value = item.get("phase")
+    if phase_value is None:
+        return _serialize_phase_marker(None)
+    if isinstance(phase_value, str):
+        normalized_phase = phase_value.strip()
+        if normalized_phase in {"commentary", "final_answer"}:
+            return _serialize_phase_marker(normalized_phase)
+    return None
 
 
 def _chat_messages_to_responses_input(messages: list) -> list:
@@ -215,17 +254,15 @@ def _apply_source_context_responses_api(
     Apply source context to messages in Responses API format.
 
     Uses adapter pattern:
-    1. Separate messages from non-message items (function_call, function_call_output)
+    1. Collect message items and remember their original indices
     2. Convert messages: Responses API input → Chat Completions messages
     3. Apply OWUI's apply_source_context_to_messages()
     4. Convert back: Chat Completions → Responses API input
-    5. Reassemble: modified messages first, then non-message items appended
+    5. Reinsert transformed messages into their original slots
 
-    Note: Non-message items (function_call, function_call_output) are appended
-    after transformed messages. For typical input (messages only), order is preserved.
-
-    This delegates all citation logic to OWUI's implementation while preserving
-    function_call and function_call_output items that must stay in the input.
+    Non-message items remain untouched and in their original positions. If the
+    OWUI round-trip changes the number of message items, the original input is
+    returned unchanged to avoid corrupting the request structure.
     """
     _logger = logging.getLogger("open_webui_openrouter_pipe.streaming.source_context")
 
@@ -240,21 +277,19 @@ def _apply_source_context_responses_api(
         _logger.warning("request_context is None - cannot apply source context")
         return input_items
 
-    # Step 1: Separate messages from non-message items (function_call, function_call_output, etc.)
-    # We need to preserve non-message items exactly as they were
-    messages_only: list[dict] = []
-    non_message_items: list[tuple[int, dict]] = []  # (original_index, item)
+    # Step 1: Collect message items and preserve their original indices.
+    messages_only: list[dict[str, Any]] = []
+    message_indices: list[int] = []
 
     for idx, item in enumerate(input_items):
         if isinstance(item, dict) and item.get("type") == "message":
+            message_indices.append(idx)
             messages_only.append(item)
-        elif isinstance(item, dict):
-            non_message_items.append((idx, item))
 
     _logger.debug(
-        "Separated input: %d messages, %d non-message items (function_call/output)",
+        "Separated input: %d messages, %d non-message items",
         len(messages_only),
-        len(non_message_items),
+        len(input_items) - len(message_indices),
     )
 
     if not messages_only:
@@ -281,17 +316,23 @@ def _apply_source_context_responses_api(
     modified_messages = _chat_messages_to_responses_input(modified_chat_messages)
     _logger.debug("Converted %d Chat Completions messages → %d Responses API messages", len(modified_chat_messages), len(modified_messages))
 
-    # Step 5: Reassemble - messages first, then non-message items in their relative order
-    # This preserves the expected structure: messages, then function_call items, then function_call_output items
-    result = list(modified_messages)
-    for _, item in non_message_items:
-        result.append(item)
+    if len(modified_messages) != len(message_indices):
+        _logger.warning(
+            "Source context transform changed message count (%d -> %d); skipping source context for this turn.",
+            len(message_indices),
+            len(modified_messages),
+        )
+        return input_items
+
+    # Step 5: Reinsert transformed messages into their original slots.
+    result = list(input_items)
+    for idx, message in zip(message_indices, modified_messages):
+        result[idx] = message
 
     _logger.debug(
-        "Reassembled result: %d total items (%d messages + %d non-message)",
+        "Reassembled result: %d total items with %d transformed message(s) reinserted",
         len(result),
         len(modified_messages),
-        len(non_message_items),
     )
 
     return result
@@ -781,6 +822,17 @@ class StreamingHandler:
             generation_last_event_at = now
             if generation_started_at is None:
                 generation_started_at = now
+
+        async def _append_assistant_hidden_markers(markers: list[str]) -> None:
+            """Append hidden markers via the assistant delta stream OWUI persists into output."""
+            nonlocal assistant_message
+            if not markers:
+                return
+            msg_before = len(assistant_message)
+            assistant_message = _append_hidden_marker_lines(assistant_message, markers)
+            marker_delta = assistant_message[msg_before:]
+            if marker_delta and body.stream and event_emitter:
+                await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
 
         async def _emit_reasoning_timing_boundary(loop_index: int) -> None:
             """Emit an OWUI-compatible text boundary so reasoning duration closes after tool latency."""
@@ -1303,6 +1355,9 @@ class StreamingHandler:
                                         break
                             if not annotation_citations_emitted:
                                 await _emit_annotation_citations(item.get("annotations"))
+                            phase_marker = _phase_marker_for_output_item(item)
+                            if phase_marker:
+                                await _append_assistant_hidden_markers([phase_marker])
                             continue
 
                         should_persist = False
@@ -1673,20 +1728,24 @@ class StreamingHandler:
                 # Per Responses API spec: the full output (reasoning, messages, function_calls)
                 # must be passed back on tool continuations to preserve the model's context.
                 # See: https://cookbook.openai.com/examples/responses_api/reasoning_items
-                reasoning_items: list[dict[str, Any]] = []
-                message_items: list[dict[str, Any]] = []
+                continuation_input_items: list[dict[str, Any]] = []
+                reasoning_count = 0
+                message_count = 0
                 call_items: list[dict[str, Any]] = []
                 invalid_call_outputs: list[dict[str, Any]] = []
                 for item in final_response.get("output", []):
                     item_type = item.get("type")
                     if item_type == "reasoning" and item.get("encrypted_content"):
-                        reasoning_items.append(item)
+                        continuation_input_items.append(item)
+                        reasoning_count += 1
                     elif item_type == "message":
-                        message_items.append(item)
+                        continuation_input_items.append(item)
+                        message_count += 1
                     elif item_type == "function_call":
                         normalized_call = normalize_persisted_item(item)
                         if normalized_call:
                             call_items.append(normalized_call)
+                            continuation_input_items.append(normalized_call)
                             continue
                         raw_call_id = item.get("call_id") or item.get("id")
                         call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
@@ -1719,15 +1778,24 @@ class StreamingHandler:
 
                 if (call_items or invalid_call_outputs) and not owui_tool_passthrough:
                     note_model_activity()  # Cancel thinking tasks when function calls begin
-                    # Per spec: pass back full output in order — reasoning, messages, calls
-                    if reasoning_items:
-                        body.input.extend(reasoning_items)
-                        self.logger.debug("🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation", len(reasoning_items))
-                    if message_items:
-                        body.input.extend(message_items)
-                        self.logger.debug("💬 Preserving %d message item(s) for tool continuation", len(message_items))
+                    # Preserve retained provider output items in their original order.
+                    if continuation_input_items:
+                        body.input.extend(continuation_input_items)
+                    if reasoning_count:
+                        self.logger.debug(
+                            "🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation",
+                            reasoning_count,
+                        )
+                    if message_count:
+                        self.logger.debug(
+                            "💬 Preserving %d message item(s) for tool continuation",
+                            message_count,
+                        )
                     if call_items:
-                        body.input.extend(call_items)
+                        self.logger.debug(
+                            "📞 Preserving %d function_call item(s) for tool continuation",
+                            len(call_items),
+                        )
                     _sanitize_request_input(self._pipe, body)
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
@@ -2415,6 +2483,13 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
+            if not was_cancelled:
+                await _flush_pending("finalize")
+                if pending_ulids:
+                    await _append_assistant_hidden_markers(
+                        [_serialize_marker(ulid) for ulid in pending_ulids]
+                    )
+
             # Plugin on_response_transform hook (always fires so plugins
             # can clean up resources even on error/cancel).
             _original_assistant_message = assistant_message
@@ -2440,6 +2515,7 @@ class StreamingHandler:
                 except Exception:
                     self.logger.debug("Plugin on_response_transform dispatch failed", exc_info=True)
 
+            if (not error_occurred) and (not was_cancelled):
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events —
                 # unless a plugin explicitly modified content via on_response_transform.
@@ -2486,6 +2562,7 @@ class StreamingHandler:
                         level="warning",
                     )
             assistant_annotations: list[Any] = []
+            assistant_reasoning_details: list[Any] = []
             if final_response and isinstance(final_response.get("output"), list):
                 for item in final_response.get("output", []):
                     if not isinstance(item, dict):
@@ -2496,8 +2573,10 @@ class StreamingHandler:
                         continue
                     raw_annotations = item.get("annotations")
                     if isinstance(raw_annotations, list) and raw_annotations:
-                        assistant_annotations = list(raw_annotations)
-                    break
+                        assistant_annotations.extend(raw_annotations)
+                    raw_reasoning_details = item.get("reasoning_details")
+                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
+                        assistant_reasoning_details.extend(raw_reasoning_details)
 
             if (not was_cancelled) and chat_id and message_id and assistant_annotations and Chats is not None:
                 try:
@@ -2511,20 +2590,6 @@ class StreamingHandler:
                         "Unable to save file annotations for this response. Output was delivered successfully.",
                         level="warning",
                     )
-
-            assistant_reasoning_details: list[Any] = []
-            if final_response and isinstance(final_response.get("output"), list):
-                for item in final_response.get("output", []):
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") != "message":
-                        continue
-                    if item.get("role") != "assistant":
-                        continue
-                    raw_reasoning_details = item.get("reasoning_details")
-                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
-                        assistant_reasoning_details = list(raw_reasoning_details)
-                    break
 
             if (not was_cancelled) and chat_id and message_id and assistant_reasoning_details and Chats is not None:
                 try:
@@ -2543,20 +2608,6 @@ class StreamingHandler:
                         "Unable to save reasoning details for this response. Output was delivered successfully.",
                         level="warning",
                     )
-
-            if not was_cancelled:
-                await _flush_pending("finalize")
-                if pending_ulids:
-                    marker_lines = [_serialize_marker(ulid) for ulid in pending_ulids]
-                    ulid_block = "\n".join(marker_lines)
-                    if assistant_message:
-                        if not assistant_message.endswith("\n"):
-                            assistant_message += "\n"
-                        if not assistant_message.endswith("\n\n"):
-                            assistant_message += "\n"
-                    assistant_message += ulid_block
-                    if not assistant_message.endswith("\n"):
-                        assistant_message += "\n"
 
         # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
         return assistant_message

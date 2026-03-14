@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any, AsyncGenerator, Optional
 
-_nagle_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Batchable event type sets
@@ -197,7 +197,7 @@ async def nagle_coalesce_stream(
             async for event in source:
                 await queue.put(event)
         except BaseException:
-            _nagle_logger.debug("nagle_coalesce_stream pump error", exc_info=True)
+            logger.debug("nagle_coalesce_stream pump error", exc_info=True)
             raise
         finally:
             await queue.put(None)  # sentinel
