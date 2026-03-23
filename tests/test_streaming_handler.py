@@ -3434,7 +3434,8 @@ class TestLoopLimitAndFunctionExecution:
 
     @pytest.mark.asyncio
     async def test_invalid_tool_call_generates_error_output(self, monkeypatch, pipe_instance_async):
-        """Test malformed tool call produces error output and continues loop."""
+        """Malformed tool call (no name) produces an orphaned error output that
+        the sanitizer correctly drops before the next API call."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={
@@ -3482,14 +3483,14 @@ class TestLoopLimitAndFunctionExecution:
 
         assert len(captured_requests) == 2
         second_input = captured_requests[1].get("input", [])
+        # The orphaned error output (function_call_output without matching
+        # function_call) is dropped by the sanitizer to prevent API 400 errors.
         outputs = [
             item
             for item in second_input
             if isinstance(item, dict) and item.get("type") == "function_call_output"
         ]
-        assert len(outputs) == 1
-        assert outputs[0].get("call_id") == "call-1"
-        assert "missing name" in str(outputs[0].get("output", "")).lower()
+        assert len(outputs) == 0
 
     @pytest.mark.asyncio
     async def test_invalid_and_valid_tool_calls_append_outputs(self, monkeypatch, pipe_instance_async):
@@ -3557,7 +3558,9 @@ class TestLoopLimitAndFunctionExecution:
             if isinstance(item, dict) and item.get("type") == "function_call_output"
         }
         assert "call-good" in output_ids
-        assert "call-bad" in output_ids
+        # call-bad's error output is an orphan (no matching function_call)
+        # and is dropped by the sanitizer to prevent API 400 errors.
+        assert "call-bad" not in output_ids
 
     @pytest.mark.asyncio
     async def test_tool_call_without_call_id_is_normalized(self, monkeypatch, pipe_instance_async):

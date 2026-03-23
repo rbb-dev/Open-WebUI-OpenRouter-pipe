@@ -6,10 +6,15 @@ tool call items to ensure consistent format.
 """
 
 import json
+import logging
 from typing import Any, TYPE_CHECKING
 
 from ..api.transforms import _filter_replayable_input_items
 from ..core.context_budget import apply_replay_tool_output_budget
+
+_ORPHAN_STUB_OUTPUT = (
+    "[Tool output unavailable -- not recorded in conversation history.]"
+)
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -88,7 +93,10 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
         logger=pipe.logger,
     )
 
-    if removed or stripped_any or omitted_call_ids or (sanitized is not items):
+    validated = _validate_tool_call_pairs(normalized, logger=pipe.logger)
+    pairs_changed = validated is not normalized
+
+    if removed or stripped_any or omitted_call_ids or pairs_changed or (sanitized is not items):
         if removed:
             pipe.logger.debug(
                 "Sanitized provider input: removed %d non-replayable artifact(s).",
@@ -101,4 +109,104 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
                 "Sanitized provider input: omitted %d replayed tool output(s) by context budget.",
                 len(omitted_call_ids),
             )
-        body.input = normalized
+        body.input = validated
+
+
+def _validate_tool_call_pairs(
+    items: list[Any],
+    *,
+    logger: logging.Logger,
+) -> list[Any]:
+    """Ensure function_call / function_call_output items are properly paired.
+
+    * Orphaned function_call_output (no matching function_call): dropped.
+    * Orphaned function_call (no matching function_call_output): a stub output
+      is synthesised immediately after the call -- but only for *interior*
+      orphans.  A function_call is considered "interior" (historical) when a
+      user message appears after it in the input array, meaning a new
+      conversation turn started and the call should have had an output.
+      Frontier function_call items (no user message after them) are left
+      alone because they represent pending tool executions.
+    """
+    call_ids: set[str] = set()
+    output_ids: set[str] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("call_id")
+        if not (isinstance(call_id, str) and call_id.strip()):
+            continue
+        cid = call_id.strip()
+        item_type = item.get("type")
+        if item_type == "function_call":
+            call_ids.add(cid)
+        elif item_type == "function_call_output":
+            output_ids.add(cid)
+
+    orphaned_outputs = output_ids - call_ids
+    orphaned_calls = call_ids - output_ids
+
+    if not orphaned_outputs and not orphaned_calls:
+        return items
+
+    # An orphaned function_call is "interior" (historical) when a user message
+    # appears after it -- meaning the conversation moved on past this tool call.
+    # Frontier calls (no user message after them) are pending executions.
+    interior_orphaned_calls: set[str] = set()
+    if orphaned_calls:
+        # Find the position of the last user message.
+        last_user_pos = -1
+        for i, item in enumerate(items):
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "message"
+                and item.get("role") == "user"
+            ):
+                last_user_pos = i
+        # Any orphaned function_call BEFORE the last user message is interior.
+        if last_user_pos >= 0:
+            for i, item in enumerate(items):
+                if not isinstance(item, dict) or item.get("type") != "function_call":
+                    continue
+                cid = item.get("call_id")
+                if not (isinstance(cid, str) and cid.strip()):
+                    continue
+                if cid.strip() in orphaned_calls and i < last_user_pos:
+                    interior_orphaned_calls.add(cid.strip())
+
+    if orphaned_outputs:
+        logger.warning(
+            "Dropping %d orphaned function_call_output item(s) with no matching function_call: call_ids=%s",
+            len(orphaned_outputs),
+            sorted(orphaned_outputs),
+        )
+    if interior_orphaned_calls:
+        logger.warning(
+            "Synthesising stub function_call_output for %d orphaned function_call item(s): call_ids=%s",
+            len(interior_orphaned_calls),
+            sorted(interior_orphaned_calls),
+        )
+
+    result: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            result.append(item)
+            continue
+        item_type = item.get("type")
+        raw_cid = item.get("call_id")
+        cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
+
+        if item_type == "function_call_output" and cid in orphaned_outputs:
+            continue
+
+        result.append(item)
+
+        if item_type == "function_call" and cid in interior_orphaned_calls:
+            result.append({
+                "type": "function_call_output",
+                "call_id": cid,
+                "output": _ORPHAN_STUB_OUTPUT,
+            })
+
+    return result
