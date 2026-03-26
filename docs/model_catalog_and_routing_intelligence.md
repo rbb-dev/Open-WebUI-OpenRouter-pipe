@@ -79,8 +79,9 @@ At request time, the pipe computes the allowed model set based on `MODEL_ID` and
 - For normal chat/API calls:
   - if the requested model is not in the allowed set, the pipe emits a user-facing error telling the user to choose an allowed model.
 - For Open WebUI “task” requests (`__task__`):
-  - the pipe **bypasses** the model whitelist (so housekeeping tasks can still run even when end-user models are locked down).
-  - the pipe only applies task-specific reasoning overrides when the task model is one of this pipe’s owned/allowed models.
+  - **housekeeping tasks** bypass the model whitelist (so titles/tags/follow-ups and similar flows can still run even when end-user models are locked down).
+  - `moa_response_generation` follows the normal chat restriction path and does **not** bypass the whitelist.
+  - task-specific reasoning overrides apply only to housekeeping tasks when the task model is one of this pipe’s owned/allowed models.
 
 See also: [Task Models & Housekeeping](task_models_and_housekeeping.md).
 

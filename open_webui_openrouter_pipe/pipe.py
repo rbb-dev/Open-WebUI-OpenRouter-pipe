@@ -1592,7 +1592,8 @@ class Pipe:
         self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
 
         task_name = TaskModelAdapter._task_name(__task__)
-        if task_name and self._auth_failure_active():
+        use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
+        if use_task_model_adapter and self._auth_failure_active():
             # Suppress background task calls after an auth failure to avoid log spam
             # and repeated upstream requests.
             fallback = self._build_task_fallback_content(task_name)
@@ -1604,8 +1605,8 @@ class Pipe:
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
             self._note_auth_failure()
-            # Task calls are background; return a safe stub without emitting UI errors.
-            if task_name:
+            # Housekeeping task calls are background; return a safe stub without emitting UI errors.
+            if use_task_model_adapter:
                 fallback = self._build_task_fallback_content(task_name)
                 return self._build_chat_completion_payload(
                     model=str(body.get("model") or openwebui_model_id or "pipe"),

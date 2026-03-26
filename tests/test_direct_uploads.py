@@ -678,6 +678,99 @@ async def test_task_requests_do_not_inject_direct_uploads():
 
 
 @pytest.mark.asyncio
+async def test_moa_requests_inject_direct_uploads_like_chat():
+    """Test that MOA requests inherit direct uploads like normal chat requests."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        body = {
+            "model": "openai/gpt-4o-mini",
+            "messages": [{"role": "user", "content": "merge these responses"}],
+            "stream": True,
+        }
+
+        metadata: dict[str, Any] = {
+            "chat_id": "chat_123",
+            "message_id": "msg_456",
+            "model": {"id": "openai/gpt-4o-mini"},
+            "openrouter_pipe": {
+                "direct_uploads": {
+                    "files": [
+                        {"id": "file_1", "name": "document.pdf", "content_type": "application/pdf", "size": 1024}
+                    ],
+                }
+            },
+        }
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Merged response")
+
+        async def event_emitter(event):
+            pass
+
+        pipe._multimodal_handler._inline_owui_file_id = AsyncMock(
+            return_value="data:application/pdf;base64,SGVsbG8gV29ybGQ="
+        )
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "pricing": {"prompt": "0", "completion": "0"}}]},
+                repeat=True,
+            )
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__="moa_response_generation",
+                __task_body__={"prompt": "merge these responses", "responses": ["A", "B"]},
+            )
+
+            if hasattr(result, "__aiter__"):
+                async for _ in result:
+                    pass
+
+        assert len(captured_payloads) >= 1, "Expected at least one request to OpenRouter"
+
+        found_file_block = False
+        for payload in captured_payloads:
+            messages = payload.get("messages", payload.get("input", []))
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") in ("file", "input_file"):
+                            found_file_block = True
+                            break
+                if found_file_block:
+                    break
+            if found_file_block:
+                break
+
+        assert found_file_block, "MOA request should have file blocks injected from direct uploads"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
 async def test_task_first_preserves_direct_uploads_for_chat():
     """Test that after a task request, direct uploads are still available for the chat.
 
