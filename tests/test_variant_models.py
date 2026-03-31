@@ -193,11 +193,11 @@ class TestAPIModelIDPreservation:
             assert result == expected_output, f"Failed for {input_id}"
 
     def test_api_model_id_nonexistent_base(self):
-        """Test that non-existent base model returns None even with variant."""
+        """Test that non-catalog model with variant converts dotted to slash format."""
         OpenRouterModelRegistry._id_map = {}
 
         result = OpenRouterModelRegistry.api_model_id("nonexistent.model:exacto")
-        assert result is None
+        assert result == "nonexistent/model:exacto"
 
 
 class TestPhaseModelSupport:
@@ -500,11 +500,57 @@ class TestAPIModelIDPresetConversion:
             assert result == expected_output, f"Failed for {input_id}"
 
     def test_api_model_id_nonexistent_preset_base(self):
-        """Test that non-existent base model returns None even with preset."""
+        """Test that non-catalog model with preset converts dotted to slash format."""
         OpenRouterModelRegistry._id_map = {}
 
         result = OpenRouterModelRegistry.api_model_id("nonexistent.model:preset/my-preset")
-        assert result is None
+        assert result == "nonexistent/model@preset/my-preset"
+
+
+class TestAPIModelIDNonCatalogConversion:
+    """Test that api_model_id() converts dotted format to slash format for non-catalog models."""
+
+    def test_non_catalog_model_with_free_suffix(self):
+        """Test non-catalog model with :free suffix converts correctly."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("qwen.qwen3.6-plus-preview:free")
+        assert result == "qwen/qwen3.6-plus-preview:free"
+
+    def test_non_catalog_model_with_variant_suffix(self):
+        """Test non-catalog model with other variant suffix."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("cognitivecomputations.dolphin-mistral-24b-venice-edition:free")
+        assert result == "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+
+    def test_non_catalog_model_without_suffix(self):
+        """Test non-catalog model without suffix converts correctly."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("qwen.qwen3.6-plus-preview")
+        assert result == "qwen/qwen3.6-plus-preview"
+
+    def test_non_catalog_model_already_has_slash(self):
+        """Test model that already has slash format is preserved."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("qwen/qwen3.6-plus-preview:free")
+        assert result == "qwen/qwen3.6-plus-preview:free"
+
+    def test_non_catalog_model_with_preset_suffix(self):
+        """Test non-catalog model with preset suffix uses @ separator."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("qwen.qwen3.6-plus-preview:preset/my-preset")
+        assert result == "qwen/qwen3.6-plus-preview@preset/my-preset"
+
+    def test_non_catalog_model_no_provider_prefix(self):
+        """Test model without provider prefix returns as-is."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("some-model:free")
+        assert result == "some-model:free"
+
+    def test_non_catalog_model_multiple_dots(self):
+        """Test model with multiple dots only converts first."""
+        OpenRouterModelRegistry._id_map = {}
+        result = OpenRouterModelRegistry.api_model_id("a.b.c:free")
+        assert result == "a/b.c:free"
 
 
 class TestVariantEnforcementExpansion:
