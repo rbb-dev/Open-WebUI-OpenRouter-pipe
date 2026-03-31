@@ -687,36 +687,11 @@ class ArtifactStore:
             return True
         return (item_type or "").lower() == "reasoning"
 
-    @staticmethod
-    def _sanitize_surrogates(obj: Any) -> Any:
-        """Recursively strip lone surrogates and null bytes from all strings.
-
-        Lone surrogates (U+D800..U+DFFF) are invalid in both UTF-8 and JSON,
-        and cause ``UnicodeEncodeError`` / ``json.dumps`` failures.  External
-        tool outputs (e.g. web-search results) may contain them when source
-        data has encoding issues.
-
-        Uses the same encode-surrogatepass/decode-ignore technique as
-        Open WebUI's ``sanitize_text_for_db`` (``open_webui.utils.misc``).
-        """
-        if isinstance(obj, str):
-            # Remove null bytes, then strip lone surrogates
-            cleaned = obj.replace("\x00", "")
-            try:
-                return cleaned.encode("utf-8", errors="surrogatepass").decode(
-                    "utf-8", errors="ignore"
-                )
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                return cleaned
-        if isinstance(obj, dict):
-            return {k: ArtifactStore._sanitize_surrogates(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [ArtifactStore._sanitize_surrogates(v) for v in obj]
-        return obj
-
     def _serialize_payload_bytes(self, payload: dict[str, Any]) -> bytes:
         """Return compact JSON bytes for ``payload``."""
-        sanitized = self._sanitize_surrogates(payload)
+        from open_webui.utils.misc import sanitize_data_for_db  # type: ignore
+
+        sanitized = sanitize_data_for_db(payload)
         return json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _maybe_compress_payload(self, serialized: bytes) -> tuple[bytes, bool]:

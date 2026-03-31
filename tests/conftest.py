@@ -195,7 +195,28 @@ def _install_open_webui_stubs() -> None:
             return await func(*args, **kwargs)
         return func(*args, **kwargs)
 
+    def _sanitize_text_for_db(text: str) -> str:
+        if not isinstance(text, str):
+            return text
+        text = text.replace("\x00", "").replace("\u0000", "")
+        try:
+            text = text.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="ignore")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+        return text
+
+    def _sanitize_data_for_db(obj):
+        if isinstance(obj, str):
+            return _sanitize_text_for_db(obj)
+        if isinstance(obj, dict):
+            return {k: _sanitize_data_for_db(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_data_for_db(v) for v in obj]
+        return obj
+
     misc_mod.run_in_threadpool = _run_in_threadpool
+    misc_mod.sanitize_text_for_db = _sanitize_text_for_db
+    misc_mod.sanitize_data_for_db = _sanitize_data_for_db
     misc_mod.openai_chat_chunk_message_template = _openai_chat_chunk_message_template
     utils_pkg.misc = misc_mod
 
