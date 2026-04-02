@@ -558,7 +558,21 @@ class OpenRouterModelRegistry:
         provider_id = cls._id_map.get(norm)
 
         if not provider_id:
-            return None
+            # Non-catalog model: convert dotted format back to slash format
+            if "/" in model_id_base:
+                api_base = model_id_base
+            elif "." in model_id_base:
+                api_base = model_id_base.replace(".", "/", 1)
+            else:
+                api_base = model_id_base
+
+            # Re-attach suffix with appropriate separator
+            if suffix_tag:
+                if suffix_tag.startswith("preset/"):
+                    return f"{api_base}@{suffix_tag}"
+                else:
+                    return f"{api_base}:{suffix_tag}"
+            return api_base
 
         # Re-attach suffix with appropriate separator
         # Presets use @ separator, variants use : separator

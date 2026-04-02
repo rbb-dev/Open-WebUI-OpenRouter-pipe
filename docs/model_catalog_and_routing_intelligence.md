@@ -144,7 +144,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 | `ModelFamily.capabilities(model_id)` | `dict[str,bool]` | Open WebUI capability checkboxes for UI affordances. |
 | `ModelFamily.supported_parameters(model_id)` | `frozenset[str]` | Provider-supported request parameter set (used for reasoning compatibility decisions). |
 | `ModelFamily.max_completion_tokens(model_id)` | `int \| None` | Provider-advertised max completion tokens, used when `USE_MODEL_MAX_OUTPUT_TOKENS=True`. |
-| `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. |
+| `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug, reconstructed non-catalog slug, or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. |
 
 ---
 
