@@ -2864,6 +2864,213 @@ async def test_non_streaming_request():
 
 
 # -----------------------------------------------------------------------------
+# Tests: MOA Routing Regressions
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_moa_task_uses_normal_streaming_path(monkeypatch):
+    """MOA should bypass the housekeeping task adapter and use normal streaming."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        task_adapter = pipe._ensure_task_model_adapter()
+        task_adapter._run_task_model_request = AsyncMock(
+            side_effect=AssertionError("MOA should not use TaskModelAdapter"),
+        )
+
+        streaming_called = False
+
+        async def fake_run_streaming_loop(*args, **kwargs):
+            nonlocal streaming_called
+            streaming_called = True
+            return "stream-finished"
+
+        monkeypatch.setattr(pipe._streaming_handler, "_run_streaming_loop", fake_run_streaming_loop)
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "norm_id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+
+            result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "merge these"}],
+                    "stream": True,
+                },
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __tools__=None,
+                __task__="moa_response_generation",
+                __task_body__={"prompt": "merge these", "responses": ["A", "B"]},
+            )
+
+            await _consume_stream(result)
+
+        assert streaming_called is True
+        task_adapter._run_task_model_request.assert_not_called()
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_housekeeping_task_still_uses_task_model_adapter(monkeypatch):
+    """Housekeeping tasks should still bypass normal chat routing."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        task_adapter = pipe._ensure_task_model_adapter()
+        task_adapter._run_task_model_request = AsyncMock(return_value="Generated Title")
+
+        normal_chat_called = False
+
+        async def fake_run_streaming_loop(*args, **kwargs):
+            nonlocal normal_chat_called
+            normal_chat_called = True
+            return "stream-finished"
+
+        async def fake_run_nonstreaming_loop(*args, **kwargs):
+            nonlocal normal_chat_called
+            normal_chat_called = True
+            return {"result": "non-stream"}
+
+        monkeypatch.setattr(pipe._streaming_handler, "_run_streaming_loop", fake_run_streaming_loop)
+        monkeypatch.setattr(pipe._streaming_handler, "_run_nonstreaming_loop", fake_run_nonstreaming_loop)
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "norm_id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+
+            result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "generate a title"}],
+                    "stream": True,
+                },
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __tools__=None,
+                __task__="title_generation",
+                __task_body__={"title": "test"},
+            )
+
+            await _consume_stream(result)
+
+        task_adapter._run_task_model_request.assert_awaited_once()
+        assert normal_chat_called is False
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_moa_inherits_provider_routing_but_housekeeping_task_skips_it():
+    """MOA should receive filter provider routing, housekeeping tasks should not."""
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Provider-routed response")
+
+        async def event_emitter(event):
+            pass
+
+        metadata = {
+            "model": {"id": "openai/gpt-4o-mini"},
+            "openrouter_pipe": {
+                "provider": {"order": ["openai", "anthropic"]},
+            },
+        }
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "norm_id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+
+            moa_result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "merge these"}],
+                    "stream": False,
+                },
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__="moa_response_generation",
+                __task_body__={"prompt": "merge these", "responses": ["A", "B"]},
+            )
+
+            assert moa_result is not None
+            assert captured_payloads
+            assert captured_payloads[-1].get("provider") == {"order": ["openai", "anthropic"]}
+
+            captured_payloads.clear()
+
+            task_result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "generate a title"}],
+                    "stream": False,
+                },
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__="title_generation",
+                __task_body__={"title": "test"},
+            )
+
+            assert task_result is not None
+            assert captured_payloads
+            assert all(not payload.get("provider") for payload in captured_payloads)
+    finally:
+        await pipe.close()
+
+
+# -----------------------------------------------------------------------------
 # Tests: OWUI Tool Registry Normalization (lines 567-591)
 # -----------------------------------------------------------------------------
 

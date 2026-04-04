@@ -256,6 +256,18 @@ def test_task_name_with_other_types(pipe_instance):
     assert adapter._task_name(["list"]) == ""
 
 
+def test_uses_task_model_adapter_excludes_moa(pipe_instance):
+    """Test that MOA uses the normal chat path rather than the housekeeping adapter."""
+    pipe = pipe_instance
+    adapter = TaskModelAdapter(pipe, logging.getLogger(__name__))
+
+    assert adapter._uses_task_model_adapter("title_generation") is True
+    assert adapter._uses_task_model_adapter({"task": "tags_generation"}) is True
+    assert adapter._uses_task_model_adapter("moa_response_generation") is False
+    assert adapter._uses_task_model_adapter({"type": "moa_response_generation"}) is False
+    assert adapter._uses_task_model_adapter(None) is False
+
+
 # ============================================================================
 # Test _run_task_model_request - Line 141 (session is None)
 # ============================================================================

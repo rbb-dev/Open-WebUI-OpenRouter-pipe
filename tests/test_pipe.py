@@ -3040,6 +3040,51 @@ class TestHandlePipeCallEdgeCases:
             await pipe.close()
 
     @pytest.mark.asyncio
+    async def test_handle_pipe_call_moa_auth_failure_uses_normal_chat_path(self, monkeypatch):
+        """Test that MOA does not get the housekeeping-task auth fallback stub."""
+        pipe = Pipe()
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+        token = SessionLogger.user_id.set("test_user")
+
+        try:
+            pipe._note_auth_failure()
+
+            process_request = AsyncMock(return_value="processed")
+            monkeypatch.setattr(pipe, "_process_transformed_request", process_request)
+
+            await pipe._ensure_async_subsystems_initialized()
+            session = pipe._http_session
+
+            with aioresponses() as mock_http:
+                mock_http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    payload={"data": [{"id": "test/model", "norm_id": "test/model", "name": "Test Model"}]},
+                    repeat=True,
+                )
+
+                result = await pipe._handle_pipe_call(
+                    body={"model": "test/model", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+                    __user__={},
+                    __request__=None,
+                    __event_emitter__=None,
+                    __event_call__=None,
+                    __metadata__={"model": {"id": "test/model"}},
+                    __tools__=None,
+                    __task__="moa_response_generation",
+                    valves=pipe.valves,
+                    session=session,
+                )
+
+            assert result == "processed"
+            process_request.assert_awaited_once()
+        finally:
+            SessionLogger.user_id.reset(token)
+            await pipe.close()
+
+    @pytest.mark.asyncio
     async def test_handle_pipe_call_api_key_error_streaming(self):
         """Test that _handle_pipe_call handles API key error in streaming mode."""
         pipe = Pipe()
@@ -9724,5 +9769,4 @@ class TestSumPricingValuesPaths:
         """Test sum_pricing_values handles invalid string."""
         result = sum_pricing_values("not_a_number")
         assert result == (Decimal(0), 0)
-
 

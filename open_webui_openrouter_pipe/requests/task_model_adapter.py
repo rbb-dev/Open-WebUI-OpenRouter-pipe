@@ -1,7 +1,7 @@
 """Task model request adapter for OpenRouter API.
 
-This module handles task model requests (e.g., generating chat titles, tags)
-via the Responses API and extracts plain text from responses.
+This module handles housekeeping task requests (e.g., generating chat titles,
+tags) via the Responses API and extracts plain text from responses.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class TaskModelAdapter:
-    """Adapter for task model requests.
+    """Adapter for housekeeping task model requests.
 
     Handles task model requests (e.g., chat titles, tags) via the Responses API
     and extracts plain text output from the response.
@@ -80,6 +80,12 @@ class TaskModelAdapter:
             return name.strip() if isinstance(name, str) else ""
         return ""
 
+    @staticmethod
+    def _uses_task_model_adapter(task: Any) -> bool:
+        """Return whether the task should use the housekeeping task adapter path."""
+        name = TaskModelAdapter._task_name(task)
+        return bool(name) and name != "moa_response_generation"
+
     @timed
     async def _run_task_model_request(
         self,
@@ -94,7 +100,7 @@ class TaskModelAdapter:
         pipe_id: Optional[str] = None,
         snapshot_model_id: Optional[str] = None,
     ) -> str:
-        """Process a task model request via the Responses API.
+        """Process a housekeeping task model request via the Responses API.
 
         Task models (e.g. generating a chat title or tags) return their
         information as standard Responses output.  This helper performs a single

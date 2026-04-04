@@ -279,6 +279,7 @@ class RequestOrchestrator:
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
+        use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
         # Optional: inject CSS tweak for multi-line statuses when enabled.
         if valves.ENABLE_STATUS_CSS_PATCH:
             if __event_call__:
@@ -338,7 +339,7 @@ class RequestOrchestrator:
             return cleaned
 
         direct_uploads_warnings = _extract_direct_uploads_warnings(__metadata__ or {})
-        if direct_uploads_warnings and not __task__:
+        if direct_uploads_warnings and not use_task_model_adapter:
             summary = direct_uploads_warnings[0]
             extra_count = max(0, len(direct_uploads_warnings) - 1)
             if extra_count:
@@ -350,10 +351,10 @@ class RequestOrchestrator:
             )
 
         direct_uploads = _extract_direct_uploads(__metadata__ or {})
-        if __task__ and direct_uploads:
-            # IMPORTANT: Open WebUI task requests (title/tags/follow-ups, web_search query generation, etc.)
+        if use_task_model_adapter and direct_uploads:
+            # IMPORTANT: Housekeeping task requests (title/tags/follow-ups, web_search query generation, etc.)
             # inherit the originating request metadata (`request.state.metadata`) and therefore may carry our
-            # `openrouter_pipe.direct_uploads` marker. Do not inject direct uploads into task calls,
+            # `openrouter_pipe.direct_uploads` marker. Do not inject direct uploads into housekeeping calls,
             # but also do not mutate shared metadata (it may be reused by the subsequent main chat request).
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -491,10 +492,9 @@ class RequestOrchestrator:
         self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
-        # Inject provider routing from filter-injected metadata
-        # Only for non-task requests - task models (title, tags, follow-ups) use different models
-        # that may not have the same providers available
-        if __task__ is None and isinstance(__metadata__, dict):
+        # Inject provider routing from filter-injected metadata.
+        # Only housekeeping tasks skip this - MOA should inherit normal chat routing.
+        if (not use_task_model_adapter) and isinstance(__metadata__, dict):
             pipe_meta = __metadata__.get("openrouter_pipe")
             if isinstance(pipe_meta, dict):
                 filter_provider = pipe_meta.get("provider")
@@ -523,8 +523,7 @@ class RequestOrchestrator:
         if enforce_zdr:
             zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
             if zdr_capable is False:
-                task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
-                if __task__:
+                if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
@@ -567,7 +566,7 @@ class RequestOrchestrator:
         # against the base model so tools/vision/search are not silently disabled.
         capability_model_id = vvb.get(normalized_model_id, responses_body.model)
 
-        task_mode = bool(__task__)
+        task_mode = use_task_model_adapter
         if task_mode:
             if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:
                 self.logger.debug(
@@ -613,7 +612,7 @@ class RequestOrchestrator:
                 features = dict(fallback_caps)
 
         task_effort = None
-        if __task__:
+        if use_task_model_adapter:
             self.logger.debug("Detected task model: %s", __task__)
 
             requested_model = responses_body.model

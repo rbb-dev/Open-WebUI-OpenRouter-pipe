@@ -1741,6 +1741,14 @@ def test_auto_context_trimming_disabled_via_valve(minimal_pipe):
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
     apply_context_transforms(responses, auto_context_trimming=False)
     assert responses.transforms is None
+    assert responses.truncation == "disabled"
+
+
+def test_auto_context_trimming_disabled_preserves_explicit_truncation(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
+    responses = ResponsesBody(model="test", input=_STUBBED_INPUT, truncation="auto")
+    apply_context_transforms(responses, auto_context_trimming=False)
+    assert responses.truncation == "auto"
 
 
 # ===== From test_responses_input_hardening.py =====
@@ -1808,7 +1816,12 @@ def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
                     "status": "completed",
                     "name": "search_web",
                     "arguments": "{}",
-                }
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "tooluse_abc123",
+                    "output": "result",
+                },
             ],
         }
     )
@@ -1821,7 +1834,12 @@ def test_sanitize_request_input_falls_back_to_id_as_call_id(pipe_instance):
             "call_id": "tooluse_abc123",
             "name": "search_web",
             "arguments": "{}",
-        }
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "tooluse_abc123",
+            "output": "result",
+        },
     ]
 
 
@@ -1862,22 +1880,240 @@ def test_sanitize_request_input_applies_replay_budget_idempotently(pipe_instance
             "model": "test/model",
             "input": [
                 {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "big_tool",
+                    "arguments": "{}",
+                },
+                {
                     "type": "function_call_output",
                     "call_id": "call-1",
                     "output": oversized_output,
-                }
+                },
             ],
             "stream": True,
         }
     )
 
     _sanitize_request_input(pipe_instance, body)
-    first_output = body.input[0]["output"]
+    output_item = next(i for i in body.input if i.get("type") == "function_call_output")
+    first_output = output_item["output"]
     assert first_output.startswith("[Replayed tool result omitted due to context budget.")
 
     _sanitize_request_input(pipe_instance, body)
-    second_output = body.input[0]["output"]
+    output_item = next(i for i in body.input if i.get("type") == "function_call_output")
+    second_output = output_item["output"]
     assert second_output == first_output
+
+
+# ============================================================================
+# Sanitizer - Orphaned function_call / function_call_output validation
+# ============================================================================
+
+
+def test_sanitize_drops_orphaned_function_call_output(pipe_instance):
+    """function_call_output with no matching function_call is dropped."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {
+                    "type": "function_call_output",
+                    "call_id": "orphan-out-1",
+                    "output": "stale result",
+                },
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    types = [i.get("type") for i in body.input]
+    assert "function_call_output" not in types
+    assert len(body.input) == 1
+
+
+def test_sanitize_stubs_interior_orphaned_function_call(pipe_instance):
+    """Interior function_call with no matching output gets a stub inserted after it."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import (
+        _sanitize_request_input,
+        _ORPHAN_STUB_OUTPUT,
+    )
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "orphan-call-1",
+                    "name": "search_web",
+                    "arguments": "{}",
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]},
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    assert body.input[0]["type"] == "function_call"
+    assert body.input[1]["type"] == "function_call_output"
+    assert body.input[1]["call_id"] == "orphan-call-1"
+    assert body.input[1]["output"] == _ORPHAN_STUB_OUTPUT
+    assert body.input[2]["type"] == "message"
+
+
+def test_sanitize_preserves_frontier_orphaned_function_call(pipe_instance):
+    """Frontier function_call items (no user message after them) are NOT stubbed."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "pending-1",
+                    "name": "search_web",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "pending-2",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    types = [i.get("type") for i in body.input]
+    assert types == ["message", "function_call", "function_call"]
+    assert len(body.input) == 3
+
+
+def test_sanitize_preserves_frontier_call_with_assistant_message(pipe_instance):
+    """function_call followed by assistant message (same turn) is NOT stubbed."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "pending-1",
+                    "name": "search_web",
+                    "arguments": "{}",
+                },
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "calling tool"}]},
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    types = [i.get("type") for i in body.input]
+    assert types == ["message", "function_call", "message"]
+    assert len(body.input) == 3
+
+
+def test_sanitize_matched_pairs_unchanged(pipe_instance):
+    """Properly paired function_call + function_call_output pass through."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "ok-1",
+                    "name": "search_web",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "ok-1",
+                    "output": "good result",
+                },
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    assert len(body.input) == 2
+    assert body.input[0]["type"] == "function_call"
+    assert body.input[1]["type"] == "function_call_output"
+
+
+def test_sanitize_mixed_orphans_and_valid_pairs(pipe_instance):
+    """Only orphans are removed; valid pairs and messages survive."""
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import (
+        _sanitize_request_input,
+        _ORPHAN_STUB_OUTPUT,
+    )
+
+    body = ResponsesBody.model_validate(
+        {
+            "model": "openrouter/test",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "good-1",
+                    "name": "search_web",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "good-1",
+                    "output": "valid",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "orphan-call",
+                    "name": "broken_tool",
+                    "arguments": "{}",
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]},
+                {
+                    "type": "function_call_output",
+                    "call_id": "orphan-out",
+                    "output": "stale",
+                },
+            ],
+        }
+    )
+
+    _sanitize_request_input(pipe_instance, body)
+
+    types = [i.get("type") for i in body.input]
+    assert types == [
+        "function_call",
+        "function_call_output",
+        "function_call",
+        "function_call_output",
+        "message",
+    ]
+    assert body.input[1]["call_id"] == "good-1"
+    assert body.input[1]["output"] == "valid"
+    assert body.input[3]["call_id"] == "orphan-call"
+    assert body.input[3]["output"] == _ORPHAN_STUB_OUTPUT
 
 
 # ============================================================================

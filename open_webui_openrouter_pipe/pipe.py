@@ -217,6 +217,12 @@ class Pipe:
         "openrouter_tool_context",
         default=None,
     )
+    # Strong references to in-flight job tasks.  Without this, the only
+    # reference is the local variable in _request_worker_loop; when OWUI's
+    # session teardown drops *its* end of the chain the GC destroys the task
+    # via GeneratorExit (context-destroying) instead of CancelledError
+    # (context-preserving), which breaks ContextVar.reset() in finally blocks.
+    _active_jobs: set[asyncio.Task[None]] = set()
     # Note: Worker-related state (_request_queue, _queue_worker_task, _queue_worker_lock,
     # _log_queue, _log_queue_loop, _log_worker_task, _log_worker_lock, _cleanup_task)
     # are now INSTANCE-level to prevent event loop contamination across tests.
@@ -1348,8 +1354,15 @@ class Pipe:
                     continue
                 task = asyncio.create_task(job.pipe._execute_pipe_job(job))
 
+                # Hold a strong reference so the GC cannot destroy the task
+                # while it is still running.  Without this, GC fires
+                # GeneratorExit (wrong context) instead of CancelledError.
+                active = type(job.pipe)._active_jobs
+                active.add(task)
+
                 @timed
-                def _mark_done(_task: asyncio.Task, q=queue) -> None:
+                def _mark_done(_task: asyncio.Task, q=queue, _active: set = active) -> None:
+                    _active.discard(_task)
                     q.task_done()
 
                 task.add_done_callback(_mark_done)
@@ -1415,6 +1428,11 @@ class Pipe:
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
                 tokens = self._apply_logging_context(job)
+                # Set _PIPE_ID here (same context that will reset it) so
+                # the token is always valid in the finally block below.
+                tokens.append(
+                    (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
+                )
                 tool_queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 per_tool_timeout = job.valves.TOOL_TIMEOUT_SECONDS
@@ -1463,6 +1481,19 @@ class Pipe:
                 if not job.future.done():
                     job.future.set_result(result)
                 self._circuit_breaker.reset(job.user_id)
+        except asyncio.CancelledError:
+            # Task was cancelled (user disconnected / OWUI session teardown).
+            # Resolve the future so nothing waits on it, send a stream
+            # sentinel so readers don't hang, then re-raise so asyncio
+            # records the task as cancelled.
+            if not job.future.done():
+                job.future.cancel()
+            if stream_queue is not None:
+                self._event_emitter_handler._try_put_middleware_stream_nowait(
+                    stream_queue,
+                    None,
+                )
+            raise
         except Exception as exc:
             self._circuit_breaker.record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
@@ -1540,7 +1571,14 @@ class Pipe:
                         SessionLogger.logs.pop(rid, None)
 
             if tool_token is not None:
-                self._TOOL_CONTEXT.reset(tool_token)
+                # ValueError if GeneratorExit delivered the token into a
+                # different contextvars.Context (e.g. GC-driven coroutine
+                # teardown).  The _active_jobs task registry prevents this
+                # under normal operation, but we guard defensively so an
+                # unexpected teardown path degrades gracefully rather than
+                # masking the original exception.
+                with contextlib.suppress(ValueError):
+                    self._TOOL_CONTEXT.reset(tool_token)
             for var, token in tokens:
                 with contextlib.suppress(Exception):
                     var.reset(token)
@@ -1673,7 +1711,8 @@ class Pipe:
             return plugin_result
 
         task_name = TaskModelAdapter._task_name(__task__)
-        if task_name and self._auth_failure_active():
+        use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
+        if use_task_model_adapter and self._auth_failure_active():
             # Suppress background task calls after an auth failure to avoid log spam
             # and repeated upstream requests.
             fallback = self._build_task_fallback_content(task_name)
@@ -1685,8 +1724,8 @@ class Pipe:
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
             self._note_auth_failure()
-            # Task calls are background; return a safe stub without emitting UI errors.
-            if task_name:
+            # Housekeeping task calls are background; return a safe stub without emitting UI errors.
+            if use_task_model_adapter:
                 fallback = self._build_task_fallback_content(task_name)
                 return self._build_chat_completion_payload(
                     model=str(body.get("model") or openwebui_model_id or "pipe"),
@@ -1772,8 +1811,8 @@ class Pipe:
         enforced_models = self._apply_model_filters(allowlist_models, valves)
         enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
 
-        # Full model ID, e.g. "<pipe-id>.gpt-4o"
-        pipe_token = ModelFamily._PIPE_ID.set(pipe_identifier)
+        # _PIPE_ID is now set in _execute_pipe_job (same async context that
+        # resets it), so model normalisation works throughout the call tree.
         features = _extract_feature_flags(__metadata__)
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
@@ -1909,8 +1948,6 @@ class Pipe:
             )
             return ""
 
-        finally:
-            ModelFamily._PIPE_ID.reset(pipe_token)
         return result
 
 
@@ -2108,17 +2145,21 @@ class Pipe:
                 "Tool shutdown exceeded %.1fs; cancelling workers.",
                 timeout,
             )
+        except asyncio.CancelledError:
+            self.logger.debug("Tool shutdown interrupted by cancellation.")
         except Exception:
             self.logger.debug(
                 "Tool shutdown encountered error; cancelling workers.",
                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
             )
-
-        for task in context.workers:
-            if not task.done():
-                task.cancel()
-        if context.workers:
-            await asyncio.gather(*context.workers, return_exceptions=True)
+        finally:
+            # Always cancel remaining workers and wait, even under
+            # CancelledError — prevents orphaned tool worker tasks.
+            for task in context.workers:
+                if not task.done():
+                    task.cancel()
+            if context.workers:
+                await asyncio.gather(*context.workers, return_exceptions=True)
 
     # Tool Execution Methods
 
