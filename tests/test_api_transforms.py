@@ -36,6 +36,8 @@ from open_webui_openrouter_pipe.api.transforms import (
     _apply_model_fallback_to_payload,
     _apply_openrouter_trace_to_payload,
     _apply_disable_native_websearch_to_payload,
+    _apply_provider_routing_params_to_payload,
+    _parse_provider_csv,
     _apply_identifier_valves_to_payload,
     _strip_disable_model_settings_params,
     _filter_replayable_input_items,
@@ -1653,12 +1655,18 @@ class TestStripDisableModelSettingsParams:
             "disable_description_updates": True,
             "disable_native_websearch": True,
             "disable_native_web_search": True,
+            "openrouter_provider_ignore": "azure",
+            "openrouter_provider_only": "openai",
+            "openrouter_provider_order": "openai,together",
         }
         _strip_disable_model_settings_params(payload)
         assert "model" in payload
         assert "disable_model_metadata_sync" not in payload
         assert "disable_capability_updates" not in payload
         assert "disable_image_updates" not in payload
+        assert "openrouter_provider_ignore" not in payload
+        assert "openrouter_provider_only" not in payload
+        assert "openrouter_provider_order" not in payload
 
     def test_non_dict_is_noop(self):
         """Test non-dict input is no-op."""
@@ -2966,3 +2974,169 @@ class TestFromCompletionsPreservesStoreAndUser:
             completions, transformer_context=pipe,
         )
         assert result.user == "user_abc123"
+
+
+# -----------------------------------------------------------------------------
+# Provider Routing Custom Params
+# -----------------------------------------------------------------------------
+
+class TestParseProviderCsv:
+    """Tests for _parse_provider_csv()."""
+
+    def test_non_string_returns_empty(self):
+        assert _parse_provider_csv(None) == []
+        assert _parse_provider_csv(123) == []
+        assert _parse_provider_csv({}) == []
+
+    def test_empty_string_returns_empty(self):
+        assert _parse_provider_csv("") == []
+        assert _parse_provider_csv("   ") == []
+
+    def test_single_slug(self):
+        assert _parse_provider_csv("openai") == ["openai"]
+
+    def test_csv_multiple_slugs(self):
+        assert _parse_provider_csv("openai, together, deepinfra") == [
+            "openai", "together", "deepinfra",
+        ]
+
+    def test_duplicates_removed(self):
+        assert _parse_provider_csv("openai, together, openai") == [
+            "openai", "together",
+        ]
+
+    def test_invalid_slugs_dropped(self):
+        assert _parse_provider_csv("openai, INVALID SLUG!, together") == [
+            "openai", "together",
+        ]
+
+    def test_whitespace_trimmed(self):
+        assert _parse_provider_csv("  openai , together  ") == [
+            "openai", "together",
+        ]
+
+    def test_slug_with_segment(self):
+        assert _parse_provider_csv("deepinfra/turbo") == ["deepinfra/turbo"]
+
+    def test_auto_lowercase(self):
+        assert _parse_provider_csv("OpenAI, Together") == ["openai", "together"]
+
+    def test_list_input(self):
+        """OWUI may auto-parse JSON arrays."""
+        assert _parse_provider_csv(["openai", "together"]) == ["openai", "together"]
+
+    def test_list_input_with_invalid(self):
+        assert _parse_provider_csv(["openai", "BAD SLUG!", "together"]) == [
+            "openai", "together",
+        ]
+
+
+class TestApplyProviderRoutingParamsToPayload:
+    """Tests for _apply_provider_routing_params_to_payload()."""
+
+    def test_non_dict_is_noop(self):
+        _apply_provider_routing_params_to_payload("not a dict")
+        _apply_provider_routing_params_to_payload(None)
+
+    def test_no_keys_is_noop(self):
+        payload = {"model": "gpt-4"}
+        _apply_provider_routing_params_to_payload(payload)
+        assert "provider" not in payload
+        assert payload == {"model": "gpt-4"}
+
+    def test_ignore_applied(self):
+        payload = {"model": "gpt-4", "openrouter_provider_ignore": "azure"}
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"ignore": ["azure"]}
+        assert "openrouter_provider_ignore" not in payload
+
+    def test_only_applied(self):
+        payload = {"model": "gpt-4", "openrouter_provider_only": "openai"}
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"only": ["openai"]}
+        assert "openrouter_provider_only" not in payload
+
+    def test_order_applied(self):
+        payload = {"model": "gpt-4", "openrouter_provider_order": "openai, together"}
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"order": ["openai", "together"]}
+        assert "openrouter_provider_order" not in payload
+
+    def test_all_three_applied(self):
+        payload = {
+            "model": "gpt-4",
+            "openrouter_provider_ignore": "azure, venice",
+            "openrouter_provider_only": "openai",
+            "openrouter_provider_order": "openai, together",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {
+            "ignore": ["azure", "venice"],
+            "only": ["openai"],
+            "order": ["openai", "together"],
+        }
+
+    def test_keys_popped_from_payload(self):
+        payload = {
+            "model": "gpt-4",
+            "openrouter_provider_ignore": "azure",
+            "openrouter_provider_only": "openai",
+            "openrouter_provider_order": "openai",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert "openrouter_provider_ignore" not in payload
+        assert "openrouter_provider_only" not in payload
+        assert "openrouter_provider_order" not in payload
+
+    def test_merges_with_existing_provider(self):
+        payload = {
+            "model": "gpt-4",
+            "provider": {"zdr": True},
+            "openrouter_provider_ignore": "azure",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"zdr": True, "ignore": ["azure"]}
+
+    def test_merges_with_existing_list_values(self):
+        payload = {
+            "model": "gpt-4",
+            "provider": {"order": ["anthropic"]},
+            "openrouter_provider_order": "openai, together",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"]["order"] == ["anthropic", "openai", "together"]
+
+    def test_merges_deduplicates_existing_list(self):
+        payload = {
+            "model": "gpt-4",
+            "provider": {"ignore": ["azure"]},
+            "openrouter_provider_ignore": "azure, venice",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"]["ignore"] == ["azure", "venice"]
+
+    def test_empty_values_no_provider_created(self):
+        payload = {
+            "model": "gpt-4",
+            "openrouter_provider_ignore": "",
+            "openrouter_provider_only": "  ",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert "provider" not in payload
+
+    def test_invalid_slugs_in_csv_dropped(self):
+        payload = {
+            "model": "gpt-4",
+            "openrouter_provider_ignore": "azure, BAD SLUG!, venice",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"ignore": ["azure", "venice"]}
+
+    def test_existing_provider_non_dict_replaced(self):
+        payload = {
+            "model": "gpt-4",
+            "provider": "not a dict",
+            "openrouter_provider_only": "openai",
+        }
+        _apply_provider_routing_params_to_payload(payload)
+        assert payload["provider"] == {"only": ["openai"]}

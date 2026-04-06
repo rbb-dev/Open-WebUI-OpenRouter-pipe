@@ -80,6 +80,9 @@ The pipe accepts the following Advanced Model Parameters:
 | `model_fallback` | `str` (CSV) | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list into the OpenRouter `models` array (order-preserving, de-duplicated). |
 | `openrouter_trace` | `str` (JSON) | Requests | Convenience mapping for OpenRouter Broadcast observability: parses a JSON object and writes it as the OpenRouter `trace` field. See §2.4. |
 | `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping the OpenRouter web-search plugin and related request fields. |
+| `openrouter_provider_ignore` | `str` (CSV) | Requests | Comma-separated provider slugs to exclude from routing. Maps to `provider.ignore`. See §2.5. |
+| `openrouter_provider_only` | `str` (CSV) | Requests | Comma-separated provider slugs to restrict routing to. Maps to `provider.only`. See §2.5. |
+| `openrouter_provider_order` | `str` (CSV) | Requests | Comma-separated ordered list of preferred provider slugs. Maps to `provider.order`. See §2.5. |
 | `disable_model_metadata_sync` | `bool-ish` | Model metadata sync | Master switch: the pipe will not “manage” this model’s settings at all (capabilities, icon, description, auto-attached integrations, default-on integrations). |
 | `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
@@ -263,6 +266,68 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Custom param: `disable_direct_uploads_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.
+
+### 2.6 Provider routing custom parameters → OpenRouter `provider` dict
+
+OpenRouter routes models through multiple infrastructure providers (e.g. OpenAI direct, Azure, Together). Some providers have different content filtering, latency, or pricing. These custom parameters let you control provider selection per-model without needing the full filter-based provider routing system.
+
+- Custom params:
+  - `openrouter_provider_ignore` (CSV string) — providers to exclude
+  - `openrouter_provider_only` (CSV string) — providers to restrict to
+  - `openrouter_provider_order` (CSV string) — preferred provider priority
+
+- Pipe behavior:
+  - Parses each CSV into a validated list of lowercase provider slugs
+  - Invalid slugs (not matching `^[a-z0-9-]+(/[a-z0-9-]+)?$`) are silently dropped with a log warning
+  - Merges into any existing `provider` dict on the request (from filter-injected routing or ZDR enforcement) — never overwrites
+  - For list fields, existing entries come first, then new entries are appended (deduplicated)
+  - Removes the custom param keys from the outgoing payload
+  - Works on both Responses API and Chat Completions paths
+
+- Provider slug format: lowercase, alphanumeric + hyphens, optional single slash segment (e.g. `azure`, `openai`, `together`, `deepinfra/turbo`)
+
+#### Example: Skip Azure for GPT-5.4
+
+Useful when Azure's content filter blocks responses that OpenAI direct would allow.
+
+Open WebUI custom parameter:
+```
+openrouter_provider_ignore: azure
+```
+
+Resulting OpenRouter request field:
+```json
+{"provider": {"ignore": ["azure"]}}
+```
+
+#### Example: Prefer OpenAI then Together, never Azure
+
+```
+openrouter_provider_order: openai, together
+openrouter_provider_ignore: azure
+```
+
+Result:
+```json
+{"provider": {"order": ["openai", "together"], "ignore": ["azure"]}}
+```
+
+#### Example: Force a single provider
+
+```
+openrouter_provider_only: openai
+```
+
+Result:
+```json
+{"provider": {"only": ["openai"]}}
+```
+
+#### Notes
+
+- `only` and `ignore` are independent fields in the OpenRouter API. Setting both is technically valid but uncommon — `only` restricts the allowlist, `ignore` removes from it.
+- These params are simple CSV strings that survive OWUI's Advanced Parameters editor re-serialization (unlike nested JSON objects which can be mangled).
+- For more advanced per-model provider routing with UI dropdowns, see the [Provider Routing Filters](openrouter_provider_routing.md) system.
 
 ---
 

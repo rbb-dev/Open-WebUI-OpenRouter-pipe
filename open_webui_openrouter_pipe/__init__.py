@@ -85,6 +85,7 @@ if TYPE_CHECKING:
         _strip_disable_model_settings_params,
         _apply_model_fallback_to_payload,
         _apply_openrouter_trace_to_payload,
+        _apply_provider_routing_params_to_payload,
     )
     from .models.registry import (
         OpenRouterModelRegistry,
@@ -186,6 +187,7 @@ __all__ = [
     "_strip_disable_model_settings_params",
     "_apply_model_fallback_to_payload",
     "_apply_openrouter_trace_to_payload",
+    "_apply_provider_routing_params_to_payload",
     "_extract_feature_flags",
     "_classify_function_call_artifacts",
     "_render_error_template",
@@ -313,6 +315,7 @@ _LAZY_IMPORTS = {
     "_strip_disable_model_settings_params": (".api.transforms", "_strip_disable_model_settings_params"),
     "_apply_model_fallback_to_payload": (".api.transforms", "_apply_model_fallback_to_payload"),
     "_apply_openrouter_trace_to_payload": (".api.transforms", "_apply_openrouter_trace_to_payload"),
+    "_apply_provider_routing_params_to_payload": (".api.transforms", "_apply_provider_routing_params_to_payload"),
     "_get_disable_param": (".api.transforms", "_get_disable_param"),
     "_model_params_to_dict": (".api.transforms", "_model_params_to_dict"),
 

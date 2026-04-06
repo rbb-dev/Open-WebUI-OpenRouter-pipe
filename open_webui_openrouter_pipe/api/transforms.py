@@ -30,6 +30,7 @@ from ..core.config import (
     _MAX_OPENROUTER_METADATA_KEY_CHARS,
     _MAX_OPENROUTER_METADATA_VALUE_CHARS,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
+    _PROVIDER_SLUG_PATTERN,
 )
 from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
@@ -520,6 +521,9 @@ def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
         "disable_description_updates",
         "disable_native_websearch",
         "disable_native_web_search",
+        "openrouter_provider_ignore",
+        "openrouter_provider_only",
+        "openrouter_provider_order",
     ):
         payload.pop(key, None)
 
@@ -1373,6 +1377,60 @@ def _apply_disable_native_websearch_to_payload(
             payload.get("model"),
         )
 
+
+# -- Provider routing custom parameters --------------------------------------
+
+def _parse_provider_csv(value: Any, *, logger: logging.Logger = LOGGER) -> list[str]:
+    """CSV string or list → validated, deduped, lowercase provider slugs."""
+    if isinstance(value, list):
+        parts = [str(v).strip() for v in value]
+    elif isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    else:
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in parts:
+        slug = raw.lower()
+        if not slug or slug in seen:
+            continue
+        if not _PROVIDER_SLUG_PATTERN.match(slug):
+            logger.warning("Dropping invalid provider slug %r from custom param.", slug)
+            continue
+        seen.add(slug)
+        result.append(slug)
+    return result
+
+
+def _apply_provider_routing_params_to_payload(
+    payload: dict[str, Any], *, logger: logging.Logger = LOGGER,
+) -> None:
+    """Pop openrouter_provider_{ignore,only,order} and merge into provider dict."""
+    if not isinstance(payload, dict):
+        return
+    try:
+        parsed = {
+            key: _parse_provider_csv(payload.pop(f"openrouter_provider_{key}", None), logger=logger)
+            for key in ("ignore", "only", "order")
+        }
+        if not any(parsed.values()):
+            return
+
+        existing = payload.get("provider")
+        provider: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        for key, slugs in parsed.items():
+            if not slugs:
+                continue
+            prev = provider.get(key)
+            if isinstance(prev, list) and prev:
+                seen = set(prev)
+                provider[key] = list(prev) + [s for s in slugs if s not in seen]
+            else:
+                provider[key] = slugs
+        payload["provider"] = provider
+        logger.debug("Applied provider routing custom params: %s", {k: v for k, v in parsed.items() if v})
+    except Exception:
+        logger.debug("Failed to apply provider routing custom params", exc_info=True)
 
 
 # -----------------------------------------------------------------------------

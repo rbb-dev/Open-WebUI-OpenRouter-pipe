@@ -79,6 +79,7 @@ from ..api.transforms import (
     _apply_model_fallback_to_payload,
     _apply_openrouter_trace_to_payload,
     _apply_disable_native_websearch_to_payload,
+    _apply_provider_routing_params_to_payload,
     _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
 )
@@ -936,6 +937,7 @@ class StreamingHandler:
                 _apply_model_fallback_to_payload(request_payload, logger=self.logger)
                 _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
                 _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
+                _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
                 _strip_disable_model_settings_params(request_payload)
 
                 api_key_value = EncryptedStr.decrypt(valves.API_KEY)
