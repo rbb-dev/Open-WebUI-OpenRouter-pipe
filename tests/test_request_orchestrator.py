@@ -2383,11 +2383,13 @@ async def test_tools_registry_awaitable_exception():
 
 @pytest.mark.asyncio
 async def test_web_search_plugin_injection():
-    """Test that web search plugin is injected when enabled.
+    """Web search plugin must be injected for any model when ORS is requested.
 
-    Covers lines 636-653: web search plugin injection with max_results.
+    Regression test for issue #26: the plugin is model-agnostic per OpenRouter
+    docs (Exa fallback for non-native models), so it must NOT be gated on
+    native web_search pricing. openai/gpt-4o-mini has no native web_search
+    capability but must still receive the {"id": "web"} plugin.
     """
-    from open_webui_openrouter_pipe.models.registry import ModelFamily
     from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
 
     pipe = Pipe()
@@ -2397,13 +2399,6 @@ async def test_web_search_plugin_injection():
         pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
         pipe.valves.REASONING_EFFORT = "medium"  # Not "minimal"
         pipe.valves.WEB_SEARCH_MAX_RESULTS = 5
-
-        # Set model capabilities for web search
-        ModelFamily.set_dynamic_specs({
-            "openai.gpt-4o-mini": {
-                "supported_parameters": ["web_search_tool"]
-            }
-        })
 
         captured_payloads: list[dict] = []
         callback = _smart_callback(captured_payloads, "Response")
@@ -2429,7 +2424,6 @@ async def test_web_search_plugin_injection():
                 "stream": True,
             }
 
-            # Pass feature flag to enable web search
             features = {_ORS_FILTER_FEATURE_FLAG: True}
 
             result = await pipe.pipe(
@@ -2450,9 +2444,15 @@ async def test_web_search_plugin_injection():
             await _consume_stream(result)
 
         assert len(captured_payloads) >= 1
+        # Assert the {"id": "web"} plugin landed in the outgoing payload, with
+        # max_results honoring the valve setting.
+        payload = captured_payloads[0]
+        plugins = payload.get("plugins") or []
+        web_plugins = [p for p in plugins if isinstance(p, dict) and p.get("id") == "web"]
+        assert len(web_plugins) == 1, f"Expected exactly one web plugin in {plugins!r}"
+        assert web_plugins[0].get("max_results") == 5
 
     finally:
-        ModelFamily.set_dynamic_specs({})
         await pipe.close()
 
 

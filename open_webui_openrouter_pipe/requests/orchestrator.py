@@ -773,7 +773,7 @@ class RequestOrchestrator:
                     responses_body.plugins = plugins
 
         ors_requested = bool(features.get(_ORS_FILTER_FEATURE_FLAG, False))
-        if ModelFamily.supports("web_search_tool", capability_model_id) and ors_requested:
+        if ors_requested:
             reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             effort = (reasoning_cfg.get("effort") or "").strip().lower()
             if not effort:
