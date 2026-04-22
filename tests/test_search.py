@@ -1,8 +1,11 @@
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 from open_webui_openrouter_pipe import Pipe
 
@@ -21,17 +24,18 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
     )
 
 
-def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_instance):
+@pytest.mark.asyncio
+async def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={})
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -53,7 +57,8 @@ def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_instance)
     assert meta["openrouter_pipe"]["openrouter_search_filter_id"] == "openrouter_search"
 
 
-def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe_instance):
+@pytest.mark.asyncio
+async def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -68,12 +73,12 @@ def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe
             },
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -90,7 +95,8 @@ def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe
     assert update_mock.call_count == 0
 
 
-def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_default_ids(pipe_instance):
+@pytest.mark.asyncio
+async def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_default_ids(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -105,12 +111,12 @@ def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_defaul
             },
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -130,7 +136,8 @@ def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_defaul
     assert meta["defaultFilterIds"] == ["openrouter_search"]
 
 
-def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updates(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updates(pipe_instance) -> None:
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -139,12 +146,12 @@ def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updat
         meta={},
         params={"disable_openrouter_search_auto_attach": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -160,7 +167,8 @@ def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updat
     assert update_mock.call_count == 0
 
 
-def test_disable_openrouter_search_default_on_skips_default_filter_ids(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_disable_openrouter_search_default_on_skips_default_filter_ids(pipe_instance) -> None:
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -169,12 +177,12 @@ def test_disable_openrouter_search_default_on_skips_default_filter_ids(pipe_inst
         meta={},
         params={"disable_openrouter_search_default_on": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,

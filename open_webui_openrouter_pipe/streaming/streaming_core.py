@@ -2524,7 +2524,7 @@ class StreamingHandler:
             message_id = metadata.get("message_id")
             if (not was_cancelled) and chat_id and message_id and emitted_citations and Chats is not None:
                 try:
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
                         chat_id, message_id, {"sources": emitted_citations}
                     )
                 except Exception as exc:
@@ -2553,7 +2553,7 @@ class StreamingHandler:
 
             if (not was_cancelled) and chat_id and message_id and assistant_annotations and Chats is not None:
                 try:
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
                         chat_id, message_id, {"annotations": assistant_annotations}
                     )
                 except Exception as exc:
@@ -2566,7 +2566,7 @@ class StreamingHandler:
 
             if (not was_cancelled) and chat_id and message_id and assistant_reasoning_details and Chats is not None:
                 try:
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
                         chat_id, message_id, {"reasoning_details": assistant_reasoning_details}
                     )
                 except Exception as exc:

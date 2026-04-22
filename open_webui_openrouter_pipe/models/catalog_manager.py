@@ -22,7 +22,6 @@ from typing import Any, Iterable, Optional, TYPE_CHECKING
 from urllib.parse import quote
 
 import aiohttp
-from fastapi.concurrency import run_in_threadpool
 
 from ..core.timing_logger import timed
 
@@ -739,12 +738,12 @@ class ModelCatalogManager:
                         if url_to_data.get(url)
                     }
 
-            # DB writes are performed via OWUI helper functions in a threadpool.
+            # DB writes are performed via OWUI async helper functions.
             semaphore = asyncio.Semaphore(10)
             ors_filter_function_id: str | None = None
             if valves.AUTO_ATTACH_ORS_FILTER or valves.AUTO_INSTALL_ORS_FILTER:
                 try:
-                    ors_filter_function_id = await run_in_threadpool(self._pipe._ensure_filter_manager().ensure_ors_filter_function_id)
+                    ors_filter_function_id = await self._pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 except Exception as exc:
                     self.logger.debug("OpenRouter Search filter ensure failed: %s", exc)
                     ors_filter_function_id = None
@@ -755,9 +754,7 @@ class ModelCatalogManager:
                 or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
             ):
                 try:
-                    direct_uploads_filter_function_id = await run_in_threadpool(
-                        self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id
-                    )
+                    direct_uploads_filter_function_id = await self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 except Exception as exc:
                     self.logger.debug("OpenRouter Direct Uploads filter ensure failed: %s", exc)
                     direct_uploads_filter_function_id = None
@@ -822,8 +819,7 @@ class ModelCatalogManager:
                 )
                 if provider_map:
                     try:
-                        provider_routing_filter_map = await run_in_threadpool(
-                            self._pipe._ensure_filter_manager().ensure_provider_routing_filters,
+                        provider_routing_filter_map = await self._pipe._ensure_filter_manager().ensure_provider_routing_filters(
                             admin_routing_models,
                             user_routing_models,
                             provider_map,
@@ -854,9 +850,7 @@ class ModelCatalogManager:
             try:
                 from open_webui.models.functions import Functions as _FunctionsTable
 
-                _all_filter_functions = await run_in_threadpool(
-                    _FunctionsTable.get_functions_by_type, "filter"
-                )
+                _all_filter_functions = await _FunctionsTable.get_functions_by_type("filter")
                 _valid_openrouter_filter_ids = frozenset(
                     f.id for f in _all_filter_functions if f.id.startswith("openrouter_")
                 )
@@ -964,8 +958,7 @@ class ModelCatalogManager:
 
                 async with semaphore:
                     try:
-                        await run_in_threadpool(
-                            self._update_or_insert_model_with_metadata,
+                        await self._update_or_insert_model_with_metadata(
                             openwebui_model_id,
                             name,
                             capabilities,
@@ -997,7 +990,7 @@ class ModelCatalogManager:
             with contextlib.suppress(Exception):
                 await session.close()
 
-    def prune_stale_openrouter_filter_ids(self) -> int:
+    async def prune_stale_openrouter_filter_ids(self) -> int:
         """Remove stale ``openrouter_*`` filter IDs from all model metadata.
 
         Queries the ``function`` table for existing ``openrouter_*`` filters,
@@ -1015,7 +1008,7 @@ class ModelCatalogManager:
 
         supports_access_control = self._model_form_supports_access_control(ModelForm)
 
-        all_filters = _FunctionsTable.get_functions_by_type("filter")
+        all_filters = await _FunctionsTable.get_functions_by_type("filter")
         valid_ids = frozenset(
             f.id for f in all_filters if f.id.startswith("openrouter_")
         )
@@ -1023,7 +1016,7 @@ class ModelCatalogManager:
             return 0
 
         updated = 0
-        all_models = Models.get_all_models()
+        all_models = await Models.get_all_models()
         for model in all_models:
             if not model.meta:
                 continue
@@ -1063,13 +1056,13 @@ class ModelCatalogManager:
                 ),
                 is_active=model.is_active,
             )
-            Models.update_model_by_id(model.id, form)
+            await Models.update_model_by_id(model.id, form)
             updated += 1
 
         return updated
 
     @timed
-    def _update_or_insert_model_with_metadata(
+    async def _update_or_insert_model_with_metadata(
         self,
         openwebui_model_id: str,
         name: str,
@@ -1100,7 +1093,7 @@ class ModelCatalogManager:
             return
         name = (name or "").strip() or openwebui_model_id
 
-        existing = Models.get_model_by_id(openwebui_model_id)
+        existing = await Models.get_model_by_id(openwebui_model_id)
 
         # Per-model advanced params: allow operators to prevent the pipe from overwriting manually-edited
         # model settings (capability checkboxes, icons, filter attachments/defaults, etc).
@@ -1427,7 +1420,7 @@ class ModelCatalogManager:
                 ),
                 is_active=existing.is_active,
             )
-            Models.update_model_by_id(openwebui_model_id, model_form)
+            await Models.update_model_by_id(openwebui_model_id, model_form)
 
         else:
             # Insert new overlay model - do NOT set user_id/owner
@@ -1480,4 +1473,4 @@ class ModelCatalogManager:
                 is_active=True,
             )
             # Use empty user_id to let OWUI handle ownership defaults
-            Models.insert_new_model(model_form, user_id="")
+            await Models.insert_new_model(model_form, user_id="")

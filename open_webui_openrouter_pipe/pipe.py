@@ -33,7 +33,6 @@ import aiohttp
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -744,12 +743,12 @@ class Pipe:
 
         if self.valves.AUTO_INSTALL_ORS_FILTER:
             try:
-                await run_in_threadpool(self._ensure_filter_manager().ensure_ors_filter_function_id)
+                await self._ensure_filter_manager().ensure_ors_filter_function_id()
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_ORS_FILTER failed: %s", exc)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
-                await run_in_threadpool(self._ensure_filter_manager().ensure_direct_uploads_filter_function_id)
+                await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc)
 
@@ -765,8 +764,7 @@ class Pipe:
                 catalog_mgr = self._ensure_catalog_manager()
                 provider_map = catalog_mgr.get_cached_provider_map()
                 if provider_map:
-                    await run_in_threadpool(
-                        self._ensure_filter_manager().ensure_provider_routing_filters,
+                    await self._ensure_filter_manager().ensure_provider_routing_filters(
                         admin_routing,
                         user_routing,
                         provider_map,
@@ -783,9 +781,7 @@ class Pipe:
         if not self._stale_filter_ids_pruned:
             self._stale_filter_ids_pruned = True
             try:
-                count = await run_in_threadpool(
-                    self._ensure_catalog_manager().prune_stale_openrouter_filter_ids
-                )
+                count = await self._ensure_catalog_manager().prune_stale_openrouter_filter_ids()
                 if count:
                     self.logger.info(
                         "Pruned stale openrouter_* filter IDs from %d model(s) on startup.", count

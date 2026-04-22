@@ -194,7 +194,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 
-def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch):
+@pytest.mark.asyncio
+async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch):
     """
     Verifies the pipe preserves existing OWUI-only capability keys while updating
     OpenRouter-derived capability fields.
@@ -258,7 +259,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
 
     class DummyModels:
         @staticmethod
-        def get_model_by_id(model_id: str) -> Any:
+        async def get_model_by_id(model_id: str) -> Any:
             # Existing model already has OWUI-only capability keys.
             existing_meta = ModelMeta(capabilities={"builtin_tools": False, "file_context": False})
             return DummyExistingModel(
@@ -272,7 +273,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
             )
 
         @staticmethod
-        def update_model_by_id(model_id: str, model_form: Any) -> None:
+        async def update_model_by_id(model_id: str, model_form: Any) -> None:
             captured["model_id"] = model_id
             captured["meta"] = getattr(model_form, "meta", None)
 
@@ -285,7 +286,7 @@ def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monkeypatch
 
         pipe = pipe_mod.Pipe()
         try:
-            pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
                 "openrouter/test",
                 "Test",
                 capabilities={"vision": True},  # pipe-provided capabilities update
@@ -339,22 +340,20 @@ class _ContextManager:
         return False
 
 
-def test_discover_engine_prefers_db_context_over_symbol_names() -> None:
+def test_discover_engine_prefers_engine_attr_over_other_attrs() -> None:
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
     engine = object()
-
-    class _Session:
-        def get_bind(self) -> Any:
-            return engine
+    other_engine = object()
 
     owui_db: Any = types.ModuleType("open_webui.internal.db")
-    owui_db.get_db_context = lambda *args, **kwargs: _ContextManager(_Session())
+    owui_db.engine = engine
+    owui_db.bind = other_engine  # should not be used since 'engine' is checked first
 
     discovered_engine, discovered_schema, details = pipe_mod.ArtifactStore._discover_owui_engine_and_schema(owui_db)
     assert discovered_engine is engine
     assert discovered_schema is None
-    assert details["engine_source"] == "get_db_context.get_bind"
+    assert details["engine_source"] == "owui_db.engine"
 
 
 def test_discover_schema_prefers_base_metadata_schema() -> None:

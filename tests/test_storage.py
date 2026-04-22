@@ -1450,22 +1450,16 @@ def test_discover_engine_from_attr(pipe_instance):
 
 
 def test_discover_engine_from_bind(pipe_instance):
-    """Test _discover_owui_engine_and_schema uses bind attribute."""
+    """Test _discover_owui_engine_and_schema uses bind attribute on owui_db."""
     store = pipe_instance._artifact_store
-
-    class _Session:
-        bind = "the_bind"
-
-    @contextlib.contextmanager
-    def _ctx():
-        yield _Session()
 
     class _DB:
         Base = None
-        get_db_context = staticmethod(_ctx)
+        bind = "the_bind"
 
     engine, schema, details = store._discover_owui_engine_and_schema(_DB)
     assert engine == "the_bind"
+    assert details["engine_source"] == "owui_db.bind"
 
 
 # -----------------------------------------------------------------------------
@@ -2057,33 +2051,19 @@ def _make_row(chat_id: str, message_id: str, payload: dict[str, Any]) -> dict[st
 
 
 def test_discover_engine_and_schema_from_get_db_context(pipe_instance):
-    engine = object()
-
-    class _Session:
-        def __init__(self, engine):
-            self._engine = engine
-
-        def get_bind(self):
-            return self._engine
-
-        def close(self):
-            return None
-
-    @contextlib.contextmanager
-    def _ctx():
-        yield _Session(engine)
+    engine_obj = object()
 
     class _DB:
         class Base:
             metadata = types.SimpleNamespace(schema="test_schema")
 
-        get_db_context = staticmethod(_ctx)
+        engine = engine_obj
 
     discovered_engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
-    assert discovered_engine is engine
+    assert discovered_engine is engine_obj
     assert schema == "test_schema"
-    assert details.get("engine_source")
-    assert details.get("schema_source")
+    assert details.get("engine_source") == "owui_db.engine"
+    assert details.get("schema_source") == "owui_db.Base.metadata.schema"
 
 
 def test_init_artifact_store_with_sqlite(pipe_instance):

@@ -26,7 +26,6 @@ from urllib.parse import quote, urlparse
 import aiohttp
 import httpx
 from fastapi import BackgroundTasks, Request, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 from ..core.timing_logger import timed
@@ -231,14 +230,13 @@ class MultimodalHandler:
             FileModel object if found, None otherwise
 
         Note:
-            Uses run_in_threadpool to avoid blocking async operations.
             Failures are logged but do not raise exceptions.
         """
-        if Files is None or run_in_threadpool is None:
+        if Files is None:
             self.logger.debug(f"Cannot load file {file_id}: Open WebUI integration not available")
             return None
         try:
-            return await run_in_threadpool(Files.get_file_by_id, file_id)
+            return await Files.get_file_by_id(file_id)
         except Exception as exc:
             self.logger.error(f"Failed to load file {file_id}: {exc}")
             return None
@@ -553,7 +551,6 @@ class MultimodalHandler:
 
         Note:
             - File processing is disabled (process=False) to avoid unnecessary overhead
-            - Uses run_in_threadpool to prevent blocking async event loop
             - Failures are logged but return None rather than raising exceptions
 
         Example:
@@ -562,7 +559,7 @@ class MultimodalHandler:
             ... )
             >>> # file_id = 'abc123...'
         """
-        if run_in_threadpool is None or upload_file_handler is None:
+        if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
             return None
         try:
@@ -576,8 +573,7 @@ class MultimodalHandler:
                 if normalized_message_id:
                     upload_metadata["message_id"] = normalized_message_id
 
-            file_item = await run_in_threadpool(
-                upload_file_handler,
+            file_item = await upload_file_handler(
                 request=request,
                 file=UploadFile(
                     file=io.BytesIO(file_data),
@@ -613,8 +609,7 @@ class MultimodalHandler:
                     effective_user_id = candidate.strip()
 
             try:
-                await run_in_threadpool(
-                    self._try_link_file_to_chat,
+                await self._try_link_file_to_chat(
                     chat_id=chat_id,
                     message_id=message_id,
                     file_id=file_id,
@@ -632,7 +627,7 @@ class MultimodalHandler:
             return None
 
     @timed
-    def _try_link_file_to_chat(
+    async def _try_link_file_to_chat(
         self,
         *,
         chat_id: Optional[str],
@@ -675,23 +670,22 @@ class MultimodalHandler:
         except Exception:
             return False
 
-        insert_fn = getattr(Chats, "insert_chat_files", None)
-        if not callable(insert_fn):
+        if not hasattr(Chats, "insert_chat_files"):
             return False
 
         try:
-            insert_fn(
+            await Chats.insert_chat_files(
                 chat_id=normalized_chat_id,
-                message_id=normalized_message_id,
+                message_id=normalized_message_id or "",
                 file_ids=[file_id.strip()],
                 user_id=normalized_user_id,
             )
             return True
         except TypeError:
             try:
-                insert_fn(
+                await Chats.insert_chat_files(
                     normalized_chat_id,
-                    normalized_message_id,
+                    normalized_message_id or "",
                     [file_id.strip()],
                     normalized_user_id,
                 )
@@ -735,7 +729,7 @@ class MultimodalHandler:
         Returns:
             User object or None if creation fails
         """
-        if Users is None or run_in_threadpool is None:
+        if Users is None:
             self.logger.debug("Cannot create storage user: Open WebUI integration not available")
             return None
 
@@ -764,8 +758,7 @@ class MultimodalHandler:
                 self._storage_role_warning_emitted = True
 
             try:
-                fallback_user = await run_in_threadpool(
-                    Users.get_user_by_email,
+                fallback_user = await Users.get_user_by_email(
                     fallback_email,
                 )
             except Exception as exc:  # pragma: no cover - defensive guard
@@ -791,8 +784,7 @@ class MultimodalHandler:
                     elif "oauth_sub" in param_names:
                         insert_kwargs["oauth_sub"] = oauth_marker
 
-                    fallback_user = await run_in_threadpool(
-                        insert_fn,
+                    fallback_user = await insert_fn(
                         user_id,
                         fallback_name,
                         fallback_email,

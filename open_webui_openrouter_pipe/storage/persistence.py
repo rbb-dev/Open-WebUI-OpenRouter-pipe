@@ -28,7 +28,7 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Tuple, Type
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
@@ -390,25 +390,8 @@ class ArtifactStore:
             except Exception:
                 schema = None
 
-        db_context = getattr(owui_db, "get_db_context", None) or getattr(owui_db, "get_db", None)
-        if db_context is not None:
-            try:
-                cm = db_context() if callable(db_context) else db_context
-                if hasattr(cm, "__enter__"):
-                    with cast(contextlib.AbstractContextManager[Any], cm) as session:
-                        if session is not None:
-                            try:
-                                engine = session.get_bind()
-                                details["engine_source"] = "get_db_context.get_bind"
-                            except Exception:
-                                engine = getattr(session, "bind", None) or getattr(session, "engine", None)
-                                if engine is not None:
-                                    details["engine_source"] = "get_db_context.bind"
-            except Exception:
-                engine = None
-
         if engine is None:
-            for attr in ("engine", "ENGINE", "bind", "BIND"):
+            for attr in ("engine", "async_engine", "ENGINE", "bind", "BIND"):
                 candidate = getattr(owui_db, attr, None)
                 if candidate:
                     engine = candidate

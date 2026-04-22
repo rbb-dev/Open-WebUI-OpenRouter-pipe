@@ -263,30 +263,16 @@ def test_discover_schema_from_metadata_obj_raises(pipe_instance):
 
 
 def test_discover_engine_from_bind_fallback(pipe_instance):
-    """Test engine discovery via session.bind when get_bind fails (lines 389-394)."""
+    """Test engine discovery via owui_db.bind attribute."""
     engine_obj = object()
-
-    class _Session:
-        def __init__(self):
-            self.bind = engine_obj
-
-        def get_bind(self):
-            raise RuntimeError("get_bind failed")
-
-        def close(self):
-            pass
-
-    @contextlib.contextmanager
-    def _ctx():
-        yield _Session()
 
     class _DB:
         Base = None
-        get_db_context = staticmethod(_ctx)
+        bind = engine_obj
 
     discovered_engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
     assert discovered_engine is engine_obj
-    assert details.get("engine_source") == "get_db_context.bind"
+    assert details.get("engine_source") == "owui_db.bind"
 
 
 def test_discover_engine_unavailable_sets_details(pipe_instance):

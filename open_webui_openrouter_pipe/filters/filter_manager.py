@@ -250,7 +250,7 @@ class FilterManager:
     # =========================================================================
 
     @timed
-    def _ensure_filter_installed(
+    async def _ensure_filter_installed(
         self,
         *,
         desired_source: str,
@@ -280,7 +280,7 @@ class FilterManager:
             return None
 
         try:
-            filters = Functions.get_functions_by_type("filter", active_only=False)
+            filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
             return None
 
@@ -307,7 +307,7 @@ class FilterManager:
             while True:
                 existing = None
                 try:
-                    existing = Functions.get_function_by_id(candidate_id)
+                    existing = await Functions.get_function_by_id(candidate_id)
                 except Exception:
                     existing = None
                 if existing is None:
@@ -329,10 +329,10 @@ class FilterManager:
                 content=desired_source,
                 meta=meta_obj,
             )
-            created = Functions.insert_new_function("", "filter", form)
+            created = await Functions.insert_new_function("", "filter", form)
             if not created:
                 return None
-            Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
+            await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
             self.logger.info("Installed %s: %s", log_label, candidate_id)
             return candidate_id
 
@@ -344,7 +344,7 @@ class FilterManager:
             existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
             if existing_content != desired_source:
                 self.logger.info("Updating %s: %s", log_label, function_id)
-                Functions.update_function_by_id(
+                await Functions.update_function_by_id(
                     function_id,
                     {
                         "content": desired_source,
@@ -356,7 +356,7 @@ class FilterManager:
                     },
                 )
             else:
-                Functions.update_function_by_id(
+                await Functions.update_function_by_id(
                     function_id,
                     {
                         "name": desired_name,
@@ -446,7 +446,7 @@ class Filter:
 '''
 
     @timed
-    def ensure_ors_filter_function_id(self) -> str | None:
+    async def ensure_ors_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Search companion filter exists (and is up to date), returning its OWUI function id."""
 
         def _matches(content: str) -> bool:
@@ -457,7 +457,7 @@ class Filter:
             # Back-compat for manual installs of earlier drafts: detect by the feature flag string.
             return _ORS_FILTER_FEATURE_FLAG in content and "class Filter" in content
 
-        return self._ensure_filter_installed(
+        return await self._ensure_filter_installed(
             desired_source=self.render_ors_filter_source().strip() + "\n",
             desired_name="OpenRouter Search",
             desired_meta={
@@ -914,7 +914,7 @@ class Filter:
         )
 
     @timed
-    def ensure_direct_uploads_filter_function_id(self) -> str | None:
+    async def ensure_direct_uploads_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Direct Uploads companion filter exists (and is up to date), returning its OWUI function id."""
 
         def _matches(content: str) -> bool:
@@ -922,7 +922,7 @@ class Filter:
                 return False
             return _DIRECT_UPLOADS_FILTER_MARKER in content and "class Filter" in content
 
-        return self._ensure_filter_installed(
+        return await self._ensure_filter_installed(
             desired_source=self.render_direct_uploads_filter_source().strip() + "\n",
             desired_name="Direct Uploads",
             desired_meta={
@@ -1382,7 +1382,7 @@ class Filter:
         return body
 '''
 
-    def ensure_provider_routing_filters(
+    async def ensure_provider_routing_filters(
         self,
         admin_models_csv: str,
         user_models_csv: str,
@@ -1434,7 +1434,7 @@ class Filter:
 
         # Find existing provider routing filters
         try:
-            all_filters = Functions.get_functions_by_type("filter", active_only=False)
+            all_filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
             all_filters = []
 
@@ -1542,7 +1542,7 @@ class Filter:
                 existing_id = getattr(existing, "id", "")
                 existing_content = (getattr(existing, "content", "") or "").strip() + "\n"
                 if existing_content != desired_source:
-                    Functions.update_function_by_id(
+                    await Functions.update_function_by_id(
                         existing_id,
                         {
                             "content": desired_source,
@@ -1555,7 +1555,7 @@ class Filter:
                     self.logger.info("Updated provider routing filter: %s", existing_id)
                 else:
                     # Just ensure it's active
-                    Functions.update_function_by_id(existing_id, {"is_active": True})
+                    await Functions.update_function_by_id(existing_id, {"is_active": True})
                 # Track for attachment
                 if existing_id:
                     slug_to_filter_id[slug] = existing_id
@@ -1565,7 +1565,7 @@ class Filter:
                 suffix = 0
                 while True:
                     try:
-                        existing_func = Functions.get_function_by_id(candidate_id)
+                        existing_func = await Functions.get_function_by_id(candidate_id)
                     except Exception:
                         existing_func = None
                     if existing_func is None:
@@ -1584,9 +1584,9 @@ class Filter:
                         content=desired_source,
                         meta=meta_obj,
                     )
-                    created_func = Functions.insert_new_function("", "filter", form)
+                    created_func = await Functions.insert_new_function("", "filter", form)
                     if created_func:
-                        Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False})
+                        await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False})
                         created += 1
                         self.logger.info("Created provider routing filter: %s", candidate_id)
                         # Track for attachment
@@ -1598,7 +1598,7 @@ class Filter:
             if slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id:
-                    Functions.update_function_by_id(existing_id, {"is_active": False})
+                    await Functions.update_function_by_id(existing_id, {"is_active": False})
                     disabled += 1
                     self.logger.info("Disabled provider routing filter: %s", existing_id)
 

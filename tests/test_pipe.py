@@ -2290,24 +2290,26 @@ class TestRenderFilterSource:
 class TestFilterFunctions:
     """Tests for filter function management."""
 
-    def test_ensure_ors_filter_function_id_no_functions_module(self):
+    @pytest.mark.asyncio
+    async def test_ensure_ors_filter_function_id_no_functions_module(self):
         """Test that ensure_ors_filter_function_id returns None when Functions module is unavailable."""
         pipe = Pipe()
 
         try:
             # Without the Functions module, should return None
-            result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+            result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
             # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
             pipe.shutdown()
 
-    def test_ensure_direct_uploads_filter_function_id_no_functions_module(self):
+    @pytest.mark.asyncio
+    async def test_ensure_direct_uploads_filter_function_id_no_functions_module(self):
         """Test that ensure_direct_uploads_filter_function_id returns None when Functions unavailable."""
         pipe = Pipe()
 
         try:
-            result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+            result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
             # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
@@ -3564,11 +3566,11 @@ async def test_pipes_auto_install_filters_handles_exceptions(monkeypatch, pipe_i
 
     called: list[str] = []
 
-    def _fail_ors() -> None:
+    async def _fail_ors() -> None:
         called.append("ors")
         raise RuntimeError("fail")
 
-    def _ok_direct() -> str:
+    async def _ok_direct() -> str:
         called.append("direct")
         return "direct"
 
@@ -4075,22 +4077,22 @@ def _install_functions_module(functions: list[_Func]) -> Iterator[types.ModuleTy
         updated: list[tuple[str, dict]] = []
 
         @classmethod
-        def get_functions_by_type(cls, _type, active_only=False):
+        async def get_functions_by_type(cls, _type, active_only=False):
             return cls._functions
 
         @classmethod
-        def get_function_by_id(cls, func_id):
+        async def get_function_by_id(cls, func_id):
             for func in cls._functions:
                 if func.id == func_id:
                     return func
             return None
 
         @classmethod
-        def insert_new_function(cls, *_args, **_kwargs):
+        async def insert_new_function(cls, *_args, **_kwargs):
             return True
 
         @classmethod
-        def update_function_by_id(cls, func_id, payload):
+        async def update_function_by_id(cls, func_id, payload):
             cls.updated.append((func_id, payload))
 
     setattr(functions_mod, "FunctionMeta", FunctionMeta)
@@ -4106,36 +4108,40 @@ def _install_functions_module(functions: list[_Func]) -> Iterator[types.ModuleTy
             sys.modules.pop("open_webui.models.functions", None)
 
 
-def test_ensure_ors_filter_auto_install_off_returns_none(pipe_instance):
+@pytest.mark.asyncio
+async def test_ensure_ors_filter_auto_install_off_returns_none(pipe_instance):
     pipe = pipe_instance
     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
 
     with _install_functions_module([]):
-        assert pipe._ensure_filter_manager().ensure_ors_filter_function_id() is None
+        assert await pipe._ensure_filter_manager().ensure_ors_filter_function_id() is None
 
 
-def test_ensure_ors_filter_auto_install_creates_and_updates(pipe_instance):
+@pytest.mark.asyncio
+async def test_ensure_ors_filter_auto_install_creates_and_updates(pipe_instance):
     pipe = pipe_instance
     pipe.valves.AUTO_INSTALL_ORS_FILTER = True
 
     with _install_functions_module([]) as mod:
-        func_id = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+        func_id = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
         assert func_id is not None
         assert mod.Functions.updated
 
 
-def test_ensure_ors_filter_updates_existing(pipe_instance):
+@pytest.mark.asyncio
+async def test_ensure_ors_filter_updates_existing(pipe_instance):
     pipe = pipe_instance
     pipe.valves.AUTO_INSTALL_ORS_FILTER = True
 
     existing = _Func(id="openrouter_search", content=f"{_ORS_FILTER_MARKER} old", updated_at=10)
     with _install_functions_module([existing]) as mod:
-        func_id = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+        func_id = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
         assert func_id == "openrouter_search"
         assert mod.Functions.updated
 
 
-def test_ensure_direct_uploads_filter_updates_existing(pipe_instance):
+@pytest.mark.asyncio
+async def test_ensure_direct_uploads_filter_updates_existing(pipe_instance):
     pipe = pipe_instance
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
 
@@ -4145,7 +4151,7 @@ def test_ensure_direct_uploads_filter_updates_existing(pipe_instance):
         updated_at=5,
     )
     with _install_functions_module([existing]) as mod:
-        func_id = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+        func_id = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
         assert func_id == _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID
         assert mod.Functions.updated
 
@@ -7049,7 +7055,8 @@ def test_pipe_log_level_can_be_set():
 class TestFilterAutoInstall:
     """Tests for the direct uploads filter auto-install functionality."""
 
-    def test_ensure_direct_uploads_filter_returns_none_when_valve_disabled(self):
+    @pytest.mark.asyncio
+    async def test_ensure_direct_uploads_filter_returns_none_when_valve_disabled(self):
         """Test that filter returns None when AUTO_INSTALL_DIRECT_UPLOADS_FILTER is False."""
         import sys
         from types import ModuleType
@@ -7061,18 +7068,19 @@ class TestFilterAutoInstall:
             # Create a mock functions module
             mock_functions_mod = ModuleType("open_webui.models.functions")
             mock_Functions = Mock()
-            mock_Functions.get_functions_by_type.return_value = []
+            mock_Functions.get_functions_by_type = AsyncMock(return_value=[])
             mock_functions_mod.Functions = mock_Functions
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return None since auto-install is disabled
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ensure_direct_uploads_filter_with_auto_install_enabled(self):
+    @pytest.mark.asyncio
+    async def test_ensure_direct_uploads_filter_with_auto_install_enabled(self):
         """Test filter auto-installation when valve is enabled."""
         import sys
         from types import ModuleType
@@ -7084,22 +7092,23 @@ class TestFilterAutoInstall:
             # Create a mock functions module
             mock_functions_mod = ModuleType("open_webui.models.functions")
             mock_Functions = Mock()
-            mock_Functions.get_functions_by_type.return_value = []
-            mock_Functions.get_function_by_id.return_value = None
-            mock_Functions.insert_new_function.return_value = Mock(id="openrouter_direct_uploads")
-            mock_Functions.update_function_by_id.return_value = None
+            mock_Functions.get_functions_by_type = AsyncMock(return_value=[])
+            mock_Functions.get_function_by_id = AsyncMock(return_value=None)
+            mock_Functions.insert_new_function = AsyncMock(return_value=Mock(id="openrouter_direct_uploads"))
+            mock_Functions.update_function_by_id = AsyncMock(return_value=None)
             mock_functions_mod.Functions = mock_Functions
             mock_functions_mod.FunctionForm = Mock
             mock_functions_mod.FunctionMeta = Mock(return_value={})
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 # Result may be the installed filter ID or None
                 # Just verify no crash occurs
         finally:
             pipe.shutdown()
 
-    def test_ensure_direct_uploads_filter_suffix_loop_limit(self):
+    @pytest.mark.asyncio
+    async def test_ensure_direct_uploads_filter_suffix_loop_limit(self):
         """Test that filter auto-install stops after 50 suffix attempts."""
         import sys
         from types import ModuleType
@@ -7111,22 +7120,23 @@ class TestFilterAutoInstall:
             # Create a mock functions module
             mock_functions_mod = ModuleType("open_webui.models.functions")
             mock_Functions = Mock()
-            mock_Functions.get_functions_by_type.return_value = []
+            mock_Functions.get_functions_by_type = AsyncMock(return_value=[])
             # Return an existing function for every get_function_by_id call
-            mock_Functions.get_function_by_id.return_value = Mock(id="exists")
+            mock_Functions.get_function_by_id = AsyncMock(return_value=Mock(id="exists"))
             mock_functions_mod.Functions = mock_Functions
             mock_functions_mod.FunctionForm = Mock
             mock_functions_mod.FunctionMeta = Mock(return_value={})
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return None after hitting suffix limit
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ensure_direct_uploads_filter_updates_existing(self):
+    @pytest.mark.asyncio
+    async def test_ensure_direct_uploads_filter_updates_existing(self):
         """Test that existing filter gets updated when content differs."""
         import sys
         from types import ModuleType
@@ -7146,12 +7156,12 @@ class TestFilterAutoInstall:
             # Create a mock functions module
             mock_functions_mod = ModuleType("open_webui.models.functions")
             mock_Functions = Mock()
-            mock_Functions.get_functions_by_type.return_value = [existing_filter]
-            mock_Functions.update_function_by_id.return_value = None
+            mock_Functions.get_functions_by_type = AsyncMock(return_value=[existing_filter])
+            mock_Functions.update_function_by_id = AsyncMock(return_value=None)
             mock_functions_mod.Functions = mock_Functions
 
             with patch.dict(sys.modules, {"open_webui.models.functions": mock_functions_mod}):
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
 
                 # Should return the existing filter's ID
                 assert result == "test_filter"
@@ -8819,26 +8829,28 @@ class TestTimingLogConfiguration2:
 class TestFilterAutoInstallationPaths:
     """Tests for filter auto-installation code paths."""
 
-    def test_ors_filter_matches_candidate_empty_content(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_matches_candidate_empty_content(self):
         """Test _matches_candidate returns False for empty content (line 1403-1404)."""
         pipe = Pipe()
         try:
             # The Functions import happens inside the method dynamically
             # We need to provide a mock module in sys.modules
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_feature_flag_match(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_feature_flag_match(self):
         """Test _matches_candidate matches by feature flag (line 1408)."""
         pipe = Pipe()
         try:
@@ -8851,35 +8863,37 @@ class TestFilterAutoInstallationPaths:
             mock_filter.content = f'{_ORS_FILTER_FEATURE_FLAG}\nclass Filter:\n    pass'
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result == "test_filter"
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_get_functions_exception(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_get_functions_exception(self):
         """Test _ensure_ors_filter_function_id handles exception in get_functions (line 1412-1413)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.side_effect = Exception("DB error")
+            mock_functions_class.get_functions_by_type = AsyncMock(side_effect=Exception("DB error"))
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_multiple_candidates_warning(self, caplog):
+    @pytest.mark.asyncio
+    async def test_ors_filter_multiple_candidates_warning(self, caplog):
         """Test warning when multiple filter candidates found (line 1424)."""
         pipe = Pipe()
         try:
@@ -8896,7 +8910,7 @@ class TestFilterAutoInstallationPaths:
             mock_filter2.content = f'{_ORS_FILTER_MARKER}\nclass Filter:\n    pass'
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter1, mock_filter2]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter1, mock_filter2])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -8904,22 +8918,24 @@ class TestFilterAutoInstallationPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 with caplog.at_level(logging.WARNING):
                     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                    result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                    result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                     # Should pick the newer one
                     assert result == "filter2"
                     assert any("Multiple OpenRouter Search filter candidates" in msg for msg in caplog.messages)
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_get_function_by_id_exception(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_get_function_by_id_exception(self):
         """Test exception in get_function_by_id during ID collision check (line 1440-1441)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
             # First call raises exception, second returns None
-            mock_functions_class.get_function_by_id.side_effect = [Exception("DB error"), None]
-            mock_functions_class.insert_new_function.return_value = MagicMock()
+            mock_functions_class.get_function_by_id = AsyncMock(side_effect=[Exception("DB error"), None])
+            mock_functions_class.insert_new_function = AsyncMock(return_value=MagicMock())
+            mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -8928,19 +8944,20 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should eventually create with the base ID (after exception we retry)
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_suffix_overflow(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_suffix_overflow(self):
         """Test suffix overflow protection (line 1446-1447)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
             # Always return existing filter (to force suffix increment)
-            mock_functions_class.get_function_by_id.return_value = MagicMock(id="existing")
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=MagicMock(id="existing"))
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -8949,20 +8966,21 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should return None after 50+ iterations
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_insert_fails(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_insert_fails(self):
         """Test when insert_new_function returns None (covers lines around 1463)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
-            mock_functions_class.get_function_by_id.return_value = None
-            mock_functions_class.insert_new_function.return_value = None  # Insert fails
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=None)
+            mock_functions_class.insert_new_function = AsyncMock(return_value=None)  # Insert fails
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -8971,12 +8989,13 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_empty_function_id(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_empty_function_id(self):
         """Test returning None when chosen filter has empty id (line 1469-1470)."""
         pipe = Pipe()
         try:
@@ -8988,19 +9007,20 @@ class TestFilterAutoInstallationPaths:
             mock_filter.content = f'{_ORS_FILTER_MARKER}\nclass Filter:\n    pass'
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_ors_filter_update_matching_source(self):
+    @pytest.mark.asyncio
+    async def test_ors_filter_update_matching_source(self):
         """Test updating filter when source matches (line 1488)."""
         pipe = Pipe()
         try:
@@ -9015,14 +9035,15 @@ class TestFilterAutoInstallationPaths:
             mock_filter.content = desired_source  # Same content
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
+            mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_ORS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_ors_filter_function_id()
                 # Should just update metadata, not content
                 assert result == "existing_filter"
                 # Verify update_function_by_id was called
@@ -9034,23 +9055,25 @@ class TestFilterAutoInstallationPaths:
 class TestDirectUploadsFilterPaths:
     """Tests for direct uploads filter installation paths."""
 
-    def test_direct_uploads_filter_get_functions_exception(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_get_functions_exception(self):
         """Test exception in get_functions_by_type (line 1533-1534)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.side_effect = Exception("DB error")
+            mock_functions_class.get_functions_by_type = AsyncMock(side_effect=Exception("DB error"))
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_multiple_candidates(self, caplog):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_multiple_candidates(self, caplog):
         """Test warning for multiple filter candidates (line 1540-1541)."""
         pipe = Pipe()
         try:
@@ -9067,7 +9090,7 @@ class TestDirectUploadsFilterPaths:
             mock_filter2.content = f'{_DIRECT_UPLOADS_FILTER_MARKER}\nclass Filter:\n    pass'
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter1, mock_filter2]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter1, mock_filter2])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -9075,20 +9098,22 @@ class TestDirectUploadsFilterPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 with caplog.at_level(logging.WARNING):
                     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-                    result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                    result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                     assert result == "filter2"
                     assert any("Multiple OpenRouter Direct Uploads filter candidates" in msg for msg in caplog.messages)
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_exception_get_by_id(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_exception_get_by_id(self):
         """Test exception in get_function_by_id (line 1557-1558)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
-            mock_functions_class.get_function_by_id.side_effect = [Exception("DB error"), None]
-            mock_functions_class.insert_new_function.return_value = MagicMock()
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
+            mock_functions_class.get_function_by_id = AsyncMock(side_effect=[Exception("DB error"), None])
+            mock_functions_class.insert_new_function = AsyncMock(return_value=MagicMock())
+            mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -9097,18 +9122,19 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 # Should continue after exception
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_suffix_overflow(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_suffix_overflow(self):
         """Test suffix overflow (line 1563-1564)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
-            mock_functions_class.get_function_by_id.return_value = MagicMock(id="existing")
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=MagicMock(id="existing"))
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -9117,19 +9143,20 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_insert_fails(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_insert_fails(self):
         """Test insert_new_function returns None (line 1579-1580)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = []
-            mock_functions_class.get_function_by_id.return_value = None
-            mock_functions_class.insert_new_function.return_value = None  # Insert fails
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[])
+            mock_functions_class.get_function_by_id = AsyncMock(return_value=None)
+            mock_functions_class.insert_new_function = AsyncMock(return_value=None)  # Insert fails
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
@@ -9138,12 +9165,13 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_empty_function_id(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_empty_function_id(self):
         """Test empty function id (line 1594-1595)."""
         pipe = Pipe()
         try:
@@ -9155,19 +9183,20 @@ class TestDirectUploadsFilterPaths:
             mock_filter.content = f'{_DIRECT_UPLOADS_FILTER_MARKER}\nclass Filter:\n    pass'
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result is None
         finally:
             pipe.shutdown()
 
-    def test_direct_uploads_filter_update_matching_source(self):
+    @pytest.mark.asyncio
+    async def test_direct_uploads_filter_update_matching_source(self):
         """Test update when source matches (line 1612-1613)."""
         pipe = Pipe()
         try:
@@ -9181,14 +9210,15 @@ class TestDirectUploadsFilterPaths:
             mock_filter.content = desired_source
 
             mock_functions_class = MagicMock()
-            mock_functions_class.get_functions_by_type.return_value = [mock_filter]
+            mock_functions_class.get_functions_by_type = AsyncMock(return_value=[mock_filter])
+            mock_functions_class.update_function_by_id = AsyncMock()
 
             mock_module = MagicMock()
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 assert result == "existing"
         finally:
             pipe.shutdown()
@@ -9217,7 +9247,7 @@ class TestPipesMethodExceptionPaths:
                     mock_list.return_value = [{"id": "test/model", "name": "Test Model"}]
 
                     # Make the filter installation fail
-                    with patch.object(pipe._filter_manager, "ensure_ors_filter_function_id", side_effect=Exception("DB error")):
+                    with patch.object(pipe._filter_manager, "ensure_ors_filter_function_id", new_callable=AsyncMock, side_effect=Exception("DB error")):
                         with caplog.at_level(logging.DEBUG):
                             models = await pipe.pipes()
                             # Should still return models despite filter error
@@ -9244,7 +9274,7 @@ class TestPipesMethodExceptionPaths:
                 with patch.object(OpenRouterModelRegistry, "list_models") as mock_list:
                     mock_list.return_value = [{"id": "test/model", "name": "Test Model"}]
 
-                    with patch.object(pipe._filter_manager, "ensure_direct_uploads_filter_function_id", side_effect=Exception("DB error")):
+                    with patch.object(pipe._filter_manager, "ensure_direct_uploads_filter_function_id", new_callable=AsyncMock, side_effect=Exception("DB error")):
                         with caplog.at_level(logging.DEBUG):
                             models = await pipe.pipes()
                             assert len(models) > 0

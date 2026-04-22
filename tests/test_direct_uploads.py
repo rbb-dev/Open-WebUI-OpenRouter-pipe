@@ -1074,7 +1074,8 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
     )
 
 
-def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instance):
+@pytest.mark.asyncio
+async def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -1085,15 +1086,15 @@ def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instanc
 
     with patch(
         "open_webui_openrouter_pipe.pipe.Models.get_model_by_id",
-        return_value=existing,
+        new=AsyncMock(return_value=existing),
     ), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id",
-        new=update_mock,
+        new=AsyncMock(side_effect=update_mock),
     ), patch(
         "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -1114,7 +1115,8 @@ def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_instanc
     assert meta["openrouter_pipe"]["capabilities"] == pipe_caps
 
 
-def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_instance):
+@pytest.mark.asyncio
+async def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -1129,15 +1131,15 @@ def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_instanc
 
     with patch(
         "open_webui_openrouter_pipe.pipe.Models.get_model_by_id",
-        return_value=existing,
+        new=AsyncMock(return_value=existing),
     ), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id",
-        new=update_mock,
+        new=AsyncMock(side_effect=update_mock),
     ), patch(
         "open_webui_openrouter_pipe.pipe.ModelForm",
         new=lambda **kw: SimpleNamespace(**kw),
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -1339,13 +1341,13 @@ async def test_upload_to_owui_storage_links_chat_file(pipe_instance_async, mock_
     from open_webui.models.chats import Chats
     from open_webui_openrouter_pipe import multimodal
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
     monkeypatch.setattr(Chats, "insert_chat_files", insert_mock, raising=False)
 
     captured: dict[str, Any] = {}
 
     # Real upload handler that validates all required parameters
-    def upload_stub(*_args, **kwargs):
+    async def upload_stub(*_args, **kwargs):
         """Simulate real upload_file_handler behavior."""
         # Validate required parameters
         assert "file" in kwargs, "file parameter required"
@@ -1371,12 +1373,7 @@ async def test_upload_to_owui_storage_links_chat_file(pipe_instance_async, mock_
         mock_file.id = "file123"
         return mock_file
 
-    async def run_in_threadpool_stub(fn, *args, **kwargs):
-        """Execute synchronously for testing."""
-        return fn(*args, **kwargs)
-
     monkeypatch.setattr(multimodal, "upload_file_handler", upload_stub)
-    monkeypatch.setattr(multimodal, "run_in_threadpool", run_in_threadpool_stub)
 
     # Execute upload
     file_id = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
@@ -1421,17 +1418,13 @@ async def test_upload_to_owui_storage_ignores_missing_insert_api(pipe_instance_a
     # Remove insert_chat_files to simulate older Open-WebUI
     monkeypatch.delattr(Chats, "insert_chat_files", raising=False)
 
-    def upload_stub(*_args, **kwargs):
+    async def upload_stub(*_args, **kwargs):
         """Simulate successful file upload."""
         mock_file = Mock()
         mock_file.id = "file123"
         return mock_file
 
-    async def run_in_threadpool_stub(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
     monkeypatch.setattr(multimodal, "upload_file_handler", upload_stub)
-    monkeypatch.setattr(multimodal, "run_in_threadpool", run_in_threadpool_stub)
 
     # Execute upload - should succeed without insert_chat_files
     file_id = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(

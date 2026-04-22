@@ -68,7 +68,11 @@ def _install_open_webui_stubs() -> None:
 
     class _Chats:
         @staticmethod
-        def upsert_message_to_chat_by_id_and_message_id(*_args, **_kwargs):
+        async def upsert_message_to_chat_by_id_and_message_id(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        async def insert_chat_files(chat_id, message_id, file_ids, user_id, db=None):
             return None
 
     class _ModelForm:
@@ -88,38 +92,79 @@ def _install_open_webui_stubs() -> None:
 
     class _Models:
         @staticmethod
-        def get_model_by_id(_model_id):
+        async def get_model_by_id(_model_id):
             return None
 
         @staticmethod
-        def get_all_models():
+        async def get_all_models():
             return []
 
         @staticmethod
-        def update_model_by_id(_model_id, _model_form):
+        async def update_model_by_id(_model_id, _model_form):
             return None
 
         @staticmethod
-        def insert_new_model(_model_form, user_id=""):
+        async def insert_new_model(_model_form, user_id=""):
             return None
 
     class _Files:
         @staticmethod
-        def get_file_by_id(_file_id):
+        async def get_file_by_id(_file_id):
             return None
 
         @staticmethod
-        def insert_new_file(*_args, **_kwargs):
+        async def insert_new_file(*_args, **_kwargs):
             return None
 
     class _Users:
         @staticmethod
-        def get_user_by_id(_user_id):
+        async def get_user_by_id(_user_id):
             return None
+
+        @staticmethod
+        async def get_user_by_email(email, db=None):
+            return None
+
+        @staticmethod
+        async def insert_new_user(id, name, email, profile_image_url='/user.png', role='pending', username=None, oauth=None, db=None):
+            return type('UserModel', (), {'id': id, 'name': name, 'email': email, 'role': role, 'profile_image_url': profile_image_url})()
 
     async def _upload_file_handler(*_args, **_kwargs):
         """Stub for upload_file_handler."""
         return None
+
+    class _FunctionMeta(pydantic.BaseModel):
+        description: str = ""
+        manifest: dict = {}
+
+    class _FunctionForm(pydantic.BaseModel):
+        id: str = ""
+        name: str = ""
+        type: str = ""
+        content: str = ""
+        meta: _FunctionMeta = _FunctionMeta()
+
+    class _Functions:
+        @staticmethod
+        async def get_functions_by_type(type, active_only=False, db=None):
+            return []
+
+        @staticmethod
+        async def get_function_by_id(id, db=None):
+            return None
+
+        @staticmethod
+        async def insert_new_function(user_id, type, form_data, db=None):
+            return None
+
+        @staticmethod
+        async def update_function_by_id(id, updated, db=None):
+            return None
+
+    functions_mod = cast(Any, _ensure_module("open_webui.models.functions"))
+    functions_mod.Functions = _Functions
+    functions_mod.FunctionForm = _FunctionForm
+    functions_mod.FunctionMeta = _FunctionMeta
 
     chats_mod.Chats = _Chats
     models_mod.ModelForm = _ModelForm
@@ -134,6 +179,7 @@ def _install_open_webui_stubs() -> None:
     models_pkg.models = models_mod
     models_pkg.files = files_mod
     models_pkg.users = users_mod
+    models_pkg.functions = functions_mod
     routers_pkg.files = routers_files_mod
     open_webui.models = models_pkg
     open_webui.routers = routers_pkg
@@ -328,8 +374,12 @@ def _install_open_webui_stubs() -> None:
             pass
         return sources
 
+    async def _process_tool_result(request=None, tool_function_name='', tool_result='', tool_type='', direct_tool=False, metadata=None, user=None):
+        return (str(tool_result), [], [])
+
     middleware_mod.apply_source_context_to_messages = _apply_source_context_to_messages
     middleware_mod.get_citation_source_from_tool_result = _get_citation_source_from_tool_result
+    middleware_mod.process_tool_result = _process_tool_result
     utils_pkg.middleware = middleware_mod
     open_webui.utils = utils_pkg
 
@@ -592,6 +642,9 @@ def _install_fastapi_stub() -> None:
     # Create run_in_threadpool stub
     async def _run_in_threadpool(func, *args, **kwargs):
         """Stub for FastAPI's run_in_threadpool."""
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
         return func(*args, **kwargs)
 
     fastapi_pkg.Request = _Request

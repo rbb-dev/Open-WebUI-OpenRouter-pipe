@@ -721,14 +721,10 @@ async def test_sync_model_metadata_skips_model_without_valid_id(pipe_instance_as
 
     update_mock = Mock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": None}, {"id": ""}, {"id": 123}],
-            pipe_identifier="test_pipe",
-        )
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": None}, {"id": ""}, {"id": 123}],
+        pipe_identifier="test_pipe",
+    )
 
     # No updates should occur
     assert update_mock.call_count == 0
@@ -744,16 +740,12 @@ async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_as
     pipe.valves.AUTO_ATTACH_ORS_FILTER = False
     pipe.valves.AUTO_INSTALL_ORS_FILTER = False
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "test.model", "name": None, "capabilities": {"vision": True}}],
-            pipe_identifier="test_pipe",
-        )
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "test.model", "name": None, "capabilities": {"vision": True}}],
+        pipe_identifier="test_pipe",
+    )
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -774,13 +766,9 @@ async def test_sync_model_metadata_ors_filter_warning_not_installed(pipe_instanc
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = Mock(return_value=None)
+    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(return_value=None)
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
-         patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
+    with patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
@@ -804,13 +792,9 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(return_value=None)
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(return_value=None)
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
-         patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
+    with patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
@@ -833,7 +817,7 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = Mock(return_value="openrouter_search")
+    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(return_value="openrouter_search")
     pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={
         "data": [
             {
@@ -847,11 +831,7 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
         ]
     })
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
-         patch.object(pipe._catalog_manager.logger, "info") as mock_info:
+    with patch.object(pipe._catalog_manager.logger, "info") as mock_info:
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
@@ -871,19 +851,15 @@ async def test_sync_model_metadata_handles_update_exception(pipe_instance_async)
     pipe.valves.UPDATE_MODEL_IMAGES = False
     pipe.valves.AUTO_ATTACH_ORS_FILTER = False
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock(
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock(
         side_effect=Exception("DB error")
     )
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        # Should not raise
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "test.model", "capabilities": {"vision": True}}],
-            pipe_identifier="test_pipe",
-        )
+    # Should not raise
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "test.model", "capabilities": {"vision": True}}],
+        pipe_identifier="test_pipe",
+    )
 
 
 @pytest.mark.asyncio
@@ -898,17 +874,13 @@ async def test_sync_model_metadata_ensure_filter_exception_handling(pipe_instanc
 
     # Initialize the filter manager and mock its method to raise
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
+    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        # Should not raise, logs debug instead
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "test.model", "original_id": "test/model"}],
-            pipe_identifier="test_pipe",
-        )
+    # Should not raise, logs debug instead
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "test.model", "original_id": "test/model"}],
+        pipe_identifier="test_pipe",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -916,13 +888,15 @@ async def test_sync_model_metadata_ensure_filter_exception_handling(pipe_instanc
 # ---------------------------------------------------------------------------
 
 
-def test_update_or_insert_empty_model_id_returns_early(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_empty_model_id_returns_early(pipe_instance_async) -> None:
     """Returns early for empty or whitespace-only model ID."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     with patch("open_webui.models.models.Models") as mock_models:
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        mock_models.get_model_by_id = AsyncMock()
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             "",
             "Name",
             None,
@@ -932,7 +906,7 @@ def test_update_or_insert_empty_model_id_returns_early(pipe_instance) -> None:
         )
         mock_models.get_model_by_id.assert_not_called()
 
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             "   ",
             "Name",
             None,
@@ -943,20 +917,21 @@ def test_update_or_insert_empty_model_id_returns_early(pipe_instance) -> None:
         mock_models.get_model_by_id.assert_not_called()
 
 
-def test_update_or_insert_uses_model_id_as_name_fallback(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_uses_model_id_as_name_fallback(pipe_instance_async) -> None:
     """Uses model_id as name when name is empty."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "",
             {"vision": True},
@@ -970,20 +945,21 @@ def test_update_or_insert_uses_model_id_as_name_fallback(pipe_instance) -> None:
     assert inserted_form.name == model_id
 
 
-def test_update_or_insert_new_model_with_capabilities(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_new_model_with_capabilities(pipe_instance_async) -> None:
     """Inserts new model with capabilities when it doesn't exist."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True, "web_search": True},
@@ -1000,17 +976,18 @@ def test_update_or_insert_new_model_with_capabilities(pipe_instance) -> None:
     assert inserted_form.meta["profile_image_url"] == "data:image/png;base64,ABC"
 
 
-def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance_async) -> None:
     """Skips insert when there's no metadata to add."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1022,21 +999,22 @@ def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance) -> Non
     insert_mock.assert_not_called()
 
 
-def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_new_model_access_control_admins(pipe_instance_async) -> None:
     """Sets admins-only access grants for new models by default."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     pipe.valves.NEW_MODEL_ACCESS_CONTROL = "admins"
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1050,21 +1028,22 @@ def test_update_or_insert_new_model_access_control_admins(pipe_instance) -> None
     assert inserted_form.access_grants == []
 
 
-def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_new_model_access_control_public(pipe_instance_async) -> None:
     """Sets wildcard access grants (all users) when configured to 'public'."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     pipe.valves.NEW_MODEL_ACCESS_CONTROL = "public"
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1080,21 +1059,22 @@ def test_update_or_insert_new_model_access_control_public(pipe_instance) -> None
     ]
 
 
-def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe_instance_async) -> None:
     """Invalid access control values should default to private (fail-safe)."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     pipe.valves.NEW_MODEL_ACCESS_CONTROL = "invalid_value"  # type: ignore[assignment]
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1109,9 +1089,10 @@ def test_update_or_insert_new_model_invalid_access_control_defaults_private(pipe
     assert inserted_form.access_grants == []
 
 
-def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_merges_capabilities(pipe_instance_async) -> None:
     """Merges new capabilities with existing ones."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1119,14 +1100,14 @@ def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
         model_id,
         meta={"capabilities": {"vision": False, "file_upload": True}},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True, "web_search": True},
@@ -1144,9 +1125,10 @@ def test_update_existing_model_merges_capabilities(pipe_instance) -> None:
     assert meta["capabilities"]["file_upload"] is True
 
 
-def test_update_existing_model_no_changes_skips_update(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_no_changes_skips_update(pipe_instance_async) -> None:
     """Skips update when no actual changes detected."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1154,11 +1136,11 @@ def test_update_existing_model_no_changes_skips_update(pipe_instance) -> None:
         model_id,
         meta={"capabilities": {"vision": True}},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},  # Same as existing
@@ -1170,9 +1152,10 @@ def test_update_existing_model_no_changes_skips_update(pipe_instance) -> None:
     update_mock.assert_not_called()
 
 
-def test_update_existing_model_updates_profile_image(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_updates_profile_image(pipe_instance_async) -> None:
     """Updates profile image when different from existing."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1180,14 +1163,14 @@ def test_update_existing_model_updates_profile_image(pipe_instance) -> None:
         model_id,
         meta={"profile_image_url": "data:image/png;base64,OLD"},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1202,21 +1185,22 @@ def test_update_existing_model_updates_profile_image(pipe_instance) -> None:
     assert meta["profile_image_url"] == "data:image/png;base64,NEW"
 
 
-def test_update_existing_model_updates_openrouter_pipe_capabilities(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_updates_openrouter_pipe_capabilities(pipe_instance_async) -> None:
     """Updates openrouter_pipe.capabilities when provided."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={})
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1232,9 +1216,10 @@ def test_update_existing_model_updates_openrouter_pipe_capabilities(pipe_instanc
     assert meta["openrouter_pipe"]["capabilities"] == {"file_input": True, "vision": True}
 
 
-def test_update_existing_model_filter_id_migration(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_filter_id_migration(pipe_instance_async) -> None:
     """Migrates filter IDs when the filter function ID changes."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1245,14 +1230,14 @@ def test_update_existing_model_filter_id_migration(pipe_instance) -> None:
             "openrouter_pipe": {"openrouter_search_filter_id": "old_openrouter_search"},
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1272,9 +1257,10 @@ def test_update_existing_model_filter_id_migration(pipe_instance) -> None:
     assert "new_openrouter_search" in meta["filterIds"]
 
 
-def test_update_existing_model_filter_removal_when_unsupported(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_filter_removal_when_unsupported(pipe_instance_async) -> None:
     """Removes filter when model no longer supports it."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1282,14 +1268,14 @@ def test_update_existing_model_filter_removal_when_unsupported(pipe_instance) ->
         model_id,
         meta={"filterIds": ["openrouter_search", "other_filter"]},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1308,9 +1294,10 @@ def test_update_existing_model_filter_removal_when_unsupported(pipe_instance) ->
     assert "other_filter" in meta["filterIds"]
 
 
-def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe_instance_async) -> None:
     """Handles direct uploads filter ID migration."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1321,14 +1308,14 @@ def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe_insta
             "openrouter_pipe": {"direct_uploads_filter_id": "old_direct_uploads"},
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1348,9 +1335,10 @@ def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe_insta
     assert meta["openrouter_pipe"]["direct_uploads_filter_id"] == "new_direct_uploads"
 
 
-def test_update_existing_model_default_filter_migration(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_default_filter_migration(pipe_instance_async) -> None:
     """Migrates default filter IDs when filter function ID changes."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1365,14 +1353,14 @@ def test_update_existing_model_default_filter_migration(pipe_instance) -> None:
             },
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1393,9 +1381,10 @@ def test_update_existing_model_default_filter_migration(pipe_instance) -> None:
     assert meta["openrouter_pipe"]["openrouter_search_filter_id"] == "new_openrouter_search"
 
 
-def test_update_existing_model_default_filter_not_attached_skips(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_default_filter_not_attached_skips(pipe_instance_async) -> None:
     """Does not set default filter if filter is not in filterIds."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1403,11 +1392,11 @@ def test_update_existing_model_default_filter_not_attached_skips(pipe_instance) 
         model_id,
         meta={"filterIds": []},  # Filter not attached
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1423,20 +1412,21 @@ def test_update_existing_model_default_filter_not_attached_skips(pipe_instance) 
     update_mock.assert_not_called()
 
 
-def test_insert_new_model_with_filters(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_insert_new_model_with_filters(pipe_instance_async) -> None:
     """Inserts new model with filter attachments."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1460,9 +1450,10 @@ def test_insert_new_model_with_filters(pipe_instance) -> None:
     assert "openrouter_search" in meta["defaultFilterIds"]
 
 
-def test_normalize_filter_ids_handles_non_list(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_normalize_filter_ids_handles_non_list(pipe_instance_async) -> None:
     """Handles filterIds that are not lists."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1470,14 +1461,14 @@ def test_normalize_filter_ids_handles_non_list(pipe_instance) -> None:
         model_id,
         meta={"filterIds": "not a list"},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1495,9 +1486,10 @@ def test_normalize_filter_ids_handles_non_list(pipe_instance) -> None:
     assert meta["filterIds"] == ["openrouter_search"]
 
 
-def test_normalize_filter_ids_filters_non_strings(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_normalize_filter_ids_filters_non_strings(pipe_instance_async) -> None:
     """Filters out non-string entries from filterIds."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1505,14 +1497,14 @@ def test_normalize_filter_ids_filters_non_strings(pipe_instance) -> None:
         model_id,
         meta={"filterIds": ["valid_filter", 123, None, "", "another_filter"]},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1533,9 +1525,10 @@ def test_normalize_filter_ids_filters_non_strings(pipe_instance) -> None:
     assert "openrouter_search" in meta["filterIds"]
 
 
-def test_dedupe_preserves_order(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_dedupe_preserves_order(pipe_instance_async) -> None:
     """Deduplication preserves original order."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1543,14 +1536,14 @@ def test_dedupe_preserves_order(pipe_instance) -> None:
         model_id,
         meta={"filterIds": ["filter_a", "filter_b", "filter_a", "filter_c", "filter_b"]},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1569,9 +1562,10 @@ def test_dedupe_preserves_order(pipe_instance) -> None:
     assert meta["filterIds"] == ["filter_a", "filter_b", "filter_c", "openrouter_search"]
 
 
-def test_existing_model_null_meta_handled(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_existing_model_null_meta_handled(pipe_instance_async) -> None:
     """Handles existing model with null meta gracefully."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1585,14 +1579,14 @@ def test_existing_model_null_meta_handled(pipe_instance) -> None:
         access_grants=[],
         is_active=True,
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -1623,13 +1617,9 @@ async def test_sync_model_metadata_direct_uploads_logs_supported_count(pipe_inst
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(return_value="openrouter_direct_uploads")
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(return_value="openrouter_direct_uploads")
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool), \
-         patch.object(pipe._catalog_manager.logger, "info") as mock_info:
+    with patch.object(pipe._catalog_manager.logger, "info") as mock_info:
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
             [{"id": "test.model", "original_id": "test/model"}],
             pipe_identifier="test_pipe",
@@ -1667,16 +1657,12 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
     pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={})
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ABC123")
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "openai.gpt-4", "original_id": "openai/gpt-4", "name": "GPT-4"}],
-            pipe_identifier="test_pipe",
-        )
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "openai.gpt-4", "original_id": "openai/gpt-4", "name": "GPT-4"}],
+        pipe_identifier="test_pipe",
+    )
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -1699,16 +1685,12 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
     pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={"anthropic": "https://example.com/anthropic.png"})
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ANTHROPIC123")
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "anthropic.claude", "original_id": "anthropic/claude", "name": "Claude"}],
-            pipe_identifier="test_pipe",
-        )
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "anthropic.claude", "original_id": "anthropic/claude", "name": "Claude"}],
+        pipe_identifier="test_pipe",
+    )
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -1731,16 +1713,12 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
     pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={})
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value=None)
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "test.model", "original_id": None, "name": "Test"}],  # No original_id
-            pipe_identifier="test_pipe",
-        )
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "test.model", "original_id": None, "name": "Test"}],  # No original_id
+        pipe_identifier="test_pipe",
+    )
 
     # Should still call update but without image
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
@@ -1748,21 +1726,22 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
     assert args[3] is None  # profile_image_url should be None
 
 
-def test_update_existing_model_with_description(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_with_description(pipe_instance_async) -> None:
     """Updates existing model with description."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={"description": "Old description"})
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1779,18 +1758,19 @@ def test_update_existing_model_with_description(pipe_instance) -> None:
     assert meta["description"] == "New description"
 
 
-def test_update_existing_model_description_no_change_skips_update(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_description_no_change_skips_update(pipe_instance_async) -> None:
     """Skips update when description unchanged."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={"description": "Same description"})
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1804,20 +1784,21 @@ def test_update_existing_model_description_no_change_skips_update(pipe_instance)
     update_mock.assert_not_called()
 
 
-def test_insert_new_model_with_description(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_insert_new_model_with_description(pipe_instance_async) -> None:
     """Inserts new model with description."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1834,20 +1815,21 @@ def test_insert_new_model_with_description(pipe_instance) -> None:
     assert meta["description"] == "Model description"
 
 
-def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance_async) -> None:
     """Inserts new model with openrouter_pipe capabilities."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
-    insert_mock = Mock()
+    insert_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=None), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
          patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1863,9 +1845,10 @@ def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance) -> No
     assert meta["openrouter_pipe"]["capabilities"] == {"vision": True, "file_input": True}
 
 
-def test_update_existing_model_with_existing_params(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_with_existing_params(pipe_instance_async) -> None:
     """Updates model preserving existing params."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1879,14 +1862,14 @@ def test_update_existing_model_with_existing_params(pipe_instance) -> None:
         access_grants=[],
         is_active=True,
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"web_search": True},
@@ -1900,9 +1883,10 @@ def test_update_existing_model_with_existing_params(pipe_instance) -> None:
     assert updated_form.params == {"temperature": 0.7, "max_tokens": 1000}
 
 
-def test_update_existing_model_same_image_skips_update(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_same_image_skips_update(pipe_instance_async) -> None:
     """Skips update when profile image unchanged."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1910,11 +1894,11 @@ def test_update_existing_model_same_image_skips_update(pipe_instance) -> None:
         model_id,
         meta={"profile_image_url": "data:image/png;base64,SAME"},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1926,9 +1910,10 @@ def test_update_existing_model_same_image_skips_update(pipe_instance) -> None:
     update_mock.assert_not_called()
 
 
-def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instance_async) -> None:
     """Preserves existing openrouter_pipe metadata when updating."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1938,14 +1923,14 @@ def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instance) -> 
             "openrouter_pipe": {"existing_key": "existing_value"},
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -1962,9 +1947,10 @@ def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instance) -> 
     assert meta["openrouter_pipe"]["capabilities"] == {"vision": True}
 
 
-def test_existing_model_with_none_params_handled(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_existing_model_with_none_params_handled(pipe_instance_async) -> None:
     """Handles existing model with None params gracefully."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -1978,14 +1964,14 @@ def test_existing_model_with_none_params_handled(pipe_instance) -> None:
         access_grants=[],
         is_active=True,
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},
@@ -2010,17 +1996,13 @@ async def test_sync_model_metadata_direct_uploads_filter_exception_handling(pipe
 
     # Initialize the filter manager and mock its method to raise
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_direct_uploads_filter_function_id = Mock(side_effect=Exception("Filter install failed"))
+    pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.models.catalog_manager.run_in_threadpool", new=fake_run_in_threadpool):
-        # Should not raise, logs debug instead
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-            [{"id": "test.model", "original_id": "test/model"}],
-            pipe_identifier="test_pipe",
-        )
+    # Should not raise, logs debug instead
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+        [{"id": "test.model", "original_id": "test/model"}],
+        pipe_identifier="test_pipe",
+    )
 
 
 # ===== From test_model_metadata_sync.py =====
@@ -2244,13 +2226,9 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
     pipe._ensure_catalog_manager()
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2292,13 +2270,9 @@ async def test_sync_model_metadata_sets_web_search_from_frontend(pipe_instance_a
     pipe._ensure_catalog_manager()
 
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2329,13 +2303,9 @@ async def test_sync_model_metadata_falls_back_to_maker_image_mapping(pipe_instan
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
     pipe._ensure_catalog_manager()
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.pipe.run_in_threadpool", new=fake_run_in_threadpool):
-        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
+    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
@@ -2370,15 +2340,9 @@ async def test_sync_model_metadata_includes_description_when_enabled(pipe_instan
     pipe._ensure_catalog_manager()
 
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
-        "open_webui_openrouter_pipe.pipe.run_in_threadpool",
-        new=fake_run_in_threadpool,
-    ):
+    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}):
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
@@ -2414,15 +2378,9 @@ async def test_sync_model_metadata_skips_description_when_disabled(pipe_instance
     pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
     pipe._ensure_catalog_manager()
 
-    pipe._catalog_manager._update_or_insert_model_with_metadata = Mock()
+    pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
-    async def fake_run_in_threadpool(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}), patch(
-        "open_webui_openrouter_pipe.pipe.run_in_threadpool",
-        new=fake_run_in_threadpool,
-    ):
+    with patch("open_webui_openrouter_pipe.registry.ModelFamily._lookup_spec", return_value={"description": "Catalog description"}):
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(models, pipe_identifier="open_webui_openrouter_pipe")
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
@@ -2666,8 +2624,9 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
     )
 
 
-def test_disable_model_metadata_sync_skips_all_updates(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_model_metadata_sync_skips_all_updates(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2675,12 +2634,12 @@ def test_disable_model_metadata_sync_skips_all_updates(pipe_instance) -> None:
         meta={},
         params={"disable_model_metadata_sync": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities={"vision": True},
@@ -2699,8 +2658,9 @@ def test_disable_model_metadata_sync_skips_all_updates(pipe_instance) -> None:
     assert update_mock.call_count == 0
 
 
-def test_disable_capability_updates_preserves_existing_caps(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_capability_updates_preserves_existing_caps(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2708,12 +2668,12 @@ def test_disable_capability_updates_preserves_existing_caps(pipe_instance) -> No
         meta={"capabilities": {"vision": False}},
         params={"disable_capability_updates": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities={"vision": True},
@@ -2733,8 +2693,9 @@ def test_disable_capability_updates_preserves_existing_caps(pipe_instance) -> No
     assert meta["filterIds"] == ["openrouter_search"]
 
 
-def test_disable_image_updates_skips_profile_image_changes(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_image_updates_skips_profile_image_changes(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2742,12 +2703,12 @@ def test_disable_image_updates_skips_profile_image_changes(pipe_instance) -> Non
         meta={"profile_image_url": "data:image/png;base64,AAAA"},
         params={"disable_image_updates": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2759,8 +2720,9 @@ def test_disable_image_updates_skips_profile_image_changes(pipe_instance) -> Non
     assert update_mock.call_count == 0
 
 
-def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2768,12 +2730,12 @@ def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance) -> N
         meta={},
         params={"disable_direct_uploads_auto_attach": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2788,17 +2750,18 @@ def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance) -> N
     assert update_mock.call_count == 0
 
 
-def test_description_updates_when_enabled(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_description_updates_when_enabled(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(model_id, meta={}, params={})
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ), patch("open_webui_openrouter_pipe.pipe.ModelForm", new=lambda **kw: SimpleNamespace(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2815,8 +2778,9 @@ def test_description_updates_when_enabled(pipe_instance) -> None:
     assert meta["description"] == "Example description"
 
 
-def test_disable_description_updates_prevents_overwrites(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_description_updates_prevents_overwrites(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2824,12 +2788,12 @@ def test_disable_description_updates_prevents_overwrites(pipe_instance) -> None:
         meta={"description": "Manual description"},
         params={"disable_description_updates": True},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2843,8 +2807,9 @@ def test_disable_description_updates_prevents_overwrites(pipe_instance) -> None:
     assert update_mock.call_count == 0
 
 
-def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2852,12 +2817,12 @@ def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_i
         meta={"description": "Manual description"},
         params={"openrouter_pipe": {"disable_description_updates": True}},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2871,8 +2836,9 @@ def test_disable_description_updates_namespaced_in_openrouter_pipe_params(pipe_i
     assert update_mock.call_count == 0
 
 
-def test_disable_description_updates_in_custom_params(pipe_instance) -> None:
-    pipe = pipe_instance
+@pytest.mark.asyncio
+async def test_disable_description_updates_in_custom_params(pipe_instance_async) -> None:
+    pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
@@ -2880,12 +2846,12 @@ def test_disable_description_updates_in_custom_params(pipe_instance) -> None:
         meta={"description": "Manual description"},
         params={"custom_params": {"disable_description_updates": True}},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", return_value=existing), patch(
+    with patch("open_webui_openrouter_pipe.pipe.Models.get_model_by_id", new=AsyncMock(return_value=existing)), patch(
         "open_webui_openrouter_pipe.pipe.Models.update_model_by_id", new=update_mock
     ):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "Example",
             capabilities=None,
@@ -2987,9 +2953,10 @@ def test_model_family_capabilities_returns_copy_and_defaults():
 # ---------------------------------------------------------------------------
 
 
-def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instance_async) -> None:
     """Stale openrouter_* filter IDs not in the valid set should be pruned."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3003,14 +2970,14 @@ def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instance) -> 
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -3032,9 +2999,10 @@ def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instance) -> 
     assert "openrouter_direct_uploads" in meta["filterIds"]
 
 
-def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_async) -> None:
     """Filter IDs that don't start with openrouter_ are never pruned, even if unknown."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3049,14 +3017,14 @@ def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -3078,9 +3046,10 @@ def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
     assert "openrouter_direct_uploads" in meta["filterIds"]
 
 
-def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance_async) -> None:
     """When the valid set is empty (batch query failed), pruning is skipped entirely."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3093,11 +3062,11 @@ def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance) -> None:
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -3111,9 +3080,10 @@ def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance) -> None:
     update_mock.assert_not_called()
 
 
-def test_prune_stale_no_filter_ids_is_noop(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_no_filter_ids_is_noop(pipe_instance_async) -> None:
     """When model has no filterIds, pruning is a no-op."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3121,11 +3091,11 @@ def test_prune_stale_no_filter_ids_is_noop(pipe_instance) -> None:
         model_id,
         meta={"capabilities": {"vision": True}},
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},  # same as existing — no capability change
@@ -3139,9 +3109,10 @@ def test_prune_stale_no_filter_ids_is_noop(pipe_instance) -> None:
     update_mock.assert_not_called()
 
 
-def test_prune_stale_all_valid_no_update(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_all_valid_no_update(pipe_instance_async) -> None:
     """When all openrouter_* filter IDs are valid, no pruning update is triggered."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3155,11 +3126,11 @@ def test_prune_stale_all_valid_no_update(pipe_instance) -> None:
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -3177,9 +3148,10 @@ def test_prune_stale_all_valid_no_update(pipe_instance) -> None:
     update_mock.assert_not_called()
 
 
-def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance_async) -> None:
     """Pruning preserves the original order of the remaining filter IDs."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3196,14 +3168,14 @@ def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance) -> None:
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             None,
@@ -3227,9 +3199,10 @@ def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance) -> None:
     ]
 
 
-def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_instance_async) -> None:
     """Pruning alone should trigger a model update write, even if no other metadata changed."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
 
@@ -3240,14 +3213,14 @@ def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_instanc
             "capabilities": {"vision": True},
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
             {"vision": True},  # same as existing — no capability change
@@ -3265,9 +3238,10 @@ def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_instanc
     assert "openrouter_ghost" not in meta["filterIds"]
 
 
-def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance_async) -> None:
     """Provider routing filter IDs (openrouter_provider_*) are kept when in the valid set."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4.1"
 
@@ -3281,11 +3255,11 @@ def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance) -> N
             ],
         },
     )
-    update_mock = Mock()
+    update_mock = AsyncMock()
 
-    with patch("open_webui.models.models.Models.get_model_by_id", return_value=existing), \
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4.1",
             None,
@@ -3340,16 +3314,17 @@ def _make_functions_module(valid_filters: list):
 
     class _Functions:
         @staticmethod
-        def get_functions_by_type(filter_type):
+        async def get_functions_by_type(filter_type):
             return valid_filters
 
     mod.Functions = _Functions  # type: ignore[attr-defined]
     return mod
 
 
-def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_async) -> None:
     """Bulk prune should remove stale openrouter_* IDs across all models."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     models = [
@@ -3371,18 +3346,18 @@ def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance) -> Non
 
     update_calls = {}
 
-    def capture_update(model_id, form):
+    async def capture_update(model_id, form):
         update_calls[model_id] = form
 
     functions_mod = _make_functions_module(valid_filters)
 
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
-         patch("open_webui.models.models.Models.update_model_by_id", side_effect=capture_update), \
+         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=AsyncMock(side_effect=capture_update)), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
     assert count == 2  # model_a and model_c updated; model_b clean
     assert "model_a" in update_calls
@@ -3396,9 +3371,10 @@ def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance) -> Non
     assert meta_c["filterIds"] == []  # both IDs were stale
 
 
-def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance_async) -> None:
     """Bulk prune should never touch filter IDs that don't start with openrouter_."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     models = [
@@ -3413,27 +3389,28 @@ def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance) -> None:
     valid_filters = [_make_filter_function("openrouter_search")]
     update_calls = {}
 
-    def capture_update(model_id, form):
+    async def capture_update(model_id, form):
         update_calls[model_id] = form
 
     functions_mod = _make_functions_module(valid_filters)
 
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
-         patch("open_webui.models.models.Models.update_model_by_id", side_effect=capture_update), \
+         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=AsyncMock(side_effect=capture_update)), \
          patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
          patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
-        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
     assert count == 1
     meta = dict(update_calls["model_x"].meta)
     assert meta["filterIds"] == ["other_plugin_filter", "openrouter_search", "yet_another_filter"]
 
 
-def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance_async) -> None:
     """Returns 0 when all openrouter_* IDs are valid."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     models = [
@@ -3449,18 +3426,21 @@ def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance) -> None:
 
     functions_mod = _make_functions_module(valid_filters)
 
+    update_mock = AsyncMock()
+
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
-         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
-        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
     assert count == 0
     update_mock.assert_not_called()
 
 
-def test_bulk_prune_returns_zero_when_no_valid_filters(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_bulk_prune_returns_zero_when_no_valid_filters(pipe_instance_async) -> None:
     """Returns 0 (skip) when the valid filter set is empty — fail-safe."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     models = [
@@ -3471,18 +3451,21 @@ def test_bulk_prune_returns_zero_when_no_valid_filters(pipe_instance) -> None:
 
     functions_mod = _make_functions_module([])
 
+    update_mock = AsyncMock()
+
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
-         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
-        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
     assert count == 0
     update_mock.assert_not_called()
 
 
-def test_bulk_prune_skips_models_without_meta(pipe_instance) -> None:
+@pytest.mark.asyncio
+async def test_bulk_prune_skips_models_without_meta(pipe_instance_async) -> None:
     """Models with no meta should be silently skipped."""
-    pipe = pipe_instance
+    pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
     model_no_meta = SimpleNamespace(
@@ -3494,10 +3477,12 @@ def test_bulk_prune_skips_models_without_meta(pipe_instance) -> None:
     valid_filters = [_make_filter_function("openrouter_search")]
     functions_mod = _make_functions_module(valid_filters)
 
+    update_mock = AsyncMock()
+
     with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", return_value=models), \
-         patch("open_webui.models.models.Models.update_model_by_id") as update_mock:
-        count = pipe._catalog_manager.prune_stale_openrouter_filter_ids()
+         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
     assert count == 0
     update_mock.assert_not_called()

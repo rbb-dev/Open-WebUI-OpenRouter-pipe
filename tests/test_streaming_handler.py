@@ -6648,7 +6648,7 @@ class TestStreamingCoreAdditionalCoverage:
         # Mock Chats to raise exception
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def raising_upsert(*args, **kwargs):
+        async def raising_upsert(*args, **kwargs):
             raise Exception("DB error")
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", raising_upsert)
@@ -6702,7 +6702,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -6758,7 +6758,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -6810,7 +6810,7 @@ class TestStreamingCoreAdditionalCoverage:
         call_count = [0]
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def raising_upsert(*args, **kwargs):
+        async def raising_upsert(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] > 1:  # Let first call (annotations) pass, fail on reasoning_details
                 raise Exception("DB error on reasoning_details")
@@ -7087,7 +7087,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -7175,7 +7175,7 @@ class TestStreamingCoreAdditionalCoverage:
         persisted_data: list[dict] = []
         from open_webui.models.chats import Chats
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
-        def capturing_upsert(chat_id, message_id, data):
+        async def capturing_upsert(chat_id, message_id, data):
             persisted_data.append({"chat_id": chat_id, "message_id": message_id, "data": data})
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", capturing_upsert)
@@ -7371,7 +7371,7 @@ class TestStreamingCoreAdditionalCoverage:
         upsert_calls: list[tuple] = []
         from open_webui.models.chats import Chats
         original_upsert_fn = Chats.upsert_message_to_chat_by_id_and_message_id
-        def tracking_upsert(chat_id, message_id, data):
+        async def tracking_upsert(chat_id, message_id, data):
             upsert_calls.append((chat_id, message_id, data))
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)
@@ -7439,7 +7439,7 @@ class TestStreamingCoreAdditionalCoverage:
         # Make upsert fail for annotations
         from open_webui.models.chats import Chats
         original_upsert_for_annotations = Chats.upsert_message_to_chat_by_id_and_message_id
-        def failing_upsert(chat_id, message_id, data):
+        async def failing_upsert(chat_id, message_id, data):
             if "annotations" in data:
                 raise Exception("Annotations persistence failed")
 
@@ -7493,7 +7493,7 @@ class TestStreamingCoreAdditionalCoverage:
         # Make upsert fail for reasoning_details
         from open_webui.models.chats import Chats
         original_upsert_for_reasoning = Chats.upsert_message_to_chat_by_id_and_message_id
-        def failing_upsert(chat_id, message_id, data):
+        async def failing_upsert(chat_id, message_id, data):
             if "reasoning_details" in data:
                 raise Exception("Reasoning details persistence failed")
 
@@ -8697,7 +8697,7 @@ class TestPhaseMarkerPersistence:
         upsert_calls: list[tuple[str, str, dict[str, Any]]] = []
         from open_webui.models.chats import Chats
 
-        def tracking_upsert(chat_id, message_id, data):
+        async def tracking_upsert(chat_id, message_id, data):
             upsert_calls.append((chat_id, message_id, data))
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", tracking_upsert)

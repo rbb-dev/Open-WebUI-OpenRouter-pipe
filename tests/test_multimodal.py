@@ -971,9 +971,10 @@ class TestInlineInternalResponsesInputFilesInplace:
 class TestTryLinkFileToChat:
     """Tests for linking files to chat in OWUI database."""
 
-    def test_returns_false_for_non_string_chat_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_non_string_chat_id(self, pipe_instance_async):
         """Should return False for non-string chat_id."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id=123,
             message_id="msg-1",
             file_id="file-1",
@@ -981,9 +982,10 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_for_empty_chat_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_empty_chat_id(self, pipe_instance_async):
         """Should return False for empty chat_id."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id="",
             message_id="msg-1",
             file_id="file-1",
@@ -991,9 +993,10 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_for_local_chat_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_local_chat_id(self, pipe_instance_async):
         """Should return False for chat_id starting with 'local:'."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id="local:temp-chat",
             message_id="msg-1",
             file_id="file-1",
@@ -1001,9 +1004,10 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_for_empty_file_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_empty_file_id(self, pipe_instance_async):
         """Should return False for empty file_id."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="",
@@ -1011,9 +1015,10 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_for_non_string_user_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_non_string_user_id(self, pipe_instance_async):
         """Should return False for non-string user_id."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="file-1",
@@ -1021,9 +1026,10 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_for_empty_user_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_for_empty_user_id(self, pipe_instance_async):
         """Should return False for empty user_id."""
-        result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+        result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
             chat_id="chat-1",
             message_id="msg-1",
             file_id="file-1",
@@ -1031,7 +1037,8 @@ class TestTryLinkFileToChat:
         )
         assert result is False
 
-    def test_returns_false_when_chats_import_fails(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_when_chats_import_fails(self, pipe_instance_async):
         """Should return False when open_webui.models.chats import fails."""
         chats_module = sys.modules.get("open_webui.models.chats")
 
@@ -1040,7 +1047,7 @@ class TestTryLinkFileToChat:
                 del sys.modules["open_webui.models.chats"]
 
             with patch.dict(sys.modules, {"open_webui.models.chats": None}):
-                pipe_instance._multimodal_handler._try_link_file_to_chat(
+                await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                     chat_id="chat-123",
                     message_id="msg-456",
                     file_id="file-789",
@@ -1050,7 +1057,8 @@ class TestTryLinkFileToChat:
             if chats_module:
                 sys.modules["open_webui.models.chats"] = chats_module
 
-    def test_calls_insert_with_keyword_args(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_calls_insert_with_keyword_args(self, pipe_instance_async):
         """Should call insert_chat_files with keyword arguments."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
@@ -1059,7 +1067,7 @@ class TestTryLinkFileToChat:
             insert_chat_files_calls = []
 
             @staticmethod
-            def insert_chat_files(*, chat_id, message_id, file_ids, user_id):
+            async def insert_chat_files(*, chat_id, message_id, file_ids, user_id):
                 MockChats.insert_chat_files_calls.append({
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -1070,7 +1078,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1086,7 +1094,8 @@ class TestTryLinkFileToChat:
         finally:
             chats_mod.Chats = original_chats
 
-    def test_falls_back_to_positional_args_on_type_error(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_falls_back_to_positional_args_on_type_error(self, pipe_instance_async):
         """Should fall back to positional arguments on TypeError."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
@@ -1095,7 +1104,7 @@ class TestTryLinkFileToChat:
             positional_calls = []
 
             @staticmethod
-            def insert_chat_files(*args, **kwargs):
+            async def insert_chat_files(*args, **kwargs):
                 if kwargs:
                     raise TypeError("Unexpected keyword argument")
                 MockChats.positional_calls.append(args)
@@ -1103,7 +1112,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1114,7 +1123,8 @@ class TestTryLinkFileToChat:
         finally:
             chats_mod.Chats = original_chats
 
-    def test_returns_false_when_insert_fn_not_callable(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_when_insert_fn_not_callable(self, pipe_instance_async):
         """Should return False when insert_chat_files is not callable."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
@@ -1124,7 +1134,7 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1134,19 +1144,20 @@ class TestTryLinkFileToChat:
         finally:
             chats_mod.Chats = original_chats
 
-    def test_returns_false_on_general_exception(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_false_on_general_exception(self, pipe_instance_async):
         """Should return False on general exception from insert."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
 
         class MockChats:
             @staticmethod
-            def insert_chat_files(*args, **kwargs):
+            async def insert_chat_files(*args, **kwargs):
                 raise RuntimeError("Database error")
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1156,7 +1167,8 @@ class TestTryLinkFileToChat:
         finally:
             chats_mod.Chats = original_chats
 
-    def test_handles_none_message_id(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_handles_none_message_id(self, pipe_instance_async):
         """Should handle None message_id gracefully."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
@@ -1165,7 +1177,7 @@ class TestTryLinkFileToChat:
             calls = []
 
             @staticmethod
-            def insert_chat_files(*, chat_id, message_id, file_ids, user_id):
+            async def insert_chat_files(*, chat_id, message_id, file_ids, user_id):
                 MockChats.calls.append({
                     "chat_id": chat_id,
                     "message_id": message_id,
@@ -1176,32 +1188,33 @@ class TestTryLinkFileToChat:
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id=None,
                 file_id="file-789",
                 user_id="user-abc",
             )
             assert result is True
-            assert MockChats.calls[0]["message_id"] is None
+            assert MockChats.calls[0]["message_id"] == ""
         finally:
             chats_mod.Chats = original_chats
 
-    def test_handles_positional_args_exception(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_handles_positional_args_exception(self, pipe_instance_async):
         """Should return False when both keyword and positional args fail."""
         chats_mod = sys.modules.get("open_webui.models.chats")
         original_chats = chats_mod.Chats
 
         class MockChats:
             @staticmethod
-            def insert_chat_files(*args, **kwargs):
+            async def insert_chat_files(*args, **kwargs):
                 if kwargs:
                     raise TypeError("Unexpected keyword")
                 raise RuntimeError("Positional also fails")
 
         try:
             chats_mod.Chats = MockChats
-            result = pipe_instance._multimodal_handler._try_link_file_to_chat(
+            result = await pipe_instance_async._multimodal_handler._try_link_file_to_chat(
                 chat_id="chat-123",
                 message_id="msg-456",
                 file_id="file-789",
@@ -1306,7 +1319,7 @@ class TestEnsureStorageUser:
         mock_users = Mock()
         mock_user = Mock()
         mock_user.email = "test@system.local"
-        mock_users.get_user_by_email = Mock(return_value=mock_user)
+        mock_users.get_user_by_email = AsyncMock(return_value=mock_user)
 
         original_users = multimodal_module.Users
         try:
@@ -1328,7 +1341,7 @@ class TestEnsureStorageUser:
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
 
         cached_user = SimpleNamespace(id="cached-user", email="cached@example.com")
 
@@ -1360,8 +1373,8 @@ class TestEnsureStorageUser:
         )
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
-        mock_users.insert_new_user = Mock(return_value=created_user)
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
+        mock_users.insert_new_user = AsyncMock(return_value=created_user)
 
         original_users = multimodal_module.Users
         try:
@@ -1386,11 +1399,11 @@ class TestEnsureStorageUser:
             email="openrouter-pipe@system.local"
         )
 
-        def mock_insert(user_id, name, email, avatar, role, oauth=None):
+        async def mock_insert(user_id, name, email, avatar, role, oauth=None):
             return created_user
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
         mock_users.insert_new_user = mock_insert
 
         original_users = multimodal_module.Users
@@ -1414,11 +1427,11 @@ class TestEnsureStorageUser:
             email="openrouter-pipe@system.local"
         )
 
-        def mock_insert(user_id, name, email, avatar, role, oauth_sub=None):
+        async def mock_insert(user_id, name, email, avatar, role, oauth_sub=None):
             return created_user
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
         mock_users.insert_new_user = mock_insert
 
         original_users = multimodal_module.Users
@@ -1438,7 +1451,7 @@ class TestEnsureStorageUser:
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(side_effect=RuntimeError("DB error"))
+        mock_users.get_user_by_email = AsyncMock(side_effect=RuntimeError("DB error"))
 
         original_users = multimodal_module.Users
         try:
@@ -1456,8 +1469,8 @@ class TestEnsureStorageUser:
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
-        mock_users.insert_new_user = Mock(side_effect=RuntimeError("Insert failed"))
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
+        mock_users.insert_new_user = AsyncMock(side_effect=RuntimeError("Insert failed"))
 
         original_users = multimodal_module.Users
         try:
@@ -1481,14 +1494,14 @@ class TestEnsureStorageUser:
         )
 
         class NonInspectable:
-            def __call__(self, *args, **kwargs):
+            async def __call__(self, *args, **kwargs):
                 return created_user
 
         non_inspectable = NonInspectable()
         non_inspectable.__signature__ = None
 
         mock_users = Mock()
-        mock_users.get_user_by_email = Mock(return_value=None)
+        mock_users.get_user_by_email = AsyncMock(return_value=None)
         mock_users.insert_new_user = non_inspectable
 
         original_users = multimodal_module.Users
@@ -2442,7 +2455,6 @@ class TestUploadToOwuiStorage:
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
         original_handler = multimodal_module.upload_file_handler
-        original_threadpool = multimodal_module.run_in_threadpool
         try:
             multimodal_module.upload_file_handler = None
             result = await pipe_instance_async._multimodal_handler._upload_to_owui_storage(
@@ -2451,14 +2463,13 @@ class TestUploadToOwuiStorage:
             assert result is None
         finally:
             multimodal_module.upload_file_handler = original_handler
-            multimodal_module.run_in_threadpool = original_threadpool
 
     @pytest.mark.asyncio
     async def test_handles_dict_response(self, pipe_instance_async, mock_request, mock_user):
         """Should handle dict response from upload handler."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return {"id": "dict-file-id"}
 
         original_handler = multimodal_module.upload_file_handler
@@ -2476,7 +2487,7 @@ class TestUploadToOwuiStorage:
         """Should handle object response with id attribute."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return SimpleNamespace(id="object-file-id")
 
         original_handler = multimodal_module.upload_file_handler
@@ -2494,7 +2505,7 @@ class TestUploadToOwuiStorage:
         """Should return None and log error on exception."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             raise RuntimeError("Upload failed")
 
         original_handler = multimodal_module.upload_file_handler
@@ -2516,7 +2527,7 @@ class TestUploadToOwuiStorage:
 
         captured_metadata = None
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             nonlocal captured_metadata
             captured_metadata = kwargs.get("metadata", {})
             return SimpleNamespace(id="file-id")
@@ -2539,7 +2550,7 @@ class TestUploadToOwuiStorage:
 
         captured_user_id = None
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return SimpleNamespace(id="uploaded-file-id")
 
         original_handler = multimodal_module.upload_file_handler
@@ -2571,7 +2582,7 @@ class TestUploadToOwuiStorage:
         """Should swallow exception from _try_link_file_to_chat and still return file_id."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return SimpleNamespace(id="uploaded-file-id")
 
         def mock_link_raises(*args, **kwargs):
@@ -2599,7 +2610,7 @@ class TestUploadToOwuiStorage:
         """Should return None when response has no id."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return SimpleNamespace()
 
         original_handler = multimodal_module.upload_file_handler
@@ -2619,7 +2630,7 @@ class TestUploadToOwuiStorage:
         """Should return None when dict response has no id."""
         import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             return {"status": "ok"}
 
         original_handler = multimodal_module.upload_file_handler
@@ -2641,7 +2652,7 @@ class TestUploadToOwuiStorage:
 
         captured_metadata = None
 
-        def mock_upload_handler(*args, **kwargs):
+        async def mock_upload_handler(*args, **kwargs):
             nonlocal captured_metadata
             captured_metadata = kwargs.get("metadata", {})
             return SimpleNamespace(id="file-id")
@@ -4191,7 +4202,7 @@ class TestSignatureInspectionException:
 
         # Create a callable that raises TypeError when inspected
         class BadSignature:
-            def __call__(self, *args, **kwargs):
+            async def __call__(self, *args, **kwargs):
                 return created_user
 
         bad_insert = BadSignature()
@@ -4206,7 +4217,7 @@ class TestSignatureInspectionException:
         original_users = multimodal_module.Users
         try:
             mock_users = Mock()
-            mock_users.get_user_by_email = Mock(return_value=None)
+            mock_users.get_user_by_email = AsyncMock(return_value=None)
             mock_users.insert_new_user = bad_insert
             multimodal_module.Users = mock_users
 
@@ -4366,7 +4377,7 @@ class TestEnsureStorageUserCacheInsideLock:
         try:
             mock_users = Mock()
             # Return an existing user (so no creation happens)
-            mock_users.get_user_by_email = Mock(return_value=existing_user)
+            mock_users.get_user_by_email = AsyncMock(return_value=existing_user)
 
             multimodal_module.Users = mock_users
 

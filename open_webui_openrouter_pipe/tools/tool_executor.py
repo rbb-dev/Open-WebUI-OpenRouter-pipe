@@ -162,9 +162,8 @@ class ToolExecutor:
                     if isinstance(user_obj, dict) and _Users is not None:
                         user_id = user_obj.get("id")
                         if user_id:
-                            # Use thread pool to avoid blocking event loop on sync DB call
-                            user_obj = await asyncio.to_thread(_Users.get_user_by_id, user_id)
-                    processed_result, files, embeds = _owui_process_tool_result(
+                            user_obj = await _Users.get_user_by_id(user_id)
+                    processed_result, files, embeds = await _owui_process_tool_result(
                         request=context.request,
                         tool_function_name=tool_name,
                         tool_result=raw_result,
