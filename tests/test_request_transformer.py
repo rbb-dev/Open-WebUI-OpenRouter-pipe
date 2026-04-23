@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 from open_webui_openrouter_pipe.requests.transformer import (
     transform_messages_to_input,
     _TOOL_OUTPUT_PRUNE_MIN_LENGTH,
@@ -892,7 +893,7 @@ class TestImageHandling:
 
             # Mock the image processing to return simple results
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -918,7 +919,7 @@ class TestImageHandling:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -1263,7 +1264,7 @@ class TestImageSelection:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             async def mock_download(*args, **kwargs):
                 return None
@@ -2541,7 +2542,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -2564,7 +2565,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -2587,7 +2588,7 @@ class TestImageProcessing:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return "data:image/png;base64,test"
+                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -2833,7 +2834,7 @@ class TestBlockTypeVariations:
             mock_family.supports.return_value = True
 
             async def mock_inline(*args, **kwargs):
-                return f"data:image/png;base64,{sample_image_base64}"
+                return InlinedFile(data_url=f"data:image/png;base64,{sample_image_base64}", filename="test.png")
 
             pipe_instance._multimodal_handler._inline_owui_file_id = mock_inline
 
@@ -4206,7 +4207,7 @@ class TestImageStorageUpload:
                 return "stored-image-id"
 
             async def mock_inline(file_id, **kwargs):
-                return f"data:image/png;base64,{sample_image_base64}"
+                return InlinedFile(data_url=f"data:image/png;base64,{sample_image_base64}", filename="test.png")
 
             async def mock_emit_status(*args, **kwargs):
                 pass
@@ -4292,7 +4293,7 @@ class TestImageStorageUpload:
                 return "stored-remote-image"
 
             async def mock_inline(file_id, **kwargs):
-                return f"data:image/png;base64,{sample_image_base64}"
+                return InlinedFile(data_url=f"data:image/png;base64,{sample_image_base64}", filename="test.png")
 
             async def mock_emit_status(*args, **kwargs):
                 pass

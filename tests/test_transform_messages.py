@@ -13,6 +13,7 @@ from open_webui_openrouter_pipe import (
     generate_item_id,
 )
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 
 
 def _assistant_message_with_markers(*markers: str) -> str:
@@ -151,7 +152,7 @@ async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
             captured_status.append(event["data"]["description"])
 
     async def fake_inline(file_id, chunk_size, max_bytes):
-        return f"data:image/png;base64,{file_id}"
+        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -181,7 +182,7 @@ async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
 async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instance_async):
     pipe = pipe_instance_async
     async def fake_inline(file_id, chunk_size, max_bytes):
-        return f"data:image/png;base64,{file_id}"
+        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
     messages = [
@@ -214,7 +215,7 @@ async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeyp
     async def fake_inline(file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
         if file_id == "missing-img":
             return None
-        return f"data:image/png;base64,{file_id}"
+        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -250,7 +251,7 @@ async def test_transform_respects_user_turn_only_selection(monkeypatch, pipe_ins
     pipe = pipe_instance_async
 
     async def fake_inline(file_id, chunk_size, max_bytes):
-        return f"data:image/png;base64,{file_id}"
+        return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
@@ -284,7 +285,7 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch, pipe_
             captured_status.append(event["data"]["description"])
 
     async def fake_inline(_file_id, chunk_size, max_bytes):
-        return "data:image/png;base64,test"
+        return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_owui_file_id", fake_inline)
     ModelFamily.set_dynamic_specs({"text-only": {"features": set()}})

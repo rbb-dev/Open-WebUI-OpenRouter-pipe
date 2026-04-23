@@ -10,6 +10,7 @@ import pytest
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 
 
 async def _transform_single_block(
@@ -44,6 +45,9 @@ async def test_supported_image_formats_are_inlined(
     """All documented OpenRouter image formats should survive the transform pipeline."""
 
     inline_value = f"data:{mime_type};base64,{sample_image_base64}"
+    ext = mime_type.split("/")[-1]
+    if ext == "jpeg":
+        ext = "jpg"
 
     monkeypatch.setattr(
         pipe_instance._multimodal_handler,
@@ -58,7 +62,7 @@ async def test_supported_image_formats_are_inlined(
     monkeypatch.setattr(
         pipe_instance._multimodal_handler,
         "_inline_owui_file_id",
-        AsyncMock(return_value=inline_value),
+        AsyncMock(return_value=InlinedFile(data_url=inline_value, filename=f"test.{ext}")),
     )
 
     block = {"type": "image_url", "image_url": f"data:{mime_type};base64,{sample_image_base64}"}

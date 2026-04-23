@@ -15,6 +15,7 @@ import pytest
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 
 
 def _m4a_like_base64() -> str:
@@ -712,7 +713,7 @@ async def test_moa_requests_inject_direct_uploads_like_chat():
             pass
 
         pipe._multimodal_handler._inline_owui_file_id = AsyncMock(
-            return_value="data:application/pdf;base64,SGVsbG8gV29ybGQ="
+            return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
         )
 
         with aioresponses() as mock_http:
@@ -893,9 +894,9 @@ async def test_task_first_preserves_direct_uploads_for_chat():
             }
 
             # Mock file inlining at the multimodal handler level
-            # Returns a data URL for the file
+            # Returns an InlinedFile for the file
             pipe._multimodal_handler._inline_owui_file_id = AsyncMock(
-                return_value="data:application/pdf;base64,SGVsbG8gV29ybGQ="
+                return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
             )
 
             result = await pipe.pipe(
@@ -980,7 +981,7 @@ async def test_direct_uploads_injected_into_chat_request_payload():
 
         # Mock file inlining at the multimodal handler level
         pipe._multimodal_handler._inline_owui_file_id = AsyncMock(
-            return_value="data:application/pdf;base64,SGVsbG8gV29ybGQ="
+            return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8gV29ybGQ=", filename="document.pdf")
         )
 
         with aioresponses() as mock_http:
@@ -1205,7 +1206,7 @@ async def test_inline_internal_responses_input_files_inplace_rewrites_internal_u
     }
 
     pipe._multimodal_handler._inline_owui_file_id = AsyncMock(  # type: ignore[method-assign]
-        return_value="data:application/pdf;base64,SGVsbG8="
+        return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8=", filename="example.pdf")
     )
 
     await pipe._multimodal_handler._inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)

@@ -23,6 +23,7 @@ import pytest_asyncio
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.multimodal import (
+    InlinedFile,
     _extract_internal_file_id,
     _extract_openrouter_og_image,
     _guess_image_mime_type,
@@ -656,7 +657,8 @@ class TestInlineOwuiFileId:
 
         file_obj = SimpleNamespace(
             path=str(test_file),
-            meta={"content_type": "image/png"}
+            filename="test.png",
+            meta={"content_type": "image/png", "name": "test.png"},
         )
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
@@ -665,7 +667,7 @@ class TestInlineOwuiFileId:
         )
 
         expected_b64 = base64.b64encode(test_content).decode("ascii")
-        assert result == f"data:image/png;base64,{expected_b64}"
+        assert result == InlinedFile(data_url=f"data:image/png;base64,{expected_b64}", filename="test.png")
 
     @pytest.mark.asyncio
     async def test_returns_none_when_read_fails(self, pipe_instance_async):
@@ -720,7 +722,8 @@ class TestInlineInternalFileUrl:
 
         file_obj = SimpleNamespace(
             path=str(test_file),
-            meta={"content_type": "application/octet-stream"}
+            filename="test.bin",
+            meta={"content_type": "application/octet-stream", "name": "test.bin"},
         )
         pipe_instance_async._multimodal_handler._get_file_by_id = AsyncMock(return_value=file_obj)
 
@@ -731,7 +734,7 @@ class TestInlineInternalFileUrl:
         )
 
         expected_b64 = base64.b64encode(test_content).decode("ascii")
-        assert result == f"data:application/octet-stream;base64,{expected_b64}"
+        assert result == InlinedFile(data_url=f"data:application/octet-stream;base64,{expected_b64}", filename="test.bin")
 
 
 # ---------------------------------------------------------------------------
@@ -2824,7 +2827,7 @@ class TestImageTransformations:
             return_value="cat123"
         )
         pipe_instance._multimodal_handler._inline_owui_file_id = AsyncMock(
-            return_value="data:image/png;base64,INLINED=="
+            return_value=InlinedFile(data_url="data:image/png;base64,INLINED==", filename="test.png")
         )
 
         block = {
@@ -3249,7 +3252,7 @@ class TestImageTransformer:
         """Base64 images should be re-hosted and emit status updates."""
         stored_id = "img123"
         upload_mock = AsyncMock(return_value=stored_id)
-        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
+        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
@@ -3286,7 +3289,7 @@ class TestImageTransformer:
             return_value={"data": b"img", "mime_type": "image/png", "url": remote_url}
         )
         upload_mock = AsyncMock(return_value=stored_id)
-        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
+        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
         status_mock = AsyncMock()
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
@@ -3318,7 +3321,7 @@ class TestImageTransformer:
         """Explicit detail selection should survive transformation."""
         async def fake_inline(file_id, chunk_size, max_bytes):  # type: ignore[no-untyped-def]
             assert file_id == "abc"
-            return "data:image/png;base64,abc"
+            return InlinedFile(data_url="data:image/png;base64,abc", filename="test.png")
 
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
@@ -3930,7 +3933,7 @@ class TestMultimodalIntegration:
             return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
         )
         upload_mock = AsyncMock(side_effect=["img123", "file123"])
-        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
+        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
@@ -3979,7 +3982,7 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle message with text, audio, and image."""
         upload_mock = AsyncMock(return_value="img999")
-        inline_mock = AsyncMock(return_value="data:image/png;base64,INLINE")
+        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
 
@@ -4019,7 +4022,10 @@ class TestMultimodalIntegration:
     ) -> None:
         """Should handle multiple images in single message."""
         upload_mock = AsyncMock(side_effect=["img1", "img2"])
-        inline_mock = AsyncMock(side_effect=["data:image/png;base64,img1", "data:image/png;base64,img2"])
+        inline_mock = AsyncMock(side_effect=[
+            InlinedFile(data_url="data:image/png;base64,img1", filename="test.png"),
+            InlinedFile(data_url="data:image/png;base64,img2", filename="test.png"),
+        ])
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_upload_to_owui_storage", upload_mock)
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_inline_owui_file_id", inline_mock)
 

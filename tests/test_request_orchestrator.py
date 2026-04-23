@@ -38,6 +38,7 @@ import pytest
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 
 
 # -----------------------------------------------------------------------------
@@ -320,7 +321,7 @@ async def test_extract_direct_uploads_skips_invalid_items():
 
         # Mock the file inlining to simulate successful inlining at the multimodal handler level
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
 
@@ -521,7 +522,7 @@ async def test_inject_direct_uploads_handles_list_content():
 
         # Mock the file inlining at the multimodal handler level
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
 
@@ -600,7 +601,7 @@ async def test_direct_uploads_pdf_parser_injects_plugin():
             pass
 
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
 
@@ -679,7 +680,7 @@ async def test_inject_direct_uploads_handles_none_content():
 
         # Mock the file inlining
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
 
@@ -3520,7 +3521,7 @@ async def test_files_loop_skips_invalid_file_id():
 
         # Mock file inlining
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
-            return f"data:application/pdf;base64,{_pdf_like_base64()}"
+            return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._multimodal_handler._inline_owui_file_id = mock_inline_owui_file_id
 

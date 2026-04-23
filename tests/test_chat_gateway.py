@@ -23,6 +23,7 @@ from aioresponses import aioresponses
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.storage.multimodal import InlinedFile
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -3961,9 +3962,9 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def fake_inline(url: str, *, chunk_size: int, max_bytes: int) -> str | None:
+    async def fake_inline(url: str, *, chunk_size: int, max_bytes: int) -> InlinedFile | None:
         assert url == "/api/v1/files/abc123"
-        return "data:application/pdf;base64,QUJD"
+        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_internal_file_url", fake_inline)
 
@@ -4321,9 +4322,9 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
     pipe = Pipe()
     valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": "chat_completions"})
 
-    async def fake_inline(url: str, *, chunk_size: int, max_bytes: int) -> str | None:
+    async def fake_inline(url: str, *, chunk_size: int, max_bytes: int) -> InlinedFile | None:
         assert url == "/api/v1/files/abc123"
-        return "data:application/pdf;base64,QUJD"
+        return InlinedFile(data_url="data:application/pdf;base64,QUJD", filename="doc.pdf")
 
     monkeypatch.setattr(pipe._multimodal_handler, "_inline_internal_file_url", fake_inline)
 

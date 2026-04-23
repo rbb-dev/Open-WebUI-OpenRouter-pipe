@@ -97,7 +97,9 @@ class ChatCompletionsAdapter:
                 if not inlined:
                     self.logger.warning("Failed to inline file URL, skipping: %s", file_value)
                     continue
-                file_obj["file_data"] = inlined
+                file_obj["file_data"] = inlined.data_url
+                if inlined.filename and "filename" not in file_obj:
+                    file_obj["filename"] = inlined.filename
 
     @timed
     async def send_openai_chat_completions_streaming_request(

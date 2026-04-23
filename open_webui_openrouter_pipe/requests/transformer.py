@@ -484,7 +484,7 @@ async def transform_messages_to_input(
                                 done=False,
                             )
                             return None
-                        url = inlined
+                        url = inlined.data_url
 
                     result: dict[str, Any] = {"type": "input_image", "image_url": url}
                     if isinstance(detail, str) and detail in {"auto", "low", "high"}:

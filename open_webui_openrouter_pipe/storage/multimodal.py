@@ -19,7 +19,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 from urllib.parse import quote, urlparse
 
 # External dependencies
@@ -57,6 +57,13 @@ from ..core.errors import (
     _classify_retryable_http_error,
     _read_rag_file_constraints,
 )
+
+
+class InlinedFile(NamedTuple):
+    """Result of inlining an OWUI file: data URL + original filename."""
+
+    data_url: str
+    filename: str  # original filename from OWUI FileModel, empty string if unknown
 
 
 # -----------------------------------------------------------------------------
@@ -278,8 +285,8 @@ class MultimodalHandler:
         *,
         chunk_size: int,
         max_bytes: int,
-    ) -> Optional[str]:
-        """Convert an Open WebUI file id into a data URL for providers.
+    ) -> Optional[InlinedFile]:
+        """Convert an Open WebUI file id into a data URL with metadata.
 
         Args:
             file_id: Open WebUI file identifier
@@ -287,7 +294,7 @@ class MultimodalHandler:
             max_bytes: Maximum file size in bytes
 
         Returns:
-            Data URL string or None if conversion fails
+            InlinedFile(data_url, filename) or None if conversion fails
         """
         normalized = (file_id or "").strip()
         if not normalized:
@@ -303,7 +310,14 @@ class MultimodalHandler:
             return None
         if not b64:
             return None
-        return f"data:{mime_type};base64,{b64}"
+        data_url = f"data:{mime_type};base64,{b64}"
+        meta = getattr(file_obj, "meta", None)
+        filename = ""
+        if isinstance(meta, dict):
+            filename = meta.get("name", "") or ""
+        if not filename:
+            filename = getattr(file_obj, "filename", "") or ""
+        return InlinedFile(data_url=data_url, filename=filename)
 
     @timed
     async def _inline_internal_file_url(
@@ -312,8 +326,8 @@ class MultimodalHandler:
         *,
         chunk_size: int,
         max_bytes: int,
-    ) -> Optional[str]:
-        """Convert an Open WebUI file URL into a data URL for providers.
+    ) -> Optional[InlinedFile]:
+        """Convert an Open WebUI file URL into a data URL with metadata.
 
         Args:
             url: Open WebUI file URL
@@ -321,7 +335,7 @@ class MultimodalHandler:
             max_bytes: Maximum file size in bytes
 
         Returns:
-            Data URL string or None if conversion fails
+            InlinedFile(data_url, filename) or None if conversion fails
         """
         file_id = _extract_internal_file_id(url)
         if not file_id:
@@ -385,17 +399,19 @@ class MultimodalHandler:
                 if not internal_file_id:
                     continue
 
-                inlined = await self._inline_owui_file_id(
+                result = await self._inline_owui_file_id(
                     internal_file_id,
                     chunk_size=chunk_size,
                     max_bytes=max_bytes,
                 )
-                if not inlined:
+                if not result:
                     raise ValueError(
                         f"Failed to inline Open WebUI file id for /responses: {internal_file_id}"
                     )
 
-                block["file_data"] = inlined
+                block["file_data"] = result.data_url
+                if result.filename and "filename" not in block:
+                    block["filename"] = result.filename
                 block.pop("file_id", None)
                 if isinstance(file_url, str) and file_url.strip() and _is_internal_file_url(file_url.strip()):
                     block.pop("file_url", None)
