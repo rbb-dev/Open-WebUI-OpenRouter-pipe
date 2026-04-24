@@ -1,5 +1,5 @@
 """
-title: OpenRouter Web Tools
+title: OR Web Tools
 author: Open-WebUI-OpenRouter-pipe
 author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: openrouter_web_tools

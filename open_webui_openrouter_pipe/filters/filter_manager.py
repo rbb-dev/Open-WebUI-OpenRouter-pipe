@@ -570,7 +570,7 @@ class FilterManager:
 
         # -- Build the template -----------------------------------------------
         template = '"""\n'
-        template += 'title: OpenRouter Web Tools\n'
+        template += 'title: OR Web Tools\n'
         template += 'author: Open-WebUI-OpenRouter-pipe\n'
         template += 'author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe\n'
         template += 'id: __FILTER_ID__\n'
@@ -691,7 +691,7 @@ class FilterManager:
                 enable_web_fetch=enable_web_fetch,
                 enable_datetime=enable_datetime,
             ).strip() + "\n",
-            desired_name="OpenRouter Web Tools",
+            desired_name="OR Web Tools",
             desired_meta={
                 "description": (
                     "OpenRouter server tools: Web Search, Web Fetch, and Datetime. "
@@ -699,7 +699,7 @@ class FilterManager:
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": "OpenRouter Web Tools",
+                    "title": "OR Web Tools",
                     "id": _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
                     "version": "0.1.0",
                     "license": "MIT",
@@ -720,7 +720,7 @@ class FilterManager:
     def render_openrouter_image_gen_filter_source() -> str:
         """Return the canonical OWUI filter source for the OpenRouter Image Generation filter."""
         template = '''"""
-title: OpenRouter Image Generation
+title: OR Image Gen
 author: Open-WebUI-OpenRouter-pipe
 author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: __FILTER_ID__
@@ -866,14 +866,14 @@ class Filter:
 
         return await self._ensure_filter_installed(
             desired_source=self.render_openrouter_image_gen_filter_source().strip() + "\n",
-            desired_name="OpenRouter Image Generation",
+            desired_name="OR Image Gen",
             desired_meta={
                 "description": (
                     "Let the model generate images from text prompts via OpenRouter's image generation server tool."
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": "OpenRouter Image Generation",
+                    "title": "OR Image Gen",
                     "id": _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
                     "version": "0.1.0",
                     "license": "MIT",
@@ -896,7 +896,7 @@ class Filter:
         # NOTE: This file is inserted into Open WebUI's Functions table as a *filter* function.
         # It must not depend on this pipe module at runtime.
         template = '''"""
-title: Direct Uploads
+title: OR Direct Uploads
 author: Open-WebUI-OpenRouter-pipe
 author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: __FILTER_ID__
@@ -1331,7 +1331,7 @@ class Filter:
 
         return await self._ensure_filter_installed(
             desired_source=self.render_direct_uploads_filter_source().strip() + "\n",
-            desired_name="Direct Uploads",
+            desired_name="OR Direct Uploads",
             desired_meta={
                 "description": (
                     "Bypass Open WebUI RAG for chat uploads and forward them to OpenRouter as direct file/audio/video inputs. "
@@ -1339,7 +1339,7 @@ class Filter:
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": "Direct Uploads",
+                    "title": "OR Direct Uploads",
                     "id": _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
                     "version": "0.1.0",
                     "license": "MIT",

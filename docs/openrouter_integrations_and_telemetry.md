@@ -87,8 +87,8 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
-| `disable_openrouter_search_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OpenRouter Web Tools** integration toggle (filter id) for this model. |
-| `disable_openrouter_search_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OpenRouter Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`). |
+| `disable_web_tools_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OR Web Tools** integration toggle (filter id) for this model. |
+| `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`). |
 | `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
 
 Notes:

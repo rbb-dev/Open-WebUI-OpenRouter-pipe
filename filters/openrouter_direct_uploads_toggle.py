@@ -1,5 +1,5 @@
 """
-title: Direct Uploads
+title: OR Direct Uploads
 author: Open-WebUI-OpenRouter-pipe
 author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: openrouter_direct_uploads

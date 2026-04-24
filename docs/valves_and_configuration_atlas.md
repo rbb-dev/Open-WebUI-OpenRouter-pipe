@@ -164,7 +164,7 @@ Behavior note (no valve):
 | `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users. |
 | `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. |
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |
-| `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically mark the OpenRouter Web Tools filter as a Default Filter on models (enabled by default, users can turn off per chat). |
+| `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OR Web Tools filter as a Default Filter on all pipe models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
 | `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to all pipe models. |
 

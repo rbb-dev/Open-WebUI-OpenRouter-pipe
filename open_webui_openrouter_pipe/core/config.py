@@ -1548,8 +1548,8 @@ class Valves(BaseModel):
         description="Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu).",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
-        default=True,
-        description="Automatically mark the OpenRouter Web Tools filter as a Default Filter on models (enabled by default, users can turn off per chat).",
+        default=False,
+        description="When enabled, marks the OR Web Tools filter as a Default Filter on all pipe models (pre-enabled per chat; users can still turn it off).",
     )
 
     # ── Image Generation Filter ──

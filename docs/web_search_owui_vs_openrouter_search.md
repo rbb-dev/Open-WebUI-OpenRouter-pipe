@@ -87,18 +87,18 @@ Not recommended. When both are enabled on the same request, the Web Tools filter
 
 ## Recommended operator settings
 
-### OpenRouter Web Search enabled by default (current defaults)
+### OpenRouter Web Tools available but opt-in (current defaults)
 
 - `AUTO_INSTALL_WEB_TOOLS_FILTER=True`
 - `AUTO_ATTACH_WEB_TOOLS_FILTER=True`
-- `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`
+- `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`
 
-Result: Users see **OpenRouter Web Tools** on all pipe models. Web Search and Datetime start enabled by default. Users can disable per chat. OWUI Web Search is suppressed when OpenRouter Web Search is active.
+Result: Users see **OpenRouter Web Tools** on all pipe models but must enable it per chat. Admin can set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True` to pre-enable it for all models.
 
-### Make OpenRouter Web Search opt-in (lower cost)
+### Enable OpenRouter Web Tools by default
 
-- Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`.
-- The Web Tools switch remains available on models, but will not be enabled by default.
+- Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
+- Web Search and Datetime start enabled by default. Users can disable per chat. OWUI Web Search is suppressed when OpenRouter Web Search is active.
 
 ### Prefer OWUI Web Search for specific models
 
