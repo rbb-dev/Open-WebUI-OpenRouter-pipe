@@ -63,6 +63,7 @@ _PROVIDER_SLUG_PATTERN = re.compile(r"^[a-z0-9-]+(?:/[a-z0-9-]+)?$")
 _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     {
         "image_generation_call",
+        "openrouter:image_generation",
         "web_search_call",
         "file_search_call",
         "local_shell_call",

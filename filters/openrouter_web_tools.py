@@ -142,7 +142,8 @@ class Filter:
         if not isinstance(user_valves, BaseModel):
             user_valves = self.UserValves()
 
-        server_tools: dict[str, Any] = {}
+        prev_st = (__metadata__.get("openrouter_pipe") or {}).get("server_tools") if isinstance(__metadata__, dict) else None
+        server_tools: dict[str, Any] = dict(prev_st) if isinstance(prev_st, dict) else {}
         suppress_owui_web_search = False
 
         if user_valves.WEB_SEARCH:

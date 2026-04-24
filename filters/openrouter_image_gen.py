@@ -29,7 +29,7 @@ class Filter:
             description="Priority level for the filter operations.",
         )
         IMAGE_GENERATION_MODEL: str = Field(
-            default="openai/gpt-image-1",
+            default="openai/gpt-5-image-mini",
             title="Image generation model",
             description="OpenRouter model ID for image generation. Controls pricing and capabilities.",
         )
@@ -40,11 +40,6 @@ class Filter:
         )
 
     class UserValves(BaseModel):
-        IMAGE_GENERATION: bool = Field(
-            default=False,
-            title="Image Generation",
-            description="Let the model generate images from text prompts. Incurs additional cost per image.",
-        )
         IMAGE_QUALITY: Literal["", "low", "medium", "high"] = Field(
             default="",
             title="Image quality",
@@ -99,9 +94,6 @@ class Filter:
             user_valves = __user__.get("valves")
         if not isinstance(user_valves, BaseModel):
             user_valves = self.UserValves()
-
-        if not user_valves.IMAGE_GENERATION:
-            return body
 
         # Build image generation parameters
         params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}

@@ -753,7 +753,8 @@ class Pipe:
         except Exception:
             pass
 
-        if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
+        all_web_tools_disabled = not (self.valves.ENABLE_WEB_SEARCH or self.valves.ENABLE_WEB_FETCH or self.valves.ENABLE_DATETIME)
+        if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not all_web_tools_disabled:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
                     enable_web_search=self.valves.ENABLE_WEB_SEARCH,
@@ -762,11 +763,29 @@ class Pipe:
                 )
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc)
+        elif all_web_tools_disabled:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                wt = await _Funcs.get_function_by_id("openrouter_web_tools")
+                if wt and getattr(wt, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_web_tools", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
+            except Exception:
+                pass
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc)
+        elif not self.valves.ENABLE_IMAGE_GENERATION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                ig = await _Funcs.get_function_by_id("openrouter_image_gen")
+                if ig and getattr(ig, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_image_gen", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
+            except Exception:
+                pass
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()

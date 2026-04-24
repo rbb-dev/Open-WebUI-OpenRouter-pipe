@@ -1541,7 +1541,7 @@ class StreamingHandler:
 
                         elif item_type == "file_search_call":
                             title = "Let me skim those files…"
-                        elif item_type == "image_generation_call":
+                        elif item_type in ("image_generation_call", "openrouter:image_generation"):
                             title = "Let me create that image…"
                             item_id = item.get("id")
                             if item_id and item_id in processed_image_item_ids:
