@@ -1672,53 +1672,6 @@ async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
 
 
 # ============================================================================
-# OpenRouter Search (ORS) Filter Tests
-# ============================================================================
-
-
-class TestORSFilter:
-    """Tests for the OpenRouter Search filter rendered from template."""
-
-    @pytest.fixture
-    def ors_filter_class(self):
-        """Load ORS filter from rendered template."""
-        source = FilterManager.render_ors_filter_source()
-        module = _load_filter_from_source(source, "ors_filter")
-        return module.Filter
-
-    def test_ors_filter_initializes(self, ors_filter_class):
-        """Test ORS filter initializes with proper defaults."""
-        filt = ors_filter_class()
-        assert filt.toggle is True
-        # ORS filter doesn't have valves - just toggle
-
-    def test_ors_filter_has_inlet(self, ors_filter_class):
-        """Test ORS filter has inlet method."""
-        filt = ors_filter_class()
-        assert hasattr(filt, 'inlet')
-        assert callable(filt.inlet)
-
-    def test_ors_filter_inlet_sets_web_search_false(self, ors_filter_class):
-        """Test ORS filter inlet disables web_search in body."""
-        filt = ors_filter_class()
-        body = {"messages": []}
-        metadata = {}
-        result = filt.inlet(body, __metadata__=metadata)
-        # ORS filter sets web_search to False
-        assert result["features"]["web_search"] is False
-
-    def test_ors_filter_inlet_sets_metadata_flag(self, ors_filter_class):
-        """Test ORS filter inlet sets feature flag in metadata."""
-        filt = ors_filter_class()
-        body = {"messages": []}
-        metadata = {}
-        filt.inlet(body, __metadata__=metadata)
-        # ORS filter sets feature flag in metadata
-        assert "features" in metadata
-        assert metadata["features"].get("openrouter_web_search") is True
-
-
-# ============================================================================
 # Provider Routing Filter Tests
 # ============================================================================
 

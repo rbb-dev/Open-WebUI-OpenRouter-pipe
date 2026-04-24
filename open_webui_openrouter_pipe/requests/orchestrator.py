@@ -15,7 +15,6 @@ import aiohttp
 from starlette.requests import Request
 
 # Import types needed for request processing
-from ..core.config import _ORS_FILTER_FEATURE_FLAG
 from ..core.errors import (
     OpenRouterAPIError,
     _is_reasoning_effort_error,
@@ -772,24 +771,26 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
-        ors_requested = bool(features.get(_ORS_FILTER_FEATURE_FLAG, False))
-        if ors_requested:
-            reasoning_cfg = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-            effort = (reasoning_cfg.get("effort") or "").strip().lower()
-            if not effort:
-                effort = valves.REASONING_EFFORT
-            if effort == "minimal":
+        server_tools = (__metadata__ or {}).get("openrouter_pipe", {}).get("server_tools", {})
+        if isinstance(server_tools, dict) and server_tools:
+            tools_list = list(responses_body.tools or [])
+            for tool_key, tool_params in server_tools.items():
+                if not isinstance(tool_key, str) or not tool_key.strip():
+                    continue
+                entry: dict[str, Any] = {"type": f"openrouter:{tool_key}"}
+                if isinstance(tool_params, dict) and tool_params:
+                    cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != "" and v != 0}
+                    if cleaned_params:
+                        entry["parameters"] = cleaned_params
+                tools_list.append(entry)
+            if tools_list:
+                responses_body.tools = tools_list
                 self.logger.debug(
-                    "Skipping web-search plugin because reasoning.effort is set to 'minimal' (model=%s)",
-                    responses_body.model,
+                    "Injected %d OpenRouter server tool(s): %s",
+                    len(server_tools),
+                    ", ".join(server_tools.keys()),
                 )
-            else:
-                plugin_payload: dict[str, Any] = {"id": "web"}
-                if valves.WEB_SEARCH_MAX_RESULTS is not None:
-                    plugin_payload["max_results"] = valves.WEB_SEARCH_MAX_RESULTS
-                plugins = list(responses_body.plugins or [])
-                plugins.append(plugin_payload)
-                responses_body.plugins = plugins
+
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)

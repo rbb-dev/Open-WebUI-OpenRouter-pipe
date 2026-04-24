@@ -8,7 +8,7 @@ OpenRouter supports **provider routing** — the ability to control which infras
 
 The **Provider Routing Filters** integration generates dedicated Open WebUI filter functions for specific models, with dropdown menus populated from OpenRouter's live provider catalog.
 
-> **Quick navigation:** [Docs Home](README.md) · [Valves Atlas](valves_and_configuration_atlas.md) · [Direct Uploads](openrouter_direct_uploads.md) · [Web Search](web_search_owui_vs_openrouter_search.md)
+> **Quick navigation:** [Docs Home](README.md) · [Valves Atlas](valves_and_configuration_atlas.md) · [Direct Uploads](openrouter_direct_uploads.md) · [Web Search / Web Tools](web_search_owui_vs_openrouter_search.md)
 
 ---
 

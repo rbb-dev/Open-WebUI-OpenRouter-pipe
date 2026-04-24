@@ -1,89 +1,126 @@
-# Web Search (Open WebUI) vs OpenRouter Search
+# Web Search: Open WebUI vs OpenRouter
 
-Open WebUI exposes a built-in **Web Search** toggle in the Integrations menu. Separately, OpenRouter offers a provider-native web-search capability for some models (via the OpenRouter `plugins: [{ "id": "web" }]` mechanism).
+Open WebUI has a built-in **Web Search** feature. Separately, OpenRouter provides a **Web Search server tool** that the model can call during generation. This pipe supports both, and intentionally keeps them separate to avoid ambiguity.
 
-This pipe supports **both**, and intentionally keeps them separate to avoid ambiguity.
-
----
-
-## Two toggles, two different systems
-
-### 1) Web Search — Open WebUI native
-
-- This is Open WebUI’s own web-search pipeline.
-- When enabled, OWUI runs a web search **before** calling the model, then attaches the results to the request as files/context.
-- It does not require the model/provider to support any special “web tool” feature.
-
-### 2) OpenRouter Search — provider-native plugin
-
-- This is OpenRouter’s provider-native web-search plugin (`{ "id": "web" }`) on the Responses API.
-- Only some OpenRouter models support it (the pipe detects support from OpenRouter’s catalog).
-- Results appear through the provider’s response/tool artifacts.
+> **Quick navigation:** [Docs Home](README.md) · [Server Tools](openrouter_server_tools.md) · [Valves Atlas](valves_and_configuration_atlas.md)
 
 ---
 
-## The rule: OpenRouter Search overrides Web Search (no double-search)
+## Two different systems
 
-If both toggles are enabled, the pipe enforces **OpenRouter Search only** to prevent:
+### 1) Open WebUI Web Search (OWUI-native)
 
-- running two searches,
-- paying twice (OWUI search + OpenRouter search),
-- confusing “which citations came from where?” outcomes.
+- Open WebUI's own web-search pipeline.
+- When enabled, OWUI runs a web search **before** calling the model, then attaches the results to the request as context.
+- Does not require the model or provider to support any special tool feature.
+- Configured in Open WebUI's settings (search engine, API keys, etc.).
 
-Implementation detail:
-- The OpenRouter Search companion filter disables OWUI’s `features.web_search` for the request (preventing OWUI’s native web-search handler), while still signaling the pipe to enable the OpenRouter plugin.
+### 2) OpenRouter Web Search (server tool)
+
+- An OpenRouter server tool passed in the `tools` array of the API request.
+- The **model** decides when to search (tool calling), and OpenRouter executes the search server-side.
+- Supports engine selection (`auto`, `native`, `exa`, `firecrawl`, `parallel`), result limits, domain restrictions, and location-aware results.
+- Configured via the **OpenRouter Web Tools** companion filter (admin valves for engines/limits, user valves for per-chat toggles and preferences).
 
 ---
 
-## How OpenRouter Search is surfaced in the Integrations menu
+## The rule: OpenRouter Web Search suppresses OWUI Web Search
 
-Open WebUI does not provide a “pipe can inject new toggles” frontend extension point. The only supported UI injection points are:
+When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `body["features"]["web_search"] = False`, which suppresses Open WebUI's native web-search handler. This prevents:
 
-- Tools (tool registry / tool servers), and
-- **toggleable filter functions** (shown as switches in Integrations).
+- running two searches (one OWUI, one OpenRouter),
+- paying twice,
+- ambiguous citation sources.
 
-So OpenRouter Search is implemented as a **toggleable filter function**:
+If OpenRouter Web Search is **disabled** (user turns off the `WEB_SEARCH` toggle in the filter), OWUI Web Search is left untouched and works normally.
 
-- The pipe can **auto-install / auto-update** this filter into Open WebUI’s Functions DB when `AUTO_INSTALL_ORS_FILTER` is enabled.
-- The pipe can **auto-enable** it in each compatible model’s settings when `AUTO_ATTACH_ORS_FILTER` is enabled.
-- The pipe can **enable it by default** on compatible models when `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER` is enabled.
+---
 
-This keeps the User Interface clean: users don’t see an OpenRouter Search switch for models where it can’t work.
+## How OpenRouter Web Search is surfaced in the UI
+
+Open WebUI does not provide a "pipe can inject new toggles" frontend extension point. The only supported UI injection points are tool registry entries and **toggleable filter functions**.
+
+The pipe implements OpenRouter Web Search as part of the **OpenRouter Web Tools** toggleable filter:
+
+- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled.
+- The pipe can **auto-attach** it to pipe models when `AUTO_ATTACH_WEB_TOOLS_FILTER` is enabled.
+- The pipe can **enable it by default** on models when `AUTO_DEFAULT_WEB_TOOLS_FILTER` is enabled.
+
+Users see an "OpenRouter Web Tools" switch in the Integrations menu. Individual tools (Web Search, Web Fetch, Datetime) are toggled via the filter's user valves.
+
+---
+
+## Per-model overrides
+
+Two per-model custom parameters (set in Open WebUI model Advanced Parameters) control Web Tools filter attachment on a per-model basis:
+
+| Parameter | Effect |
+| --- | --- |
+| `disable_openrouter_search_auto_attach` | Prevents auto-attaching the Web Tools filter to this model. The toggle will not appear in the Integrations menu for this model. As a consequence, default-on seeding is also skipped. |
+| `disable_openrouter_search_default_on` | Prevents auto-enabling the Web Tools filter by default for this model. The toggle appears but starts off; users can still enable it per chat. |
+
+These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` pipe valves are enabled.
+
+---
+
+## When to use which
+
+### Use OpenRouter Web Search when:
+
+- You want the **model** to decide when to search (tool calling).
+- You want search results integrated naturally into the model's response.
+- You want engine selection, domain restrictions, and location-aware results.
+- The model supports tool calling (most modern models do).
+
+### Use OWUI Web Search when:
+
+- You want search results injected as context **before** the model sees the prompt.
+- You want to use OWUI's configured search engine (Google, Bing, SearXNG, etc.).
+- The model does not support tool calling.
+- You prefer a deterministic "always search" behavior rather than model-decided searching.
+
+### Use both (advanced):
+
+Not recommended. When both are enabled on the same request, the Web Tools filter suppresses OWUI Web Search to avoid double-searching. If you need OWUI Web Search for specific models, use `disable_openrouter_search_auto_attach` on those models to prevent the Web Tools filter from being attached.
 
 ---
 
 ## Recommended operator settings
 
-### OpenRouter Search enabled by default (current defaults)
+### OpenRouter Web Search enabled by default (current defaults)
 
-- `AUTO_INSTALL_ORS_FILTER=true`
-- `AUTO_ATTACH_ORS_FILTER=true`
-- `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=true`
+- `AUTO_INSTALL_WEB_TOOLS_FILTER=True`
+- `AUTO_ATTACH_WEB_TOOLS_FILTER=True`
+- `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`
 
-Result:
-- Users see **OpenRouter Search** only on models that support OpenRouter-native web search.
-- OpenRouter Search starts enabled by default on those models, but can still be turned off per chat.
-- Users can still use Open WebUI-native **Web Search** on any model.
+Result: Users see **OpenRouter Web Tools** on all pipe models. Web Search and Datetime start enabled by default. Users can disable per chat. OWUI Web Search is suppressed when OpenRouter Web Search is active.
 
-These are the current defaults.
+### Make OpenRouter Web Search opt-in (lower cost)
 
-### Make OpenRouter Search opt-in (lower cost)
+- Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`.
+- The Web Tools switch remains available on models, but will not be enabled by default.
 
-Result:
-- Set `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=false`.
-- The OpenRouter Search switch remains available on compatible models, but will not be enabled by default.
-- If you previously enabled it by default on a specific model (via the model’s **Default Filters**), that per-model setting is respected until you change it.
+### Prefer OWUI Web Search for specific models
+
+- Set `disable_openrouter_search_auto_attach` in the model's Advanced Parameters.
+- The Web Tools toggle will not appear for that model, and OWUI Web Search will work normally.
 
 ---
 
 ## Troubleshooting
 
-### “I enabled AUTO_ATTACH_ORS_FILTER but don’t see the OpenRouter Search toggle”
+### "I don't see the OpenRouter Web Tools toggle"
 
-- You likely don’t have the companion filter installed.
-- Enable `AUTO_INSTALL_ORS_FILTER`, save valves, then trigger a models refresh.
+- Confirm `AUTO_INSTALL_WEB_TOOLS_FILTER=True` and `AUTO_ATTACH_WEB_TOOLS_FILTER=True` on the pipe valves.
+- Trigger a model catalog refresh (the filter is installed/attached during refresh).
+- Check that the model does not have `disable_openrouter_search_auto_attach` set in its Advanced Parameters.
 
-### “I see OpenRouter Search toggle on models that don’t support it”
+### "OWUI Web Search doesn't work when OpenRouter Web Tools is enabled"
 
-- By design, the pipe avoids this by auto-enabling the OpenRouter Search filter only on models that support OpenRouter web search.
-- If you manually attached the filter to a model, remove it from the model’s Filters list (or let the next refresh remove it when `AUTO_ATTACH_ORS_FILTER` is enabled).
+- This is by design. The Web Tools filter suppresses OWUI Web Search when OpenRouter Web Search is active, to prevent double-searching.
+- To use OWUI Web Search instead, disable the `WEB_SEARCH` user valve in the filter's settings, or disable the Web Tools toggle entirely for that chat.
+
+### "I see the old OpenRouter Search filter"
+
+- The old filter is automatically disabled on pipe startup. If it persists, manually deactivate it in Admin > Functions.
+- The old pipe valves (`AUTO_ATTACH_ORS_FILTER`, `AUTO_INSTALL_ORS_FILTER`, `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER`) no longer exist; use the new `AUTO_*_WEB_TOOLS_FILTER` valves instead.

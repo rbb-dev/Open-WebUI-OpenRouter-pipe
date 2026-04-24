@@ -25,7 +25,7 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
 
 
 @pytest.mark.asyncio
-async def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_instance):
+async def test_auto_default_web_tools_seeds_default_filter_once(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
@@ -42,7 +42,7 @@ async def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_ins
             profile_image_url=None,
             update_capabilities=False,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -51,25 +51,25 @@ async def test_auto_default_openrouter_search_seeds_default_filter_once(pipe_ins
     assert update_mock.call_count == 1
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    assert meta["filterIds"] == ["openrouter_search"]
-    assert meta["defaultFilterIds"] == ["openrouter_search"]
-    assert meta["openrouter_pipe"]["openrouter_search_default_seeded"] is True
-    assert meta["openrouter_pipe"]["openrouter_search_filter_id"] == "openrouter_search"
+    assert meta["filterIds"] == ["openrouter_web_tools"]
+    assert meta["defaultFilterIds"] == ["openrouter_web_tools"]
+    assert meta["openrouter_pipe"]["web_tools_default_seeded"] is True
+    assert meta["openrouter_pipe"]["web_tools_filter_id"] == "openrouter_web_tools"
 
 
 @pytest.mark.asyncio
-async def test_auto_default_openrouter_search_respects_operator_disabling_default(pipe_instance):
+async def test_auto_default_web_tools_respects_operator_disabling_default(pipe_instance):
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
         model_id,
         meta={
-            "filterIds": ["openrouter_search"],
+            "filterIds": ["openrouter_web_tools"],
             "defaultFilterIds": [],
             "openrouter_pipe": {
-                "openrouter_search_default_seeded": True,
-                "openrouter_search_filter_id": "openrouter_search",
+                "web_tools_default_seeded": True,
+                "web_tools_filter_id": "openrouter_web_tools",
             },
         },
     )
@@ -85,7 +85,7 @@ async def test_auto_default_openrouter_search_respects_operator_disabling_defaul
             profile_image_url=None,
             update_capabilities=False,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -103,11 +103,11 @@ async def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_
     existing = _make_existing_model(
         model_id,
         meta={
-            "filterIds": ["openrouter_search"],
-            "defaultFilterIds": ["openrouter_search"],
+            "filterIds": ["openrouter_web_tools"],
+            "defaultFilterIds": ["openrouter_web_tools"],
             "openrouter_pipe": {
-                "openrouter_search_default_seeded": True,
-                "openrouter_search_filter_id": "openrouter_search",
+                "web_tools_default_seeded": True,
+                "web_tools_filter_id": "openrouter_web_tools",
             },
         },
     )
@@ -123,7 +123,7 @@ async def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_
             profile_image_url=None,
             update_capabilities=False,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=False,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -133,18 +133,18 @@ async def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     assert meta["filterIds"] == []
-    assert meta["defaultFilterIds"] == ["openrouter_search"]
+    assert meta["defaultFilterIds"] == ["openrouter_web_tools"]
 
 
 @pytest.mark.asyncio
-async def test_disable_openrouter_search_auto_attach_prevents_filter_and_default_updates(pipe_instance) -> None:
+async def test_disable_web_tools_auto_attach_prevents_filter_and_default_updates(pipe_instance) -> None:
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
         model_id,
         meta={},
-        params={"disable_openrouter_search_auto_attach": True},
+        params={"disable_web_tools_auto_attach": True},
     )
     update_mock = AsyncMock()
 
@@ -158,7 +158,7 @@ async def test_disable_openrouter_search_auto_attach_prevents_filter_and_default
             profile_image_url=None,
             update_capabilities=False,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -168,14 +168,14 @@ async def test_disable_openrouter_search_auto_attach_prevents_filter_and_default
 
 
 @pytest.mark.asyncio
-async def test_disable_openrouter_search_default_on_skips_default_filter_ids(pipe_instance) -> None:
+async def test_disable_web_tools_default_on_skips_default_filter_ids(pipe_instance) -> None:
     pipe = pipe_instance
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
 
     existing = _make_existing_model(
         model_id,
         meta={},
-        params={"disable_openrouter_search_default_on": True},
+        params={"disable_web_tools_default_on": True},
     )
     update_mock = AsyncMock()
 
@@ -189,7 +189,7 @@ async def test_disable_openrouter_search_default_on_skips_default_filter_ids(pip
             profile_image_url=None,
             update_capabilities=False,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -198,40 +198,8 @@ async def test_disable_openrouter_search_default_on_skips_default_filter_ids(pip
     assert update_mock.call_count == 1
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    assert meta["filterIds"] == ["openrouter_search"]
+    assert meta["filterIds"] == ["openrouter_web_tools"]
     assert "defaultFilterIds" not in meta
-
-
-# ===== From test_openrouter_search_toggle_filter.py =====
-
-
-from typing import Any, cast
-
-from filters.openrouter_search_toggle import Filter, _FEATURE_FLAG
-
-
-def test_search_toggle_sets_features_and_metadata_marker():
-    filt = Filter()
-
-    features: dict = {}
-    body = {"features": features}
-    metadata = {"features": features}
-
-    result = filt.inlet(body, __metadata__=metadata)
-
-    assert result["features"]["web_search"] is False
-    assert metadata["features"] is not features
-    assert metadata["features"][_FEATURE_FLAG] is True
-
-
-def test_search_toggle_skips_when_metadata_invalid():
-    filt = Filter()
-    body = {}
-
-    result = filt.inlet(body, __metadata__=cast(Any, "invalid"))
-
-    assert result is body
-    assert "features" not in result
 
 
 # ===== From test_disable_native_websearch.py =====

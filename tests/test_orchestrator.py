@@ -62,7 +62,6 @@ def mock_valves():
     valves.ENABLE_STRICT_TOOL_CALLING = False
     valves.TOOL_EXECUTION_MODE = "Pipeline"
     valves.TOOL_OUTPUT_RETENTION_TURNS = 3
-    valves.WEB_SEARCH_MAX_RESULTS = None
     valves.ENABLE_ANTHROPIC_PROMPT_CACHING = False
     valves.MODEL_ID = ""
     valves.FREE_MODEL_FILTER = "all"
@@ -542,120 +541,6 @@ class TestToolRenameLogging:
                     )
 
                     assert result == "Test response"
-
-
-# -----------------------------------------------------------------------------
-# Test web search plugin with minimal reasoning effort (lines 638-653)
-# -----------------------------------------------------------------------------
-
-
-class TestWebSearchPluginMinimalEffort:
-    """Tests for web search plugin configuration with minimal reasoning effort."""
-
-    @pytest.mark.asyncio
-    async def test_web_search_skipped_with_minimal_effort(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Web search should be skipped when reasoning effort is 'minimal' (lines 642-646)."""
-        orchestrator, pipe = orchestrator_and_pipe
-        mock_valves.REASONING_EFFORT = "minimal"
-
-        # Setup mocks
-        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
-        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
-        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
-
-        from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
-
-        with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
-            mock_family.base_model.return_value = "openai/gpt-4o"
-            mock_family.supports.side_effect = lambda cap, model: cap == "web_search_tool"
-            mock_family.capabilities.return_value = {}
-            mock_family.max_completion_tokens.return_value = None
-
-            with patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as mock_registry:
-                mock_registry.api_model_id.return_value = "openai/gpt-4o"
-
-                result = await orchestrator.process_request(
-                    body=base_request_body,
-                    __user__={"id": "user1"},
-                    __request__=None,
-                    __event_emitter__=None,
-                    __event_call__=None,
-                    __metadata__={},
-                    __tools__=None,
-                    __task__=None,
-                    __task_body__=None,
-                    valves=mock_valves,
-                    session=mock_session,
-                    openwebui_model_id="openai/gpt-4o",
-                    pipe_identifier="test-pipe",
-                    allowlist_norm_ids={"openai/gpt-4o"},
-                    enforced_norm_ids=set(),
-                    catalog_norm_ids=set(),
-                    features={_ORS_FILTER_FEATURE_FLAG: True},  # Enable ORS filter
-                )
-
-                assert result == "Test response"
-
-    @pytest.mark.asyncio
-    async def test_web_search_added_with_non_minimal_effort(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Web search should be added when reasoning effort is not 'minimal' (lines 647-653)."""
-        orchestrator, pipe = orchestrator_and_pipe
-        mock_valves.REASONING_EFFORT = "medium"
-        mock_valves.WEB_SEARCH_MAX_RESULTS = 10
-
-        # Setup mocks
-        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
-        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
-
-        captured_body = None
-
-        async def capture_streaming_loop(responses_body, *args, **kwargs):
-            nonlocal captured_body
-            captured_body = responses_body
-            return "Test response"
-
-        pipe._streaming_handler._run_streaming_loop = capture_streaming_loop
-
-        from open_webui_openrouter_pipe.core.config import _ORS_FILTER_FEATURE_FLAG
-
-        with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
-            mock_family.base_model.return_value = "openai/gpt-4o"
-            mock_family.supports.return_value = True
-            mock_family.capabilities.return_value = {}
-            mock_family.max_completion_tokens.return_value = None
-
-            with patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as mock_registry:
-                mock_registry.api_model_id.return_value = "openai/gpt-4o"
-
-                result = await orchestrator.process_request(
-                    body=base_request_body,
-                    __user__={"id": "user1"},
-                    __request__=None,
-                    __event_emitter__=None,
-                    __event_call__=None,
-                    __metadata__={},
-                    __tools__=None,
-                    __task__=None,
-                    __task_body__=None,
-                    valves=mock_valves,
-                    session=mock_session,
-                    openwebui_model_id="openai/gpt-4o",
-                    pipe_identifier="test-pipe",
-                    allowlist_norm_ids={"openai/gpt-4o"},
-                    enforced_norm_ids=set(),
-                    catalog_norm_ids=set(),
-                    features={_ORS_FILTER_FEATURE_FLAG: True},
-                )
-
-                assert result == "Test response"
-                # Verify plugins were set
-                assert captured_body is not None
-                if captured_body.plugins:
-                    assert any(p.get("id") == "web" for p in captured_body.plugins)
 
 
 # -----------------------------------------------------------------------------

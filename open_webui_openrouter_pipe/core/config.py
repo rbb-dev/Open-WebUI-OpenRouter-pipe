@@ -41,9 +41,13 @@ _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
-_ORS_FILTER_MARKER = "openrouter_pipe:ors_filter:v1"
-_ORS_FILTER_FEATURE_FLAG = "openrouter_web_search"
-_ORS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_search"
+# OpenRouter Web Tools filter
+_OPENROUTER_WEB_TOOLS_FILTER_MARKER = "openrouter_pipe:web_tools_filter:v1"
+_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"
+
+# OpenRouter Image Generation filter
+_OPENROUTER_IMAGE_GEN_FILTER_MARKER = "openrouter_pipe:image_gen_filter:v1"
+_OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID = "openrouter_image_gen"
 
 _DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
@@ -984,14 +988,6 @@ class Valves(BaseModel):
         )
     )
 
-    # Web search
-    WEB_SEARCH_MAX_RESULTS: Optional[int] = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Number of web results to request when the web-search plugin is enabled (1-10). Set to null to use the provider default.",
-    )
-
     # Logging
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default_factory=_resolve_log_level_default,
@@ -1522,27 +1518,48 @@ class Valves(BaseModel):
             "Disable to manage model descriptions manually (or set per-model disable_description_updates)."
         ),
     )
-    AUTO_ATTACH_ORS_FILTER: bool = Field(
+    # ── Server Tool Gates ──
+    # These control which OpenRouter server tools are available in the generated filters.
+    # When disabled, the tool's UserValves are excluded from the filter source entirely.
+    ENABLE_WEB_SEARCH: bool = Field(
         default=True,
-        description=(
-            "When enabled, automatically attaches the OpenRouter Search toggleable filter to models that support "
-            "OpenRouter native web search (so the OpenRouter Search switch appears in the Integrations menu only where it works)."
-        ),
+        description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users.",
     )
-    AUTO_INSTALL_ORS_FILTER: bool = Field(
+    ENABLE_WEB_FETCH: bool = Field(
         default=True,
-        description=(
-            "When enabled, automatically installs/updates the companion OpenRouter Search filter function in Open WebUI. "
-            "This is required for AUTO_ATTACH_ORS_FILTER when the filter hasn't been installed manually."
-        ),
+        description="Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users.",
     )
-    AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER: bool = Field(
+    ENABLE_DATETIME: bool = Field(
         default=True,
-        description=(
-            "When enabled, automatically marks OpenRouter Search as a Default Filter on models that support OpenRouter native "
-            "web search (by updating the model's meta.defaultFilterIds). This replicates \"web search enabled by default\" "
-            "behavior while still allowing operators/users to turn it off per model or per chat."
-        ),
+        description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users.",
+    )
+    ENABLE_IMAGE_GENERATION: bool = Field(
+        default=True,
+        description="Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users.",
+    )
+
+    # ── Web Tools Filter (Web Search + Web Fetch + Datetime) ──
+    AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
+        default=True,
+        description="Automatically install/update the OpenRouter Web Tools filter function in Open WebUI.",
+    )
+    AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
+        default=True,
+        description="Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu).",
+    )
+    AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
+        default=True,
+        description="Automatically mark the OpenRouter Web Tools filter as a Default Filter on models (enabled by default, users can turn off per chat).",
+    )
+
+    # ── Image Generation Filter ──
+    AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
+        default=True,
+        description="Automatically install/update the OpenRouter Image Generation filter function in Open WebUI.",
+    )
+    AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
+        default=True,
+        description="Automatically attach the OpenRouter Image Generation filter to all pipe models.",
     )
     AUTO_ATTACH_DIRECT_UPLOADS_FILTER: bool = Field(
         default=True,

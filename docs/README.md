@@ -92,7 +92,8 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md) — forward chat uploads to OpenRouter as direct files/audio/video with per-chat toggles and safety gates.
 - [OpenRouter Provider Routing](openrouter_provider_routing.md) — control which infrastructure providers serve your requests with per-model filters, ORDER dropdowns, and compliance options (ZDR, fallbacks).
 - [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) — identifiers, metadata, optional telemetry exports, and OpenRouter-facing headers.
-- [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md) — explains the two web-search toggles and how OpenRouter Search is auto-installed, only shown on models where it can work, and enabled by default (while still allowing per-model and per-chat control).
+- [OpenRouter Server Tools](openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, and Image Generation server tools: configuration, companion filters, and data flow.
+- [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) — the distinction between Open WebUI native web search and OpenRouter web search, suppression behavior, and when to use which.
 - [Model Variants & Presets](model_variants_and_presets.md) — create virtual model entries for OpenRouter variants (`:nitro`, `:exacto`, etc.) and user-defined presets (`@preset/your-preset`) to expose specialized routing options in the model selector.
 
 ### Security and compliance guidance (admins)

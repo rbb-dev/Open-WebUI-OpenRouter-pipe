@@ -147,7 +147,7 @@ VARIANT_MODELS = "anthropic/claude-sonnet-4.5:extended,deepseek/deepseek-r1:thin
 #### `:online` - Real-Time Web Search
 - **Purpose:** Enables real-time web search capabilities
 - **Availability:** Works with all models
-- **Equivalent to:** OpenRouter Search filter/toggle
+- **Equivalent to:** OpenRouter Web Tools filter/toggle
 - **Best for:** Current events, fact-checking, research requiring fresh data
 - **Example:** `openai/gpt-5.2:online`
 - **Reference:** [OpenRouter Online Variant Docs](https://openrouter.ai/docs/guides/routing/model-variants/online)

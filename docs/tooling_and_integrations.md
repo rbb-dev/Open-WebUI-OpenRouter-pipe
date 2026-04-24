@@ -201,16 +201,17 @@ When a tool breaker is open, tool calls are skipped and a status message is emit
 
 ---
 
-## OpenRouter web-search plugin
+## OpenRouter web search server tool
 
-The web-search integration is attached as a `plugins` entry (not as a `tools` function):
+The web-search integration is attached as a server tool (not as a `tools` function or legacy `plugins` entry):
 
-- If the selected model supports `web_search_tool` and the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via the model’s Default Filters), the pipe appends `{ "id": "web" }` to `plugins`.
-- If `WEB_SEARCH_MAX_RESULTS` is set, it is included as `max_results`.
-- If reasoning effort is `minimal`, the pipe skips adding the web-search plugin.
+- If the selected model supports `web_search_tool` and the **OpenRouter Web Tools** toggle is enabled for the request (per chat, or enabled by default via the model’s Default Filters), the pipe appends `{"type": "openrouter:web_search", ...}` to `tools`.
+- Search parameters (max results, engine, allowed/excluded domains, etc.) are controlled by the OpenRouter Web Tools filter’s admin valves.
+- If reasoning effort is `minimal`, the pipe skips adding the web search server tool.
 
-Important: Open WebUI also has a separate built-in **Web Search** toggle (Open WebUI-native). OpenRouter Search and Open WebUI Web Search are different systems.
-See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+Important: Open WebUI also has a separate built-in **Web Search** toggle (Open WebUI-native). OpenRouter Web Tools and Open WebUI Web Search are different systems.
+See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md).
+See: [OpenRouter Server Tools](openrouter_server_tools.md) for the full server tools reference.
 
 ---
 

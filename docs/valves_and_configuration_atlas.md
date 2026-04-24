@@ -154,16 +154,22 @@ Behavior note (no valve):
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `float` | `1.0` | Cleanup cadence (hours). |
 | `DB_BATCH_SIZE` | `int` | `10` | Rows per DB transaction when draining Redis / batching persistence work. |
 
-### Web search
+### OpenRouter server tools
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `AUTO_ATTACH_ORS_FILTER` | `bool` | `True` | Auto-enable the OpenRouter Search toggleable filter in each compatible model’s Advanced Settings (by updating the model’s `filterIds`), so the OpenRouter Search slider appears only where it works. |
-| `AUTO_INSTALL_ORS_FILTER` | `bool` | `True` | Auto-install / auto-update the companion OpenRouter Search filter function into Open WebUI’s Functions DB (recommended with `AUTO_ATTACH_ORS_FILTER`). |
-| `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER` | `bool` | `True` | Auto-enable OpenRouter Search by default on compatible models (by updating the model’s `defaultFilterIds`). This replicates “enabled by default” behavior while still allowing per-chat/per-model control. |
-| `WEB_SEARCH_MAX_RESULTS` | `int` | `3` | Maximum number of results to request from the web search tool. |
+| `ENABLE_WEB_SEARCH` | `bool` | `True` | Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users. |
+| `ENABLE_WEB_FETCH` | `bool` | `True` | Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users. |
+| `ENABLE_DATETIME` | `bool` | `True` | Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users. |
+| `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users. |
+| `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. |
+| `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |
+| `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically mark the OpenRouter Web Tools filter as a Default Filter on models (enabled by default, users can turn off per chat). |
+| `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
+| `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to all pipe models. |
 
-See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+See: [OpenRouter Server Tools](openrouter_server_tools.md) for filter valves, user valves, and the data flow.
+See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) for the distinction between Open WebUI native web search and OpenRouter web search.
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 

@@ -113,15 +113,12 @@ When `ENABLE_REASONING=True`, the pipe decides how to request reasoning based on
 Provider mismatch recovery:
 - If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)).
 
-### 4.4 Web search plugin attachment (guarded by reasoning effort)
+### 4.4 Web search server tool attachment
 
-When the selected model supports OpenRouter web search, the pipe can attach the OpenRouter web search plugin (`plugins: [{"id":"web", ...}]`) when the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via Default Filters).
+When the **OpenRouter Web Tools** filter is active and the user has enabled Web Search in their valves, the pipe attaches the `openrouter:web_search` server tool to the API request. The model decides when and whether to search — it may search zero or multiple times per request.
 
-Important compatibility behavior:
-- If effective `reasoning.effort` is `minimal`, the pipe skips attaching the web search plugin (to avoid provider/tool incompatibility errors).
-
-For the full User Interface story (Open WebUI Web Search vs OpenRouter Search, and why OpenRouter Search overrides Web Search), see:
-[Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools, and why OpenRouter Web Tools overrides Web Search), see:
+[Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openrouter_search.md).
 
 ### 4.5 Output token cap selection
 

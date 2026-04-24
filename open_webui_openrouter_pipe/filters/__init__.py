@@ -1,7 +1,8 @@
 """Filter management module.
 
 Provides FilterManager for managing OWUI filter functions:
-- OpenRouter Search filter (ORS)
+- OpenRouter Web Tools filter (Web Search, Web Fetch, Datetime)
+- OpenRouter Image Generation filter
 - Direct Uploads filter
 - Provider Routing filters
 """

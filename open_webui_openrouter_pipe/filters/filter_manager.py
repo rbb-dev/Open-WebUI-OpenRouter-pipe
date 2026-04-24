@@ -1,9 +1,10 @@
 """Filter management for OWUI filter functions.
 
-This module manages three types of filter functions:
-1. OpenRouter Search (ORS) - Enables OpenRouter's native web search
-2. Direct Uploads - Bypasses OWUI RAG for file uploads
-3. Provider Routing - Per-model provider/quantization preferences
+This module manages filter functions:
+1. OpenRouter Web Tools - Web Search, Web Fetch, and Datetime server tools
+2. OpenRouter Image Generation - Image generation server tool
+3. Direct Uploads - Bypasses OWUI RAG for file uploads
+4. Provider Routing - Per-model provider/quantization preferences
 
 FilterManager handles:
 - Generating filter source code (static methods)
@@ -23,9 +24,10 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from ..core.timing_logger import timed
 from ..core.config import (
-    _ORS_FILTER_MARKER,
-    _ORS_FILTER_FEATURE_FLAG,
-    _ORS_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+    _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
     _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
@@ -262,7 +264,7 @@ class FilterManager:
         matches_candidate: Callable[[str], bool],
         primary_marker: str | None = None,
     ) -> str | None:
-        """Generic filter install/update lifecycle shared by ORS and Direct Uploads filters.
+        """Generic filter install/update lifecycle shared by all filter types.
 
         Args:
             desired_source: The canonical filter source (already stripped + newline-terminated).
@@ -370,114 +372,522 @@ class FilterManager:
         return function_id
 
     # =========================================================================
-    # ORS FILTER (OpenRouter Search)
+    # OPENROUTER WEB TOOLS FILTER (Web Search + Web Fetch + Datetime)
     # =========================================================================
 
     @staticmethod
-    def render_ors_filter_source() -> str:
-        """Return the canonical OWUI filter source for the OpenRouter Search toggle."""
-        # NOTE: This file is inserted into Open WebUI's Functions table as a *filter* function.
-        # It must not depend on this pipe module at runtime.
-        return f'''"""
-title: OpenRouter Search
+    def render_openrouter_web_tools_filter_source(
+        *,
+        enable_web_search: bool = True,
+        enable_web_fetch: bool = True,
+        enable_datetime: bool = True,
+    ) -> str:
+        """Return the canonical OWUI filter source for the OpenRouter Web Tools filter.
+
+        The generated filter exposes admin Valves (engine selection, limits) and
+        UserValves (per-tool toggles, preferences) for whichever tools are enabled.
+        Tools disabled via the gate parameters are excluded from the template entirely.
+        """
+        # -- Valves fields (admin) -------------------------------------------
+        valves_fields = [
+            '        priority: int = Field(\n'
+            '            default=0,\n'
+            '            description="Priority level for the filter operations.",\n'
+            '        )',
+        ]
+        if enable_web_search:
+            valves_fields.extend([
+                '        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel"] = Field(\n'
+                '            default="auto",\n'
+                '            description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",\n'
+                '        )',
+                '        WEB_SEARCH_MAX_RESULTS: int = Field(\n'
+                '            default=5,\n'
+                '            ge=1,\n'
+                '            le=25,\n'
+                '            description="Maximum number of search results per query.",\n'
+                '        )',
+                '        WEB_SEARCH_MAX_TOTAL_RESULTS: int = Field(\n'
+                '            default=0,\n'
+                '            ge=0,\n'
+                '            description="Cap on total search results across all queries in one request. 0 means no cap.",\n'
+                '        )',
+                '        WEB_SEARCH_ALLOWED_DOMAINS: str = Field(\n'
+                '            default="",\n'
+                '            description="Comma-separated list of domains to restrict search results to. Empty means no restriction.",\n'
+                '        )',
+                '        WEB_SEARCH_EXCLUDED_DOMAINS: str = Field(\n'
+                '            default="",\n'
+                '            description="Comma-separated list of domains to exclude from search results.",\n'
+                '        )',
+            ])
+        if enable_web_fetch:
+            valves_fields.extend([
+                '        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl"] = Field(\n'
+                '            default="auto",\n'
+                '            description="Web fetch backend. auto lets OpenRouter choose the best engine for each URL.",\n'
+                '        )',
+                '        WEB_FETCH_MAX_USES: int = Field(\n'
+                '            default=0,\n'
+                '            ge=0,\n'
+                '            description="Maximum number of URL fetches per request. 0 means no limit.",\n'
+                '        )',
+                '        WEB_FETCH_MAX_CONTENT_TOKENS: int = Field(\n'
+                '            default=0,\n'
+                '            ge=0,\n'
+                '            description="Maximum tokens of fetched content to return per URL. 0 means no limit.",\n'
+                '        )',
+                '        WEB_FETCH_ALLOWED_DOMAINS: str = Field(\n'
+                '            default="",\n'
+                '            description="Comma-separated list of domains allowed for fetching. Empty means allow all.",\n'
+                '        )',
+                '        WEB_FETCH_BLOCKED_DOMAINS: str = Field(\n'
+                '            default="",\n'
+                '            description="Comma-separated list of domains blocked from fetching.",\n'
+                '        )',
+            ])
+
+        # -- UserValves fields ------------------------------------------------
+        user_valves_fields: list[str] = []
+        if enable_web_search:
+            user_valves_fields.extend([
+                '        WEB_SEARCH: bool = Field(\n'
+                '            default=True,\n'
+                '            description="Enable OpenRouter web search for this chat.",\n'
+                '        )',
+                '        WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high"] = Field(\n'
+                '            default="medium",\n'
+                '            description="Amount of search context to include (low saves tokens, high is more thorough).",\n'
+                '        )',
+                '        WEB_SEARCH_LOCATION_CITY: str = Field(\n'
+                '            default="",\n'
+                '            description="City for location-aware search results.",\n'
+                '        )',
+                '        WEB_SEARCH_LOCATION_REGION: str = Field(\n'
+                '            default="",\n'
+                '            description="Region/state for location-aware search results.",\n'
+                '        )',
+                '        WEB_SEARCH_LOCATION_COUNTRY: str = Field(\n'
+                '            default="",\n'
+                '            description="Country code (e.g. AU, US) for location-aware search results.",\n'
+                '        )',
+                '        WEB_SEARCH_LOCATION_TIMEZONE: str = Field(\n'
+                '            default="",\n'
+                '            description="Timezone (e.g. Australia/Sydney) for location-aware search results.",\n'
+                '        )',
+            ])
+        if enable_web_fetch:
+            user_valves_fields.append(
+                '        WEB_FETCH: bool = Field(\n'
+                '            default=False,\n'
+                '            description="Enable OpenRouter web fetch (URL reading) for this chat.",\n'
+                '        )'
+            )
+        if enable_datetime:
+            user_valves_fields.extend([
+                '        DATETIME: bool = Field(\n'
+                '            default=True,\n'
+                '            description="Enable OpenRouter datetime tool for this chat (free, no extra cost).",\n'
+                '        )',
+                '        DATETIME_TIMEZONE: str = Field(\n'
+                '            default="",\n'
+                '            description="Timezone for the datetime tool (e.g. Australia/Sydney). Empty uses UTC.",\n'
+                '        )',
+            ])
+
+        # -- inlet logic (conditional per tool) -------------------------------
+        inlet_tool_blocks: list[str] = []
+        if enable_web_search:
+            inlet_tool_blocks.append(
+                '        if user_valves.WEB_SEARCH:\n'
+                '            ws_params: dict[str, Any] = {}\n'
+                '            ws_params["engine"] = self.valves.WEB_SEARCH_ENGINE\n'
+                '            ws_params["max_results"] = self.valves.WEB_SEARCH_MAX_RESULTS\n'
+                '            if self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS > 0:\n'
+                '                ws_params["max_total_results"] = self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS\n'
+                '            ws_params["search_context_size"] = user_valves.WEB_SEARCH_CONTEXT_SIZE\n'
+                '            allowed = self._csv_list(self.valves.WEB_SEARCH_ALLOWED_DOMAINS)\n'
+                '            if allowed:\n'
+                '                ws_params["allowed_domains"] = allowed\n'
+                '            excluded = self._csv_list(self.valves.WEB_SEARCH_EXCLUDED_DOMAINS)\n'
+                '            if excluded:\n'
+                '                ws_params["excluded_domains"] = excluded\n'
+                '            location: dict[str, str] = {}\n'
+                '            if user_valves.WEB_SEARCH_LOCATION_CITY:\n'
+                '                location["city"] = user_valves.WEB_SEARCH_LOCATION_CITY\n'
+                '            if user_valves.WEB_SEARCH_LOCATION_REGION:\n'
+                '                location["region"] = user_valves.WEB_SEARCH_LOCATION_REGION\n'
+                '            if user_valves.WEB_SEARCH_LOCATION_COUNTRY:\n'
+                '                location["country"] = user_valves.WEB_SEARCH_LOCATION_COUNTRY\n'
+                '            if user_valves.WEB_SEARCH_LOCATION_TIMEZONE:\n'
+                '                location["timezone"] = user_valves.WEB_SEARCH_LOCATION_TIMEZONE\n'
+                '            if location:\n'
+                '                ws_params["user_location"] = location\n'
+                '            server_tools["web_search"] = ws_params\n'
+                '            suppress_owui_web_search = True'
+            )
+        if enable_web_fetch:
+            inlet_tool_blocks.append(
+                '        if user_valves.WEB_FETCH:\n'
+                '            wf_params: dict[str, Any] = {}\n'
+                '            wf_params["engine"] = self.valves.WEB_FETCH_ENGINE\n'
+                '            if self.valves.WEB_FETCH_MAX_USES > 0:\n'
+                '                wf_params["max_uses"] = self.valves.WEB_FETCH_MAX_USES\n'
+                '            if self.valves.WEB_FETCH_MAX_CONTENT_TOKENS > 0:\n'
+                '                wf_params["max_content_tokens"] = self.valves.WEB_FETCH_MAX_CONTENT_TOKENS\n'
+                '            allowed = self._csv_list(self.valves.WEB_FETCH_ALLOWED_DOMAINS)\n'
+                '            if allowed:\n'
+                '                wf_params["allowed_domains"] = allowed\n'
+                '            blocked = self._csv_list(self.valves.WEB_FETCH_BLOCKED_DOMAINS)\n'
+                '            if blocked:\n'
+                '                wf_params["blocked_domains"] = blocked\n'
+                '            server_tools["web_fetch"] = wf_params'
+            )
+        if enable_datetime:
+            inlet_tool_blocks.append(
+                '        if user_valves.DATETIME:\n'
+                '            dt_params: dict[str, Any] = {}\n'
+                '            if user_valves.DATETIME_TIMEZONE:\n'
+                '                dt_params["timezone"] = user_valves.DATETIME_TIMEZONE\n'
+                '            server_tools["datetime"] = dt_params'
+            )
+
+        inlet_tools_code = "\n\n".join(inlet_tool_blocks)
+
+        # -- Suppress OWUI web search block -----------------------------------
+        suppress_block = ""
+        if enable_web_search:
+            suppress_block = (
+                '\n'
+                '        if suppress_owui_web_search:\n'
+                '            features = body.get("features")\n'
+                '            if not isinstance(features, dict):\n'
+                '                features = {}\n'
+                '                body["features"] = features\n'
+                '            features["web_search"] = False\n'
+            )
+
+        # -- Build the template -----------------------------------------------
+        template = '"""\n'
+        template += 'title: OpenRouter Web Tools\n'
+        template += 'author: Open-WebUI-OpenRouter-pipe\n'
+        template += 'author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe\n'
+        template += 'id: __FILTER_ID__\n'
+        template += 'description: Configures OpenRouter server tools (web search, web fetch, datetime) for the OpenRouter pipe.\n'
+        template += 'version: 0.1.0\n'
+        template += 'license: MIT\n'
+        template += '"""\n'
+        template += '\n'
+        template += 'from __future__ import annotations\n'
+        template += '\n'
+        template += 'import logging\n'
+        template += 'from typing import Any, Literal\n'
+        template += '\n'
+        template += 'from pydantic import BaseModel, Field\n'
+        template += '\n'
+        template += 'from open_webui.env import SRC_LOG_LEVELS\n'
+        template += '\n'
+        template += 'OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"\n'
+        template += '\n'
+        template += '\n'
+        template += 'class Filter:\n'
+        template += '    toggle = True\n'
+        template += '\n'
+
+        # Valves class
+        template += '    class Valves(BaseModel):\n'
+        template += '\n'.join(valves_fields) + '\n'
+        template += '\n'
+
+        # UserValves class (always emit — OWUI expects it even when empty)
+        template += '    class UserValves(BaseModel):\n'
+        if user_valves_fields:
+            template += '\n'.join(user_valves_fields) + '\n'
+        else:
+            template += '        pass\n'
+        template += '\n'
+
+        # __init__
+        template += '    def __init__(self) -> None:\n'
+        template += '        self.log = logging.getLogger("openrouter.web.tools")\n'
+        template += '        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))\n'
+        template += '        self.toggle = True\n'
+        template += '        self.valves = self.Valves()\n'
+        template += '\n'
+
+        # _csv_list helper
+        template += '    @staticmethod\n'
+        template += '    def _csv_list(value: str) -> list[str]:\n'
+        template += '        if not isinstance(value, str):\n'
+        template += '            return []\n'
+        template += '        return [item.strip() for item in value.split(",") if item.strip()]\n'
+        template += '\n'
+
+        # inlet method
+        template += '    def inlet(\n'
+        template += '        self,\n'
+        template += '        body: dict[str, Any],\n'
+        template += '        __metadata__: dict[str, Any] | None = None,\n'
+        template += '        __user__: dict[str, Any] | None = None,\n'
+        template += '        __model__: dict[str, Any] | None = None,\n'
+        template += '    ) -> dict[str, Any]:\n'
+        template += '        if not isinstance(body, dict):\n'
+        template += '            return body\n'
+        template += '        if __metadata__ is not None and not isinstance(__metadata__, dict):\n'
+        template += '            return body\n'
+        template += '\n'
+        template += '        user_valves = None\n'
+        template += '        if isinstance(__user__, dict):\n'
+        template += '            user_valves = __user__.get("valves")\n'
+        template += '        if not isinstance(user_valves, BaseModel):\n'
+        template += '            user_valves = self.UserValves()\n'
+        template += '\n'
+        template += '        server_tools: dict[str, Any] = {}\n'
+        if enable_web_search:
+            template += '        suppress_owui_web_search = False\n'
+        template += '\n'
+        template += inlet_tools_code + '\n'
+        template += '\n'
+
+        # Write to metadata
+        template += '        if server_tools and isinstance(__metadata__, dict):\n'
+        template += '            prev_pipe_meta = __metadata__.get("openrouter_pipe")\n'
+        template += '            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}\n'
+        template += '            __metadata__["openrouter_pipe"] = pipe_meta\n'
+        template += '            pipe_meta["server_tools"] = server_tools\n'
+
+        # OWUI web search suppression
+        template += suppress_block
+        template += '\n'
+        template += '        return body\n'
+
+        return (
+            template
+            .replace("__FILTER_ID__", _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID)
+            .replace("__MARKER__", _OPENROUTER_WEB_TOOLS_FILTER_MARKER)
+        )
+
+    @timed
+    async def ensure_openrouter_web_tools_filter_function_id(
+        self,
+        *,
+        enable_web_search: bool = True,
+        enable_web_fetch: bool = True,
+        enable_datetime: bool = True,
+    ) -> str | None:
+        """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
+
+        def _matches(content: str) -> bool:
+            if not isinstance(content, str) or not content:
+                return False
+            return _OPENROUTER_WEB_TOOLS_FILTER_MARKER in content and "class Filter" in content
+
+        return await self._ensure_filter_installed(
+            desired_source=self.render_openrouter_web_tools_filter_source(
+                enable_web_search=enable_web_search,
+                enable_web_fetch=enable_web_fetch,
+                enable_datetime=enable_datetime,
+            ).strip() + "\n",
+            desired_name="OpenRouter Web Tools",
+            desired_meta={
+                "description": (
+                    "OpenRouter server tools: Web Search, Web Fetch, and Datetime. "
+                    "Toggle individual tools on/off via user valves."
+                ),
+                "toggle": True,
+                "manifest": {
+                    "title": "OpenRouter Web Tools",
+                    "id": _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+                    "version": "0.1.0",
+                    "license": "MIT",
+                },
+            },
+            preferred_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+            auto_install_valve="AUTO_INSTALL_WEB_TOOLS_FILTER",
+            log_label="OpenRouter Web Tools filter",
+            matches_candidate=_matches,
+            primary_marker=_OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+        )
+
+    # =========================================================================
+    # OPENROUTER IMAGE GENERATION FILTER
+    # =========================================================================
+
+    @staticmethod
+    def render_openrouter_image_gen_filter_source() -> str:
+        """Return the canonical OWUI filter source for the OpenRouter Image Generation filter."""
+        template = '''"""
+title: OpenRouter Image Generation
 author: Open-WebUI-OpenRouter-pipe
-	author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
-	id: openrouter_search
-	description: Enables OpenRouter's web-search plugin for the OpenRouter pipe and disables Open WebUI Web Search for this request (OpenRouter Search overrides Web Search).
-	version: 0.1.0
-	license: MIT
-	"""
+author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
+id: __FILTER_ID__
+description: Configures OpenRouter image generation for the OpenRouter pipe.
+version: 0.1.0
+license: MIT
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from open_webui.env import SRC_LOG_LEVELS
 
-OWUI_OPENROUTER_PIPE_MARKER = "{_ORS_FILTER_MARKER}"
-_FEATURE_FLAG = "{_ORS_FILTER_FEATURE_FLAG}"
+OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
 
 
 class Filter:
-    # Toggleable filter (shows a switch in the Integrations menu).
     toggle = True
 
+    class Valves(BaseModel):
+        priority: int = Field(
+            default=0,
+            description="Priority level for the filter operations.",
+        )
+        IMAGE_GENERATION_MODEL: str = Field(
+            default="openai/gpt-image-1",
+            title="Image generation model",
+            description="OpenRouter model ID for image generation. Controls pricing and capabilities.",
+        )
+        IMAGE_GENERATION_MODERATION: Literal["auto", "low"] = Field(
+            default="auto",
+            title="Image moderation",
+            description="Content moderation level. \'auto\' = standard. \'low\' = reduced filtering.",
+        )
+
+    class UserValves(BaseModel):
+        IMAGE_GENERATION: bool = Field(
+            default=False,
+            title="Image Generation",
+            description="Let the model generate images from text prompts. Incurs additional cost per image.",
+        )
+        IMAGE_QUALITY: Literal["", "low", "medium", "high"] = Field(
+            default="",
+            title="Image quality",
+            description="Quality level for generated images. Empty = model default.",
+        )
+        IMAGE_SIZE: Literal["", "1024x1024", "1536x1024", "1024x1536", "512x512"] = Field(
+            default="",
+            title="Image size",
+            description="Image dimensions. Empty = model default.",
+        )
+        IMAGE_ASPECT_RATIO: Literal["", "1:1", "16:9", "4:3", "3:2"] = Field(
+            default="",
+            title="Image aspect ratio",
+            description="Aspect ratio for generated images. Empty = model default.",
+        )
+        IMAGE_BACKGROUND: Literal["", "transparent", "opaque"] = Field(
+            default="",
+            title="Image background",
+            description="\'transparent\' removes background (PNG only). Empty = model default.",
+        )
+        IMAGE_OUTPUT_FORMAT: Literal["", "png", "jpeg", "webp"] = Field(
+            default="",
+            title="Image format",
+            description="Output format. \'png\' supports transparency. Empty = model default.",
+        )
+        IMAGE_OUTPUT_COMPRESSION: int = Field(
+            default=0,
+            ge=0,
+            le=100,
+            title="Image compression",
+            description="Compression level for jpeg/webp (0-100). 0 = model default.",
+        )
+
     def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.search.toggle")
+        self.log = logging.getLogger("openrouter.image.gen")
         self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
         self.toggle = True
+        self.valves = self.Valves()
 
     def inlet(
         self,
         body: dict[str, Any],
         __metadata__: dict[str, Any] | None = None,
+        __user__: dict[str, Any] | None = None,
+        __model__: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        # Signal the pipe via request metadata (preferred path).
-        if __metadata__ is not None and not isinstance(__metadata__, dict):
+        if not isinstance(body, dict):
             return body
 
-        features = body.get("features")
-        if not isinstance(features, dict):
-            features = {{}}
-            body["features"] = features
+        user_valves = None
+        if isinstance(__user__, dict):
+            user_valves = __user__.get("valves")
+        if not isinstance(user_valves, BaseModel):
+            user_valves = self.UserValves()
 
-        # Enforce: OpenRouter Search overrides Web Search (prevent OWUI native web search handler).
-        features["web_search"] = False
+        if not user_valves.IMAGE_GENERATION:
+            return body
 
+        # Build image generation parameters
+        params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
+        if self.valves.IMAGE_GENERATION_MODERATION != "auto":
+            params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
+        for attr, key in [
+            ("IMAGE_QUALITY", "quality"),
+            ("IMAGE_SIZE", "size"),
+            ("IMAGE_ASPECT_RATIO", "aspect_ratio"),
+            ("IMAGE_BACKGROUND", "background"),
+            ("IMAGE_OUTPUT_FORMAT", "output_format"),
+        ]:
+            val = getattr(user_valves, attr, "")
+            if isinstance(val, str) and val.strip():
+                params[key] = val.strip()
+        compression = getattr(user_valves, "IMAGE_OUTPUT_COMPRESSION", 0)
+        if isinstance(compression, int) and compression > 0:
+            params["output_compression"] = compression
+
+        # Write to metadata
         if isinstance(__metadata__, dict):
-            meta_features = __metadata__.get("features")
-            if meta_features is None:
-                meta_features = {{}}
-                __metadata__["features"] = meta_features
+            prev_pipe_meta = __metadata__.get("openrouter_pipe")
+            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
+            __metadata__["openrouter_pipe"] = pipe_meta
 
-            # OWUI builds __metadata__["features"] as a reference to body["features"].
-            # Break the reference so we can preserve the marker for the pipe while forcing
-            # body.features.web_search = False.
-            if meta_features is features:
-                meta_features = dict(meta_features)
-                __metadata__["features"] = meta_features
+            prev_tools = pipe_meta.get("server_tools")
+            server_tools = dict(prev_tools) if isinstance(prev_tools, dict) else {}
+            pipe_meta["server_tools"] = server_tools
+            server_tools["image_generation"] = params
 
-            if isinstance(meta_features, dict):
-                meta_features[_FEATURE_FLAG] = True
-
-        self.log.debug("Enabled OpenRouter Search; disabled OWUI web_search")
         return body
 '''
 
+        return (
+            template
+            .replace("__FILTER_ID__", _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID)
+            .replace("__MARKER__", _OPENROUTER_IMAGE_GEN_FILTER_MARKER)
+        )
+
     @timed
-    async def ensure_ors_filter_function_id(self) -> str | None:
-        """Ensure the OpenRouter Search companion filter exists (and is up to date), returning its OWUI function id."""
+    async def ensure_openrouter_image_gen_filter_function_id(self) -> str | None:
+        """Ensure the OpenRouter Image Generation filter exists (and is up to date), returning its OWUI function id."""
 
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
-            if _ORS_FILTER_MARKER in content:
-                return True
-            # Back-compat for manual installs of earlier drafts: detect by the feature flag string.
-            return _ORS_FILTER_FEATURE_FLAG in content and "class Filter" in content
+            return _OPENROUTER_IMAGE_GEN_FILTER_MARKER in content and "class Filter" in content
 
         return await self._ensure_filter_installed(
-            desired_source=self.render_ors_filter_source().strip() + "\n",
-            desired_name="OpenRouter Search",
+            desired_source=self.render_openrouter_image_gen_filter_source().strip() + "\n",
+            desired_name="OpenRouter Image Generation",
             desired_meta={
                 "description": (
-                    "Enable OpenRouter native web search for this request. "
-                    "When OpenRouter Search is enabled, OWUI Web Search is disabled to avoid double-search."
+                    "Let the model generate images from text prompts via OpenRouter's image generation server tool."
                 ),
                 "toggle": True,
                 "manifest": {
-                    "title": "OpenRouter Search",
-                    "id": "openrouter_search",
+                    "title": "OpenRouter Image Generation",
+                    "id": _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
                     "version": "0.1.0",
                     "license": "MIT",
                 },
             },
-            preferred_id=_ORS_FILTER_PREFERRED_FUNCTION_ID,
-            auto_install_valve="AUTO_INSTALL_ORS_FILTER",
-            log_label="OpenRouter Search filter",
+            preferred_id=_OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+            auto_install_valve="AUTO_INSTALL_IMAGE_GEN_FILTER",
+            log_label="OpenRouter Image Generation filter",
             matches_candidate=_matches,
-            primary_marker=_ORS_FILTER_MARKER,
+            primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
         )
 
     # =========================================================================

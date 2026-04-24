@@ -7,7 +7,7 @@ These tests target coverage of model catalog operations including:
 - Frontend catalog fetching error handling
 - Maker profile image mapping
 - Metadata sync scheduling and execution
-- Filter attachment/default logic for ORS and Direct Uploads
+- Filter attachment/default logic for Web Tools and Direct Uploads
 - Model insert with various access control modes
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
@@ -281,152 +281,6 @@ def test_build_icon_mapping_skips_no_icon_or_fallback(pipe_instance) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Web Search Support Mapping Tests
-# ---------------------------------------------------------------------------
-
-
-def test_build_web_search_support_mapping_empty_cases(pipe_instance) -> None:
-    """Returns empty dict for None, non-dict, or missing data."""
-    pipe = pipe_instance
-    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping(None) == {}
-    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping("not a dict") == {}
-    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping({}) == {}
-    assert pipe._ensure_catalog_manager()._build_web_search_support_mapping({"data": "not a list"}) == {}
-
-
-def test_build_web_search_support_mapping_skips_invalid_entries(pipe_instance) -> None:
-    """Skips non-dict items and items with invalid slugs."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            None,
-            "string item",
-            {"slug": None},
-            {"slug": ""},
-            {"slug": 123},
-            {"slug": "no-endpoint"},
-            {"slug": "non-dict-endpoint", "endpoint": "string"},
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {}
-
-
-def test_build_web_search_support_mapping_web_search_options_parameter(pipe_instance) -> None:
-    """Detects web search support via supported_parameters list."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": ["temperature", "web_search_options", "max_tokens"],
-                    "features": {},
-                    "pricing": {},
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"test/model": True}
-
-
-def test_build_web_search_support_mapping_whitespace_handling(pipe_instance) -> None:
-    """Handles whitespace in web_search_options parameter."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": ["  web_search_options  "],
-                    "features": {},
-                    "pricing": {},
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"test/model": True}
-
-
-def test_build_web_search_support_mapping_supported_parameters_not_list(pipe_instance) -> None:
-    """Handles non-list supported_parameters gracefully."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": "not a list",
-                    "features": {"supports_native_web_search": True},
-                    "pricing": {},
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"test/model": True}
-
-
-def test_build_web_search_support_mapping_non_string_parameter_entries(pipe_instance) -> None:
-    """Skips non-string entries in supported_parameters."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": [123, None, {"key": "value"}],
-                    "features": {},
-                    "pricing": {},
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {}
-
-
-def test_build_web_search_support_mapping_features_not_dict(pipe_instance) -> None:
-    """Handles non-dict features gracefully."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": [],
-                    "features": "not a dict",
-                    "pricing": {"web_search": "0.01"},
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"test/model": True}
-
-
-def test_build_web_search_support_mapping_pricing_not_dict(pipe_instance) -> None:
-    """Handles non-dict pricing gracefully."""
-    pipe = pipe_instance
-    frontend_data = {
-        "data": [
-            {
-                "slug": "test/model",
-                "endpoint": {
-                    "supported_parameters": [],
-                    "features": {"supports_native_web_search": True},
-                    "pricing": "not a dict",
-                },
-            }
-        ]
-    }
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"test/model": True}
-
-
-# ---------------------------------------------------------------------------
 # Frontend Catalog Fetch Tests
 # ---------------------------------------------------------------------------
 
@@ -591,11 +445,13 @@ def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> 
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
     pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-    pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+    pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+    pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
         [{"id": "test"}],
@@ -634,11 +490,17 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         pipe.valves.UPDATE_MODEL_IMAGES,
         pipe.valves.UPDATE_MODEL_CAPABILITIES,
         pipe.valves.UPDATE_MODEL_DESCRIPTIONS,
-        pipe.valves.AUTO_ATTACH_ORS_FILTER,
-        pipe.valves.AUTO_INSTALL_ORS_FILTER,
-        pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+        pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
+        pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
+        pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
         pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
         pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
+        pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
+        pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
+        pipe.valves.ENABLE_WEB_SEARCH,
+        pipe.valves.ENABLE_WEB_FETCH,
+        pipe.valves.ENABLE_DATETIME,
+        pipe.valves.ENABLE_IMAGE_GENERATION,
         pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
         pipe.valves.USER_PROVIDER_ROUTING_MODELS,
     )
@@ -682,11 +544,12 @@ async def test_sync_model_metadata_returns_early_no_valves(pipe_instance_async) 
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
     pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
-    pipe.valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+    pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
 
     # Should return early without error
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="test_pipe")
@@ -737,8 +600,8 @@ async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_as
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
@@ -753,20 +616,20 @@ async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_as
 
 
 @pytest.mark.asyncio
-async def test_sync_model_metadata_ors_filter_warning_not_installed(pipe_instance_async) -> None:
-    """Logs warning when AUTO_ATTACH_ORS_FILTER enabled but filter not installed."""
+async def test_sync_model_metadata_web_tools_filter_warning_not_installed(pipe_instance_async) -> None:
+    """Logs warning when AUTO_ATTACH_WEB_TOOLS_FILTER enabled but filter not installed."""
     pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = True
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = True
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(return_value=None)
+    pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value=None)
 
     with patch.object(pipe._catalog_manager.logger, "warning") as mock_warning:
         await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
@@ -774,9 +637,9 @@ async def test_sync_model_metadata_ors_filter_warning_not_installed(pipe_instanc
             pipe_identifier="test_pipe",
         )
 
-    # Check that the ORS filter warning was among the warnings logged
+    # Check that the Web Tools filter warning was among the warnings logged
     warning_messages = [call[0][0] for call in mock_warning.call_args_list]
-    assert any("AUTO_ATTACH_ORS_FILTER is enabled" in msg for msg in warning_messages)
+    assert any("AUTO_ATTACH_WEB_TOOLS_FILTER is enabled" in msg for msg in warning_messages)
 
 
 @pytest.mark.asyncio
@@ -786,7 +649,7 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
@@ -812,12 +675,12 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = True
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = True
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
 
     # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(return_value="openrouter_search")
+    pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value="openrouter_web_tools")
     pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={
         "data": [
             {
@@ -839,7 +702,7 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
 
     mock_info.assert_called()
     call_args = mock_info.call_args[0]
-    assert "Auto-attaching OpenRouter Search filter" in call_args[0]
+    assert "Auto-attaching OpenRouter Web Tools filter" in call_args[0]
 
 
 @pytest.mark.asyncio
@@ -849,7 +712,7 @@ async def test_sync_model_metadata_handles_update_exception(pipe_instance_async)
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock(
         side_effect=Exception("DB error")
@@ -869,12 +732,12 @@ async def test_sync_model_metadata_ensure_filter_exception_handling(pipe_instanc
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = True
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = True
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = True
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
 
     # Initialize the filter manager and mock its method to raise
     pipe._ensure_filter_manager()
-    pipe._filter_manager.ensure_ors_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
+    pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
 
     # Should not raise, logs debug instead
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
@@ -1226,8 +1089,8 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
     existing = _make_existing_model(
         model_id,
         meta={
-            "filterIds": ["old_openrouter_search"],
-            "openrouter_pipe": {"openrouter_search_filter_id": "old_openrouter_search"},
+            "filterIds": ["old_openrouter_web_tools"],
+            "openrouter_pipe": {"web_tools_filter_id": "old_openrouter_web_tools"},
         },
     )
     update_mock = AsyncMock()
@@ -1244,7 +1107,7 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
             None,
             False,
             False,
-            filter_function_id="new_openrouter_search",
+            filter_function_id="new_openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
         )
@@ -1253,8 +1116,8 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     # Old filter should be replaced with new one
-    assert "old_openrouter_search" not in meta["filterIds"]
-    assert "new_openrouter_search" in meta["filterIds"]
+    assert "old_openrouter_web_tools" not in meta["filterIds"]
+    assert "new_openrouter_web_tools" in meta["filterIds"]
 
 
 @pytest.mark.asyncio
@@ -1266,7 +1129,7 @@ async def test_update_existing_model_filter_removal_when_unsupported(pipe_instan
 
     existing = _make_existing_model(
         model_id,
-        meta={"filterIds": ["openrouter_search", "other_filter"]},
+        meta={"filterIds": ["openrouter_web_tools", "other_filter"]},
     )
     update_mock = AsyncMock()
 
@@ -1282,7 +1145,7 @@ async def test_update_existing_model_filter_removal_when_unsupported(pipe_instan
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=False,
             auto_attach_filter=True,
         )
@@ -1290,7 +1153,7 @@ async def test_update_existing_model_filter_removal_when_unsupported(pipe_instan
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    assert "openrouter_search" not in meta["filterIds"]
+    assert "openrouter_web_tools" not in meta["filterIds"]
     assert "other_filter" in meta["filterIds"]
 
 
@@ -1345,11 +1208,11 @@ async def test_update_existing_model_default_filter_migration(pipe_instance_asyn
     existing = _make_existing_model(
         model_id,
         meta={
-            "filterIds": ["old_openrouter_search"],
-            "defaultFilterIds": ["old_openrouter_search"],
+            "filterIds": ["old_openrouter_web_tools"],
+            "defaultFilterIds": ["old_openrouter_web_tools"],
             "openrouter_pipe": {
-                "openrouter_search_filter_id": "old_openrouter_search",
-                "openrouter_search_default_seeded": True,
+                "web_tools_filter_id": "old_openrouter_web_tools",
+                "web_tools_default_seeded": True,
             },
         },
     )
@@ -1367,7 +1230,7 @@ async def test_update_existing_model_default_filter_migration(pipe_instance_asyn
             None,
             False,
             False,
-            filter_function_id="new_openrouter_search",
+            filter_function_id="new_openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -1377,8 +1240,8 @@ async def test_update_existing_model_default_filter_migration(pipe_instance_asyn
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     # Default filter ID should be migrated
-    assert "new_openrouter_search" in meta["defaultFilterIds"]
-    assert meta["openrouter_pipe"]["openrouter_search_filter_id"] == "new_openrouter_search"
+    assert "new_openrouter_web_tools" in meta["defaultFilterIds"]
+    assert meta["openrouter_pipe"]["web_tools_filter_id"] == "new_openrouter_web_tools"
 
 
 @pytest.mark.asyncio
@@ -1403,7 +1266,7 @@ async def test_update_existing_model_default_filter_not_attached_skips(pipe_inst
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=False,  # Not supported, so not attached
             auto_attach_filter=False,
             auto_default_filter=True,  # Even though enabled, should not add default
@@ -1433,7 +1296,7 @@ async def test_insert_new_model_with_filters(pipe_instance_async) -> None:
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -1445,9 +1308,9 @@ async def test_insert_new_model_with_filters(pipe_instance_async) -> None:
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
     meta = dict(inserted_form.meta)
-    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_web_tools" in meta["filterIds"]
     assert "openrouter_direct_uploads" in meta["filterIds"]
-    assert "openrouter_search" in meta["defaultFilterIds"]
+    assert "openrouter_web_tools" in meta["defaultFilterIds"]
 
 
 @pytest.mark.asyncio
@@ -1475,7 +1338,7 @@ async def test_normalize_filter_ids_handles_non_list(pipe_instance_async) -> Non
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
         )
@@ -1483,7 +1346,7 @@ async def test_normalize_filter_ids_handles_non_list(pipe_instance_async) -> Non
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    assert meta["filterIds"] == ["openrouter_search"]
+    assert meta["filterIds"] == ["openrouter_web_tools"]
 
 
 @pytest.mark.asyncio
@@ -1511,7 +1374,7 @@ async def test_normalize_filter_ids_filters_non_strings(pipe_instance_async) -> 
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
         )
@@ -1519,10 +1382,10 @@ async def test_normalize_filter_ids_filters_non_strings(pipe_instance_async) -> 
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Should have valid_filter, another_filter, and openrouter_search (newly added)
+    # Should have valid_filter, another_filter, and openrouter_web_tools (newly added)
     assert "valid_filter" in meta["filterIds"]
     assert "another_filter" in meta["filterIds"]
-    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_web_tools" in meta["filterIds"]
 
 
 @pytest.mark.asyncio
@@ -1550,7 +1413,7 @@ async def test_dedupe_preserves_order(pipe_instance_async) -> None:
             None,
             False,
             False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
         )
@@ -1559,7 +1422,7 @@ async def test_dedupe_preserves_order(pipe_instance_async) -> None:
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     # Order should be preserved, duplicates removed
-    assert meta["filterIds"] == ["filter_a", "filter_b", "filter_c", "openrouter_search"]
+    assert meta["filterIds"] == ["filter_a", "filter_b", "filter_c", "openrouter_web_tools"]
 
 
 @pytest.mark.asyncio
@@ -1610,8 +1473,8 @@ async def test_sync_model_metadata_direct_uploads_logs_supported_count(pipe_inst
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
@@ -1637,8 +1500,8 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_IMAGES = True
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
@@ -1676,8 +1539,8 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_IMAGES = True
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
@@ -1704,8 +1567,8 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_IMAGES = True
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
-    pipe.valves.AUTO_INSTALL_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
@@ -1990,7 +1853,7 @@ async def test_sync_model_metadata_direct_uploads_filter_exception_handling(pipe
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = False
     pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.AUTO_ATTACH_ORS_FILTER = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
 
@@ -2123,74 +1986,6 @@ def test_build_icon_mapping_uses_first_provider_icon(pipe_instance):
     assert icon_mapping["dup/model"] == "https://example.com/first.png"
 
 
-def test_build_web_search_support_mapping_detects_multiple_signals(pipe_instance):
-    pipe = pipe_instance
-
-    frontend_data = {
-        "data": [
-            {
-                "slug": "x-ai/grok-4",
-                "endpoint": {
-                    "features": {"supports_native_web_search": True},
-                    "supported_parameters": [],
-                    "pricing": {"web_search": "0"},
-                },
-            },
-            {
-                "slug": "openai/gpt-4o",
-                "endpoint": {
-                    "features": {},
-                    "supported_parameters": ["web_search_options"],
-                    "pricing": {"web_search": "0"},
-                },
-            },
-            {
-                "slug": "anthropic/claude-opus-4.5",
-                "endpoint": {
-                    "features": {"supports_native_web_search": False},
-                    "supported_parameters": [],
-                    "pricing": {"web_search": "0.01"},
-                },
-            },
-            {
-                "slug": "nope/nope",
-                "endpoint": {"features": {}, "supported_parameters": [], "pricing": {"web_search": "0"}},
-            },
-        ]
-    }
-
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {
-        "x-ai/grok-4": True,
-        "openai/gpt-4o": True,
-        "anthropic/claude-opus-4.5": True,
-    }
-
-
-def test_build_web_search_support_mapping_unions_duplicates(pipe_instance):
-    pipe = pipe_instance
-
-    frontend_data = {
-        "data": [
-            {
-                "slug": "dup/model",
-                "endpoint": {"features": {}, "supported_parameters": [], "pricing": {"web_search": "0"}},
-            },
-            {
-                "slug": "dup/model",
-                "endpoint": {
-                    "features": {},
-                    "supported_parameters": ["web_search_options"],
-                    "pricing": {"web_search": "0"},
-                },
-            },
-        ]
-    }
-
-    mapping = pipe._ensure_catalog_manager()._build_web_search_support_mapping(frontend_data)
-    assert mapping == {"dup/model": True}
-
-
 @pytest.mark.asyncio
 async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pipe_instance_async):
     pipe = pipe_instance_async
@@ -2321,9 +2116,9 @@ async def test_sync_model_metadata_includes_description_when_enabled(pipe_instan
         UPDATE_MODEL_IMAGES=False,
         UPDATE_MODEL_CAPABILITIES=False,
         UPDATE_MODEL_DESCRIPTIONS=True,
-        AUTO_ATTACH_ORS_FILTER=False,
-        AUTO_INSTALL_ORS_FILTER=False,
-        AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=False,
+        AUTO_ATTACH_WEB_TOOLS_FILTER=False,
+        AUTO_INSTALL_WEB_TOOLS_FILTER=False,
+        AUTO_DEFAULT_WEB_TOOLS_FILTER=False,
         AUTO_ATTACH_DIRECT_UPLOADS_FILTER=False,
         AUTO_INSTALL_DIRECT_UPLOADS_FILTER=False,
     )
@@ -2358,9 +2153,9 @@ async def test_sync_model_metadata_skips_description_when_disabled(pipe_instance
         UPDATE_MODEL_IMAGES=False,
         UPDATE_MODEL_CAPABILITIES=True,
         UPDATE_MODEL_DESCRIPTIONS=False,
-        AUTO_ATTACH_ORS_FILTER=False,
-        AUTO_INSTALL_ORS_FILTER=False,
-        AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=False,
+        AUTO_ATTACH_WEB_TOOLS_FILTER=False,
+        AUTO_INSTALL_WEB_TOOLS_FILTER=False,
+        AUTO_DEFAULT_WEB_TOOLS_FILTER=False,
         AUTO_ATTACH_DIRECT_UPLOADS_FILTER=False,
         AUTO_INSTALL_DIRECT_UPLOADS_FILTER=False,
     )
@@ -2646,7 +2441,7 @@ async def test_disable_model_metadata_sync_skips_all_updates(pipe_instance_async
             profile_image_url="data:image/png;base64,QUJD",
             update_capabilities=True,
             update_images=True,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
@@ -2680,7 +2475,7 @@ async def test_disable_capability_updates_preserves_existing_caps(pipe_instance_
             profile_image_url=None,
             update_capabilities=True,
             update_images=False,
-            filter_function_id="openrouter_search",
+            filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=False,
@@ -2690,7 +2485,7 @@ async def test_disable_capability_updates_preserves_existing_caps(pipe_instance_
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     assert meta["capabilities"] == {"vision": False}
-    assert meta["filterIds"] == ["openrouter_search"]
+    assert meta["filterIds"] == ["openrouter_web_tools"]
 
 
 @pytest.mark.asyncio
@@ -2964,7 +2759,7 @@ async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instanc
         model_id,
         meta={
             "filterIds": [
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_native_attachments",  # stale — doesn't exist
                 "openrouter_direct_uploads",
             ],
@@ -2985,7 +2780,7 @@ async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instanc
             False,
             False,
             valid_openrouter_filter_ids=frozenset({
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4o",
             }),
@@ -2995,7 +2790,7 @@ async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instanc
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
     assert "openrouter_native_attachments" not in meta["filterIds"]
-    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_web_tools" in meta["filterIds"]
     assert "openrouter_direct_uploads" in meta["filterIds"]
 
 
@@ -3010,7 +2805,7 @@ async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_asy
         model_id,
         meta={
             "filterIds": [
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_native_attachments",  # stale
                 "some_other_plugin_filter",        # non-openrouter — must survive
                 "openrouter_direct_uploads",
@@ -3032,7 +2827,7 @@ async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_asy
             False,
             False,
             valid_openrouter_filter_ids=frozenset({
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
             }),
         )
@@ -3042,7 +2837,7 @@ async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_asy
     meta = dict(updated_form.meta)
     assert "openrouter_native_attachments" not in meta["filterIds"]
     assert "some_other_plugin_filter" in meta["filterIds"]
-    assert "openrouter_search" in meta["filterIds"]
+    assert "openrouter_web_tools" in meta["filterIds"]
     assert "openrouter_direct_uploads" in meta["filterIds"]
 
 
@@ -3057,7 +2852,7 @@ async def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance_async) ->
         model_id,
         meta={
             "filterIds": [
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_native_attachments",  # would be stale, but pruning disabled
             ],
         },
@@ -3102,7 +2897,7 @@ async def test_prune_stale_no_filter_ids_is_noop(pipe_instance_async) -> None:
             None,
             True,
             False,
-            valid_openrouter_filter_ids=frozenset({"openrouter_search"}),
+            valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
         )
 
     # No update needed — capabilities identical and no stale filter IDs
@@ -3120,7 +2915,7 @@ async def test_prune_stale_all_valid_no_update(pipe_instance_async) -> None:
         model_id,
         meta={
             "filterIds": [
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4o",
             ],
@@ -3138,7 +2933,7 @@ async def test_prune_stale_all_valid_no_update(pipe_instance_async) -> None:
             False,
             False,
             valid_openrouter_filter_ids=frozenset({
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4o",
             }),
@@ -3161,7 +2956,7 @@ async def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance_async)
             "filterIds": [
                 "other_plugin",
                 "openrouter_stale_one",
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_stale_two",
                 "openrouter_direct_uploads",
                 "another_plugin",
@@ -3183,7 +2978,7 @@ async def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance_async)
             False,
             False,
             valid_openrouter_filter_ids=frozenset({
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
             }),
         )
@@ -3193,7 +2988,7 @@ async def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance_async)
     meta = dict(updated_form.meta)
     assert meta["filterIds"] == [
         "other_plugin",
-        "openrouter_search",
+        "openrouter_web_tools",
         "openrouter_direct_uploads",
         "another_plugin",
     ]
@@ -3209,7 +3004,7 @@ async def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_i
     existing = _make_existing_model(
         model_id,
         meta={
-            "filterIds": ["openrouter_search", "openrouter_ghost"],
+            "filterIds": ["openrouter_web_tools", "openrouter_ghost"],
             "capabilities": {"vision": True},
         },
     )
@@ -3227,14 +3022,14 @@ async def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_i
             None,
             True,
             False,
-            valid_openrouter_filter_ids=frozenset({"openrouter_search"}),
+            valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
         )
 
     # Update should still happen because stale ID was pruned
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    assert meta["filterIds"] == ["openrouter_search"]
+    assert meta["filterIds"] == ["openrouter_web_tools"]
     assert "openrouter_ghost" not in meta["filterIds"]
 
 
@@ -3249,7 +3044,7 @@ async def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance
         model_id,
         meta={
             "filterIds": [
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4_1",
             ],
@@ -3267,7 +3062,7 @@ async def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance
             False,
             False,
             valid_openrouter_filter_ids=frozenset({
-                "openrouter_search",
+                "openrouter_web_tools",
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4_1",
             }),
@@ -3329,10 +3124,10 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
 
     models = [
         _make_model_for_bulk_prune("model_a", [
-            "openrouter_search", "openrouter_native_attachments", "openrouter_direct_uploads",
+            "openrouter_web_tools", "openrouter_native_attachments", "openrouter_direct_uploads",
         ]),
         _make_model_for_bulk_prune("model_b", [
-            "openrouter_search", "openrouter_direct_uploads",
+            "openrouter_web_tools", "openrouter_direct_uploads",
         ]),
         _make_model_for_bulk_prune("model_c", [
             "openrouter_native_attachments", "openrouter_provider_qwen_qwen3_coder",
@@ -3340,7 +3135,7 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
     ]
 
     valid_filters = [
-        _make_filter_function("openrouter_search"),
+        _make_filter_function("openrouter_web_tools"),
         _make_filter_function("openrouter_direct_uploads"),
     ]
 
@@ -3365,7 +3160,7 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
     assert "model_c" in update_calls
 
     meta_a = dict(update_calls["model_a"].meta)
-    assert meta_a["filterIds"] == ["openrouter_search", "openrouter_direct_uploads"]
+    assert meta_a["filterIds"] == ["openrouter_web_tools", "openrouter_direct_uploads"]
 
     meta_c = dict(update_calls["model_c"].meta)
     assert meta_c["filterIds"] == []  # both IDs were stale
@@ -3381,12 +3176,12 @@ async def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance_asyn
         _make_model_for_bulk_prune("model_x", [
             "other_plugin_filter",
             "openrouter_native_attachments",
-            "openrouter_search",
+            "openrouter_web_tools",
             "yet_another_filter",
         ]),
     ]
 
-    valid_filters = [_make_filter_function("openrouter_search")]
+    valid_filters = [_make_filter_function("openrouter_web_tools")]
     update_calls = {}
 
     async def capture_update(model_id, form):
@@ -3404,7 +3199,7 @@ async def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance_asyn
 
     assert count == 1
     meta = dict(update_calls["model_x"].meta)
-    assert meta["filterIds"] == ["other_plugin_filter", "openrouter_search", "yet_another_filter"]
+    assert meta["filterIds"] == ["other_plugin_filter", "openrouter_web_tools", "yet_another_filter"]
 
 
 @pytest.mark.asyncio
@@ -3415,12 +3210,12 @@ async def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance_async) -
 
     models = [
         _make_model_for_bulk_prune("model_clean", [
-            "openrouter_search", "openrouter_direct_uploads",
+            "openrouter_web_tools", "openrouter_direct_uploads",
         ]),
     ]
 
     valid_filters = [
-        _make_filter_function("openrouter_search"),
+        _make_filter_function("openrouter_web_tools"),
         _make_filter_function("openrouter_direct_uploads"),
     ]
 
@@ -3474,7 +3269,7 @@ async def test_bulk_prune_skips_models_without_meta(pipe_instance_async) -> None
     )
     models = [model_no_meta]
 
-    valid_filters = [_make_filter_function("openrouter_search")]
+    valid_filters = [_make_filter_function("openrouter_web_tools")]
     functions_mod = _make_functions_module(valid_filters)
 
     update_mock = AsyncMock()

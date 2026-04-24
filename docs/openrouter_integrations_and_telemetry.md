@@ -39,7 +39,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `include_reasoning` | Legacy reasoning flag; may be used as a fallback depending on model/provider behavior. |
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
-| `plugins` | Plugin configuration (for example OpenRouter web search attachment when enabled and supported). |
+| `plugins` | Legacy plugin configuration (retained for backward compatibility). |
 | `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
 | `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
@@ -79,7 +79,7 @@ The pipe accepts the following Advanced Model Parameters:
 | --- | --- | --- | --- |
 | `model_fallback` | `str` (CSV) | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list into the OpenRouter `models` array (order-preserving, de-duplicated). |
 | `openrouter_trace` | `str` (JSON) | Requests | Convenience mapping for OpenRouter Broadcast observability: parses a JSON object and writes it as the OpenRouter `trace` field. See §2.4. |
-| `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping the OpenRouter web-search plugin and related request fields. |
+| `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping OpenRouter web search server tools and related request fields. |
 | `openrouter_provider_ignore` | `str` (CSV) | Requests | Comma-separated provider slugs to exclude from routing. Maps to `provider.ignore`. See §2.5. |
 | `openrouter_provider_only` | `str` (CSV) | Requests | Comma-separated provider slugs to restrict routing to. Maps to `provider.only`. See §2.5. |
 | `openrouter_provider_order` | `str` (CSV) | Requests | Comma-separated ordered list of preferred provider slugs. Maps to `provider.order`. See §2.5. |
@@ -87,8 +87,8 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_capability_updates` | `bool-ish` | Model metadata sync | Prevents overwriting Open WebUI capability checkboxes (`meta.capabilities`). |
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
-| `disable_openrouter_search_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OpenRouter Search** integration toggle (filter id) for this model. |
-| `disable_openrouter_search_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OpenRouter Search** by default for this model (prevents seeding `meta.defaultFilterIds`). |
+| `disable_openrouter_search_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OpenRouter Web Tools** integration toggle (filter id) for this model. |
+| `disable_openrouter_search_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OpenRouter Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`). |
 | `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
 
 Notes:
@@ -213,19 +213,20 @@ openrouter_trace:     {"trace_name": "My Pipeline", "trace_id": "from_model"}
 
 If you send `trace` directly in the request body (without using the `openrouter_trace` model parameter), it passes through the pipe's allowlist filter unchanged — no special configuration required. The `openrouter_trace` convenience parameter is only needed when you want to configure trace metadata per-model in Open WebUI's model settings.
 
-### 2.5 `disable_native_websearch` → disable OpenRouter web search plugin
+### 2.5 `disable_native_websearch` → disable OpenRouter web search server tool
 Open WebUI can attach per-model custom parameters (model settings → `custom_params`). This pipe supports a boolean custom parameter to **disable OpenRouter’s built-in web search** for specific models.
 
 - Custom param: `disable_native_websearch` (bool-ish; accepts `true/false`, `1/0`, etc.)
   - Alias: `disable_native_web_search`
 - Pipe behavior (when truthy):
-  - Removes `plugins` entries with `{"id": "web"}`.
+  - Removes `tools` entries with `{"type": "openrouter:web_search"}`.
+  - Removes legacy `plugins` entries with `{"id": "web"}`.
   - Removes `web_search_options` when present (OpenRouter `/chat/completions`).
 
-This is useful when OpenRouter Search is enabled by default (via the model’s Default Filters / `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER`) but you want to block provider-native web search on selected models.
+This is useful when OpenRouter Web Tools is enabled by default (via the model’s Default Filters / `AUTO_DEFAULT_WEB_TOOLS_FILTER`) but you want to block provider-native web search on selected models.
 
 Note: Open WebUI’s built-in **Web Search** is separate (OWUI-native) and is not controlled by this parameter.
-See: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+See: [Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openrouter_search.md).
 
 ### 2.6 `disable_model_metadata_sync` → opt out of all model metadata sync for a model
 This is a per-model “master kill switch” for the pipe’s Open WebUI model metadata sync behavior.
@@ -250,17 +251,17 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Pipe behavior (when truthy):
   - Leaves `meta.description` as-is for that model, even when `UPDATE_MODEL_DESCRIPTIONS=True`.
 
-### 2.10 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Search toggle wiring
+### 2.10 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Web Tools toggle wiring
 - Custom param: `disable_openrouter_search_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
-  - The pipe will not add/remove the OpenRouter Search filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_ORS_FILTER=True`.
+  - The pipe will not add/remove the OpenRouter Web Tools filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_WEB_TOOLS_FILTER=True`.
   - As a consequence, default-on seeding is also avoided (the pipe will not mark a filter as default unless it is attached).
 
 ### 2.11 `disable_openrouter_search_default_on` → preserve default-on behavior
 - Custom param: `disable_openrouter_search_default_on` (bool-ish)
 - Pipe behavior (when truthy):
-  - The pipe will not seed OpenRouter Search into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER=True`.
-  - The OpenRouter Search toggle may still be auto-attached if `AUTO_ATTACH_ORS_FILTER=True` and the model supports it.
+  - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
+  - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it.
 
 ### 2.12 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
 - Custom param: `disable_direct_uploads_auto_attach` (bool-ish)
@@ -383,8 +384,8 @@ Operational guidance:
 ## 5. Tooling and plugins
 
 - Web search:
-  - When the **OpenRouter Search** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches the OpenRouter web-search plugin.
-  - `WEB_SEARCH_MAX_RESULTS` caps result count.
+  - When the **OpenRouter Web Tools** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches OpenRouter web search as a server tool (`tools: [{"type": "openrouter:web_search", ...}]`).
+  - The filter's admin valves (`WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_ENGINE`, etc.) control search parameters.
 - Response healing:
   - The OpenRouter response-healing plugin is intentionally **not** exposed by this pipe.
   - We prefer fail-fast behavior for malformed/invalid outputs so errors remain visible.
@@ -395,7 +396,7 @@ Operational guidance:
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
 
 See also: [Tooling & Integrations](tooling_and_integrations.md).
-And: [Web Search (Open WebUI) vs OpenRouter Search](web_search_owui_vs_openrouter_search.md).
+And: [Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openrouter_search.md).
 
 ---
 

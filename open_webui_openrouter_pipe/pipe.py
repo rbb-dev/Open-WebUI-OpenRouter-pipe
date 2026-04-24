@@ -741,11 +741,32 @@ class Pipe:
         if refresh_error and not available_models:
             return []
 
-        if self.valves.AUTO_INSTALL_ORS_FILTER:
+        # Disable old OpenRouter Search filter if it still exists (replaced by Web Tools)
+        try:
+            from open_webui.models.functions import Functions as _Funcs
+            old_ors = await _Funcs.get_function_by_id("openrouter_search")
+            if old_ors and getattr(old_ors, "is_active", False):
+                content = getattr(old_ors, "content", "") or ""
+                if "openrouter_pipe:ors_filter:" in content:
+                    await _Funcs.update_function_by_id("openrouter_search", {"is_active": False})
+                    self.logger.info("Disabled old OpenRouter Search filter (replaced by OpenRouter Web Tools)")
+        except Exception:
+            pass
+
+        if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
             try:
-                await self._ensure_filter_manager().ensure_ors_filter_function_id()
+                await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
+                    enable_web_search=self.valves.ENABLE_WEB_SEARCH,
+                    enable_web_fetch=self.valves.ENABLE_WEB_FETCH,
+                    enable_datetime=self.valves.ENABLE_DATETIME,
+                )
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_ORS_FILTER failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc)
+        if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
+            try:
+                await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
+            except Exception as exc:
+                self.logger.debug("AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
@@ -756,7 +777,7 @@ class Pipe:
         selected_models = self._apply_model_filters(selected_models, self.valves)
         selected_models = self._expand_variant_models(selected_models, self.valves)
 
-        # Provider routing filter creation (immediate, like ORS and Direct Uploads)
+        # Provider routing filter creation (immediate, like Web Tools and Direct Uploads)
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
         user_routing = (self.valves.USER_PROVIDER_ROUTING_MODELS or "").strip()
         if admin_routing or user_routing:

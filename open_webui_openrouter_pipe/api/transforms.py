@@ -515,8 +515,8 @@ def _strip_disable_model_settings_params(payload: dict[str, Any]) -> None:
         "disable_model_metadata_sync",
         "disable_capability_updates",
         "disable_image_updates",
-        "disable_openrouter_search_auto_attach",
-        "disable_openrouter_search_default_on",
+        "disable_web_tools_auto_attach",
+        "disable_web_tools_default_on",
         "disable_direct_uploads_auto_attach",
         "disable_description_updates",
         "disable_native_websearch",
@@ -539,7 +539,11 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        if tool.get("type") != "function":
+        tool_type = tool.get("type", "")
+        if isinstance(tool_type, str) and tool_type.startswith("openrouter:"):
+            out.append(dict(tool))
+            continue
+        if tool_type != "function":
             continue
         name = tool.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -567,7 +571,11 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        if tool.get("type") != "function":
+        tool_type = tool.get("type", "")
+        if isinstance(tool_type, str) and tool_type.startswith("openrouter:"):
+            out.append(dict(tool))
+            continue
+        if tool_type != "function":
             continue
 
         fn = tool.get("function")

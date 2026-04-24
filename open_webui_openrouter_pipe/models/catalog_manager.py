@@ -8,7 +8,7 @@ Key responsibilities:
 - Fetch frontend catalog and extract icon/web-search mappings
 - Download and convert profile images to data URLs
 - Update or insert model records with metadata in OWUI database
-- Auto-attach companion filters (OpenRouter Search, Direct Uploads)
+- Auto-attach companion filters (Web Tools, Image Gen, Direct Uploads)
 - Respect per-model advanced params (disable_model_metadata_sync, etc.)
 """
 
@@ -265,11 +265,13 @@ class ModelCatalogManager:
             valves.UPDATE_MODEL_CAPABILITIES
             or valves.UPDATE_MODEL_IMAGES
             or valves.UPDATE_MODEL_DESCRIPTIONS
-            or valves.AUTO_ATTACH_ORS_FILTER
-            or valves.AUTO_INSTALL_ORS_FILTER
-            or valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
+            or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+            or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+            or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
             or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+            or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
             or provider_routing_enabled
         ):
             return
@@ -283,11 +285,17 @@ class ModelCatalogManager:
             valves.UPDATE_MODEL_IMAGES,
             valves.UPDATE_MODEL_CAPABILITIES,
             valves.UPDATE_MODEL_DESCRIPTIONS,
-            valves.AUTO_ATTACH_ORS_FILTER,
-            valves.AUTO_INSTALL_ORS_FILTER,
-            valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+            valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
+            valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
+            valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
             valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
             valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
+            valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
+            valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
+            valves.ENABLE_WEB_SEARCH,
+            valves.ENABLE_WEB_FETCH,
+            valves.ENABLE_DATETIME,
+            valves.ENABLE_IMAGE_GENERATION,
             admin_routing_models,
             user_routing_models,
         )
@@ -396,53 +404,6 @@ class ModelCatalogManager:
             icon_mapping[slug] = icon_url
 
         return icon_mapping
-
-    @timed
-    def _build_web_search_support_mapping(
-        self,
-        frontend_data: dict[str, Any] | None,
-    ) -> dict[str, bool]:
-        """Return a slug -> True mapping when the frontend catalog signals web-search support."""
-        if not isinstance(frontend_data, dict):
-            return {}
-        raw_items = frontend_data.get("data")
-        if not isinstance(raw_items, list):
-            return {}
-
-        mapping: dict[str, bool] = {}
-        for item in raw_items:
-            if not isinstance(item, dict):
-                continue
-            slug = item.get("slug")
-            if not isinstance(slug, str) or not slug:
-                continue
-
-            endpoint = item.get("endpoint")
-            if not isinstance(endpoint, dict):
-                continue
-
-            supported_parameters = endpoint.get("supported_parameters")
-            has_web_search_options = False
-            if isinstance(supported_parameters, list):
-                for entry in supported_parameters:
-                    if isinstance(entry, str) and entry.strip() == "web_search_options":
-                        has_web_search_options = True
-                        break
-
-            supports_native_web_search = False
-            features = endpoint.get("features")
-            if isinstance(features, dict):
-                supports_native_web_search = features.get("supports_native_web_search") is True
-
-            supports_priced_web_search = False
-            pricing = endpoint.get("pricing")
-            if isinstance(pricing, dict):
-                supports_priced_web_search = OpenRouterModelRegistry._supports_web_search(pricing)
-
-            if supports_native_web_search or has_web_search_options or supports_priced_web_search:
-                mapping[slug] = True
-
-        return mapping
 
     @timed
     def _build_model_provider_map(
@@ -613,11 +574,12 @@ class ModelCatalogManager:
             valves.UPDATE_MODEL_CAPABILITIES
             or valves.UPDATE_MODEL_IMAGES
             or valves.UPDATE_MODEL_DESCRIPTIONS
-            or valves.AUTO_ATTACH_ORS_FILTER
-            or valves.AUTO_INSTALL_ORS_FILTER
-            or valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
+            or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+            or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+            or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
             or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
             or provider_routing_enabled
         ):
             return
@@ -632,7 +594,7 @@ class ModelCatalogManager:
             if (
                 valves.UPDATE_MODEL_IMAGES
                 or valves.UPDATE_MODEL_CAPABILITIES
-                or valves.AUTO_ATTACH_ORS_FILTER
+                or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
                 or provider_routing_enabled
             ):
                 frontend_data = await self._fetch_frontend_model_catalog(session)
@@ -661,10 +623,6 @@ class ModelCatalogManager:
             icon_mapping: dict[str, str] = {}
             if valves.UPDATE_MODEL_IMAGES:
                 icon_mapping = self._build_icon_mapping(frontend_data)
-
-            web_search_mapping: dict[str, bool] = {}
-            if valves.UPDATE_MODEL_CAPABILITIES or valves.AUTO_ATTACH_ORS_FILTER:
-                web_search_mapping = self._build_web_search_support_mapping(frontend_data)
 
             # Build provider map for provider routing filters
             provider_map: dict[str, dict[str, list[str]]] = {}
@@ -740,13 +698,25 @@ class ModelCatalogManager:
 
             # DB writes are performed via OWUI async helper functions.
             semaphore = asyncio.Semaphore(10)
-            ors_filter_function_id: str | None = None
-            if valves.AUTO_ATTACH_ORS_FILTER or valves.AUTO_INSTALL_ORS_FILTER:
+            web_tools_filter_function_id: str | None = None
+            if valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
                 try:
-                    ors_filter_function_id = await self._pipe._ensure_filter_manager().ensure_ors_filter_function_id()
+                    web_tools_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
+                        enable_web_search=valves.ENABLE_WEB_SEARCH,
+                        enable_web_fetch=valves.ENABLE_WEB_FETCH,
+                        enable_datetime=valves.ENABLE_DATETIME,
+                    )
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Search filter ensure failed: %s", exc)
-                    ors_filter_function_id = None
+                    self.logger.debug("OpenRouter Web Tools filter ensure failed: %s", exc)
+                    web_tools_filter_function_id = None
+
+            image_gen_filter_function_id: str | None = None
+            if valves.AUTO_INSTALL_IMAGE_GEN_FILTER and valves.ENABLE_IMAGE_GENERATION:
+                try:
+                    image_gen_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
+                except Exception as exc:
+                    self.logger.debug("OpenRouter Image Gen filter ensure failed: %s", exc)
+                    image_gen_filter_function_id = None
 
             direct_uploads_filter_function_id: str | None = None
             if (
@@ -759,22 +729,16 @@ class ModelCatalogManager:
                     self.logger.debug("OpenRouter Direct Uploads filter ensure failed: %s", exc)
                     direct_uploads_filter_function_id = None
 
-            if valves.AUTO_ATTACH_ORS_FILTER:
-                if not ors_filter_function_id:
+            if valves.AUTO_ATTACH_WEB_TOOLS_FILTER:
+                if not web_tools_filter_function_id:
                     self.logger.warning(
-                        "AUTO_ATTACH_ORS_FILTER is enabled but the OpenRouter Search filter is not installed. "
-                        "Enable AUTO_INSTALL_ORS_FILTER (or install the filter manually) to show the OpenRouter Search toggle in the UI."
+                        "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is not installed. "
+                        "Enable AUTO_INSTALL_WEB_TOOLS_FILTER (or install the filter manually) to show the Web Tools toggle in the UI."
                     )
                 else:
-                    supported_models = 0
-                    for model in models:
-                        original_id = model.get("original_id")
-                        if isinstance(original_id, str) and original_id and web_search_mapping.get(original_id):
-                            supported_models += 1
                     self.logger.info(
-                        "Auto-attaching OpenRouter Search filter '%s' to %d/%d model(s) that support OpenRouter web search.",
-                        ors_filter_function_id,
-                        supported_models,
+                        "Auto-attaching OpenRouter Web Tools filter '%s' to %d model(s).",
+                        web_tools_filter_function_id,
                         len(models),
                     )
 
@@ -908,18 +872,13 @@ class ModelCatalogManager:
                             maker_id = original_id.split("/", 1)[0]
                             profile_image_url = maker_data_mapping.get(maker_id)
 
-                ors_supported = False
-                auto_attach_or_default = bool(
-                    ors_filter_function_id
+                web_tools_supported = bool(
+                    web_tools_filter_function_id
                     and (
-                        valves.AUTO_ATTACH_ORS_FILTER
-                        or valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER
+                        valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+                        or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
                     )
                 )
-                if auto_attach_or_default:
-                    original_id = model.get("original_id")
-                    if isinstance(original_id, str) and original_id and web_search_mapping.get(original_id):
-                        ors_supported = True
 
                 native_supported = bool(
                     pipe_capabilities.get("file_input")
@@ -949,10 +908,11 @@ class ModelCatalogManager:
                     not capabilities
                     and not description
                     and not profile_image_url
-                    and not auto_attach_or_default
+                    and not web_tools_supported
                     and not pipe_capabilities
                     and not auto_attach_direct_uploads
                     and not pr_filter_id
+                    and not image_gen_filter_function_id
                 ):
                     return
 
@@ -965,13 +925,15 @@ class ModelCatalogManager:
                             profile_image_url,
                             valves.UPDATE_MODEL_CAPABILITIES,
                             valves.UPDATE_MODEL_IMAGES,
-                            filter_function_id=ors_filter_function_id,
-                            filter_supported=ors_supported,
-                            auto_attach_filter=auto_attach_or_default,
-                            auto_default_filter=valves.AUTO_DEFAULT_OPENROUTER_SEARCH_FILTER,
+                            filter_function_id=web_tools_filter_function_id,
+                            filter_supported=web_tools_supported,
+                            auto_attach_filter=web_tools_supported,
+                            auto_default_filter=valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
+                            image_gen_filter_function_id=image_gen_filter_function_id,
+                            auto_attach_image_gen_filter=bool(valves.AUTO_ATTACH_IMAGE_GEN_FILTER),
                             provider_routing_filter_id=pr_filter_id,
                             valid_openrouter_filter_ids=_valid_openrouter_filter_ids,
                             openrouter_pipe_capabilities=pipe_capabilities,
@@ -1078,6 +1040,8 @@ class ModelCatalogManager:
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
+        image_gen_filter_function_id: str | None = None,
+        auto_attach_image_gen_filter: bool = False,
         provider_routing_filter_id: str | None = None,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
@@ -1100,8 +1064,8 @@ class ModelCatalogManager:
         disable_model_metadata_sync = False
         disable_capability_updates = False
         disable_image_updates = False
-        disable_openrouter_search_auto_attach = False
-        disable_openrouter_search_default_on = False
+        disable_web_tools_auto_attach = False
+        disable_web_tools_default_on = False
         disable_direct_uploads_auto_attach = False
         disable_description_updates = False
 
@@ -1113,8 +1077,8 @@ class ModelCatalogManager:
             disable_model_metadata_sync = _get_disable_param(params, "disable_model_metadata_sync")
             disable_capability_updates = _get_disable_param(params, "disable_capability_updates")
             disable_image_updates = _get_disable_param(params, "disable_image_updates")
-            disable_openrouter_search_auto_attach = _get_disable_param(params, "disable_openrouter_search_auto_attach")
-            disable_openrouter_search_default_on = _get_disable_param(params, "disable_openrouter_search_default_on")
+            disable_web_tools_auto_attach = _get_disable_param(params, "disable_web_tools_auto_attach")
+            disable_web_tools_default_on = _get_disable_param(params, "disable_web_tools_default_on")
             disable_direct_uploads_auto_attach = _get_disable_param(params, "disable_direct_uploads_auto_attach")
             disable_description_updates = _get_disable_param(params, "disable_description_updates")
 
@@ -1125,9 +1089,9 @@ class ModelCatalogManager:
             update_capabilities = False
         if disable_image_updates:
             update_images = False
-        if disable_openrouter_search_auto_attach:
+        if disable_web_tools_auto_attach:
             auto_attach_filter = False
-        if disable_openrouter_search_default_on:
+        if disable_web_tools_default_on:
             auto_default_filter = False
         if disable_direct_uploads_auto_attach:
             auto_attach_direct_uploads_filter = False
@@ -1197,7 +1161,7 @@ class ModelCatalogManager:
             pipe_meta = meta_dict.get("openrouter_pipe")
             previous_id = None
             if isinstance(pipe_meta, dict):
-                prev = pipe_meta.get("openrouter_search_filter_id")
+                prev = pipe_meta.get("web_tools_filter_id")
                 if isinstance(prev, str) and prev and prev != filter_function_id:
                     previous_id = prev
             had = set(normalized)
@@ -1247,6 +1211,32 @@ class ModelCatalogManager:
             meta_dict["openrouter_pipe"] = pipe_meta
             return True
 
+        def _apply_image_gen_filter_ids(meta_dict: dict) -> bool:
+            if not image_gen_filter_function_id or not auto_attach_image_gen_filter:
+                return False
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            pipe_meta = meta_dict.get("openrouter_pipe")
+            previous_id = None
+            if isinstance(pipe_meta, dict):
+                prev = pipe_meta.get("image_gen_filter_id")
+                if isinstance(prev, str) and prev and prev != image_gen_filter_function_id:
+                    previous_id = prev
+            had = set(normalized)
+            wanted = set(had)
+            wanted.add(image_gen_filter_function_id)
+            if previous_id:
+                wanted.discard(previous_id)
+            if wanted == had:
+                return False
+            if image_gen_filter_function_id not in normalized:
+                normalized.append(image_gen_filter_function_id)
+            normalized = [fid for fid in normalized if fid in wanted]
+            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            pipe_meta["image_gen_filter_id"] = image_gen_filter_function_id
+            meta_dict["openrouter_pipe"] = pipe_meta
+            return True
+
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
             if not auto_default_filter or not filter_function_id or not filter_supported:
                 return False
@@ -1259,8 +1249,8 @@ class ModelCatalogManager:
                 return False
 
             pipe_meta = _ensure_pipe_meta(meta_dict)
-            seeded_key = "openrouter_search_default_seeded"
-            previous_id = pipe_meta.get("openrouter_search_filter_id")
+            seeded_key = "web_tools_default_seeded"
+            previous_id = pipe_meta.get("web_tools_filter_id")
             previous_id_str = previous_id if isinstance(previous_id, str) else ""
 
             default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
@@ -1283,7 +1273,7 @@ class ModelCatalogManager:
                     changed = True
 
             if previous_id_str != filter_function_id:
-                pipe_meta["openrouter_search_filter_id"] = filter_function_id
+                pipe_meta["web_tools_filter_id"] = filter_function_id
                 changed = True
 
             if not changed:
@@ -1387,6 +1377,9 @@ class ModelCatalogManager:
             if _apply_direct_uploads_filter_ids(meta_dict):
                 meta_updated = True
 
+            if _apply_image_gen_filter_ids(meta_dict):
+                meta_updated = True
+
             if _apply_provider_routing_filter_ids(meta_dict):
                 meta_updated = True
                 self.logger.debug(
@@ -1435,6 +1428,7 @@ class ModelCatalogManager:
             _apply_filter_ids(meta_dict)
             _apply_default_filter_ids(meta_dict)
             _apply_direct_uploads_filter_ids(meta_dict)
+            _apply_image_gen_filter_ids(meta_dict)
             if _apply_provider_routing_filter_ids(meta_dict):
                 self.logger.debug(
                     "Attached provider routing filter '%s' to new model '%s'",
