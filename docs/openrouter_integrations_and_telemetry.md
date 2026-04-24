@@ -407,9 +407,6 @@ When `SHOW_FINAL_USAGE_STATUS=True`, the pipe emits a final status message that 
 
 This is intended as user-visible telemetry and operator troubleshooting signal (not as an authoritative billing record).
 
-### Status UI formatting
-When `ENABLE_STATUS_CSS_PATCH=True`, the pipe applies a small UI formatting patch so multi-line statuses are easier to read in Open WebUI.
-
 ---
 
 ## 7. Optional telemetry export: cost snapshots to Redis

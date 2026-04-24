@@ -51,7 +51,6 @@ def mock_valves():
     valves.IMAGE_INPUT_SELECTION = "latest_user"
     valves.BASE64_MAX_SIZE_MB = 10
     valves.IMAGE_UPLOAD_CHUNK_BYTES = 65536
-    valves.ENABLE_STATUS_CSS_PATCH = False
     valves.DIRECT_UPLOAD_FAILURE_TEMPLATE = "Direct upload failed: {reason}"
     valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE = "Endpoint conflict: {reason}"
     valves.MODEL_RESTRICTED_TEMPLATE = "Model restricted: {restriction_reasons}"

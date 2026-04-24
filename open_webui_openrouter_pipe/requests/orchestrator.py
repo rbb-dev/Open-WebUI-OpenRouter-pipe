@@ -280,47 +280,6 @@ class RequestOrchestrator:
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
-        # Optional: inject CSS tweak for multi-line statuses when enabled.
-        if valves.ENABLE_STATUS_CSS_PATCH:
-            if __event_call__:
-                payload_user_id = user_id or __metadata__.get("user_id") or __user__.get("id") or "anonymous"
-                try:
-                    await __event_call__({
-                        "type": "execute",
-                        "user_id": str(payload_user_id),
-                        "data": {
-                            "code": """
-                            (() => {
-                                if (document.getElementById("owui-status-unclamp")) return "ok";
-                                const style = document.createElement("style");
-                                style.id = "owui-status-unclamp";
-                                style.textContent = `
-                                    .status-description .line-clamp-1,
-                                    .status-description .text-base.line-clamp-1,
-                                    .status-description .text-gray-500.text-base.line-clamp-1 {
-                                        display: block !important;
-                                        overflow: visible !important;
-                                        -webkit-line-clamp: unset !important;
-                                        -webkit-box-orient: initial !important;
-                                        white-space: pre-wrap !important;
-                                        word-break: break-word;
-                                    }
-                                    .status-description .text-base::first-line,
-                                    .status-description .text-gray-500.text-base::first-line {
-                                        font-weight: 500 !important;
-                                    }
-                                `;
-                                document.head.appendChild(style);
-                                return "ok";
-                            })();
-                            """
-                        }
-                    })
-                except Exception as exc:  # pragma: no cover - UI injection optional
-                    self.logger.debug("Status CSS injection failed: %s", exc)
-            else:
-                    self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
-
         def _extract_direct_uploads_warnings(metadata: dict[str, Any]) -> list[str]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):

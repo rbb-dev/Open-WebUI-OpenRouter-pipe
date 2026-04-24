@@ -1471,10 +1471,6 @@ class Valves(BaseModel):
             "Only used when FINAL_USAGE_STATUS_STYLE is set to 'icons'."
         ),
     )
-    ENABLE_STATUS_CSS_PATCH: bool = Field(
-        default=True,
-        description="When True, injects a CSS tweak via __event_call__ to show multi-line status descriptions in Open WebUI (experimental).",
-    )
     SEND_END_USER_ID: bool = Field(
         default=False,
         description="When True, send OpenRouter `user` using the OWUI user GUID, and also include `metadata.user_id`.",

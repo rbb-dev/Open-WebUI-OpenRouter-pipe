@@ -255,7 +255,6 @@ Each generated provider routing filter has these valves (admin and/or user depen
 | `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing/cost/tokens in the final status message. |
 | `FINAL_USAGE_STATUS_STYLE` | `Literal["text","icons"]` | `text` | Choose text labels or icons for the final usage status line. |
 | `USAGE_STATUS_ICON_SET` | `str` | `⧗,$,⇅,▲,▼,↺,▽` | CSV icon set for final usage status fields (time,cost,total,input,output,cached,reasoning). Used only when `FINAL_USAGE_STATUS_STYLE="icons"`. |
-| `ENABLE_STATUS_CSS_PATCH` | `bool` | `True` | Injects a CSS helper so multi-line statuses render cleanly in the Open WebUI UI. |
 
 Notes:
 - `FINAL_USAGE_STATUS_STYLE="text"` uses labels like “Time”, “Cost”, and “Total tokens”.
