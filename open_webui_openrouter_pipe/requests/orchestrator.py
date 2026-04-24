@@ -20,6 +20,7 @@ from ..core.errors import (
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
 )
+from ..core.config import _PIPE_METADATA_KEY
 from ..core.utils import _select_best_effort_fallback
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
@@ -73,7 +74,7 @@ class RequestOrchestrator:
         virtual_variant_bases: dict[str, str] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
-            pipe_meta = metadata.get("openrouter_pipe")
+            pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
                 return {}
             attachments = pipe_meta.get("direct_uploads")
@@ -321,7 +322,7 @@ class RequestOrchestrator:
                     self.logger.debug("Status CSS injection skipped: __event_call__ unavailable.")
 
         def _extract_direct_uploads_warnings(metadata: dict[str, Any]) -> list[str]:
-            pipe_meta = metadata.get("openrouter_pipe")
+            pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
                 return []
             warnings = pipe_meta.get("direct_uploads_warnings")
@@ -494,7 +495,7 @@ class RequestOrchestrator:
         # Inject provider routing from filter-injected metadata.
         # Only housekeeping tasks skip this - MOA should inherit normal chat routing.
         if (not use_task_model_adapter) and isinstance(__metadata__, dict):
-            pipe_meta = __metadata__.get("openrouter_pipe")
+            pipe_meta = __metadata__.get(_PIPE_METADATA_KEY)
             if isinstance(pipe_meta, dict):
                 filter_provider = pipe_meta.get("provider")
                 if isinstance(filter_provider, dict) and filter_provider:
@@ -771,7 +772,7 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
-        server_tools = (__metadata__ or {}).get("openrouter_pipe", {}).get("server_tools", {})
+        server_tools = (__metadata__ or {}).get(_PIPE_METADATA_KEY, {}).get("server_tools", {})
         if isinstance(server_tools, dict) and server_tools:
             tools_list = list(responses_body.tools or [])
             for tool_key, tool_params in server_tools.items():

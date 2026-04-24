@@ -41,6 +41,9 @@ _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
+# Metadata namespace key — used by all filters to communicate with the pipe via __metadata__
+_PIPE_METADATA_KEY = "openrouter_pipe"
+
 # OpenRouter Web Tools filter
 _OPENROUTER_WEB_TOOLS_FILTER_MARKER = "openrouter_pipe:web_tools_filter:v1"
 _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"

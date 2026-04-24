@@ -30,6 +30,7 @@ from ..core.config import (
     _MAX_OPENROUTER_METADATA_KEY_CHARS,
     _MAX_OPENROUTER_METADATA_VALUE_CHARS,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
+    _PIPE_METADATA_KEY,
     _PROVIDER_SLUG_PATTERN,
 )
 from ..core.timing_logger import timed
@@ -1473,7 +1474,7 @@ def _get_disable_param(params: Any, key: str) -> bool:
 
     if raw is sentinel:
         # Some operators may choose to namespace pipe settings inside params JSON.
-        for container_key in ("openrouter_pipe", "openrouter", "pipe"):
+        for container_key in (_PIPE_METADATA_KEY, "openrouter", "pipe"):
             container = params_dict.get(container_key)
             if isinstance(container, dict) and key in container:
                 raw = container.get(key, None)

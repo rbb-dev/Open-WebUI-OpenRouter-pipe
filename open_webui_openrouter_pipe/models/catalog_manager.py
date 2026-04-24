@@ -31,7 +31,7 @@ try:
 except ImportError:
     ModelForm = None  # type: ignore
 
-from ..core.config import _OPENROUTER_SITE_URL, _OPENROUTER_FRONTEND_MODELS_URL
+from ..core.config import _OPENROUTER_SITE_URL, _OPENROUTER_FRONTEND_MODELS_URL, _PIPE_METADATA_KEY
 # Lazy import to avoid circular dependency.
 from .registry import OpenRouterModelRegistry, ModelFamily
 
@@ -1099,11 +1099,11 @@ class ModelCatalogManager:
             update_descriptions = False
 
         def _ensure_pipe_meta(meta_dict: dict) -> dict:
-            pipe_meta = meta_dict.get("openrouter_pipe")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             if isinstance(pipe_meta, dict):
                 return pipe_meta
             pipe_meta = {}
-            meta_dict["openrouter_pipe"] = pipe_meta
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
             return pipe_meta
 
         def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
@@ -1158,7 +1158,7 @@ class ModelCatalogManager:
             if not auto_attach_filter or not filter_function_id:
                 return False
             normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get("openrouter_pipe")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
             if isinstance(pipe_meta, dict):
                 prev = pipe_meta.get("web_tools_filter_id")
@@ -1185,7 +1185,7 @@ class ModelCatalogManager:
             if not auto_attach_direct_uploads_filter or not direct_uploads_filter_function_id:
                 return False
             normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get("openrouter_pipe")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
             if isinstance(pipe_meta, dict):
                 prev = pipe_meta.get("direct_uploads_filter_id")
@@ -1208,14 +1208,14 @@ class ModelCatalogManager:
             meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
             pipe_meta = _ensure_pipe_meta(meta_dict)
             pipe_meta["direct_uploads_filter_id"] = direct_uploads_filter_function_id
-            meta_dict["openrouter_pipe"] = pipe_meta
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
             return True
 
         def _apply_image_gen_filter_ids(meta_dict: dict) -> bool:
             if not image_gen_filter_function_id or not auto_attach_image_gen_filter:
                 return False
             normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get("openrouter_pipe")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
             if isinstance(pipe_meta, dict):
                 prev = pipe_meta.get("image_gen_filter_id")
@@ -1234,7 +1234,7 @@ class ModelCatalogManager:
             meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
             pipe_meta = _ensure_pipe_meta(meta_dict)
             pipe_meta["image_gen_filter_id"] = image_gen_filter_function_id
-            meta_dict["openrouter_pipe"] = pipe_meta
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
             return True
 
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
@@ -1280,7 +1280,7 @@ class ModelCatalogManager:
                 return False
 
             meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
-            meta_dict["openrouter_pipe"] = pipe_meta
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
             return True
 
         def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
@@ -1297,7 +1297,7 @@ class ModelCatalogManager:
                 return False
 
             normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get("openrouter_pipe")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
             if isinstance(pipe_meta, dict):
                 prev = pipe_meta.get("provider_routing_filter_id")
@@ -1330,7 +1330,7 @@ class ModelCatalogManager:
             meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
             pipe_meta = _ensure_pipe_meta(meta_dict)
             pipe_meta["provider_routing_filter_id"] = provider_routing_filter_id
-            meta_dict["openrouter_pipe"] = pipe_meta
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
 
             self.logger.debug(
                 "PR attach: SUCCESS - new filterIds=%r",
@@ -1392,7 +1392,7 @@ class ModelCatalogManager:
                 pipe_meta = _ensure_pipe_meta(meta_dict)
                 if pipe_meta.get("capabilities") != openrouter_pipe_capabilities:
                     pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
-                    meta_dict["openrouter_pipe"] = pipe_meta
+                    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
                     meta_updated = True
 
             if not meta_updated:
@@ -1439,7 +1439,7 @@ class ModelCatalogManager:
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)
                 pipe_meta["capabilities"] = dict(openrouter_pipe_capabilities)
-                meta_dict["openrouter_pipe"] = pipe_meta
+                meta_dict[_PIPE_METADATA_KEY] = pipe_meta
 
             if not meta_dict:
                 # Nothing to insert, skip

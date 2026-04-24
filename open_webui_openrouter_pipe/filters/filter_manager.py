@@ -30,6 +30,7 @@ from ..core.config import (
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+    _PIPE_METADATA_KEY,
     _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
     _PROVIDER_ROUTING_FILTER_MARKER_VERSION,
     _PROVIDER_ROUTING_FILTER_ID_PREFIX,
@@ -651,9 +652,9 @@ class FilterManager:
 
         # Write to metadata
         template += '        if server_tools and isinstance(__metadata__, dict):\n'
-        template += '            prev_pipe_meta = __metadata__.get("openrouter_pipe")\n'
+        template += '            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")\n'
         template += '            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}\n'
-        template += '            __metadata__["openrouter_pipe"] = pipe_meta\n'
+        template += '            __metadata__["__PIPE_META_KEY__"] = pipe_meta\n'
         template += '            pipe_meta["server_tools"] = server_tools\n'
 
         # OWUI web search suppression
@@ -665,6 +666,7 @@ class FilterManager:
             template
             .replace("__FILTER_ID__", _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID)
             .replace("__MARKER__", _OPENROUTER_WEB_TOOLS_FILTER_MARKER)
+            .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
         )
 
     @timed
@@ -841,9 +843,9 @@ class Filter:
 
         # Write to metadata
         if isinstance(__metadata__, dict):
-            prev_pipe_meta = __metadata__.get("openrouter_pipe")
+            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")
             pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
-            __metadata__["openrouter_pipe"] = pipe_meta
+            __metadata__["__PIPE_META_KEY__"] = pipe_meta
 
             prev_tools = pipe_meta.get("server_tools")
             server_tools = dict(prev_tools) if isinstance(prev_tools, dict) else {}
@@ -857,6 +859,7 @@ class Filter:
             template
             .replace("__FILTER_ID__", _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID)
             .replace("__MARKER__", _OPENROUTER_IMAGE_GEN_FILTER_MARKER)
+            .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
         )
 
     @timed
@@ -1065,7 +1068,7 @@ class Filter:
         meta = __model__.get("info", {}).get("meta", {})
         if not isinstance(meta, dict):
             return {}
-        pipe_meta = meta.get("openrouter_pipe", {})
+        pipe_meta = meta.get("__PIPE_META_KEY__", {})
         if not isinstance(pipe_meta, dict):
             return {}
         caps = pipe_meta.get("capabilities", {})
@@ -1265,9 +1268,9 @@ class Filter:
                 __metadata__["files"] = retained
 
         if isinstance(__metadata__, dict) and (diverted_any or warnings):
-            prev_pipe_meta = __metadata__.get("openrouter_pipe")
+            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")
             pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
-            __metadata__["openrouter_pipe"] = pipe_meta
+            __metadata__["__PIPE_META_KEY__"] = pipe_meta
 
             if warnings:
                 prev_warnings = pipe_meta.get("direct_uploads_warnings")
@@ -1321,6 +1324,7 @@ class Filter:
         return (
             template.replace("__FILTER_ID__", _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID)
             .replace("__MARKER__", _DIRECT_UPLOADS_FILTER_MARKER)
+            .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
         )
 
     @timed
@@ -1563,7 +1567,7 @@ class Filter:
         if provider:
             if __metadata__ is None:
                 __metadata__ = {}
-            pipe_meta = __metadata__.setdefault("openrouter_pipe", {})
+            pipe_meta = __metadata__.setdefault("__PIPE_META_KEY__", {})
             pipe_meta["provider"] = provider
             self.log.debug("Injected provider routing: %s", provider)
 '''
@@ -1743,7 +1747,7 @@ class Filter:
         # Generate inlet logic based on visibility
         inlet_logic = FilterManager._generate_inlet_logic(visibility)
 
-        return f'''"""
+        return (f'''"""
 title: Provider: {safe_display_name_escaped}
 author: Open-WebUI-OpenRouter-pipe
 author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
@@ -1790,7 +1794,7 @@ class Filter:
         """Inject provider routing preferences into request metadata."""
 {inlet_logic}
         return body
-'''
+''').replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
 
     async def ensure_provider_routing_filters(
         self,
@@ -1859,7 +1863,7 @@ class Filter:
                         try:
                             marker_val = line.split("=", 1)[1].strip().strip('"').strip("'")
                             parts = marker_val.split(":")
-                            if len(parts) >= 4 and parts[0] == "openrouter_pipe" and parts[1] == "provider_routing":
+                            if len(parts) >= 4 and parts[0] == _PIPE_METADATA_KEY and parts[1] == "provider_routing":
                                 slug = parts[2]
                                 existing_filters[slug] = f
                         except Exception:
