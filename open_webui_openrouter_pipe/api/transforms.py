@@ -439,6 +439,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "provider",
     "route",
     "debug",
+    "thinking_config",
 }
 
 ALLOWED_OPENROUTER_CHAT_FIELDS = {
@@ -488,6 +489,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "modalities",
     # Keep transforms for compatibility; OpenRouter may ignore if unsupported.
     "transforms",
+    "thinking_config",
 }
 
 
@@ -1607,11 +1609,11 @@ def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
                 filtered[key] = float(value)
                 continue
             if isinstance(value, str):
-                candidate = value.strip()
-                if not candidate:
+                stripped = value.strip()
+                if not stripped:
                     continue
                 try:
-                    filtered[key] = float(candidate)
+                    filtered[key] = float(stripped)
                 except ValueError:
                     continue
                 continue
