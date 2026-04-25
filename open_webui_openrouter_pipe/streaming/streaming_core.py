@@ -539,9 +539,17 @@ class StreamingHandler:
                     if stored:
                         await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                         return f"/api/v1/files/{stored}/content"
-                    return text
+                    return None
                 return None
-            if text.startswith(("http://", "https://", "/")):
+            if text.startswith(("http://", "https://")):
+                downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
+                if downloaded:
+                    stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])
+                    if stored:
+                        await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
+                        return f"/api/v1/files/{stored}/content"
+                return text
+            if text.startswith("/"):
                 return text
             cleaned = text
             if "," in cleaned and ";base64" in cleaned.split(",", 1)[0]:
@@ -560,7 +568,7 @@ class StreamingHandler:
             if stored:
                 await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                 return f"/api/v1/files/{stored}/content"
-            return f"data:{mime_type};base64,{cleaned}"
+            return None
 
         @timed
         async def _materialize_image_entry(entry: Any) -> Optional[str]:
@@ -577,7 +585,7 @@ class StreamingHandler:
                         nested = await _materialize_image_entry(candidate)
                         if nested:
                             return nested
-                for key in ("b64_json", "b64", "base64", "data", "image_base64"):
+                for key in ("b64_json", "b64", "base64", "data", "image_base64", "imageB64"):
                     b64_val = entry.get(key)
                     if isinstance(b64_val, str) and b64_val.strip():
                         cleaned = b64_val.strip()
@@ -599,24 +607,40 @@ class StreamingHandler:
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
-                        return f"data:{mime_type};base64,{cleaned}"
+                        return None
                 nested_result = entry.get("result")
                 if nested_result is not None:
                     return await _materialize_image_entry(nested_result)
             return None
 
         async def _collect_image_output_urls(item: dict[str, Any]) -> list[str]:
-            payload = item.get("result")
             urls: list[str] = []
-            if isinstance(payload, list):
-                for entry in payload:
-                    resolved = await _materialize_image_entry(entry)
-                    if resolved:
-                        urls.append(resolved)
-            else:
-                resolved = await _materialize_image_entry(payload)
+            seen_blobs: set[int] = set()
+
+            async def _resolve_and_dedup(value: Any) -> None:
+                if value is None:
+                    return
+                if isinstance(value, str) and len(value) > 256:
+                    blob_hash = hash(value)
+                    if blob_hash in seen_blobs:
+                        return
+                    seen_blobs.add(blob_hash)
+                resolved = await _materialize_image_entry(value)
                 if resolved:
                     urls.append(resolved)
+
+            payload = item.get("result")
+            if isinstance(payload, list):
+                for entry in payload:
+                    await _resolve_and_dedup(entry)
+            else:
+                await _resolve_and_dedup(payload)
+
+            for extra_key in ("imageUrl", "imageB64"):
+                extra = item.get(extra_key)
+                if extra is not None:
+                    await _resolve_and_dedup(extra)
+
             return urls
 
         async def _render_image_markdown(item: dict[str, Any]) -> list[str]:
@@ -1543,27 +1567,41 @@ class StreamingHandler:
                             title = "Let me skim those files…"
                         elif item_type in ("image_generation_call", "openrouter:image_generation"):
                             title = "Let me create that image…"
-                            item_id = item.get("id")
-                            if item_id and item_id in processed_image_item_ids:
-                                self.logger.debug("Skipping duplicate image item '%s'", item_id)
+                            item_status = item.get("status")
+                            if item_status == "error":
+                                error_msg = item.get("error") or "Image generation failed"
+                                self.logger.warning("Image generation error: %s", error_msg)
+                                await self._pipe._event_emitter_handler._emit_notification(
+                                    event_emitter,
+                                    f"Image generation failed: {error_msg}",
+                                    level="warning",
+                                )
                             else:
-                                if item_id:
-                                    processed_image_item_ids.add(item_id)
-                                try:
-                                    image_markdowns = await _render_image_markdown(item)
-                                except Exception as exc:
-                                    self.logger.error(
-                                        "Failed to process generated image for item '%s': %s",
-                                        item_id or "<unknown>",
-                                        exc,
-                                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                                    )
-                                    await self._pipe._event_emitter_handler._emit_status(
-                                        event_emitter,
-                                        "⚠️ Unable to process generated image output",
-                                        done=False,
-                                    )
-                                    image_markdowns = []
+                                item_id = item.get("id")
+                                if item_id and item_id in processed_image_item_ids:
+                                    self.logger.debug("Skipping duplicate image item '%s'", item_id)
+                                else:
+                                    if item_id:
+                                        processed_image_item_ids.add(item_id)
+                                    try:
+                                        image_markdowns = await _render_image_markdown(item)
+                                        for blob_key in ("result", "imageUrl", "imageB64"):
+                                            val = item.get(blob_key)
+                                            if isinstance(val, str) and len(val) > 1024:
+                                                item[blob_key] = "[image persisted to storage]"
+                                    except Exception as exc:
+                                        self.logger.error(
+                                            "Failed to process generated image for item '%s': %s",
+                                            item_id or "<unknown>",
+                                            exc,
+                                            exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                        )
+                                        await self._pipe._event_emitter_handler._emit_status(
+                                            event_emitter,
+                                            "⚠️ Unable to process generated image output",
+                                            done=False,
+                                        )
+                                        image_markdowns = []
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
                         elif item_type == "reasoning":

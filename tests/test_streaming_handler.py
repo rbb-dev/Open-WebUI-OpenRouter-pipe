@@ -7899,7 +7899,10 @@ class TestImagePersistenceWithStatusMessages:
 
     @pytest.mark.asyncio
     async def test_image_generation_data_url_processing(self, monkeypatch, pipe_instance_async, sample_image_base64):
-        """Test image generation with data URL is processed and rendered in markdown."""
+        """Test image generation with data URL is processed and rendered in markdown.
+
+        When storage succeeds, the data URL is replaced with an OWUI file URL.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
@@ -7919,6 +7922,15 @@ class TestImagePersistenceWithStatusMessages:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
+        async def _mock_resolve_storage(*_args, **_kwargs):
+            return (object(), object())
+
+        async def _mock_upload(self, request, user, file_data, filename, mime_type, **kwargs):
+            return "fake-file-id-1234"
+
+        monkeypatch.setattr(type(pipe._multimodal_handler), "_resolve_storage_context", _mock_resolve_storage)
+        monkeypatch.setattr(type(pipe._multimodal_handler), "_upload_to_owui_storage", _mock_upload)
+
         emitted: list[dict] = []
         async def emitter(event):
             emitted.append(event)
@@ -7933,11 +7945,9 @@ class TestImagePersistenceWithStatusMessages:
             user_id="user-123",
         )
 
-        # Check that image was processed
         assert result is not None
-        # Image should be rendered in markdown with data URL
         assert "![" in result
-        assert "data:image" in result or "Generated" in result
+        assert "/api/v1/files/fake-file-id-1234/content" in result
 
     @pytest.mark.asyncio
     async def test_image_generation_with_url_result(self, monkeypatch, pipe_instance_async):

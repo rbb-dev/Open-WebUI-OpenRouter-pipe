@@ -766,15 +766,15 @@ class Filter:
             title="Image quality",
             description="Quality level for generated images. Empty = model default.",
         )
-        IMAGE_SIZE: Literal["", "1024x1024", "1536x1024", "1024x1536", "512x512"] = Field(
+        IMAGE_SIZE: Literal["", "1024x1024", "1536x1024", "1024x1536", "1344x768", "768x1344", "1248x832", "832x1248", "1184x864", "864x1184", "1152x896", "896x1152", "1536x672", "512x512"] = Field(
             default="",
             title="Image size",
-            description="Image dimensions. Empty = model default.",
+            description="Image dimensions in pixels. Empty = model default.",
         )
-        IMAGE_ASPECT_RATIO: Literal["", "1:1", "16:9", "4:3", "3:2"] = Field(
+        IMAGE_ASPECT_RATIO: Literal["", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "4:1", "1:4", "8:1", "1:8"] = Field(
             default="",
             title="Image aspect ratio",
-            description="Aspect ratio for generated images. Empty = model default.",
+            description="Aspect ratio for generated images. Extended ratios (4:1, 1:4, 8:1, 1:8) supported by Gemini only. Empty = model default.",
         )
         IMAGE_BACKGROUND: Literal["", "transparent", "opaque"] = Field(
             default="",
@@ -785,6 +785,11 @@ class Filter:
             default="",
             title="Image format",
             description="Output format. \'png\' supports transparency. Empty = model default.",
+        )
+        IMAGE_RESOLUTION_TIER: Literal["", "0.5K", "1K", "2K", "4K"] = Field(
+            default="",
+            title="Resolution tier",
+            description="Resolution multiplier for Gemini image models (0.5K is Gemini Flash only). Empty = model default (1K).",
         )
         IMAGE_OUTPUT_COMPRESSION: int = Field(
             default=0,
@@ -826,6 +831,7 @@ class Filter:
             ("IMAGE_ASPECT_RATIO", "aspect_ratio"),
             ("IMAGE_BACKGROUND", "background"),
             ("IMAGE_OUTPUT_FORMAT", "output_format"),
+            ("IMAGE_RESOLUTION_TIER", "image_size"),
         ]:
             val = getattr(user_valves, attr, "")
             if isinstance(val, str) and val.strip():
