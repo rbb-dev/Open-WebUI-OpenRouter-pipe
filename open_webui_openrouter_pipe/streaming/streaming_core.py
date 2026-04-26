@@ -665,33 +665,65 @@ class StreamingHandler:
                     current += "\n"
             return f"{current}{snippet}\n"
 
-        async def _emit_server_tool_card(
-            item_id: str, name: str, arguments: str, result_text: str,
-        ) -> None:
+        async def _emit_tool_start(
+            *,
+            call_id: str,
+            name: str,
+            arguments: str,
+            status: str = "in_progress",
+        ) -> str:
+            """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
+
+            CALLERS MUST capture the return value and pass it to _emit_tool_result for correct pairing.
+            If the caller threads the wrong id, _emit_tool_result will short-circuit and the card will
+            stay in spinner state indefinitely.
+            """
+            nonlocal emitted_response_output_items
             if not event_emitter:
-                return
-            call_id = item_id or f"st-{uuid.uuid4().hex}"
+                return call_id
+            effective_id = call_id or f"st-{uuid.uuid4().hex}"
+            if effective_id in emitted_tool_call_items:
+                return effective_id
+            emitted_tool_call_items.add(effective_id)
+            emitted_response_output_items = True
             await event_emitter({
                 "type": "response.output_item.added",
                 "item": {
                     "type": "function_call",
-                    "id": call_id,
-                    "call_id": call_id,
+                    "id": effective_id,
+                    "call_id": effective_id,
                     "name": name,
                     "arguments": arguments,
-                    "status": "completed",
+                    "status": status,
                 },
             })
-            await event_emitter({
-                "type": "response.output_item.added",
-                "item": {
-                    "type": "function_call_output",
-                    "id": f"fco-{uuid.uuid4().hex}",
-                    "call_id": call_id,
-                    "output": [{"type": "input_text", "text": result_text}],
-                    "status": "completed",
-                },
-            })
+            return effective_id
+
+        async def _emit_tool_result(
+            *,
+            call_id: str,
+            result_text: str,
+            files: list | None = None,
+            embeds: list | None = None,
+        ) -> None:
+            """Emit a completed tool result card. Used by both pipeline and server tools."""
+            nonlocal emitted_response_output_items
+            if not event_emitter or not call_id or call_id in emitted_tool_output_items:
+                return
+            emitted_tool_output_items.add(call_id)
+            emitted_response_output_items = True
+            output_item: dict[str, Any] = {
+                "type": "function_call_output",
+                "id": f"fco-{uuid.uuid4().hex}",
+                "call_id": call_id,
+                "output": [{"type": "input_text", "text": result_text}],
+                "status": "completed",
+            }
+            if files:
+                output_item["files"] = files
+            if embeds:
+                output_item["embeds"] = embeds
+            await event_emitter({"type": "response.output_item.added", "item": output_item})
 
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
             """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
@@ -1643,19 +1675,33 @@ class StreamingHandler:
                                         image_markdowns = []
                         elif item_type == "openrouter:datetime":
                             title = None
-                            dt_val = item.get("datetime", "")
-                            tz_val = item.get("timezone", "")
-                            result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
-                            await _emit_server_tool_card(item.get("id", ""), "Datetime", "{}", result_text)
+                            if valves.SHOW_TOOL_CARDS:
+                                dt_val = item.get("datetime", "")
+                                tz_val = item.get("timezone", "")
+                                result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name="Datetime",
+                                    arguments="{}",
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_search":
                             title = None
                             result_data = item.get("result")
-                            try:
-                                result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
-                            except (TypeError, ValueError):
-                                result_text = str(result_data) if result_data is not None else "{}"
-                            await _emit_server_tool_card(item.get("id", ""), "Web Search", "{}", result_text)
+                            if valves.SHOW_TOOL_CARDS:
+                                try:
+                                    result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
+                                except (TypeError, ValueError):
+                                    result_text = str(result_data) if result_data is not None else "{}"
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name="Web Search",
+                                    arguments="{}",
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
                             search_urls: list[str] = []
                             url_sources: list[Any] = []
                             if isinstance(result_data, dict):
@@ -1681,15 +1727,22 @@ class StreamingHandler:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_fetch":
                             title = None
-                            result_data = item.get("result")
-                            fetch_url = item.get("url", "")
-                            try:
-                                args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
-                                result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
-                            except (TypeError, ValueError):
-                                args_text = "{}"
-                                result_text = str(result_data) if result_data is not None else "{}"
-                            await _emit_server_tool_card(item.get("id", ""), "Web Fetch", args_text, result_text)
+                            if valves.SHOW_TOOL_CARDS:
+                                fetch_url = item.get("url", "")
+                                result_data = item.get("result")
+                                try:
+                                    args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
+                                    result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
+                                except (TypeError, ValueError):
+                                    args_text = "{}"
+                                    result_text = str(result_data) if result_data is not None else "{}"
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name="Web Fetch",
+                                    arguments=args_text,
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
@@ -2114,22 +2167,11 @@ class StreamingHandler:
                                             if isinstance(raw_args, str)
                                             else json.dumps(raw_args, ensure_ascii=False)
                                         )
-                                        if call_id not in emitted_tool_call_items:
-                                            emitted_tool_call_items.add(call_id)
-                                            emitted_response_output_items = True
-                                            await event_emitter(
-                                                {
-                                                    "type": "response.output_item.added",
-                                                    "item": {
-                                                        "type": "function_call",
-                                                        "id": call_id,
-                                                        "call_id": call_id,
-                                                        "name": tool_name,
-                                                        "arguments": args_text,
-                                                        "status": "in_progress",
-                                                    },
-                                                }
-                                            )
+                                        await _emit_tool_start(
+                                            call_id=call_id,
+                                            name=tool_name,
+                                            arguments=args_text,
+                                        )
                                 except Exception as exc:
                                     self.logger.warning("Failed to emit in-progress tool cards: %s", exc)
 
@@ -2138,28 +2180,17 @@ class StreamingHandler:
                             if show_tool_cards and event_emitter and body.stream and _tool_ctx:
                                 async def _on_tool_complete(call: dict, result: dict) -> None:
                                     cid = _extract_call_id(call) or _extract_call_id(result)
-                                    if not cid or cid in emitted_tool_output_items:
+                                    if not cid:
                                         return
-                                    emitted_tool_output_items.add(cid)
-                                    nonlocal emitted_response_output_items
-                                    emitted_response_output_items = True
                                     result_str = result.get("output") or ""
                                     if not isinstance(result_str, str):
                                         result_str = str(result_str)
-                                    output_item: dict[str, Any] = {
-                                        "type": "function_call_output",
-                                        "id": f"fco-{uuid.uuid4().hex}",
-                                        "call_id": cid,
-                                        "output": [{"type": "input_text", "text": result_str}],
-                                        "status": "completed",
-                                    }
-                                    tool_files = result.get("files") or []
-                                    tool_embeds = result.get("embeds") or []
-                                    if tool_files:
-                                        output_item["files"] = tool_files
-                                    if tool_embeds:
-                                        output_item["embeds"] = tool_embeds
-                                    await event_emitter({"type": "response.output_item.added", "item": output_item})
+                                    await _emit_tool_result(
+                                        call_id=cid,
+                                        result_text=result_str,
+                                        files=result.get("files") or None,
+                                        embeds=result.get("embeds") or None,
+                                    )
 
                                 _tool_ctx.on_complete = _on_tool_complete
 
@@ -2217,28 +2248,14 @@ class StreamingHandler:
                         if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
                                 for cid, output in output_by_call_id.items():
-                                    if cid in emitted_tool_output_items:
-                                        continue
-                                    emitted_tool_output_items.add(cid)
-                                    emitted_response_output_items = True
                                     result_str = output.get("output") or ""
                                     if not isinstance(result_str, str):
                                         result_str = str(result_str)
-                                    tool_files = output.get("files") or []
-                                    tool_embeds = output.get("embeds") or []
-                                    output_item = {
-                                        "type": "function_call_output",
-                                        "id": f"fco-{uuid.uuid4().hex}",
-                                        "call_id": cid,
-                                        "output": [{"type": "input_text", "text": result_str}],
-                                        "status": "completed",
-                                    }
-                                    if tool_files:
-                                        output_item["files"] = tool_files
-                                    if tool_embeds:
-                                        output_item["embeds"] = tool_embeds
-                                    await event_emitter(
-                                        {"type": "response.output_item.added", "item": output_item}
+                                    await _emit_tool_result(
+                                        call_id=cid,
+                                        result_text=result_str,
+                                        files=output.get("files") or None,
+                                        embeds=output.get("embeds") or None,
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc)
@@ -2620,6 +2637,13 @@ class StreamingHandler:
                     )
 
             if (not error_occurred) and (not was_cancelled):
+                # Audit: warn if any tool card was emitted without a matching result.
+                unmatched_tool_calls = emitted_tool_call_items - emitted_tool_output_items
+                if unmatched_tool_calls:
+                    self.logger.warning(
+                        "Tool card(s) emitted without matching function_call_output: %s",
+                        sorted(unmatched_tool_calls),
+                    )
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
                 if terminal:

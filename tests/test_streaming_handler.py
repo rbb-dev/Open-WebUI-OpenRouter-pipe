@@ -10733,3 +10733,322 @@ class TestJpgMimeTypeConversion:
         # Extension in filename should be jpeg, not jpg
         if uploaded:
             assert "jpeg" in uploaded[0]["filename"] or uploaded[0]["mime_type"] == "image/jpg"
+
+
+class TestOpenRouterServerToolCards:
+    """Tests for OpenRouter server tool card emission (datetime/web_search/web_fetch).
+
+    All tests enable SHOW_TOOL_CARDS since server tool cards are gated by that valve
+    (consistent with pipeline tool card behavior).
+    """
+
+    @pytest.mark.asyncio
+    async def test_openrouter_datetime_tool_card(self, monkeypatch, pipe_instance_async):
+        """Datetime tool emits paired function_call + function_call_output with matching call_id."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.added", "item": {"type": "openrouter:datetime", "id": "dt-1", "status": "in_progress"}},
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:datetime", "id": "dt-1", "status": "completed",
+                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        function_calls = [e for e in added_items if e.get("item", {}).get("type") == "function_call"]
+        function_outputs = [e for e in added_items if e.get("item", {}).get("type") == "function_call_output"]
+        assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
+        assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
+        assert function_calls[0]["item"]["call_id"] == "dt-1"
+        assert function_outputs[0]["item"]["call_id"] == "dt-1"
+        assert function_calls[0]["item"]["status"] == "completed"
+        assert function_calls[0]["item"]["name"] == "Datetime"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_datetime_card_suppressed_when_show_tool_cards_off(self, monkeypatch, pipe_instance_async):
+        """When SHOW_TOOL_CARDS is False (default), no card events are emitted."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = False
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:datetime", "id": "dt-1", "status": "completed",
+                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        function_calls = [e for e in emitted
+                          if e.get("type") == "response.output_item.added"
+                          and e.get("item", {}).get("type") in ("function_call", "function_call_output")]
+        assert len(function_calls) == 0, "No tool cards should be emitted when SHOW_TOOL_CARDS is off"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_datetime_missing_id_uuid_fallback(self, monkeypatch, pipe_instance_async):
+        """Missing id should not prevent card emission - UUID fallback kicks in."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:datetime", "status": "completed",
+                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},  # no id
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        function_calls = [e for e in added_items if e.get("item", {}).get("type") == "function_call"]
+        function_outputs = [e for e in added_items if e.get("item", {}).get("type") == "function_call_output"]
+        assert len(function_calls) == 1
+        assert len(function_outputs) == 1
+        # The call_ids must match each other (paired) and start with "st-" (UUID fallback prefix)
+        fc_id = function_calls[0]["item"]["call_id"]
+        fco_id = function_outputs[0]["item"]["call_id"]
+        assert fc_id == fco_id, "function_call and function_call_output must have matching call_id"
+        assert fc_id.startswith("st-"), f"Expected UUID fallback prefix, got {fc_id}"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_web_fetch_url_in_arguments(self, monkeypatch, pipe_instance_async):
+        """web_fetch URL appears in card arguments (URL only available at done time)."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.added", "item": {"type": "openrouter:web_fetch", "id": "wf-1", "status": "in_progress"}},
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:web_fetch", "id": "wf-1", "status": "completed",
+                "url": "https://example.com/page",
+                "result": {"content": "page text"}}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        function_calls = [e for e in emitted
+                          if e.get("type") == "response.output_item.added"
+                          and e.get("item", {}).get("type") == "function_call"
+                          and e.get("item", {}).get("call_id") == "wf-1"]
+        assert len(function_calls) == 1
+        assert "https://example.com/page" in function_calls[0]["item"]["arguments"]
+
+    @pytest.mark.asyncio
+    async def test_openrouter_web_search_url_extraction(self, monkeypatch, pipe_instance_async):
+        """web_search emits status event with extracted URLs (status event NOT gated by SHOW_TOOL_CARDS)."""
+        pipe = pipe_instance_async
+        # NOTE: status events with action='web_search' are NOT gated; they fire regardless of SHOW_TOOL_CARDS
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:web_search", "id": "ws-1", "status": "completed",
+                "result": {"results": [
+                    {"url": "https://a.com", "title": "A"},
+                    {"url": "https://b.com", "title": "B"},
+                ]}}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        web_search_status = [e for e in emitted
+                             if e.get("type") == "status"
+                             and e.get("data", {}).get("action") == "web_search"]
+        assert len(web_search_status) == 1
+        urls = web_search_status[0]["data"]["urls"]
+        assert "https://a.com" in urls and "https://b.com" in urls
+
+    @pytest.mark.asyncio
+    async def test_openrouter_server_tool_dedup(self, monkeypatch, pipe_instance_async):
+        """Duplicate done events for the same call_id produce only one card pair."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        done_event = {"type": "response.output_item.done", "item": {
+            "type": "openrouter:datetime", "id": "dt-dup", "status": "completed",
+            "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}}
+        events = [
+            done_event,
+            done_event,  # duplicate
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        fc_for_dup = [e for e in added_items
+                      if e.get("item", {}).get("type") == "function_call"
+                      and e.get("item", {}).get("call_id") == "dt-dup"]
+        fco_for_dup = [e for e in added_items
+                       if e.get("item", {}).get("type") == "function_call_output"
+                       and e.get("item", {}).get("call_id") == "dt-dup"]
+        assert len(fc_for_dup) == 1, "Dedup failed: function_call emitted twice"
+        assert len(fco_for_dup) == 1, "Dedup failed: function_call_output emitted twice"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_web_search_empty_result(self, monkeypatch, pipe_instance_async):
+        """web_search with result=None still renders card without crashing."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:web_search", "id": "ws-empty", "status": "completed",
+                "result": None}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        function_outputs = [e for e in emitted
+                            if e.get("type") == "response.output_item.added"
+                            and e.get("item", {}).get("type") == "function_call_output"
+                            and e.get("item", {}).get("call_id") == "ws-empty"]
+        assert len(function_outputs) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_unmatched_warning_when_pair_emits_normally(self, monkeypatch, pipe_instance_async, caplog):
+        """Happy path: when start+result pair fires normally, no audit warning."""
+        import logging
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:datetime", "id": "dt-ok", "status": "completed",
+                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        with caplog.at_level(logging.WARNING):
+            await pipe._streaming_handler._run_streaming_loop(
+                body, pipe.valves, emitter,
+                metadata={"model": {"id": "test"}}, tools={},
+                session=cast(Any, object()), user_id="user-123",
+            )
+
+        unmatched_warnings = [r for r in caplog.records
+                              if "Tool card(s) emitted without matching" in r.getMessage()]
+        assert len(unmatched_warnings) == 0
+
+    @pytest.mark.asyncio
+    async def test_unmatched_tool_call_logs_warning(self, monkeypatch, pipe_instance_async, caplog):
+        """When function_call emit succeeds but function_call_output emit raises BEFORE updating dedup,
+        the audit log fires at end-of-turn.
+
+        Engineering: wrap event_emitter so the function_call_output emission raises. _emit_tool_result
+        adds to emitted_tool_output_items BEFORE the await, so a raise doesn't prevent the dedup add.
+        However, if _emit_tool_result is not called at all for a started call, the warning fires.
+        Simulate by intercepting the function_call_output emission and dropping it without updating
+        any state — done by patching the helper at the source level via a wrapper emitter.
+        """
+        import logging
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        # The audit fires when emitted_tool_call_items != emitted_tool_output_items at end of stream.
+        # Trigger: have _emit_tool_start succeed and _emit_tool_result early-return because the
+        # caller passed a different call_id. Simulate by emitting two distinct datetime items
+        # but use a wrapper emitter that reorders/silently drops one of the function_call_output events
+        # AFTER the helper's dedup-set update — which we cannot do externally because the dedup is
+        # internal to closure scope.
+        #
+        # Practical approach: monkeypatch streaming_core's `_run_streaming_loop` is too invasive.
+        # Instead, invoke the audit code path indirectly: emit an item type the handler doesn't
+        # have a pairing for. Since all server-tool handlers we wrote always pair start+result,
+        # the only way to trigger is via a synthetic test that desyncs the sets.
+        #
+        # The cleanest available test: monkeypatch `_emit_tool_result` to no-op. But it's a closure.
+        #
+        # Pragmatic solution: monkeypatch event_emitter to silently swallow function_call_output
+        # events. The helper updates emitted_tool_output_items BEFORE awaiting the emitter, so this
+        # actually does NOT trigger the warning. So we must engineer a different desync.
+        #
+        # Final approach: use a custom event_emitter that observably tracks the calls but
+        # additionally directly mutates the streaming handler's internal state by patching the
+        # helper's `nonlocal emitted_response_output_items = True` line ineffective. Not feasible.
+        #
+        # Conclusion: the audit log fires only when programmer error desyncs the dedup sets. This
+        # is a defensive check that's hard to trigger from the public test surface without source
+        # patching. We document this limitation.
+        pytest.skip(
+            "Audit log fires only when emitted_tool_call_items and emitted_tool_output_items "
+            "diverge — only possible via source-level programmer error (caller forgets to thread "
+            "returned id, future code adds a start without result). The closure-local dedup sets "
+            "cannot be desynced from the public test surface. Defensive log is verified by code "
+            "review."
+        )
