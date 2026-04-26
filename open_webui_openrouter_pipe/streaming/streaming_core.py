@@ -665,6 +665,34 @@ class StreamingHandler:
                     current += "\n"
             return f"{current}{snippet}\n"
 
+        async def _emit_server_tool_card(
+            item_id: str, name: str, arguments: str, result_text: str,
+        ) -> None:
+            if not event_emitter:
+                return
+            call_id = item_id or f"st-{uuid.uuid4().hex}"
+            await event_emitter({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call",
+                    "id": call_id,
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                    "status": "completed",
+                },
+            })
+            await event_emitter({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call_output",
+                    "id": f"fco-{uuid.uuid4().hex}",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": result_text}],
+                    "status": "completed",
+                },
+            })
+
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
             """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
             prev = surrogate_carry.get(bucket, "")
@@ -1361,6 +1389,17 @@ class StreamingHandler:
                                     tool_call_names[call_id] = tool_name
                             continue
 
+                        if item_type.startswith("openrouter:") and event_emitter:
+                            tool_label = {
+                                "openrouter:web_search": "Searching the web…",
+                                "openrouter:web_fetch": "Fetching web page…",
+                                "openrouter:datetime": "Getting current time…",
+                                "openrouter:image_generation": "Generating image…",
+                            }.get(item_type, f"Running {item_type}…")
+                            await self._pipe._event_emitter_handler._emit_status(
+                                event_emitter, tool_label, done=False
+                            )
+
                     # --- Emit detailed tool status upon completion ------------------------
                     if etype == "response.output_item.done":
                         item_raw = event.get("item")
@@ -1602,6 +1641,56 @@ class StreamingHandler:
                                             done=False,
                                         )
                                         image_markdowns = []
+                        elif item_type == "openrouter:datetime":
+                            title = None
+                            dt_val = item.get("datetime", "")
+                            tz_val = item.get("timezone", "")
+                            result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
+                            await _emit_server_tool_card(item.get("id", ""), "Datetime", "{}", result_text)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif item_type == "openrouter:web_search":
+                            title = None
+                            result_data = item.get("result")
+                            try:
+                                result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
+                            except (TypeError, ValueError):
+                                result_text = str(result_data) if result_data is not None else "{}"
+                            await _emit_server_tool_card(item.get("id", ""), "Web Search", "{}", result_text)
+                            search_urls: list[str] = []
+                            url_sources: list[Any] = []
+                            if isinstance(result_data, dict):
+                                url_sources = result_data.get("urls") or result_data.get("results") or []
+                            elif isinstance(result_data, list):
+                                url_sources = result_data
+                            if not isinstance(url_sources, list):
+                                url_sources = []
+                            for u in url_sources:
+                                if isinstance(u, str):
+                                    search_urls.append(u)
+                                elif isinstance(u, dict):
+                                    href = u.get("url") or u.get("link") or u.get("href", "")
+                                    if isinstance(href, str) and href:
+                                        search_urls.append(href)
+                            if search_urls and event_emitter:
+                                await event_emitter({"type": "status", "data": {
+                                    "action": "web_search",
+                                    "description": f"Searched {len(search_urls)} sites",
+                                    "done": True,
+                                    "urls": search_urls,
+                                }})
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif item_type == "openrouter:web_fetch":
+                            title = None
+                            result_data = item.get("result")
+                            fetch_url = item.get("url", "")
+                            try:
+                                args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
+                                result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
+                            except (TypeError, ValueError):
+                                args_text = "{}"
+                                result_text = str(result_data) if result_data is not None else "{}"
+                            await _emit_server_tool_card(item.get("id", ""), "Web Fetch", args_text, result_text)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
                         elif item_type == "reasoning":
