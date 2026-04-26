@@ -10945,16 +10945,16 @@ class TestOpenRouterServerToolCards:
         assert len(fco_for_dup) == 1, "Dedup failed: function_call_output emitted twice"
 
     @pytest.mark.asyncio
-    async def test_openrouter_web_search_empty_result(self, monkeypatch, pipe_instance_async):
-        """web_search with result=None still renders card without crashing."""
+    async def test_openrouter_web_search_card_shows_citation_pointer(self, monkeypatch, pipe_instance_async):
+        """web_search card body points users to citations panel (per OpenRouter spec, the
+        OutputWebSearchServerToolItem has no result field; data is in url_citation annotations)."""
         pipe = pipe_instance_async
         pipe.valves.SHOW_TOOL_CARDS = True
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
         events = [
             {"type": "response.output_item.done", "item": {
-                "type": "openrouter:web_search", "id": "ws-empty", "status": "completed",
-                "result": None}},
+                "type": "openrouter:web_search", "id": "ws-empty", "status": "completed"}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
@@ -10973,6 +10973,9 @@ class TestOpenRouterServerToolCards:
                             and e.get("item", {}).get("type") == "function_call_output"
                             and e.get("item", {}).get("call_id") == "ws-empty"]
         assert len(function_outputs) == 1
+        result_text = function_outputs[0]["item"]["output"][0]["text"]
+        assert "citations panel" in result_text
+        assert "Search completed" in result_text
 
     @pytest.mark.asyncio
     async def test_no_unmatched_warning_when_pair_emits_normally(self, monkeypatch, pipe_instance_async, caplog):

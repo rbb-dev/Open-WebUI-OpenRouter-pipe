@@ -1691,10 +1691,12 @@ class StreamingHandler:
                             title = None
                             result_data = item.get("result")
                             if valves.SHOW_TOOL_CARDS:
-                                try:
-                                    result_text = json.dumps(result_data, indent=2, ensure_ascii=False) if result_data is not None else "{}"
-                                except (TypeError, ValueError):
-                                    result_text = str(result_data) if result_data is not None else "{}"
+                                # OpenRouter's web_search server tool does not include result data
+                                # in the tool item per OpenAPI schema (OutputWebSearchServerToolItem
+                                # has only id/status/type). Search results are delivered as
+                                # url_citation annotations on the assistant message, surfaced via
+                                # the Sources panel.
+                                result_text = "Search completed. Sources available in the citations panel below."
                                 effective_id = await _emit_tool_start(
                                     call_id=item.get("id", ""),
                                     name="Web Search",
