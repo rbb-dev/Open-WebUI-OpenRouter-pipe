@@ -90,6 +90,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [Valves & Configuration Atlas](valves_and_configuration_atlas.md) — authoritative configuration reference (defaults verified against code/tests).
 - [Error Handling & User Experience](error_handling_and_user_experience.md) — what users see, how errors are structured, and how to troubleshoot.
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md) — forward chat uploads to OpenRouter as direct files/audio/video with per-chat toggles and safety gates.
+- [OpenRouter Video Generation](openrouter_video_generation.md) — async video models, per-model filters, streaming storage, and resume behavior.
 - [OpenRouter Provider Routing](openrouter_provider_routing.md) — control which infrastructure providers serve your requests with per-model filters, ORDER dropdowns, and compliance options (ZDR, fallbacks).
 - [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) — identifiers, metadata, optional telemetry exports, and OpenRouter-facing headers.
 - [OpenRouter Server Tools](openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, and Image Generation server tools: configuration, companion filters, and data flow.

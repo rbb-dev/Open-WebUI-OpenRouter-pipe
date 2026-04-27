@@ -173,6 +173,85 @@ See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) f
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 
+### OpenRouter video generation
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_VIDEO_GENERATION` | `bool` | `True` | Expose OpenRouter async video-generation models as chat models. Video models are always treated as not ZDR-capable. |
+| `AUTO_INSTALL_VIDEO_FILTERS` | `bool` | `True` | Automatically install/update model-specific OpenRouter Video Generation companion filters in Open WebUI. |
+| `AUTO_ATTACH_VIDEO_FILTERS` | `bool` | `True` | Automatically attach each model-specific video filter to its matching OpenRouter video model. |
+| `AUTO_DEFAULT_VIDEO_FILTERS` | `bool` | `True` | Always keep the per-model video filter enabled by default on its video model. Re-asserted on every catalog metadata sync because video models require their filter to function (the filter exposes mandatory per-model params like `personGeneration` for Veo, `quality` for Sora, etc.). Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_video_default_filter_ids` in `models/catalog_manager.py`. |
+| `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `float` | `5.0` | Initial delay before polling a newly submitted OpenRouter video generation job. |
+| `VIDEO_POLL_INTERVAL_SECONDS` | `float` | `5.0` | Base polling interval for video jobs. |
+| `VIDEO_POLL_BACKOFF_FACTOR` | `float` | `1.2` | Backoff multiplier after each non-terminal poll. |
+| `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `float` | `20.0` | Maximum interval between video status polls. |
+| `VIDEO_MAX_POLL_TIME_SECONDS` | `int` | `600` | Maximum wall-clock polling time before a visible timeout failure is persisted. |
+| `VIDEO_STATUS_POLL_MAX_ERRORS` | `int` | `5` | Consecutive status-poll failures before the lifecycle fails visibly. |
+| `REMOTE_VIDEO_MAX_SIZE_MB` | `int` | `500` | Maximum generated video download size. The download is streamed to a bounded temp file and aborted during streaming if this cap is exceeded. |
+| `VIDEO_DOWNLOAD_CHUNK_SIZE` | `int` | `1048576` | Chunk size used while streaming generated video content to a temp file. |
+| `MAX_CONCURRENT_VIDEO_GENS` | `int` | `2` | Maximum active video lifecycles per pipe process. |
+| `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `int` | `2` | Maximum active video lifecycles per user per pipe process. |
+| `VIDEO_FRAME_IMAGE_MAX_BYTES` | `int` | `12582912` | Maximum decoded size for one image frame passed to video generation. |
+| `VIDEO_FRAME_TOTAL_MAX_BYTES` | `int` | `52428800` | Maximum combined decoded size for all image frames in one video request. |
+| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `str` | `image/jpeg,image/png,image/webp` | Comma-separated MIME allowlist for video frame images. |
+| `VIDEO_OUTPUT_MIME_ALLOWLIST` | `str` | `video/mp4,video/webm` | Comma-separated MIME allowlist for generated video downloads after content sniffing. |
+| `VIDEO_FILTER_MARKER` | `str` | `openrouter_pipe:video_filter:v1` | Marker used to identify generated OpenRouter Video Generation filter functions. |
+
+Notes:
+- Generated videos are not buffered as full Python `bytes`; they go through the canonical multimodal helpers (`MultimodalHandler._download_remote_url_streaming` → `MultimodalHandler._upload_to_owui_storage_from_path` → `_try_link_file_to_chat`), which apply the SSRF gate, exponential-backoff retry, size cap, MIME sniff, OWUI `upload_file_handler` insert, and chat-file link in one shot. The same helpers are reused by image generation.
+- The adapter persists a hidden `videojob` marker into the assistant message immediately after `submit()` returns a job_id, by emitting an OWUI socket `'message'` event (which routes through `Chats.upsert_message_to_chat_by_id_and_message_id`). A later request for the same message resumes polling that job instead of submitting a second job.
+- Local/transient chats (`chat_id` beginning with `local:`) cannot persist markers or final assistant content to Open WebUI chat storage. The on-submit `'message'` emit is skipped for them. They remain in-process only.
+- `Pipe.close()` cancels in-process video lifecycles. OpenRouter has no cancel endpoint here; the on-submit `videojob` marker is what allows the next user request for that message to resume polling rather than submit a duplicate job.
+- Video filters are generated per model from OpenRouter video metadata. Unsupported controls are not exposed: for example Sora text-only models do not show frame controls, and models without seed/audio/negative-prompt support do not show those controls.
+- User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) are validated against `MultimodalHandler._is_safe_url_blocking` before forwarding to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
+
+See: [OpenRouter Video Generation](openrouter_video_generation.md).
+
+#### Companion filter user valves (per-user, per-model)
+
+Each of the 11 video models gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union (27 valves across all 11 variants) is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
+
+**Core UserValves** — gated on `supported_*` catalog fields:
+
+| Valve | Type | Default | Maps to | Gate |
+| --- | --- | --- | --- | --- |
+| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` raw JSON keyed by provider slug | always |
+| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` (seconds) | `supported_durations` non-empty |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty |
+| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty |
+| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` (`WIDTHxHEIGHT`) | `supported_sizes` non-empty |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | shapes `frame_images[]` from chat-attached images | `supported_frame_images` non-empty |
+| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | catalog top-level `generate_audio: true` |
+| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | catalog top-level `seed: true` |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed |
+| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed |
+| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed |
+| `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` allowed |
+| `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` allowed |
+
+**Typed passthrough UserValves** — added in the verification + upgrade pass so users no longer need raw JSON for known per-model knobs. Each renders only when its corresponding string is in the model's `allowed_passthrough_parameters`:
+
+| Valve | Type | Default | Maps to | Exposed on |
+| --- | --- | --- | --- | --- |
+| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow"]` | `""` | passthrough `personGeneration` | Veo trio |
+| `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | Veo trio |
+| `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | Veo trio |
+| `VIDEO_PROMPT_OPTIMIZER` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_optimizer` (boolean) | Hailuo |
+| `VIDEO_FAST_PRETREATMENT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `fast_pretreatment` (boolean) | Hailuo |
+| `VIDEO_PROMPT_EXTEND` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_extend` (boolean) | Wan 2.7 |
+| `VIDEO_RATIO` | `str` | `""` | passthrough `ratio` | Wan 2.7 |
+| `VIDEO_ENABLE_PROMPT_EXPANSION` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enable_prompt_expansion` (boolean) | Wan 2.6 |
+| `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | Wan 2.6 |
+| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | Seedance trio |
+| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | Seedance trio |
+| `VIDEO_QUALITY` | `Literal["", "standard", "hd"]` | `""` | passthrough `quality` | Sora 2 Pro |
+| `VIDEO_STYLE` | `str` | `""` | passthrough `style` | Sora 2 Pro |
+
+**Skip-when-default sentinel**: a valve set to its default value (`""`, `0`, `0.0`, or `"model_default"`) is **NOT** included in the request body. The upstream provider's own default applies. 3-state Literals translate `"on"` → `True`, `"off"` → `False`, `"model_default"` → omitted.
+
+**Routing**: top-level fields (`duration`, `aspect_ratio`, `resolution`, `size`, `seed`, `generate_audio`, `negative_prompt`, `frame_images`) land at the request body root. Other passthrough fields land at the body root too — OpenRouter "passes them through to the provider". `VIDEO_PROVIDER_OPTIONS_JSON` is the only valve that writes to `provider.options.<slug>.parameters.<field>` (Phase-0-probe-confirmed nesting).
+
 ### Direct uploads (bypass OWUI RAG)
 
 | Valve | Type | Default (verified) | Purpose / notes |

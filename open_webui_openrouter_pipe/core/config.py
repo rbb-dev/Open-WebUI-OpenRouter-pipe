@@ -52,6 +52,9 @@ _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"
 _OPENROUTER_IMAGE_GEN_FILTER_MARKER = "openrouter_pipe:image_gen_filter:v1"
 _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID = "openrouter_image_gen"
 
+# OpenRouter Video Generation filter
+_OPENROUTER_VIDEO_GEN_FILTER_MARKER = "openrouter_pipe:video_filter:v1"
+
 _DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
 
@@ -1537,6 +1540,13 @@ class Valves(BaseModel):
         default=True,
         description="Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users.",
     )
+    ENABLE_VIDEO_GENERATION: bool = Field(
+        default=True,
+        description=(
+            "Expose OpenRouter async video-generation models as chat models. "
+            "Video models are never treated as ZDR-capable."
+        ),
+    )
 
     # ── Web Tools Filter (Web Search + Web Fetch + Datetime) ──
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
@@ -1560,6 +1570,102 @@ class Valves(BaseModel):
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
         description="Automatically attach the OpenRouter Image Generation filter to all pipe models.",
+    )
+    AUTO_INSTALL_VIDEO_FILTERS: bool = Field(
+        default=True,
+        description="Automatically install/update the OpenRouter Video Generation companion filter function in Open WebUI.",
+    )
+    AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
+        default=True,
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models.",
+    )
+    AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
+        default=True,
+        description="Always keep the per-model video filter enabled by default on its video model. Re-asserted on every sync because video models require their filter to function.",
+    )
+    VIDEO_INITIAL_POLL_DELAY_SECONDS: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=60.0,
+        description="Initial delay before polling a newly submitted OpenRouter video generation job.",
+    )
+    VIDEO_POLL_INTERVAL_SECONDS: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=60.0,
+        description="Base polling interval for OpenRouter video generation jobs.",
+    )
+    VIDEO_POLL_BACKOFF_FACTOR: float = Field(
+        default=1.2,
+        ge=1.0,
+        le=4.0,
+        description="Backoff multiplier applied after each non-terminal video status poll.",
+    )
+    VIDEO_POLL_INTERVAL_MAX_SECONDS: float = Field(
+        default=20.0,
+        ge=1.0,
+        le=120.0,
+        description="Maximum interval between video generation status polls.",
+    )
+    VIDEO_MAX_POLL_TIME_SECONDS: int = Field(
+        default=600,
+        ge=30,
+        le=7200,
+        description="Maximum wall-clock time to wait for a video generation job before persisting a timeout error.",
+    )
+    VIDEO_STATUS_POLL_MAX_ERRORS: int = Field(
+        default=5,
+        ge=1,
+        le=25,
+        description="Maximum consecutive video status polling errors before the lifecycle is failed visibly.",
+    )
+    REMOTE_VIDEO_MAX_SIZE_MB: int = Field(
+        default=500,
+        ge=1,
+        le=2048,
+        description="Maximum downloaded generated video size in MB before the lifecycle is failed.",
+    )
+    VIDEO_DOWNLOAD_CHUNK_SIZE: int = Field(
+        default=1024 * 1024,
+        ge=64 * 1024,
+        le=8 * 1024 * 1024,
+        description="Chunk size in bytes used when downloading generated video content.",
+    )
+    MAX_CONCURRENT_VIDEO_GENS: int = Field(
+        default=2,
+        ge=1,
+        le=100,
+        description="Maximum number of active video generation lifecycles per pipe process.",
+    )
+    MAX_CONCURRENT_VIDEO_GENS_PER_USER: int = Field(
+        default=2,
+        ge=1,
+        le=25,
+        description="Maximum number of active video generation lifecycles per user per pipe process.",
+    )
+    VIDEO_FRAME_IMAGE_MAX_BYTES: int = Field(
+        default=12 * 1024 * 1024,
+        ge=64 * 1024,
+        le=64 * 1024 * 1024,
+        description="Maximum decoded size for a single image frame passed to OpenRouter video generation.",
+    )
+    VIDEO_FRAME_TOTAL_MAX_BYTES: int = Field(
+        default=50 * 1024 * 1024,
+        ge=64 * 1024,
+        le=128 * 1024 * 1024,
+        description="Maximum combined decoded size for all image frames passed to one video generation request.",
+    )
+    VIDEO_FRAME_IMAGE_MIME_ALLOWLIST: str = Field(
+        default="image/jpeg,image/png,image/webp",
+        description="Comma-separated MIME allowlist for video generation frame images.",
+    )
+    VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
+        default="video/mp4,video/webm",
+        description="Comma-separated MIME allowlist for generated video downloads after content sniffing.",
+    )
+    VIDEO_FILTER_MARKER: str = Field(
+        default=_OPENROUTER_VIDEO_GEN_FILTER_MARKER,
+        description="Marker string used to identify the installed OpenRouter Video Generation filter function.",
     )
     AUTO_ATTACH_DIRECT_UPLOADS_FILTER: bool = Field(
         default=True,

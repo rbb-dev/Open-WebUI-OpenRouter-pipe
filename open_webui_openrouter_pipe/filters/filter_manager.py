@@ -28,6 +28,7 @@ from ..core.config import (
     _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
@@ -890,6 +891,105 @@ class Filter:
             log_label="OpenRouter Image Generation filter",
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+        )
+
+    @staticmethod
+    def render_openrouter_video_gen_filter_source(
+        *,
+        model_id: str = "openrouter/video",
+        video_model: dict[str, Any] | None = None,
+    ) -> str:
+        from .video_filter_renderer import render_video_filter_source
+
+        return render_video_filter_source(
+            model_id=model_id,
+            video_model=video_model,
+            pipe_metadata_key=_PIPE_METADATA_KEY,
+        )
+
+    @timed
+    async def ensure_openrouter_video_gen_filter_function_ids(
+        self,
+        models: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        from ..models.registry import ModelFamily, OpenRouterModelRegistry
+
+        installed: dict[str, str] = {}
+        for model in models:
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            model_id = model_id.strip()
+            try:
+                if not ModelFamily.supports("video_generation", model_id):
+                    continue
+            except Exception:
+                continue
+            spec = OpenRouterModelRegistry.spec(model_id)
+            video_model = spec.get("video_model") if isinstance(spec, dict) else None
+            if not isinstance(video_model, dict):
+                video_model = dict(model)
+            original_id = model.get("original_id")
+            canonical_id = original_id if isinstance(original_id, str) and original_id.strip() else model_id
+            function_id = await self._ensure_single_video_gen_filter_function_id(
+                model_id=canonical_id,
+                video_model=video_model,
+            )
+            if function_id:
+                installed[model_id] = function_id
+                if isinstance(original_id, str) and original_id.strip():
+                    installed[original_id.strip()] = function_id
+        return installed
+
+    async def _ensure_single_video_gen_filter_function_id(
+        self,
+        *,
+        model_id: str,
+        video_model: dict[str, Any] | None,
+    ) -> str | None:
+        from .video_filter_renderer import build_video_filter_spec
+
+        spec = build_video_filter_spec(model_id, video_model)
+
+        model_id_token_dq = f'VIDEO_MODEL_ID = "{spec.model_id}"'
+        model_id_token_sq = f"VIDEO_MODEL_ID = '{spec.model_id}'"
+
+        def _matches(content: str) -> bool:
+            if not isinstance(content, str) or not content:
+                return False
+            if _OPENROUTER_VIDEO_GEN_FILTER_MARKER not in content:
+                return False
+            if model_id_token_dq not in content and model_id_token_sq not in content:
+                return False
+            return "class Filter" in content
+
+        desired_source = self.render_openrouter_video_gen_filter_source(
+            model_id=model_id,
+            video_model=video_model,
+        ).strip() + "\n"
+        valid, error = self.validate_filter_source(desired_source)
+        if not valid:
+            raise ValueError(f"Generated OpenRouter Video Generation filter is invalid: {error}")
+
+        return await self._ensure_filter_installed(
+            desired_source=desired_source,
+            desired_name=f" {spec.display_name}"[:80],
+            desired_meta={
+                "description": (
+                    f"Configure OpenRouter async video generation for {spec.display_name}."
+                ),
+                "toggle": True,
+                "manifest": {
+                    "title": spec.display_name[:80],
+                    "id": spec.function_id,
+                    "version": "0.1.0",
+                    "license": "MIT",
+                },
+            },
+            preferred_id=spec.function_id,
+            auto_install_valve="AUTO_INSTALL_VIDEO_FILTERS",
+            log_label=f"OpenRouter Video Generation filter for {spec.model_id}",
+            matches_candidate=_matches,
         )
 
     # =========================================================================

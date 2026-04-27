@@ -272,15 +272,19 @@ class ModelCatalogManager:
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
             or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
+            or valves.AUTO_INSTALL_VIDEO_FILTERS
+            or valves.AUTO_ATTACH_VIDEO_FILTERS
             or provider_routing_enabled
         ):
             return
         if not selected_models:
             return
         last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
+        last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
         sync_key = (
             pipe_identifier,
             float(last_fetch or 0.0),
+            float(last_video_fetch or 0.0),
             valves.MODEL_ID,
             valves.UPDATE_MODEL_IMAGES,
             valves.UPDATE_MODEL_CAPABILITIES,
@@ -292,6 +296,10 @@ class ModelCatalogManager:
             valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
             valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
             valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
+            valves.AUTO_INSTALL_VIDEO_FILTERS,
+            valves.AUTO_ATTACH_VIDEO_FILTERS,
+            valves.AUTO_DEFAULT_VIDEO_FILTERS,
+            valves.ENABLE_VIDEO_GENERATION,
             valves.ENABLE_WEB_SEARCH,
             valves.ENABLE_WEB_FETCH,
             valves.ENABLE_DATETIME,
@@ -580,6 +588,8 @@ class ModelCatalogManager:
             or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
             or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+            or valves.AUTO_INSTALL_VIDEO_FILTERS
+            or valves.AUTO_ATTACH_VIDEO_FILTERS
             or provider_routing_enabled
         ):
             return
@@ -718,6 +728,19 @@ class ModelCatalogManager:
                     self.logger.debug("OpenRouter Image Gen filter ensure failed: %s", exc)
                     image_gen_filter_function_id = None
 
+            video_gen_filter_function_ids: dict[str, str] = {}
+            if (
+                (valves.AUTO_INSTALL_VIDEO_FILTERS or valves.AUTO_ATTACH_VIDEO_FILTERS)
+                and valves.ENABLE_VIDEO_GENERATION
+            ):
+                try:
+                    video_gen_filter_function_ids = (
+                        await self._pipe._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(models)
+                    )
+                except Exception as exc:
+                    self.logger.debug("OpenRouter Video Gen filter ensure failed: %s", exc)
+                    video_gen_filter_function_ids = {}
+
             direct_uploads_filter_function_id: str | None = None
             if (
                 valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
@@ -766,6 +789,30 @@ class ModelCatalogManager:
                     self.logger.info(
                         "Auto-attaching OpenRouter Direct Uploads filter '%s' to %d/%d model(s) that support direct uploads.",
                         direct_uploads_filter_function_id,
+                        supported_models,
+                        len(models),
+                    )
+
+            if valves.AUTO_ATTACH_VIDEO_FILTERS and valves.ENABLE_VIDEO_GENERATION:
+                if not video_gen_filter_function_ids:
+                    self.logger.warning(
+                        "AUTO_ATTACH_VIDEO_FILTERS is enabled but no OpenRouter Video Generation filters are installed. "
+                        "Enable AUTO_INSTALL_VIDEO_FILTERS (or install the filters manually) to show model-specific toggles in the UI."
+                    )
+                else:
+                    supported_models = 0
+                    for model in models:
+                        model_id = model.get("id")
+                        if isinstance(model_id, str) and model_id:
+                            try:
+                                supported = bool(ModelFamily.supports("video_generation", model_id))
+                            except Exception:
+                                supported = False
+                            if supported:
+                                supported_models += 1
+                    self.logger.info(
+                        "Auto-attaching %d OpenRouter Video Generation filter(s) to %d/%d video model(s).",
+                        len(set(video_gen_filter_function_ids.values())),
                         supported_models,
                         len(models),
                     )
@@ -841,6 +888,7 @@ class ModelCatalogManager:
                     "file_input": _safe_supports("file_input"),
                     "audio_input": _safe_supports("audio_input"),
                     "video_input": _safe_supports("video_input"),
+                    "video_generation": _safe_supports("video_generation"),
                     "vision": _safe_supports("vision"),
                 }
 
@@ -863,9 +911,10 @@ class ModelCatalogManager:
                         if cleaned:
                             description = cleaned
 
+                original_id = model.get("original_id")
+
                 profile_image_url = None
                 if valves.UPDATE_MODEL_IMAGES:
-                    original_id = model.get("original_id")
                     if isinstance(original_id, str) and original_id:
                         profile_image_url = icon_data_mapping.get(original_id)
                         if not profile_image_url:
@@ -888,11 +937,22 @@ class ModelCatalogManager:
                 auto_attach_direct_uploads = bool(
                     direct_uploads_filter_function_id and valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
                 )
+                video_gen_filter_function_id = ""
+                if pipe_capabilities.get("video_generation"):
+                    video_gen_filter_function_id = (
+                        video_gen_filter_function_ids.get(openrouter_id)
+                        or video_gen_filter_function_ids.get(str(original_id or ""))
+                        or ""
+                    )
+                auto_attach_video_gen = bool(
+                    video_gen_filter_function_id
+                    and valves.AUTO_ATTACH_VIDEO_FILTERS
+                    and valves.ENABLE_VIDEO_GENERATION
+                    and pipe_capabilities.get("video_generation")
+                )
 
-                # Look up provider routing filter ID for this model
-                # NOTE: Use original_id (e.g., "openai/gpt-4o") not openrouter_id (sanitized "openai.gpt-4o")
-                # because the filter map keys come from valve input which uses original OpenRouter format
-                original_id = model.get("original_id")
+                # Look up provider routing filter ID for this model.
+                # Use original_id (e.g., "openai/gpt-4o") rather than the sanitized OWUI id.
                 pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
 
                 # DEBUG: trace provider routing attachment
@@ -911,6 +971,7 @@ class ModelCatalogManager:
                     and not web_tools_supported
                     and not pipe_capabilities
                     and not auto_attach_direct_uploads
+                    and not auto_attach_video_gen
                     and not pr_filter_id
                     and not image_gen_filter_function_id
                 ):
@@ -934,6 +995,13 @@ class ModelCatalogManager:
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
                             image_gen_filter_function_id=image_gen_filter_function_id,
                             auto_attach_image_gen_filter=bool(valves.AUTO_ATTACH_IMAGE_GEN_FILTER),
+                            video_gen_filter_function_id=video_gen_filter_function_id,
+                            video_gen_filter_supported=bool(pipe_capabilities.get("video_generation")),
+                            auto_attach_video_gen_filter=auto_attach_video_gen,
+                            auto_default_video_gen_filter=bool(
+                                auto_attach_video_gen
+                                and valves.AUTO_DEFAULT_VIDEO_FILTERS
+                            ),
                             provider_routing_filter_id=pr_filter_id,
                             valid_openrouter_filter_ids=_valid_openrouter_filter_ids,
                             openrouter_pipe_capabilities=pipe_capabilities,
@@ -1042,6 +1110,10 @@ class ModelCatalogManager:
         auto_attach_direct_uploads_filter: bool = False,
         image_gen_filter_function_id: str | None = None,
         auto_attach_image_gen_filter: bool = False,
+        video_gen_filter_function_id: str | None = None,
+        video_gen_filter_supported: bool = False,
+        auto_attach_video_gen_filter: bool = False,
+        auto_default_video_gen_filter: bool = False,
         provider_routing_filter_id: str | None = None,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
@@ -1067,6 +1139,7 @@ class ModelCatalogManager:
         disable_web_tools_auto_attach = False
         disable_web_tools_default_on = False
         disable_direct_uploads_auto_attach = False
+        disable_video_gen_auto_attach = False
         disable_description_updates = False
 
         if existing is not None:
@@ -1080,6 +1153,7 @@ class ModelCatalogManager:
             disable_web_tools_auto_attach = _get_disable_param(params, "disable_web_tools_auto_attach")
             disable_web_tools_default_on = _get_disable_param(params, "disable_web_tools_default_on")
             disable_direct_uploads_auto_attach = _get_disable_param(params, "disable_direct_uploads_auto_attach")
+            disable_video_gen_auto_attach = _get_disable_param(params, "disable_video_gen_auto_attach")
             disable_description_updates = _get_disable_param(params, "disable_description_updates")
 
         if disable_model_metadata_sync:
@@ -1095,6 +1169,8 @@ class ModelCatalogManager:
             auto_default_filter = False
         if disable_direct_uploads_auto_attach:
             auto_attach_direct_uploads_filter = False
+        if disable_video_gen_auto_attach:
+            auto_attach_video_gen_filter = False
         if disable_description_updates:
             update_descriptions = False
 
@@ -1235,6 +1311,52 @@ class ModelCatalogManager:
             pipe_meta = _ensure_pipe_meta(meta_dict)
             pipe_meta["image_gen_filter_id"] = image_gen_filter_function_id
             meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+            return True
+
+        def _apply_video_gen_filter_ids(meta_dict: dict) -> bool:
+            if not video_gen_filter_function_id or not auto_attach_video_gen_filter:
+                return False
+            normalized = _normalize_id_list(meta_dict, "filterIds")
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+            previous_id = None
+            if isinstance(pipe_meta, dict):
+                prev = pipe_meta.get("video_gen_filter_id")
+                if isinstance(prev, str) and prev and prev != video_gen_filter_function_id:
+                    previous_id = prev
+            had = set(normalized)
+            wanted = set(had)
+            if video_gen_filter_supported:
+                wanted.add(video_gen_filter_function_id)
+            else:
+                wanted.discard(video_gen_filter_function_id)
+            if previous_id:
+                wanted.discard(previous_id)
+            if wanted == had:
+                return False
+            if video_gen_filter_supported and video_gen_filter_function_id not in normalized:
+                normalized.append(video_gen_filter_function_id)
+            normalized = [fid for fid in normalized if fid in wanted]
+            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            pipe_meta["video_gen_filter_id"] = video_gen_filter_function_id
+            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+            return True
+
+        def _apply_video_default_filter_ids(meta_dict: dict) -> bool:
+            if (
+                not auto_default_video_gen_filter
+                or not video_gen_filter_function_id
+                or not video_gen_filter_supported
+            ):
+                return False
+            filter_ids = _normalize_id_list(meta_dict, "filterIds")
+            if video_gen_filter_function_id not in filter_ids:
+                return False
+            default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
+            if video_gen_filter_function_id in default_ids:
+                return False
+            default_ids.append(video_gen_filter_function_id)
+            meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
             return True
 
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
@@ -1380,6 +1502,12 @@ class ModelCatalogManager:
             if _apply_image_gen_filter_ids(meta_dict):
                 meta_updated = True
 
+            if _apply_video_gen_filter_ids(meta_dict):
+                meta_updated = True
+
+            if _apply_video_default_filter_ids(meta_dict):
+                meta_updated = True
+
             if _apply_provider_routing_filter_ids(meta_dict):
                 meta_updated = True
                 self.logger.debug(
@@ -1429,6 +1557,8 @@ class ModelCatalogManager:
             _apply_default_filter_ids(meta_dict)
             _apply_direct_uploads_filter_ids(meta_dict)
             _apply_image_gen_filter_ids(meta_dict)
+            _apply_video_gen_filter_ids(meta_dict)
+            _apply_video_default_filter_ids(meta_dict)
             if _apply_provider_routing_filter_ids(meta_dict):
                 self.logger.debug(
                     "Attached provider routing filter '%s' to new model '%s'",

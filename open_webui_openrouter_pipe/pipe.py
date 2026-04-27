@@ -120,6 +120,7 @@ if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from .requests.orchestrator import RequestOrchestrator
     from .filters import FilterManager
+    from .integrations.video import VideoGenerationAdapter
 
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
@@ -199,7 +200,6 @@ class Pipe:
 
     # Class variables (shared across instances)
     id: str = _PIPE_RUNTIME_ID or "open_webui_openrouter_pipe"
-    name: str = "OpenRouter Responses API"
 
     # Valve classes (must be defined as nested classes for Open WebUI discovery)
     Valves = Valves
@@ -211,6 +211,8 @@ class Pipe:
     _semaphore_limit: int = 0
     _tool_global_semaphore: asyncio.Semaphore | None = None
     _tool_global_limit: int = 0
+    _video_global_semaphore: asyncio.Semaphore | None = None
+    _video_global_limit: int = 0
     _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
         "openrouter_tool_context",
         default=None,
@@ -302,6 +304,16 @@ class Pipe:
         self._chat_completions_adapter: Optional["ChatCompletionsAdapter"] = None
         self._request_orchestrator: Optional["RequestOrchestrator"] = None
         self._filter_manager: Optional["FilterManager"] = None
+        self._video_generation_adapter: Optional["VideoGenerationAdapter"] = None
+        self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._video_active_tasks_dict_lock: asyncio.Lock = asyncio.Lock()
+        self._video_message_locks_dict_lock: asyncio.Lock = asyncio.Lock()
+        self._video_user_locks_dict_lock: asyncio.Lock = asyncio.Lock()
+        self._video_user_locks: dict[str, asyncio.Lock] = {}
+        self._video_user_active_counts: dict[str, int] = {}
+        self._video_user_active_jobs: dict[str, set[str]] = {}
+        self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._video_message_lock_refs: dict[tuple[str, str], int] = {}
 
         # Circuit breaker state (per-user error tracking)
         self._circuit_breaker = CircuitBreaker(
@@ -701,6 +713,15 @@ class Pipe:
             )
         return self._filter_manager
 
+    def _ensure_video_generation_adapter(self) -> "VideoGenerationAdapter":
+        if self._video_generation_adapter is None:
+            from .integrations.video import VideoGenerationAdapter
+            self._video_generation_adapter = VideoGenerationAdapter(
+                pipe=self,
+                logger=self.logger,
+            )
+        return self._video_generation_adapter
+
     # =============================================================================
     # ENTRY POINTS
     # =============================================================================
@@ -726,6 +747,15 @@ class Pipe:
                     logger=self.logger,
                     http_referer=_select_openrouter_http_referer(self.valves),
                 )
+                if self.valves.ENABLE_VIDEO_GENERATION:
+                    from .integrations.video_catalog import ensure_video_catalog_loaded
+
+                    await ensure_video_catalog_loaded(
+                        session,
+                        valves=self.valves,
+                        api_key=api_key_value,
+                        logger=self.logger,
+                    )
         except ValueError as exc:
             refresh_error = exc
             self.logger.error("OpenRouter configuration error: %s", exc)
@@ -786,6 +816,30 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
                 pass
+        if self.valves.AUTO_INSTALL_VIDEO_FILTERS and self.valves.ENABLE_VIDEO_GENERATION:
+            try:
+                await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(available_models)
+            except Exception as exc:
+                self.logger.debug("AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc)
+        elif not self.valves.ENABLE_VIDEO_GENERATION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                vg = await _Funcs.get_function_by_id("openrouter_video_gen")
+                if vg and getattr(vg, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_video_gen", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
+            except Exception:
+                pass
+        try:
+            from open_webui.models.functions import Functions as _Funcs
+            legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
+            if legacy is not None:
+                await _Funcs.delete_function_by_id("openrouter_video_openrouter_video")
+                self.logger.info(
+                    "Removed legacy generic OpenRouter Video Generation filter row 'openrouter_video_openrouter_video'"
+                )
+        except Exception as exc:
+            self.logger.debug("Legacy video filter cleanup failed: %s", exc)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
@@ -1145,12 +1199,24 @@ class Pipe:
             pass
 
     @timed
+    async def _stop_video_tasks(self) -> None:
+        tasks = list(getattr(self, "_video_active_tasks", {}).values())
+        self._video_active_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                if task.get_loop() is asyncio.get_running_loop():
+                    await task
+
+    @timed
     async def close(self):
         """Shutdown background resources (DB executor, queue worker, log worker, Redis)."""
         if getattr(self, "_closed", False):
             return
         self._closed = True
         self.shutdown()
+        await self._stop_video_tasks()
         await self._stop_request_worker()
         await self._stop_log_worker()
         await self._stop_redis()
@@ -1735,6 +1801,15 @@ class Pipe:
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
             )
+            if valves.ENABLE_VIDEO_GENERATION:
+                from .integrations.video_catalog import ensure_video_catalog_loaded
+
+                await ensure_video_catalog_loaded(
+                    session,
+                    valves=valves,
+                    api_key=api_key_value or "",
+                    logger=self.logger,
+                )
         except ValueError as exc:
             await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
@@ -2454,7 +2529,7 @@ class Pipe:
                 self.logger.warning(
                     "ZDR model filter enabled but ZDR endpoint list is unavailable; skipping ZDR filtering."
                 )
-        if free_mode == "all" and tool_mode == "all" and not (zdr_only and zdr_model_ids is not None):
+        if free_mode == "all" and tool_mode == "all" and not zdr_only:
             return models
 
         filtered: list[dict[str, Any]] = []
@@ -2473,8 +2548,12 @@ class Pipe:
             else:
                 spec_lookup_id = norm_id
 
-            if zdr_only and zdr_model_ids is not None and norm_id not in zdr_model_ids:
-                continue
+            if zdr_only:
+                zdr_capable = OpenRouterModelRegistry.is_zdr_capable(norm_id)
+                if zdr_capable is False:
+                    continue
+                if zdr_capable is None and zdr_model_ids is not None and norm_id not in zdr_model_ids:
+                    continue
 
             if free_mode != "all":
                 is_free = is_free_model(spec_lookup_id)

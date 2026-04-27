@@ -575,6 +575,16 @@ def _normalize_optional_str(value: Any) -> Optional[str]:
     return value or None
 
 
+def _clean_str(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _csv_set(value: Any) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    return {part.strip().lower() for part in value.split(",") if part.strip()}
+
+
 def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_length: int = 128) -> str:
     """Return a filesystem-safe path component to prevent traversal/odd characters."""
     text = str(value or "").strip()
@@ -686,6 +696,61 @@ def _iter_phase_marker_spans(text: str) -> list[dict[str, Any]]:
 
     spans.sort(key=lambda span: span["start"])
     return spans
+
+
+_KIND_MARKER_NAMESPACE = "openrouter:v1:"
+_KIND_MARKER_RE = re.compile(
+    r"^\[" + re.escape(_KIND_MARKER_NAMESPACE) + r"([a-z][a-z0-9_-]*):([^\]]+)\]: #$"
+)
+
+
+def _serialize_kind_marker(kind: str, body: str) -> str:
+    if not isinstance(kind, str) or not kind:
+        raise ValueError("kind must be a non-empty string")
+    if not isinstance(body, str) or not body:
+        raise ValueError("body must be a non-empty string")
+    return f"[{_KIND_MARKER_NAMESPACE}{kind}:{body}{_MARKER_SUFFIX}"
+
+
+def _extract_kind_marker(line: str) -> tuple[str, str] | None:
+    if not line:
+        return None
+    match = _KIND_MARKER_RE.match(line.strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _iter_kind_marker_spans(text: str, *, kind: Optional[str] = None) -> list[dict[str, Any]]:
+    if not text:
+        return []
+    spans: list[dict[str, Any]] = []
+    cursor = 0
+    for segment in text.splitlines(True):
+        stripped = segment.strip()
+        match = _extract_kind_marker(stripped)
+        if match is not None:
+            mk_kind, body = match
+            if kind is None or mk_kind == kind:
+                offset = segment.find(stripped)
+                start = cursor + (offset if offset >= 0 else 0)
+                spans.append(
+                    {
+                        "start": start,
+                        "end": start + len(stripped),
+                        "kind": mk_kind,
+                        "body": body,
+                    }
+                )
+        cursor += len(segment)
+    spans.sort(key=lambda span: span["start"])
+    return spans
+
+
+def _find_first_kind_marker_body(text: str, kind: str) -> str:
+    for span in _iter_kind_marker_spans(text, kind=kind):
+        return str(span.get("body") or "")
+    return ""
 
 
 # -----------------------------------------------------------------------------

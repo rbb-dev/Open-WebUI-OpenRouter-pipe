@@ -376,6 +376,23 @@ class StreamingHandler:
         self._model_registry = model_registry
         self._pipe = pipe_instance
 
+    def _audit_orphan_tool_cards(
+        self,
+        emitted_tool_call_items: set[str],
+        emitted_tool_output_items: set[str],
+    ) -> None:
+        """Warn when a tool-card start was emitted without a matching function_call_output.
+
+        Extracted from the closure-local audit so it's directly testable without
+        having to desync internal sets through the public stream surface.
+        """
+        unmatched = emitted_tool_call_items - emitted_tool_output_items
+        if unmatched:
+            self.logger.warning(
+                "Tool card(s) emitted without matching function_call_output: %s",
+                sorted(unmatched),
+            )
+
     @timed
     async def _run_streaming_loop(  # pyright: ignore[reportGeneralTypeIssues]
         self,
@@ -2639,13 +2656,7 @@ class StreamingHandler:
                     )
 
             if (not error_occurred) and (not was_cancelled):
-                # Audit: warn if any tool card was emitted without a matching result.
-                unmatched_tool_calls = emitted_tool_call_items - emitted_tool_output_items
-                if unmatched_tool_calls:
-                    self.logger.warning(
-                        "Tool card(s) emitted without matching function_call_output: %s",
-                        sorted(unmatched_tool_calls),
-                    )
+                self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
                 # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
                 if terminal:

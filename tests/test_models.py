@@ -452,6 +452,8 @@ def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> 
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
     pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
+    pipe.valves.AUTO_INSTALL_VIDEO_FILTERS = False
+    pipe.valves.AUTO_ATTACH_VIDEO_FILTERS = False
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
         [{"id": "test"}],
@@ -482,10 +484,12 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
     # Set a sync key that matches what would be generated
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
     last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
+    last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
 
     pipe._catalog_manager._model_metadata_sync_key = (
         "test_pipe",
         float(last_fetch or 0.0),
+        float(last_video_fetch or 0.0),
         pipe.valves.MODEL_ID,
         pipe.valves.UPDATE_MODEL_IMAGES,
         pipe.valves.UPDATE_MODEL_CAPABILITIES,
@@ -497,6 +501,10 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
         pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
         pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
+        pipe.valves.AUTO_INSTALL_VIDEO_FILTERS,
+        pipe.valves.AUTO_ATTACH_VIDEO_FILTERS,
+        pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS,
+        pipe.valves.ENABLE_VIDEO_GENERATION,
         pipe.valves.ENABLE_WEB_SEARCH,
         pipe.valves.ENABLE_WEB_FETCH,
         pipe.valves.ENABLE_DATETIME,
@@ -1311,6 +1319,115 @@ async def test_insert_new_model_with_filters(pipe_instance_async) -> None:
     assert "openrouter_web_tools" in meta["filterIds"]
     assert "openrouter_direct_uploads" in meta["filterIds"]
     assert "openrouter_web_tools" in meta["defaultFilterIds"]
+
+
+@pytest.mark.asyncio
+async def test_video_filter_auto_default_on_insert(pipe_instance_async) -> None:
+    """Per-model video filter is auto-attached AND auto-defaulted on insert."""
+    pipe = pipe_instance_async
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.google.veo-3-fast"
+
+    insert_mock = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
+         patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "Veo 3 Fast",
+            None,
+            None,
+            False,
+            False,
+            video_gen_filter_function_id="openrouter_video_gen_google_veo_3_fast",
+            video_gen_filter_supported=True,
+            auto_attach_video_gen_filter=True,
+            auto_default_video_gen_filter=True,
+        )
+
+    insert_mock.assert_called_once()
+    inserted_form = insert_mock.call_args[0][0]
+    meta = dict(inserted_form.meta)
+    assert "openrouter_video_gen_google_veo_3_fast" in meta["filterIds"]
+    assert "openrouter_video_gen_google_veo_3_fast" in meta["defaultFilterIds"]
+
+
+@pytest.mark.asyncio
+async def test_video_filter_default_reasserted_on_update(pipe_instance_async) -> None:
+    """Removing the video filter from defaults is undone on the next sync (no seeding)."""
+    pipe = pipe_instance_async
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.google.veo-3-fast"
+
+    existing = _make_existing_model(
+        model_id,
+        meta={
+            "filterIds": ["openrouter_video_gen_google_veo_3_fast"],
+            "defaultFilterIds": [],
+        },
+    )
+
+    update_mock = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "Veo 3 Fast",
+            None,
+            None,
+            False,
+            False,
+            video_gen_filter_function_id="openrouter_video_gen_google_veo_3_fast",
+            video_gen_filter_supported=True,
+            auto_attach_video_gen_filter=True,
+            auto_default_video_gen_filter=True,
+        )
+
+    update_mock.assert_called_once()
+    updated_form = update_mock.call_args[0][1]
+    meta = dict(updated_form.meta)
+    assert "openrouter_video_gen_google_veo_3_fast" in meta["defaultFilterIds"]
+
+
+@pytest.mark.asyncio
+async def test_video_filter_default_skipped_when_valve_off(pipe_instance_async) -> None:
+    """auto_default_video_gen_filter=False keeps video filter out of defaultFilterIds."""
+    pipe = pipe_instance_async
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.google.veo-3-fast"
+
+    insert_mock = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)), \
+         patch("open_webui.models.models.Models.insert_new_model", new=insert_mock), \
+         patch("open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)), \
+         patch("open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)), \
+         patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id,
+            "Veo 3 Fast",
+            None,
+            None,
+            False,
+            False,
+            video_gen_filter_function_id="openrouter_video_gen_google_veo_3_fast",
+            video_gen_filter_supported=True,
+            auto_attach_video_gen_filter=True,
+            auto_default_video_gen_filter=False,
+        )
+
+    insert_mock.assert_called_once()
+    inserted_form = insert_mock.call_args[0][0]
+    meta = dict(inserted_form.meta)
+    assert "openrouter_video_gen_google_veo_3_fast" in meta["filterIds"]
+    assert "openrouter_video_gen_google_veo_3_fast" not in meta.get("defaultFilterIds", [])
 
 
 @pytest.mark.asyncio

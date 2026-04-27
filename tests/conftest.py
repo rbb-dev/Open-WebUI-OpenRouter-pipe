@@ -72,6 +72,10 @@ def _install_open_webui_stubs() -> None:
             return None
 
         @staticmethod
+        async def get_message_by_id_and_message_id(*_args, **_kwargs):
+            return None
+
+        @staticmethod
         async def insert_chat_files(chat_id, message_id, file_ids, user_id, db=None):
             return None
 
@@ -115,6 +119,13 @@ def _install_open_webui_stubs() -> None:
         @staticmethod
         async def insert_new_file(*_args, **_kwargs):
             return None
+
+    class _FileForm:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+        def model_dump(self):
+            return dict(self.__dict__)
 
     class _Users:
         @staticmethod
@@ -172,8 +183,32 @@ def _install_open_webui_stubs() -> None:
     models_mod.ModelParams = _ModelParams
     models_mod.Models = _Models
     files_mod.Files = _Files
+    files_mod.FileForm = _FileForm
     users_mod.Users = _Users
     routers_files_mod.upload_file_handler = _upload_file_handler
+
+    storage_pkg = cast(Any, _ensure_module("open_webui.storage"))
+    storage_pkg.__path__ = []
+    storage_provider_mod = cast(Any, _ensure_module("open_webui.storage.provider"))
+
+    class _Storage:
+        @staticmethod
+        def upload_file(file, filename, tags=None):
+            contents = file.read()
+            if not contents:
+                raise ValueError("empty file")
+            return contents, f"/tmp/{filename}"
+
+        @staticmethod
+        def delete_file(_file_path):
+            return None
+
+        @staticmethod
+        def get_file(file_path):
+            return file_path
+
+    storage_provider_mod.Storage = _Storage
+    storage_pkg.provider = storage_provider_mod
 
     models_pkg.chats = chats_mod
     models_pkg.models = models_mod
@@ -758,6 +793,7 @@ def _reset_model_registry():
     reg._models = []
     reg._specs = {}
     reg._id_map = {}
+    reg._zdr_model_ids = None
     reg._last_fetch = 0.0
     reg._lock = asyncio.Lock()
     reg._next_refresh_after = 0.0

@@ -598,6 +598,24 @@ class RequestOrchestrator:
             )
             return result
 
+        video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
+        video_features = set(video_spec.get("features") or set()) if isinstance(video_spec, dict) else set()
+        if valves.ENABLE_VIDEO_GENERATION and "video_generation" in video_features:
+            api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
+            return await self._pipe._ensure_video_generation_adapter().generate(
+                body=body,
+                responses_body=responses_body,
+                valves=valves,
+                session=session,
+                event_emitter=__event_emitter__,
+                metadata=__metadata__,
+                user=__user__,
+                request=__request__,
+                user_obj=user_model,
+                normalized_model_id=normalized_model_id,
+                api_model_id=api_model_id,
+            )
+
         tools_registry = __tools__
         if inspect.isawaitable(tools_registry):
             try:

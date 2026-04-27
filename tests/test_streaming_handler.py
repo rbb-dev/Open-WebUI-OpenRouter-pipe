@@ -11007,51 +11007,43 @@ class TestOpenRouterServerToolCards:
                               if "Tool card(s) emitted without matching" in r.getMessage()]
         assert len(unmatched_warnings) == 0
 
-    @pytest.mark.asyncio
-    async def test_unmatched_tool_call_logs_warning(self, monkeypatch, pipe_instance_async, caplog):
-        """When function_call emit succeeds but function_call_output emit raises BEFORE updating dedup,
-        the audit log fires at end-of-turn.
+    def test_unmatched_tool_call_logs_warning(self, pipe_instance_async, caplog):
+        """When a tool-card start has no matching function_call_output, the audit warning fires.
 
-        Engineering: wrap event_emitter so the function_call_output emission raises. _emit_tool_result
-        adds to emitted_tool_output_items BEFORE the await, so a raise doesn't prevent the dedup add.
-        However, if _emit_tool_result is not called at all for a started call, the warning fires.
-        Simulate by intercepting the function_call_output emission and dropping it without updating
-        any state — done by patching the helper at the source level via a wrapper emitter.
+        Calls the extracted `_audit_orphan_tool_cards` helper directly with desynced sets — the
+        closure-local sets in `_run_streaming_loop` are private, but the audit logic itself is now
+        a callable method that takes the sets as arguments, so we can verify the defensive log
+        without source-patching the streaming loop.
         """
         import logging
-        pipe = pipe_instance_async
-        pipe.valves.SHOW_TOOL_CARDS = True
-        body = ResponsesBody(model="test/model", input=[], stream=True)
+        handler = pipe_instance_async._streaming_handler
 
-        # The audit fires when emitted_tool_call_items != emitted_tool_output_items at end of stream.
-        # Trigger: have _emit_tool_start succeed and _emit_tool_result early-return because the
-        # caller passed a different call_id. Simulate by emitting two distinct datetime items
-        # but use a wrapper emitter that reorders/silently drops one of the function_call_output events
-        # AFTER the helper's dedup-set update — which we cannot do externally because the dedup is
-        # internal to closure scope.
-        #
-        # Practical approach: monkeypatch streaming_core's `_run_streaming_loop` is too invasive.
-        # Instead, invoke the audit code path indirectly: emit an item type the handler doesn't
-        # have a pairing for. Since all server-tool handlers we wrote always pair start+result,
-        # the only way to trigger is via a synthetic test that desyncs the sets.
-        #
-        # The cleanest available test: monkeypatch `_emit_tool_result` to no-op. But it's a closure.
-        #
-        # Pragmatic solution: monkeypatch event_emitter to silently swallow function_call_output
-        # events. The helper updates emitted_tool_output_items BEFORE awaiting the emitter, so this
-        # actually does NOT trigger the warning. So we must engineer a different desync.
-        #
-        # Final approach: use a custom event_emitter that observably tracks the calls but
-        # additionally directly mutates the streaming handler's internal state by patching the
-        # helper's `nonlocal emitted_response_output_items = True` line ineffective. Not feasible.
-        #
-        # Conclusion: the audit log fires only when programmer error desyncs the dedup sets. This
-        # is a defensive check that's hard to trigger from the public test surface without source
-        # patching. We document this limitation.
-        pytest.skip(
-            "Audit log fires only when emitted_tool_call_items and emitted_tool_output_items "
-            "diverge — only possible via source-level programmer error (caller forgets to thread "
-            "returned id, future code adds a start without result). The closure-local dedup sets "
-            "cannot be desynced from the public test surface. Defensive log is verified by code "
-            "review."
-        )
+        with caplog.at_level(logging.WARNING):
+            handler._audit_orphan_tool_cards(
+                emitted_tool_call_items={"call-1", "call-2", "call-3"},
+                emitted_tool_output_items={"call-1"},
+            )
+
+        unmatched = [r for r in caplog.records
+                     if "Tool card(s) emitted without matching" in r.getMessage()]
+        assert len(unmatched) == 1
+        message = unmatched[0].getMessage()
+        # Orphans should be sorted and present; the matched call should NOT be in the warning.
+        assert "call-2" in message
+        assert "call-3" in message
+        assert "['call-2', 'call-3']" in message  # sorted, only orphans
+
+    def test_no_unmatched_warning_when_sets_match(self, pipe_instance_async, caplog):
+        """No warning when every started tool card has a matching output."""
+        import logging
+        handler = pipe_instance_async._streaming_handler
+
+        with caplog.at_level(logging.WARNING):
+            handler._audit_orphan_tool_cards(
+                emitted_tool_call_items={"call-1", "call-2"},
+                emitted_tool_output_items={"call-1", "call-2"},
+            )
+
+        unmatched = [r for r in caplog.records
+                     if "Tool card(s) emitted without matching" in r.getMessage()]
+        assert len(unmatched) == 0

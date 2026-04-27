@@ -122,6 +122,34 @@ def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> s
     return None
 
 
+def _sniff_mime_from_prefix(data: bytes) -> str | None:
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    raw = bytes(data)
+
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw.startswith((b"\x00\x00\x01\x00", b"\x00\x00\x02\x00")):
+        return "image/x-icon"
+
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        return "video/mp4"
+    if raw.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if raw.startswith(b"OggS"):
+        return "video/ogg"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"AVI ":
+        return "video/x-msvideo"
+
+    return None
+
+
 def _extract_openrouter_og_image(html: str) -> str | None:
     """Extract OpenGraph or Twitter image URL from HTML meta tags.
 
@@ -642,6 +670,90 @@ class MultimodalHandler:
             self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
             return None
 
+    async def _upload_to_owui_storage_from_path(
+        self,
+        request: Request,
+        user,
+        source_path: Path,
+        filename: str,
+        mime_type: str,
+        chat_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        owui_user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if upload_file_handler is None:
+            self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
+            return None
+        if not source_path.is_file():
+            self.logger.error("Source path %s is not a file; aborting OWUI streaming upload.", source_path)
+            return None
+        try:
+            upload_metadata: dict[str, Any] = {"mime_type": mime_type}
+            if isinstance(chat_id, str):
+                normalized_chat_id = chat_id.strip()
+                if normalized_chat_id and not normalized_chat_id.startswith("local:"):
+                    upload_metadata["chat_id"] = normalized_chat_id
+            if isinstance(message_id, str):
+                normalized_message_id = message_id.strip()
+                if normalized_message_id:
+                    upload_metadata["message_id"] = normalized_message_id
+
+            size_bytes = source_path.stat().st_size
+
+            with source_path.open("rb") as fh:
+                file_item = await upload_file_handler(
+                    request=request,
+                    file=UploadFile(
+                        file=fh,
+                        filename=filename,
+                        headers=Headers({"content-type": mime_type}),
+                    ),
+                    metadata=upload_metadata,
+                    process=False,
+                    process_in_background=False,
+                    user=user,
+                    background_tasks=BackgroundTasks(),
+                )
+
+            file_id: Optional[str] = None
+            if hasattr(file_item, "id"):
+                candidate = getattr(file_item, "id", None)
+                if isinstance(candidate, str) and candidate.strip():
+                    file_id = candidate.strip()
+            elif isinstance(file_item, dict):
+                raw_id = file_item.get("id")
+                if isinstance(raw_id, str) and raw_id.strip():
+                    file_id = raw_id.strip()
+            if not file_id:
+                self.logger.error("Streaming upload handler returned an object without an id; aborting.")
+                return None
+
+            effective_user_id: Optional[str] = None
+            if isinstance(owui_user_id, str) and owui_user_id.strip():
+                effective_user_id = owui_user_id.strip()
+            else:
+                candidate = getattr(user, "id", None)
+                if isinstance(candidate, str) and candidate.strip():
+                    effective_user_id = candidate.strip()
+
+            try:
+                await self._try_link_file_to_chat(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    file_id=file_id,
+                    user_id=effective_user_id,
+                )
+            except Exception:
+                pass
+
+            self.logger.info(
+                f"Streaming-uploaded {filename} ({size_bytes:,} bytes) to OWUI storage: /api/v1/files/{file_id}"
+            )
+            return file_id
+        except Exception as exc:
+            self.logger.error(f"Failed to streaming-upload {source_path} to OWUI storage: {exc}")
+            return None
+
     @timed
     async def _try_link_file_to_chat(
         self,
@@ -1001,6 +1113,149 @@ class MultimodalHandler:
             elapsed = time.perf_counter() - start_time
             self.logger.error(
                 f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
+            )
+            return None
+
+    async def _download_remote_url_streaming(
+        self,
+        url: str,
+        dest_path: Path,
+        *,
+        chunk_size: int = 1024 * 1024,
+        max_size_bytes: Optional[int] = None,
+        timeout_seconds: Optional[int] = None,
+        mime_allowlist: Optional[set[str]] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        url = (url or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return None
+        if not await self._is_safe_url(url):
+            self.logger.error(
+                "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
+                url,
+            )
+            return None
+
+        max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
+        initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
+        max_retry_time = self.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS
+
+        if timeout_seconds is None:
+            timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
+        if timeout_seconds is None:
+            timeout_seconds = 60
+        timeout_seconds = max(timeout_seconds, 60)  # streaming downloads need more time
+
+        effective_max = (
+            max_size_bytes
+            if max_size_bytes is not None
+            else self._get_effective_remote_file_limit_mb() * 1024 * 1024
+        )
+
+        attempt = 0
+        start_time = time.perf_counter()
+
+        try:
+            async for attempt_info in AsyncRetrying(
+                retry=retry_if_exception_type(
+                    (_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)
+                ),
+                stop=stop_after_attempt(max_retries + 1),
+                wait=_RetryWait(wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time)),
+                reraise=True,
+            ):
+                with attempt_info:
+                    attempt += 1
+                    elapsed = time.perf_counter() - start_time
+                    if attempt > 1 and elapsed > max_retry_time:
+                        self.logger.warning(
+                            f"Streaming download retry timeout exceeded for {url} after {elapsed:.1f}s"
+                        )
+                        return None
+                    if attempt > 1:
+                        self.logger.info(
+                            f"Streaming retry attempt {attempt - 1}/{max_retries} for {url} after {elapsed:.1f}s"
+                        )
+
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    if dest_path.exists():
+                        dest_path.unlink()
+
+                    request_headers = dict(extra_headers) if extra_headers else None
+                    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                        async with client.stream("GET", url, headers=request_headers) as response:
+                            try:
+                                response.raise_for_status()
+                            except httpx.HTTPStatusError as exc:
+                                retryable, retry_after = _classify_retryable_http_error(exc)
+                                if retryable:
+                                    raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
+                                raise
+
+                            mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                            if mime_type == "image/jpg":
+                                mime_type = "image/jpeg"
+
+                            content_length = response.headers.get("content-length")
+                            if content_length:
+                                try:
+                                    if int(content_length) > effective_max:
+                                        self.logger.warning(
+                                            "Remote streaming target %s exceeds configured limit per Content-Length "
+                                            "(%s bytes > %s bytes); aborting.",
+                                            url, content_length, effective_max,
+                                        )
+                                        return None
+                                except ValueError:
+                                    pass
+
+                            written = 0
+                            sniff_buffer = bytearray()
+                            sniffed_mime: Optional[str] = mime_type
+                            with dest_path.open("wb") as fh:
+                                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                                    if not chunk:
+                                        continue
+                                    projected = written + len(chunk)
+                                    if projected > effective_max:
+                                        size_mb = projected / (1024 * 1024)
+                                        limit_mb = effective_max / (1024 * 1024)
+                                        self.logger.warning(
+                                            f"Streaming download {url} exceeds limit "
+                                            f"({size_mb:.1f}MB > {limit_mb:.1f}MB); aborting."
+                                        )
+                                        return None
+                                    if len(sniff_buffer) < 32:
+                                        sniff_buffer.extend(chunk[: 32 - len(sniff_buffer)])
+                                    fh.write(chunk)
+                                    written = projected
+
+                            if mime_allowlist is not None:
+                                if not sniffed_mime or sniffed_mime in {"application/octet-stream", ""}:
+                                    sniffed_mime = _sniff_mime_from_prefix(bytes(sniff_buffer)) or sniffed_mime
+                                if sniffed_mime not in mime_allowlist:
+                                    self.logger.warning(
+                                        "Streaming download MIME %r not in allowlist %r; aborting.",
+                                        sniffed_mime, sorted(mime_allowlist),
+                                    )
+                                    return None
+
+                    if attempt > 1:
+                        self.logger.info(
+                            f"Successfully streamed {url} ({written:,} bytes) after {attempt} attempt(s)"
+                        )
+
+                    return {
+                        "path": dest_path,
+                        "mime_type": sniffed_mime or mime_type,
+                        "url": url,
+                        "size_bytes": written,
+                    }
+        except Exception as exc:
+            elapsed = time.perf_counter() - start_time
+            self.logger.error(
+                f"Failed streaming download of {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
             )
             return None
 

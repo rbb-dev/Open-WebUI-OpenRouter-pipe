@@ -533,6 +533,114 @@ class OpenRouterModelRegistry:
             enriched.append(item)
         return enriched
 
+    _last_video_fetch: float = 0.0
+
+    @classmethod
+    def last_video_fetch(cls) -> float:
+        """Return the timestamp of the last successful video catalog registration.
+
+        Used by `maybe_schedule_model_metadata_sync` to detect when video models
+        appeared in `cls._models` so the metadata sync re-runs and writes per-model
+        rows + auto-attaches the per-model video filters.
+        """
+        return cls._last_video_fetch
+
+    @classmethod
+    def register_video_models(cls, video_models: list[dict[str, Any]]) -> None:
+        """Register OpenRouter async video-generation models as selectable models."""
+        if not isinstance(video_models, list):
+            return
+
+        old_video_norms = {
+            norm_id
+            for norm_id, spec in cls._specs.items()
+            if "video_generation" in set(spec.get("features") or set())
+        }
+        if old_video_norms:
+            cls._models = [
+                model
+                for model in cls._models
+                if model.get("norm_id") not in old_video_norms
+            ]
+            for norm_id in old_video_norms:
+                cls._specs.pop(norm_id, None)
+                cls._id_map.pop(norm_id, None)
+
+        models_by_norm: dict[str, dict[str, Any]] = {}
+        for model in cls._models:
+            if not isinstance(model, dict):
+                continue
+            norm = model.get("norm_id")
+            if isinstance(norm, str) and norm:
+                models_by_norm[norm] = dict(model)
+
+        for item in video_models:
+            if not isinstance(item, dict):
+                continue
+            original_id = item.get("id")
+            if not isinstance(original_id, str) or not original_id.strip():
+                continue
+            original_id = original_id.strip()
+            sanitized = sanitize_model_id(original_id)
+            norm_id = ModelFamily.base_model(sanitized)
+            if not norm_id:
+                continue
+
+            supported_frames = item.get("supported_frame_images")
+            accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
+            allowed_params = item.get("allowed_passthrough_parameters")
+            allowed_set = {
+                param
+                for param in allowed_params
+                if isinstance(param, str) and param
+            } if isinstance(allowed_params, list) else set()
+            pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+            features = {"video_generation", "video_output"}
+            if accepts_frame_images:
+                features.update({"vision", "file_input"})
+
+            cls._id_map[norm_id] = original_id
+            models_by_norm[norm_id] = {
+                "id": sanitized,
+                "norm_id": norm_id,
+                "original_id": original_id,
+                "name": item.get("name") or original_id,
+            }
+            cls._specs[norm_id] = {
+                "features": features,
+                "capabilities": {
+                    # Video models always advertise vision + file_upload + image_generation
+                    # in OWUI so the chat input renders the upload + image buttons. Models
+                    # that don't actually accept image input (e.g. Sora) reject inside the
+                    # adapter — but the UI affordance is consistent across the family so
+                    # users don't have to inspect each model's capability sheet.
+                    "vision": True,
+                    "file_upload": True,
+                    "web_search": False,
+                    "image_generation": True,
+                    "video_generation": True,
+                    "code_interpreter": False,
+                    "citations": False,
+                    "status_updates": True,
+                    "usage": True,
+                },
+                "max_completion_tokens": None,
+                "supported_parameters": frozenset(allowed_set),
+                "full_model": dict(item),
+                "video_model": dict(item),
+                "context_length": None,
+                "description": item.get("description"),
+                "pricing": pricing,
+                "architecture": item.get("architecture") if isinstance(item.get("architecture"), dict) else {},
+                "zdr_capable": False,
+            }
+
+        cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
+        ModelFamily.set_dynamic_specs(cls._specs)
+        # Bump the video-fetch timestamp so the catalog manager's sync_key picks up the
+        # newly-registered video models and re-runs metadata sync to install per-model
+        # filters and write rows for them.
+        cls._last_video_fetch = time.time()
 
     @classmethod
     def api_model_id(cls, model_id: str) -> Optional[str]:
@@ -604,6 +712,9 @@ class OpenRouterModelRegistry:
         variants (e.g. ``:nitro``) that are absent from the ZDR endpoint
         will return False even if their base model is ZDR-capable.
         """
+        spec = cls.spec(model_id)
+        if "video_generation" in set(spec.get("features") or set()):
+            return False
         if cls._zdr_model_ids is None:
             return None
         norm = ModelFamily.base_model(model_id)
