@@ -1698,7 +1698,7 @@ class StreamingHandler:
                                 result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
                                 effective_id = await _emit_tool_start(
                                     call_id=item.get("id", ""),
-                                    name="Datetime",
+                                    name="datetime",
                                     arguments="{}",
                                     status="completed",
                                 )
@@ -1716,7 +1716,7 @@ class StreamingHandler:
                                 result_text = "Search completed. Sources available in the citations panel below."
                                 effective_id = await _emit_tool_start(
                                     call_id=item.get("id", ""),
-                                    name="Web Search",
+                                    name="web_search",
                                     arguments="{}",
                                     status="completed",
                                 )
@@ -1757,7 +1757,7 @@ class StreamingHandler:
                                     result_text = str(result_data) if result_data is not None else "{}"
                                 effective_id = await _emit_tool_start(
                                     call_id=item.get("id", ""),
-                                    name="Web Fetch",
+                                    name="web_fetch",
                                     arguments=args_text,
                                     status="completed",
                                 )

@@ -10775,7 +10775,7 @@ class TestOpenRouterServerToolCards:
         assert function_calls[0]["item"]["call_id"] == "dt-1"
         assert function_outputs[0]["item"]["call_id"] == "dt-1"
         assert function_calls[0]["item"]["status"] == "completed"
-        assert function_calls[0]["item"]["name"] == "Datetime"
+        assert function_calls[0]["item"]["name"] == "datetime"
 
     @pytest.mark.asyncio
     async def test_openrouter_datetime_card_suppressed_when_show_tool_cards_off(self, monkeypatch, pipe_instance_async):
