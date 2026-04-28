@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
+from ..core.costs import maybe_dump_costs_snapshot
 from ..core.utils import (
     _clean_str,
     _csv_set,
@@ -139,7 +140,7 @@ class VideoGenerationAdapter:
                     self._pipe._video_active_tasks[key] = bg_task
                 lifecycle_transferred = True
                 result = await asyncio.shield(bg_task)
-                await self._emit_completion(event_emitter, result.content)
+                await self._emit_completion(event_emitter, result.content, usage=result.usage)
                 return result.content
 
             if not prompt.strip():
@@ -237,7 +238,7 @@ class VideoGenerationAdapter:
                 result = await asyncio.shield(bg_task)
             except asyncio.CancelledError:
                 raise
-            await self._emit_completion(event_emitter, result.content)
+            await self._emit_completion(event_emitter, result.content, usage=result.usage)
             return result.content
         except asyncio.CancelledError:
             raise
@@ -403,6 +404,16 @@ class VideoGenerationAdapter:
             )
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
             await self._emit_status(event_emitter, description, done=True, progress=100)
+            with contextlib.suppress(Exception):
+                await maybe_dump_costs_snapshot(
+                    self._pipe,
+                    valves,
+                    user_id=user_id,
+                    model_id=api_model_id,
+                    usage=usage,
+                    user_obj=user_obj,
+                    pipe_id=self._pipe.id,
+                )
             return VideoLifecycleResult(
                 content=content,
                 status_description=description,
@@ -511,7 +522,7 @@ class VideoGenerationAdapter:
         await self._emit_status(event_emitter, "Waiting for active video generation job...", done=False)
         result = await asyncio.shield(task)
         await self._emit_status(event_emitter, result.status_description, done=True)
-        await self._emit_completion(event_emitter, result.content)
+        await self._emit_completion(event_emitter, result.content, usage=result.usage)
         return result.content
 
     async def _get_active_task(self, key: tuple[str, str]) -> "asyncio.Task[VideoLifecycleResult] | None":
@@ -946,17 +957,12 @@ class VideoGenerationAdapter:
         elapsed: float,
         usage: dict[str, Any],
     ) -> str:
-        footer = f"*Generated in {elapsed:.1f}s*"
-        cost = usage.get("cost")
-        if isinstance(cost, (int, float)) and cost > 0:
-            footer = f"*Generated in {elapsed:.1f}s · ${cost:.4f}*"
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
             f"<video>\n"
             f"/api/v1/files/{file_id}/content\n"
-            f"</video>\n\n"
-            f"{footer}\n"
+            f"</video>\n"
         )
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:
@@ -994,24 +1000,30 @@ class VideoGenerationAdapter:
                 elapsed=elapsed,
                 total_usage=usage,
                 valves=valves,
-                stream_duration=None,
+                stream_duration=elapsed,
             )
         except Exception:
             return f"Video generated in {elapsed:.1f}s"
 
     @staticmethod
     def _coerce_video_usage(raw: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0}
         if not isinstance(raw, dict):
-            return {}
-        out = dict(raw)
-        cost = out.get("cost")
-        if isinstance(cost, str):
-            try:
-                out["cost"] = float(cost)
-            except (TypeError, ValueError):
-                out.pop("cost", None)
-        elif not isinstance(cost, (int, float)):
-            out.pop("cost", None)
+            return out
+        for key, value in raw.items():
+            if key == "cost":
+                if isinstance(value, str):
+                    try:
+                        out["cost"] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                elif isinstance(value, (int, float)):
+                    out["cost"] = value
+            elif key in {"total_tokens", "input_tokens", "output_tokens"}:
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    out[key] = int(value)
+            else:
+                out[key] = value
         return out
 
     async def _emit_status(
@@ -1033,7 +1045,13 @@ class VideoGenerationAdapter:
             },
         )
 
-    async def _emit_completion(self, emitter: "EventEmitter | None", content: str) -> None:
+    async def _emit_completion(
+        self,
+        emitter: "EventEmitter | None",
+        content: str,
+        *,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
         await self._safe_emit(
             emitter,
             {
@@ -1041,11 +1059,14 @@ class VideoGenerationAdapter:
                 "data": {"content": content},
             },
         )
+        completion_data: dict[str, Any] = {"content": content, "done": True}
+        if isinstance(usage, dict) and usage:
+            completion_data["usage"] = usage
         await self._safe_emit(
             emitter,
             {
                 "type": "chat:completion",
-                "data": {"content": content, "done": True},
+                "data": completion_data,
             },
         )
 

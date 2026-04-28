@@ -169,7 +169,7 @@ def test_build_success_content_ends_with_newline():
     assert content.endswith("\n"), "success content must end with \\n so concatenation cannot smash markers into inline text"
     doubled = content + content
     assert "\n[openrouter:v1:videojob:job-abc]: #" in doubled
-    assert "*Generated in 12.3s · $0.4000*[openrouter" not in doubled, "marker must NOT be glued onto the footer line"
+    assert "Generated in" not in content, "success content must not embed time/cost text — those go through the status emitter"
 
 
 @pytest.mark.asyncio
@@ -1390,6 +1390,85 @@ def test_serialize_kind_marker_round_trips_through_extractors():
     ]
     assert _find_first_kind_marker_body(text, kind="videojob") == "j-1"
     assert _find_first_kind_marker_body(text, kind="missing") == ""
+
+
+def test_coerce_video_usage_pads_zero_tokens():
+    raw = {"cost": 0.42}
+    out = VideoGenerationAdapter._coerce_video_usage(raw)
+    assert out["cost"] == 0.42
+    assert out["total_tokens"] == 0
+    assert out["input_tokens"] == 0
+    assert out["output_tokens"] == 0
+
+
+def test_coerce_video_usage_zeros_default_when_input_is_none():
+    out = VideoGenerationAdapter._coerce_video_usage(None)
+    assert out["total_tokens"] == 0
+    assert out["input_tokens"] == 0
+    assert out["output_tokens"] == 0
+    assert "cost" not in out
+
+
+def test_format_final_status_renders_chat_style_token_bracket():
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    usage = VideoGenerationAdapter._coerce_video_usage({"cost": 0.20})
+    description = adapter._format_final_status(elapsed=4.0, usage=usage, valves=pipe.valves)
+    assert "Total tokens: 0" in description
+    assert "Input: 0" in description
+    assert "Output: 0" in description
+
+
+def test_build_success_content_has_no_time_or_cost_footer():
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    content = adapter._build_success_content(
+        job_id="j-1",
+        model_id="google/veo-3.1-lite",
+        file_id="file-1",
+        elapsed=4.2,
+        usage={"cost": 0.20, "total_tokens": 0, "input_tokens": 0, "output_tokens": 0},
+    )
+    assert "Generated in" not in content
+    assert "· $" not in content
+    assert "$0." not in content
+    assert "</video>" in content
+    assert content.endswith("\n")
+
+
+@pytest.mark.asyncio
+async def test_emit_completion_includes_usage_in_chat_completion_event():
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    captured: list[dict[str, Any]] = []
+
+    async def emitter(event: dict[str, Any]) -> None:
+        captured.append(event)
+
+    usage = {"cost": 0.20, "total_tokens": 0, "input_tokens": 0, "output_tokens": 0}
+    await adapter._emit_completion(emitter, "hello", usage=usage)
+
+    completion_events = [e for e in captured if e.get("type") == "chat:completion"]
+    assert len(completion_events) == 1
+    assert completion_events[0]["data"]["usage"] == usage
+    delta_events = [e for e in captured if e.get("type") == "chat:message:delta"]
+    assert len(delta_events) == 1
+    assert "usage" not in delta_events[0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_emit_completion_omits_usage_field_when_unset():
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    captured: list[dict[str, Any]] = []
+
+    async def emitter(event: dict[str, Any]) -> None:
+        captured.append(event)
+
+    await adapter._emit_completion(emitter, "hello")
+
+    completion_events = [e for e in captured if e.get("type") == "chat:completion"]
+    assert len(completion_events) == 1
+    assert "usage" not in completion_events[0]["data"]
 
 
 @pytest.mark.asyncio

@@ -634,6 +634,18 @@ class ModelCatalogManager:
             if valves.UPDATE_MODEL_IMAGES:
                 icon_mapping = self._build_icon_mapping(frontend_data)
 
+            description_mapping: dict[str, str] = {}
+            if valves.UPDATE_MODEL_DESCRIPTIONS and isinstance(frontend_data, dict):
+                fd_items = frontend_data.get("data")
+                if isinstance(fd_items, list):
+                    for item in fd_items:
+                        if not isinstance(item, dict):
+                            continue
+                        slug = item.get("slug")
+                        desc = item.get("description")
+                        if isinstance(slug, str) and slug and isinstance(desc, str) and desc.strip():
+                            description_mapping[slug] = desc.strip()
+
             # Build provider map for provider routing filters
             provider_map: dict[str, dict[str, list[str]]] = {}
             if provider_routing_enabled:
@@ -897,19 +909,24 @@ class ModelCatalogManager:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):
                         capabilities = dict(raw_caps)
-                        # OWUI Web Search is OWUI-native and works with any model. Keep the
-                        # Integrations "Web Search" toggle available for all OpenRouter-pipe models.
-                        capabilities["web_search"] = True
+                        if not pipe_capabilities.get("video_generation"):
+                            capabilities["web_search"] = True
 
                 description = None
                 if valves.UPDATE_MODEL_DESCRIPTIONS:
-                    norm_id = model.get("norm_id")
-                    spec = ModelFamily._lookup_spec(str(norm_id or ""))
-                    raw_desc = spec.get("description")
-                    if isinstance(raw_desc, str):
-                        cleaned = raw_desc.strip()
-                        if cleaned:
-                            description = cleaned
+                    original_id_for_desc = model.get("original_id")
+                    if isinstance(original_id_for_desc, str) and original_id_for_desc:
+                        frontend_desc = description_mapping.get(original_id_for_desc)
+                        if frontend_desc:
+                            description = frontend_desc
+                    if description is None:
+                        norm_id = model.get("norm_id")
+                        spec = ModelFamily._lookup_spec(str(norm_id or ""))
+                        raw_desc = spec.get("description")
+                        if isinstance(raw_desc, str):
+                            cleaned = raw_desc.strip()
+                            if cleaned:
+                                description = cleaned
 
                 original_id = model.get("original_id")
 
