@@ -496,9 +496,8 @@ full 1080p.
 ## Per-model parameter reference
 
 This section enumerates exactly which filter knobs each model exposes,
-based on the OpenRouter catalog at the time of writing
-(`.external/models-openrouter-videos-2026-04-26-pretty.json`). The
-chat-filter UI auto-hides knobs the model does not support, so this table
+based on the OpenRouter catalog at the time of writing.
+The chat-filter UI auto-hides knobs the model does not support, so this table
 is also the spec for what you can change per-message.
 
 ### Google: Veo 3.1 / Veo 3.1 Fast / Veo 3.1 Lite
@@ -1220,70 +1219,3 @@ Key files:
 
 ---
 
-## Phase 0 probe
-
-`tests/integration/probe_video_generation.py` is a live, manual probe
-for OpenRouter video behaviour. It checks:
-
-- `/videos/models` response shape.
-- Data URL frame image acceptance.
-- Provider passthrough with the `parameters` wrapper.
-- Provider passthrough without the `parameters` wrapper.
-
-Run it only when you intend to make live video-generation calls (it bills
-your OpenRouter account):
-
-```bash
-OPENROUTER_RUN_VIDEO_PROBE=1 PYTHONPATH=. .venv/bin/python tests/integration/probe_video_generation.py
-```
-
-The script requires `OPENROUTER_API_KEY` and records responses under
-`tests/fixtures/`. It's the source of truth for the
-"`provider.options.<slug>.parameters` nesting" decision baked into the
-adapter — re-run if OpenRouter ever changes that contract.
-
----
-
-## Limitations and non-goals
-
-The current v1 implementation explicitly does NOT cover:
-
-- **Auto-startup recovery for orphan jobs**. The on-submit pending
-  marker survives a process restart in the chat DB, so the next pipe()
-  call for that chat resumes polling. But there is no startup scan
-  that proactively re-attaches polling without user re-engagement.
-  Recovery is user-driven on the next request. (Planned for v1.1.)
-- **OWUI regenerate-button dedup**. Clicking regenerate creates a NEW
-  `message_id`, so it's a fresh request — not deduped against the
-  existing job.
-- **Cost-failure compensation**. If OpenRouter charges for a job that
-  ultimately fails or times out on our side, the user pays for nothing.
-  Costs come from the poll response — we don't refund.
-- **Cost preview before submit**. The catalog SKU rates are visible via
-  `help`, but exact cost depends on duration + audio + resolution
-  combination at runtime.
-- **Multi-worker exact-once semantics**. Single-worker only.
-  Multi-worker would need Redis-backed locks.
-- **Public-URL hack for frame inputs**. Frames are inlined as base64
-  data URLs (Phase 0 verified this works). No frame uploads to a public
-  bucket.
-- **Cancellation API**. OpenRouter does not expose `/videos/{id}/cancel`,
-  so once submitted the job runs to completion (or expiry).
-- **Treating video models as ZDR-capable**. Video models are flagged
-  `is_zdr_capable=False`. `ZDR_MODELS_ONLY=True` will hide them.
-- **Streaming video output as it generates**. Generation is async on the
-  OpenRouter side — there is no streaming. The pipe polls until
-  completion and downloads the final MP4.
-
----
-
-## See also
-
-- OpenRouter video API docs:
-  [`.external/openrouter_docs/api/api-reference/video-generation/`](../.external/openrouter_docs/api/api-reference/video-generation/)
-- Live model catalog snapshot:
-  [`.external/models-openrouter-videos-2026-04-26-pretty.json`](../.external/models-openrouter-videos-2026-04-26-pretty.json)
-- Test suite:
-  [`tests/test_video_generation.py`](../tests/test_video_generation.py)
-- Plan history:
-  [`/home/boris/.claude/plans/radiant-toasting-nygaard.md`](/home/boris/.claude/plans/radiant-toasting-nygaard.md)

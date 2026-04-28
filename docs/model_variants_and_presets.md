@@ -608,8 +608,8 @@ class UserValves:
 
 - [Model Variants Overview](https://openrouter.ai/docs/guides/routing/model-variants)
 - [Presets Guide](https://openrouter.ai/docs/guides/features/presets)
-- [Exacto Variant Details](.external/openrouter_docs/guides/routing/model-variants/exacto.md)
-- [Thinking Variant Details](.external/openrouter_docs/guides/routing/model-variants/thinking.md)
+- [Exacto Variant Details](https://openrouter.ai/docs/guides/routing/model-variants/exacto)
+- [Thinking Variant Details](https://openrouter.ai/docs/guides/routing/model-variants/thinking)
 
 ### Related Pipe Documentation
 
