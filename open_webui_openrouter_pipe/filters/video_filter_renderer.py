@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -9,8 +10,48 @@ from typing import Any
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import _clean_str
 
+_logger = logging.getLogger(__name__)
+
 _FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
+
+# Every passthrough parameter for which `_render_user_valves_fields` and
+# `_render_param_lines` have a dedicated branch (or which is covered by a
+# top-level field handler under a different name). If a model's catalog dict
+# lists a passthrough name not in this set, the renderer silently drops it
+# from outbound requests. `render_video_filter_source` warns about that
+# state so future model additions don't lose UX silently.
+#
+# `aspectRatio` and `size` appear in some models' `allowed_passthrough_parameters`
+# (Veo trio and Wan 2.6 respectively) but the renderer always emits the
+# normalised top-level fields (`aspect_ratio`/`size`) via `VIDEO_ASPECT_RATIO`
+# and `VIDEO_SIZE`, so the param is not dropped — it just travels as top-level
+# rather than nested under `params`.
+_HANDLED_PASSTHROUGH_PARAMS: frozenset[str] = frozenset({
+    "negative_prompt",
+    "negativePrompt",
+    "audio",
+    "video",
+    "videos",
+    "images",
+    "last_image",
+    "personGeneration",
+    "conditioningScale",
+    "cfg_scale",
+    "enhancePrompt",
+    "prompt_optimizer",
+    "fast_pretreatment",
+    "prompt_extend",
+    "ratio",
+    "enable_prompt_expansion",
+    "shot_type",
+    "watermark",
+    "req_key",
+    "quality",
+    "style",
+    "aspectRatio",
+    "size",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +163,15 @@ def render_video_filter_source(
     pipe_metadata_key: str = _PIPE_METADATA_KEY,
 ) -> str:
     spec = build_video_filter_spec(model_id, video_model)
+    unhandled = sorted(set(spec.allowed_params) - _HANDLED_PASSTHROUGH_PARAMS)
+    if unhandled:
+        _logger.warning(
+            "Video filter renderer has no handler for passthrough parameter(s) %s on model %r — "
+            "they will be silently dropped from outbound requests. Add a branch in "
+            "_render_user_valves_fields and _render_param_lines, plus a `_KNOB_GATE` entry in video_help.py.",
+            unhandled,
+            spec.model_id,
+        )
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
     frame_block = _render_frame_block(spec)
@@ -475,6 +525,18 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
                 "        )"
             )
         )
+    if "cfg_scale" in spec.allowed_params:
+        fields.append(
+            _field_block(
+                "VIDEO_CFG_SCALE: float = Field(\n"
+                "            default=0.0,\n"
+                "            ge=0.0,\n"
+                "            le=1.0,\n"
+                '            title="CFG scale",\n'
+                '            description="Classifier-free guidance strength (0 leaves the provider default; higher values bias toward stricter prompt adherence).",\n'
+                "        )"
+            )
+        )
     if "enhancePrompt" in spec.allowed_params:
         fields.append(
             _field_block(
@@ -706,6 +768,18 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
                 "            conditioning_scale = 0.0",
                 "        if conditioning_scale > 0.0:",
                 '            params["conditioningScale"] = conditioning_scale',
+            ]
+        )
+    if "cfg_scale" in spec.allowed_params:
+        lines.extend(
+            [
+                '        cfg_scale_raw = getattr(user_valves, "VIDEO_CFG_SCALE", 0.0)',
+                "        try:",
+                "            cfg_scale = float(cfg_scale_raw)",
+                "        except (TypeError, ValueError):",
+                "            cfg_scale = 0.0",
+                "        if cfg_scale > 0.0:",
+                '            params["cfg_scale"] = cfg_scale',
             ]
         )
     if "enhancePrompt" in spec.allowed_params:

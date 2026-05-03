@@ -209,7 +209,7 @@ See: [OpenRouter Video Generation](openrouter_video_generation.md).
 
 #### Companion filter user valves (per-user, per-model)
 
-Each of the 11 video models gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union (27 valves across all 11 variants) is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
+Each of the 13 video models gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union (28 valves across all 13 variants) is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
 
 **Core UserValves** — gated on `supported_*` catalog fields:
 
@@ -236,6 +236,7 @@ Each of the 11 video models gets its OWN filter function in Open WebUI. The `Use
 | --- | --- | --- | --- | --- |
 | `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow"]` | `""` | passthrough `personGeneration` | Veo trio |
 | `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | Veo trio |
+| `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | Kling v3.0 (Pro, Standard) |
 | `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | Veo trio |
 | `VIDEO_PROMPT_OPTIMIZER` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_optimizer` (boolean) | Hailuo |
 | `VIDEO_FAST_PRETREATMENT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `fast_pretreatment` (boolean) | Hailuo |

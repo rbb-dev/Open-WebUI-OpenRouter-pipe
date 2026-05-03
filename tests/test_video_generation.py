@@ -1139,6 +1139,54 @@ def test_video_help_is_model_specific_for_all_catalog_models():
     assert len(set(rendered.values())) == len(rendered)
 
 
+def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog():
+    """Drift guard for the three-name spread (`<Human Label>` → `passthrough_param` → `VIDEO_VALVE_NAME`).
+
+    Two invariants:
+      (1) Every passthrough param that appears in any catalog model's
+          `allowed_passthrough_parameters` MUST be in `_HANDLED_PASSTHROUGH_PARAMS`
+          — otherwise the renderer drops it silently from outbound requests
+          (and the runtime `_logger.warning` in `render_video_filter_source`
+          would fire on every render of that model).
+      (2) Every `_KNOB_GATE` value that names a passthrough param (i.e. not a
+          special top-level marker) MUST be a renderer-handled param —
+          otherwise help advertises a knob that the renderer cannot wire.
+
+    The reverse direction (catalog → `_KNOB_GATE`) is intentionally NOT
+    asserted: aliases like `negative_prompt`/`negativePrompt` and top-level
+    fields like `aspectRatio`/`size` map via marker gates or `None`-gate
+    entries that don't share literal string identity with the catalog name.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import _HANDLED_PASSTHROUGH_PARAMS
+    from open_webui_openrouter_pipe.integrations.video_help import _KNOB_GATE
+
+    catalog_passthrough_params: set[str] = set()
+    for model in VIDEO_BY_ID.values():
+        for param in model.get("allowed_passthrough_parameters") or []:
+            if isinstance(param, str) and param:
+                catalog_passthrough_params.add(param)
+
+    unhandled_in_renderer = catalog_passthrough_params - _HANDLED_PASSTHROUGH_PARAMS
+    assert not unhandled_in_renderer, (
+        f"Catalog passthrough params not handled by video_filter_renderer.py: {sorted(unhandled_in_renderer)} — "
+        "add a branch in `_render_user_valves_fields` and `_render_param_lines` AND extend "
+        "`_HANDLED_PASSTHROUGH_PARAMS` so the runtime warning stays in sync."
+    )
+
+    knob_gate_passthrough_values = {v for v in _KNOB_GATE.values() if isinstance(v, str)}
+    top_level_markers = {
+        "seed_top_level",
+        "generate_audio_top_level",
+        "negative_prompt_or_camelcase",
+    }
+    knob_gate_passthrough_only = knob_gate_passthrough_values - top_level_markers
+    knob_gate_only_unrendered = knob_gate_passthrough_only - _HANDLED_PASSTHROUGH_PARAMS
+    assert not knob_gate_only_unrendered, (
+        f"`_KNOB_GATE` advertises knob(s) the renderer cannot wire: {sorted(knob_gate_only_unrendered)} — "
+        "either remove the gate entry or add the renderer branch."
+    )
+
+
 def test_video_help_renders_pricing_live_from_pricing_skus():
     veo_help = render_video_help("google/veo-3.1-fast", VIDEO_BY_ID["google/veo-3.1-fast"])
     assert "**Cost** (live from OpenRouter catalog `pricing_skus`)" in veo_help
@@ -1221,6 +1269,8 @@ def test_video_filter_spec_seed_and_audio_gates_use_top_level_fields():
     "google/veo-3.1-lite",
     "google/veo-3.1",
     "kwaivgi/kling-video-o1",
+    "kwaivgi/kling-v3.0-pro",
+    "kwaivgi/kling-v3.0-std",
     "minimax/hailuo-2.3",
     "alibaba/wan-2.7",
     "bytedance/seedance-2.0-fast",
@@ -1247,6 +1297,7 @@ def test_video_filter_renderer_per_model_audit(model_id: str):
     valve_for = {
         "personGeneration": "VIDEO_PERSON_GENERATION",
         "conditioningScale": "VIDEO_CONDITIONING_SCALE",
+        "cfg_scale": "VIDEO_CFG_SCALE",
         "enhancePrompt": "VIDEO_ENHANCE_PROMPT",
         "prompt_optimizer": "VIDEO_PROMPT_OPTIMIZER",
         "fast_pretreatment": "VIDEO_FAST_PRETREATMENT",
@@ -1288,6 +1339,61 @@ def test_video_filter_typed_valves_route_into_metadata_params():
     assert params["conditioningScale"] == 0.7
     assert params["enhancePrompt"] is True
     assert params["seed"] == 42
+
+
+@pytest.mark.parametrize("model_id", ["kwaivgi/kling-v3.0-pro", "kwaivgi/kling-v3.0-std"])
+def test_video_filter_routes_cfg_scale_into_params_for_kling_v3(model_id: str):
+    kling = VIDEO_BY_ID[model_id]
+    source = render_video_filter_source(model_id=model_id, video_model=kling)
+    module = _load_filter_from_source(source, f"video_gen_filter_cfg_scale_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}")
+
+    user_valves = module.Filter.UserValves(VIDEO_CFG_SCALE=0.6)
+    body: dict[str, Any] = {"files": []}
+    metadata: dict[str, Any] = {}
+    module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves})
+
+    params = metadata["openrouter_pipe"]["video_generation"]["params"]
+    assert params["cfg_scale"] == 0.6
+
+
+@pytest.mark.parametrize("model_id", ["kwaivgi/kling-v3.0-pro", "kwaivgi/kling-v3.0-std"])
+def test_video_filter_drops_cfg_scale_when_zero_for_kling_v3(model_id: str):
+    """`VIDEO_CFG_SCALE=0.0` must NOT emit a cfg_scale param — the > 0.0 sentinel
+    preserves the "0 means provider default" semantic shared with conditioningScale."""
+    kling = VIDEO_BY_ID[model_id]
+    source = render_video_filter_source(model_id=model_id, video_model=kling)
+    module = _load_filter_from_source(source, f"video_gen_filter_cfg_scale_zero_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}")
+
+    user_valves = module.Filter.UserValves(VIDEO_CFG_SCALE=0.0)
+    body: dict[str, Any] = {"files": []}
+    metadata: dict[str, Any] = {}
+    module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves})
+
+    params = metadata["openrouter_pipe"]["video_generation"]["params"]
+    assert "cfg_scale" not in params
+
+
+def test_video_filter_does_not_expose_cfg_scale_for_kling_video_o1():
+    """`kwaivgi/kling-video-o1` does NOT list cfg_scale in `allowed_passthrough_parameters`,
+    so neither the typed valve nor the param-emit branch should appear in the rendered source."""
+    o1 = VIDEO_BY_ID["kwaivgi/kling-video-o1"]
+    source = render_video_filter_source(model_id="kwaivgi/kling-video-o1", video_model=o1)
+    assert "VIDEO_CFG_SCALE" not in source
+    assert 'params["cfg_scale"]' not in source
+
+
+def test_video_help_includes_cfg_scale_for_kling_v3_only():
+    """`CFG scale` must appear in the help output for `kwaivgi/kling-v3.0-pro` and
+    `kwaivgi/kling-v3.0-std` (whose `allowed_passthrough_parameters` includes
+    `cfg_scale`), and must NOT appear for `kwaivgi/kling-video-o1`."""
+    for model_id in ("kwaivgi/kling-v3.0-pro", "kwaivgi/kling-v3.0-std"):
+        rendered = render_video_help(model_id, VIDEO_BY_ID[model_id])
+        assert "`CFG scale`" in rendered, f"{model_id} help missing `CFG scale` knob description"
+        assert VIDEO_BY_ID[model_id]["name"] in rendered, f"{model_id} help missing display name"
+        assert "Classifier-free guidance" in rendered, f"{model_id} help missing cfg_scale description body"
+
+    o1_rendered = render_video_help("kwaivgi/kling-video-o1", VIDEO_BY_ID["kwaivgi/kling-video-o1"])
+    assert "`CFG scale`" not in o1_rendered, "kwaivgi/kling-video-o1 should not show CFG scale (cfg_scale not in passthrough)"
 
 
 def test_payload_includes_seed_and_generate_audio_for_capable_models(monkeypatch):

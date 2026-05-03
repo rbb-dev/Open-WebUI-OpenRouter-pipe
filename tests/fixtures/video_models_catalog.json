@@ -135,6 +135,116 @@
       ]
     },
     {
+      "id": "kwaivgi/kling-v3.0-pro",
+      "canonical_slug": "kwaivgi/kling-v3.0-pro-20260429",
+      "hugging_face_id": null,
+      "name": "Kling: Video v3.0 Pro",
+      "created": 1777496206,
+      "description": "Kling v3.0 Pro is Kuaishou's premium video generation model, offering higher visual quality than the Standard tier. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for precise...",
+      "supported_resolutions": [
+        "720p"
+      ],
+      "supported_aspect_ratios": [
+        "16:9",
+        "9:16",
+        "1:1"
+      ],
+      "supported_sizes": [
+        "1280x720",
+        "720x1280",
+        "720x720"
+      ],
+      "supported_durations": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "supported_frame_images": [
+        "first_frame",
+        "last_frame"
+      ],
+      "generate_audio": true,
+      "seed": false,
+      "pricing_skus": {
+        "duration_seconds": "0.112",
+        "duration_seconds_with_audio": "0.168",
+        "text_to_video_duration_seconds_480p": "0.112",
+        "text_to_video_duration_seconds_720p": "0.112",
+        "image_to_video_duration_seconds_720p": "0.112",
+        "text_to_video_duration_seconds_1080p": "0.112",
+        "image_to_video_duration_seconds_1080p": "0.112"
+      },
+      "allowed_passthrough_parameters": [
+        "negative_prompt",
+        "cfg_scale"
+      ]
+    },
+    {
+      "id": "kwaivgi/kling-v3.0-std",
+      "canonical_slug": "kwaivgi/kling-v3.0-std-20260429",
+      "hugging_face_id": null,
+      "name": "Kling: Video v3.0 Standard",
+      "created": 1777496205,
+      "description": "Kling v3.0 Standard is a video generation model from Kuaishou. It supports text-to-video and image-to-video workflows, with first-frame and last-frame control for guided scene composition. Clips range from 3 to...",
+      "supported_resolutions": [
+        "720p"
+      ],
+      "supported_aspect_ratios": [
+        "16:9",
+        "9:16",
+        "1:1"
+      ],
+      "supported_sizes": [
+        "1280x720",
+        "720x1280",
+        "720x720"
+      ],
+      "supported_durations": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "supported_frame_images": [
+        "first_frame",
+        "last_frame"
+      ],
+      "generate_audio": true,
+      "seed": false,
+      "pricing_skus": {
+        "duration_seconds": "0.084",
+        "duration_seconds_with_audio": "0.126",
+        "text_to_video_duration_seconds_480p": "0.084",
+        "text_to_video_duration_seconds_720p": "0.084",
+        "image_to_video_duration_seconds_720p": "0.084",
+        "text_to_video_duration_seconds_1080p": "0.084",
+        "image_to_video_duration_seconds_1080p": "0.084"
+      },
+      "allowed_passthrough_parameters": [
+        "negative_prompt",
+        "cfg_scale"
+      ]
+    },
+    {
       "id": "minimax/hailuo-2.3",
       "canonical_slug": "minimax/hailuo-2.3-20260420",
       "hugging_face_id": null,

@@ -3445,6 +3445,32 @@ def test_register_video_models_uses_atomic_assignment_for_all_state_attrs():
     assert "chat-model-norm" in OpenRouterModelRegistry._specs, "chat model must be preserved across video registration"
 
 
+def test_register_video_models_picks_up_kling_v3_pro_and_std():
+    """The full fixture must register both new Kling v3.0 ids end-to-end:
+    norm ids land in `_specs` with the `video_generation` feature, the original
+    ids round-trip through `_id_map`, and the supported_parameters frozenset
+    includes `cfg_scale` so the renderer's gate trips correctly."""
+    import json
+    from pathlib import Path
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry, sanitize_model_id, ModelFamily
+
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "video_models_catalog.json").read_text())
+    OpenRouterModelRegistry.register_video_models(fixture["data"])
+
+    for original_id in ("kwaivgi/kling-v3.0-pro", "kwaivgi/kling-v3.0-std"):
+        norm_id = ModelFamily.base_model(sanitize_model_id(original_id))
+        assert norm_id in OpenRouterModelRegistry._specs, f"{original_id} (norm={norm_id}) missing from _specs"
+        spec = OpenRouterModelRegistry._specs[norm_id]
+        assert "video_generation" in spec["features"], f"{original_id} missing video_generation feature"
+        assert OpenRouterModelRegistry._id_map[norm_id] == original_id, (
+            f"_id_map[{norm_id}] should round-trip to {original_id}, got {OpenRouterModelRegistry._id_map[norm_id]!r}"
+        )
+        assert "cfg_scale" in spec["supported_parameters"], (
+            f"{original_id} supported_parameters must include cfg_scale (renderer gate keys off this set)"
+        )
+        assert "negative_prompt" in spec["supported_parameters"], f"{original_id} missing negative_prompt"
+
+
 @pytest.mark.asyncio
 async def test_chat_refresh_preserves_video_models():
     """Chat catalog `_refresh` must NOT wipe video models from `_specs`/`_id_map`/`_models`.

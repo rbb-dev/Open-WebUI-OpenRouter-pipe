@@ -13,7 +13,7 @@ pipe → Valves.
 ## Table of contents
 
 - [Quickstart](#quickstart)
-- [The 11 video models](#the-11-video-models)
+- [The 13 video models](#the-13-video-models)
 - [Per-model deep dive](#per-model-deep-dive)
 - [Per-model parameter reference](#per-model-parameter-reference)
 - [Filter UserValve identifiers (master reference)](#filter-uservalve-identifiers-master-reference)
@@ -71,7 +71,7 @@ video model returns a research-grounded model-specific help blurb covering:
 - Live pricing rates pulled from the OpenRouter catalog
 
 This is the fastest way to learn a model without leaving the chat. Try
-it on each of the 11 models — the answers are different for every one.
+it on each of the 13 models — the answers are different for every one.
 
 ### For administrators
 
@@ -116,7 +116,7 @@ See [Configuration valves](#configuration-valves-admin) for the full list
 
 ---
 
-## The 11 video models
+## The 13 video models
 
 | Model id | Display name | Best for | Audio | Seed | Frames | Cost rate |
 |----------|--------------|----------|:----:|:----:|:------:|-----------|
@@ -124,6 +124,8 @@ See [Configuration valves](#configuration-valves-admin) for the full list
 | `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at ~60% lower cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | ~$0.10/s without audio, $0.12/s with |
 | `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Cheapest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast at half the cost. | ✅ | ✅ | first + last | $0.03/s @ 720p without audio |
 | `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | $0.0896/s |
+| `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | $0.112/s ($0.168/s with audio) |
+| `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | $0.084/s ($0.126/s with audio) |
 | `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | ❌ | first only | $0.0817/s |
 | `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | $0.10/s |
 | `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | $0.04–$0.15/s by mode and resolution |
@@ -635,11 +637,11 @@ the catalog condition under which the valve renders.
 
 | Identifier | Type | Default | Maps to API field | Gate (catalog condition) | Exposed on |
 |------------|------|---------|-------------------|---------------------------|------------|
-| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 11 |
-| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | all 11 |
-| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 11 |
-| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 11 |
-| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 11 |
+| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 13 |
+| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | all 13 |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 13 |
+| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 13 |
+| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 13 |
 | `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 10 (all except Sora 2 Pro) |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | Veo trio, Kling, Wan 2.6, Wan 2.7 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | top-level `generate_audio: true` in catalog | 10 (all except Hailuo) |
@@ -661,6 +663,7 @@ when the corresponding string appears in the model's
 |------------|------|---------|-------------------|------|------------|
 | `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow"]` | `""` | passthrough `personGeneration` | `"personGeneration"` allowed | Veo trio |
 | `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | `"conditioningScale"` allowed | Veo trio |
+| `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | `"cfg_scale"` allowed | Kling v3.0 (Pro, Standard) |
 | `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | `"enhancePrompt"` allowed | Veo trio |
 | `VIDEO_PROMPT_OPTIMIZER` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_optimizer` (boolean) | `"prompt_optimizer"` allowed | Hailuo |
 | `VIDEO_FAST_PRETREATMENT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `fast_pretreatment` (boolean) | `"fast_pretreatment"` allowed | Hailuo |
@@ -803,6 +806,7 @@ Per-model frame support:
 |-------|:-----------:|:----------:|
 | Veo 3.1 / Fast / Lite | ✅ | ✅ |
 | Kling Video O1 | ✅ | ✅ |
+| Kling v3.0 Pro / Standard | ✅ | ✅ |
 | Hailuo 2.3 | ✅ | ❌ |
 | Wan 2.7 | ✅ | ✅ |
 | Wan 2.6 | ✅ | ❌ |

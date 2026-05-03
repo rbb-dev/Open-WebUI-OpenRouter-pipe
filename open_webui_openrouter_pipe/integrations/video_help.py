@@ -131,6 +131,65 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not surfaced as valves; leave empty unless OpenRouter docs call out a specific override you need.",
         },
     },
+    "kwaivgi/kling-v3.0-pro": {
+        "display_name": "Kling: Video v3.0 Pro",
+        "best_known_for": (
+            "Kuaishou's premium tier of Kling v3.0 — the highest-quality Kling SKU "
+            "OpenRouter exposes, with sharper detail, stronger character consistency, "
+            "and richer motion fidelity than the Standard tier. Best suited for hero "
+            "shots, marketing deliverables, and pre-vis where quality matters more "
+            "than cost. Same capability matrix as Kling v3.0 Standard (granular "
+            "3–15s durations, first/last-frame anchoring, native audio, 720p, three "
+            "aspects) but at roughly 1.33× the per-second price."
+        ),
+        "tips_and_pitfalls": [
+            "Use Pro for finals and hero shots; iterate on Standard first to lock prompt and references — the visual delta is meaningful but not always worth the cost on drafts.",
+            "Pricing is per-second of output and ~50% higher with audio on; a 15s clip with audio costs ~$2.52 (0.168 × 15) — plan duration deliberately.",
+            "Kling responds to cinematic intent — describe camera move (slow dolly-in / tracking), motion physics, and end state explicitly rather than listing objects.",
+            "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
+            "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in whole seconds; Kling v3.0 Pro accepts any integer from 3 to 15s and pricing scales linearly per second.",
+            "Aspect ratio": "Frame shape (16:9 landscape, 9:16 vertical, 1:1 square) — pick to match your delivery surface; the model fills the chosen aspect with a fixed 720p tier.",
+            "Resolution": "Output quality tier; Kling v3.0 currently outputs only 720p, so this knob is effectively fixed.",
+            "Size": "Exact pixel dimensions tied to your aspect choice (1280×720, 720×1280, 720×720); usually leave on auto so it follows the aspect ratio.",
+            "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
+            "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
+            "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
+            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally (audio adds ~50% to the per-second cost).",
+            "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
+        },
+    },
+    "kwaivgi/kling-v3.0-std": {
+        "display_name": "Kling: Video v3.0 Standard",
+        "best_known_for": (
+            "Kuaishou's standard tier of Kling v3.0 — the most cost-efficient Kling "
+            "SKU OpenRouter exposes, with the same capability surface as Kling v3.0 "
+            "Pro (granular 3–15s durations, first/last-frame anchoring, native "
+            "audio, 720p, three aspects) at roughly 0.75× the Pro per-second price. "
+            "Best suited for prompt iteration, drafts, and bulk pipelines where "
+            "throughput and cost matter more than the last few percent of polish."
+        ),
+        "tips_and_pitfalls": [
+            "Use Standard for drafting, prompt and reference iteration, and bulk runs; switch to Pro for finals when the quality delta is worth ~33% more per-second.",
+            "Pricing is per-second of output and ~50% higher with audio on; a 15s clip with audio costs ~$1.89 (0.126 × 15) — plan duration deliberately.",
+            "Kling responds to cinematic intent — describe camera move, motion physics, and end state explicitly rather than listing objects.",
+            "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
+            "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in whole seconds; Kling v3.0 Standard accepts any integer from 3 to 15s and pricing scales linearly per second.",
+            "Aspect ratio": "Frame shape (16:9 landscape, 9:16 vertical, 1:1 square) — pick to match your delivery surface; the model fills the chosen aspect with a fixed 720p tier.",
+            "Resolution": "Output quality tier; Kling v3.0 currently outputs only 720p, so this knob is effectively fixed.",
+            "Size": "Exact pixel dimensions tied to your aspect choice (1280×720, 720×1280, 720×720); usually leave on auto so it follows the aspect ratio.",
+            "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
+            "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
+            "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
+            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally (audio adds ~50% to the per-second cost).",
+            "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
+        },
+    },
     "minimax/hailuo-2.3": {
         "display_name": "MiniMax: Hailuo 2.3",
         "best_known_for": (
@@ -381,6 +440,7 @@ _KNOB_GATE: dict[str, str | None] = {
     "Reference images JSON": "images",
     "Person generation": "personGeneration",
     "Conditioning scale": "conditioningScale",
+    "CFG scale": "cfg_scale",
     "Enhance prompt": "enhancePrompt",
     "Prompt optimizer": "prompt_optimizer",
     "Fast pretreatment": "fast_pretreatment",
