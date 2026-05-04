@@ -925,7 +925,10 @@ async def test_image_client_list_models_returns_filtered_list():
             return _MockResponse()
 
     client = OpenRouterImageClient(
-        _MockSession(), base_url="https://openrouter.ai/api/v1", api_key="test", logger=MagicMock()
+        _MockSession(),  # type: ignore[arg-type]
+        base_url="https://openrouter.ai/api/v1",
+        api_key="test",
+        logger=MagicMock(),
     )
     models = await client.list_models()
     assert len(models) == 2
@@ -958,7 +961,10 @@ async def test_image_client_list_models_handles_missing_data_field():
             return _MockResponse()
 
     client = OpenRouterImageClient(
-        _MockSession(), base_url="https://openrouter.ai/api/v1", api_key="test", logger=MagicMock()
+        _MockSession(),  # type: ignore[arg-type]
+        base_url="https://openrouter.ai/api/v1",
+        api_key="test",
+        logger=MagicMock(),
     )
     models = await client.list_models()
     assert models == []
