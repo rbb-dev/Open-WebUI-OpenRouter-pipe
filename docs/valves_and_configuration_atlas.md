@@ -173,6 +173,61 @@ See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) f
 
 **Note:** Open WebUI Direct Tool Servers are configured in Open WebUI (External Tools) and are not controlled by valves in this pipe.
 
+### OpenRouter native image generation
+
+Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seedream, Google Gemini Image, OpenAI GPT-5 Image, etc.) — **distinct** from the legacy `openrouter_image_gen` filter (OpenAI Responses-API server tool) controlled by `ENABLE_IMAGE_GENERATION` / `AUTO_INSTALL_IMAGE_GEN_FILTER` / `AUTO_ATTACH_IMAGE_GEN_FILTER` above.
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get the generic image filter attached for `image_config` knobs. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Automatically install/update the three OpenRouter native image filters in Open WebUI: `OR Image Filter` (generic, all image models), `Gemini Options` (Gemini Flash Image Preview only), `Sourceful Options` (Sourceful Riverflow Pro/Fast only). |
+| `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Automatically attach the appropriate native image filters to image-output models: generic to all, Gemini-extended to `^google/gemini-.*flash-image.*-preview$`, Sourceful-extended to `^sourceful/riverflow-v\d+(\.\d+)?-(pro\|fast)$`. |
+| `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_image_default_filter_ids` in `models/catalog_manager.py`. |
+
+Notes:
+- The image catalog uses the **shared** `MODEL_CATALOG_REFRESH_SECONDS` TTL (no separate cache valve).
+- Generated images are persisted via the canonical multimodal helpers (`_materialize_image_entry` → `_persist_generated_image` in `streaming/streaming_core.py`), reusing the same path that has handled `gpt-5-image` end-to-end since well before this feature.
+- The `image_config` request body field is typed as `Optional[Dict[str, Any]]` in [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py) (was `Optional[Union[str, float]]` which would have rejected dict writes from filters at `CompletionsBody.model_validate`).
+- `OR Web Tools` and `OR Web Search` overlays are **capability-gated to skip image-output models** — these models do not support tool use and would fail with HTTP 404 ("No endpoints found that support tool use") if web search were attached. The `web_tools_supported` check in `models/catalog_manager.py` excludes models with `image_output` or `video_generation` capability.
+- Pre-validation: the Sourceful filter rejects `font_inputs` > 2 entries and `super_resolution_references` > 4 entries **before** the HTTP call, surfacing a clear `ImageGenerationError` instead of an opaque provider 400.
+
+See: [OpenRouter Image Generation](openrouter_image_generation.md).
+
+#### Companion filter user valves (per-user, per-filter)
+
+Three filter functions are installed:
+
+| Filter ID | OWUI display name | Attached to |
+| --- | --- | --- |
+| `openrouter_image_filter_generic` | `OR Image Filter` | All image models |
+| `openrouter_image_filter_gemini` | `Gemini Options` | Gemini Flash Image Preview models |
+| `openrouter_image_filter_sourceful` | `Sourceful Options` | Sourceful Riverflow Pro/Fast models |
+
+**Generic filter UserValves** (always attached):
+
+| Valve | Type | Default | Maps to |
+| --- | --- | --- | --- |
+| `IMAGE_ASPECT_RATIO` | `Literal["", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]` | `""` | `image_config.aspect_ratio` |
+| `IMAGE_SIZE` | `Literal["", "1K", "2K", "4K"]` | `""` | `image_config.image_size` |
+
+**Gemini Options filter UserValves** (Gemini Flash Image Preview only):
+
+| Valve | Type | Default | Maps to |
+| --- | --- | --- | --- |
+| `IMAGE_ASPECT_RATIO_EXTENDED` | `Literal["", "1:4", "4:1", "1:8", "8:1"]` | `""` | `image_config.aspect_ratio` (overrides generic) |
+| `IMAGE_SIZE_GEMINI` | `Literal["", "0.5K"]` | `""` | `image_config.image_size` (overrides generic) |
+
+**Sourceful Options filter UserValves** (Sourceful Riverflow Pro/Fast only):
+
+| Valve | Type | Default | Maps to |
+| --- | --- | --- | --- |
+| `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` (max 2, +$0.03 each) |
+| `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` (max 4, +$0.20 each) |
+
+**Skip-when-default sentinel**: empty string `""` (after `.strip()`) is **NOT** included in `body.image_config` — the upstream provider's own default applies. `Literal` valves treat `""` as the skip sentinel.
+
+**Routing**: all three filters write to `body.image_config` via shallow merge. The Gemini Options and Sourceful Options filters check `body.model` against their respective regex patterns at inlet time and return the body unchanged on non-match (defensive guard against operator misconfiguration). On collision (e.g. generic and Gemini both write `aspect_ratio`), the last-running filter wins per-key — by ordering convention, the more-specific filter overrides the generic.
+
 ### OpenRouter video generation
 
 | Valve | Type | Default (verified) | Purpose / notes |
@@ -209,7 +264,7 @@ See: [OpenRouter Video Generation](openrouter_video_generation.md).
 
 #### Companion filter user valves (per-user, per-model)
 
-Each of the 13 video models gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union (28 valves across all 13 variants) is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
+Each video model gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union of valves across variants is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
 
 **Core UserValves** — gated on `supported_*` catalog fields:
 

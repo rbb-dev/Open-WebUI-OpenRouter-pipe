@@ -114,7 +114,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "iteration. Only Gemini variant with these extensions."
         ),
         "tips_and_pitfalls": [
-            "Use the dedicated 'OR Image Filter — Gemini' for extended ratios (4:1, 1:4, 8:1, 1:8) and 0.5K size — these are Gemini Flash Image Preview ONLY.",
+            "Use the dedicated 'Gemini Options' filter for extended ratios (4:1, 1:4, 8:1, 1:8) and 0.5K size — these are Gemini Flash Image Preview ONLY.",
             "Set aspect via the Gemini-extended valve OR the standard valve; the Gemini one wins on collision (deep-merge semantics).",
             "0.5K is ~50% cheaper than 1K — good for prompt iteration.",
         ],
@@ -154,7 +154,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "PURE-image-only — does NOT output text. Filter writes modalities=['image'] for this model.",
             "font_inputs (max 2, +$0.03/font) renders custom typefaces in the image — supply font_url + matching text in the prompt.",
             "super_resolution_references (max 4, +$0.20/ref) requires input images in messages (image-to-image only).",
-            "Both extensions exposed via 'OR Image Filter — Sourceful' filter; cardinality caps validated at inlet (rejects 3+ font_inputs before submission).",
+            "Both extensions exposed via 'Sourceful Options' filter; cardinality caps validated at inlet (rejects 3+ font_inputs before submission).",
             "4.5MB request size limit — pass image URLs instead of base64 to avoid bloat.",
         ],
         "knob_descriptions": {

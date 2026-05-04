@@ -13,7 +13,7 @@ pipe → Valves.
 ## Table of contents
 
 - [Quickstart](#quickstart)
-- [The 13 video models](#the-13-video-models)
+- [Video models](#video-models)
 - [Per-model deep dive](#per-model-deep-dive)
 - [Per-model parameter reference](#per-model-parameter-reference)
 - [Filter UserValve identifiers (master reference)](#filter-uservalve-identifiers-master-reference)
@@ -71,7 +71,7 @@ video model returns a research-grounded model-specific help blurb covering:
 - Live pricing rates pulled from the OpenRouter catalog
 
 This is the fastest way to learn a model without leaving the chat. Try
-it on each of the 13 models — the answers are different for every one.
+it on each video model — the answers are different for every one.
 
 ### For administrators
 
@@ -111,12 +111,11 @@ call). If you manually disable a video filter for a chat, the next sync
 will re-default it. Set `AUTO_DEFAULT_VIDEO_FILTERS=False` to opt out
 of the re-assert.
 
-See [Configuration valves](#configuration-valves-admin) for the full list
-(19 video-related valves).
+See [Configuration valves](#configuration-valves-admin) for the full list of video valves.
 
 ---
 
-## The 13 video models
+## Video models
 
 | Model id | Display name | Best for | Audio | Seed | Frames | Cost rate |
 |----------|--------------|----------|:----:|:----:|:------:|-----------|

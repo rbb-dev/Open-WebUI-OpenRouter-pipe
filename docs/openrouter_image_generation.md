@@ -1,0 +1,988 @@
+# OpenRouter Image Generation
+
+This pipe exposes OpenRouter's seventeen native image-output models as
+selectable chat models in Open WebUI. You pick an image model in the chat
+header (just like any other LLM), type a prompt, and the pipe submits a
+chat-completions request with `modalities: ["image"]` (or
+`["image", "text"]` for multimodal models), receives the generated image
+inline as base64, persists it to OWUI file storage, and renders it inline
+with `![alt](url)` markdown. No polling, no separate endpoint — image
+generation is synchronous over `/api/v1/chat/completions`.
+
+The feature is on by default (`ENABLE_OPENROUTER_IMAGE_GENERATION=True`).
+If you want to disable it, set that valve to `False` in Admin → Functions
+→ OpenRouter pipe → Valves; previously-registered pure-image-only models
+will be removed from the dropdown immediately.
+
+> **Note:** This document covers the **native image-output models**
+> integration (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance
+> Seedream, Google Gemini Image, OpenAI GPT-5 Image, etc.). It is
+> distinct from the **legacy `openrouter_image_gen` filter** which wires
+> the OpenAI Responses-API `image_generation_call` server tool — that
+> remains controlled by `ENABLE_IMAGE_GENERATION` /
+> `AUTO_INSTALL_IMAGE_GEN_FILTER` / `AUTO_ATTACH_IMAGE_GEN_FILTER`
+> valves and is unchanged by this feature.
+
+## Table of contents
+
+- [Quickstart](#quickstart)
+- [Image models](#image-models)
+- [Pure-image-only vs multimodal](#pure-image-only-vs-multimodal)
+- [Per-model deep dive](#per-model-deep-dive)
+- [Per-model parameter reference](#per-model-parameter-reference)
+- [Filter UserValve identifiers (master reference)](#filter-uservalve-identifiers-master-reference)
+- [The chat filter UI (UserValves)](#the-chat-filter-ui-uservalves)
+- [The `help` command](#the-help-command)
+- [Output rendering and message format](#output-rendering-and-message-format)
+- [Pricing and cost display](#pricing-and-cost-display)
+- [Configuration valves (admin)](#configuration-valves-admin)
+- [Errors and troubleshooting](#errors-and-troubleshooting)
+- [Architecture overview](#architecture-overview)
+- [Limitations and non-goals](#limitations-and-non-goals)
+
+---
+
+## Quickstart
+
+### For end users
+
+1. Open a chat in Open WebUI.
+2. In the model picker, choose any image-output model (e.g.
+   `Sourceful: Riverflow V2 Pro`, `Black Forest Labs: FLUX.2 Pro`,
+   `Google: Gemini 3.1 Flash Image (Preview)`, `OpenAI: GPT-5 Image`).
+   Image models look like normal chat models — they are not in a
+   separate menu.
+3. (Optional) Open the Integrations menu (puzzle-piece icon below the
+   prompt input). The `OR Image Filter` toggle is auto-attached and
+   default-on. For Gemini Flash Image Preview models, you'll also see
+   `Gemini Options`. For Sourceful Riverflow Pro/Fast models, you'll
+   see `Sourceful Options`. All applicable filters are default-on.
+4. (Optional) Click any filter's settings icon to set per-message
+   overrides — aspect ratio, image size, custom fonts (Sourceful), etc.
+5. Type your prompt and press send.
+6. The chat shows the generated image inline (typically 5–30 seconds).
+   The image renders as a normal image attachment that you can right-
+   click to download, copy, or open full-size.
+
+### Model-specific help in chat
+
+Typing the literal word `help` (no other text) into a chat against any
+image model returns a curated model-specific help blurb covering:
+
+- What the model is best known for
+- Tips and pitfalls (how to prompt, when to use vs alternatives)
+- Every filter knob exposed for this model and what it does
+
+This is the fastest way to learn a model without leaving the chat. Try
+it on each image model — the answers are different for every one (the auto-router `openrouter/auto` is a routing layer rather than a generator).
+
+### For administrators
+
+Out-of-the-box defaults are sensible for most deployments:
+
+```
+ENABLE_OPENROUTER_IMAGE_GENERATION = True
+AUTO_INSTALL_IMAGE_FILTERS = True       # creates the 3 filter rows
+AUTO_ATTACH_IMAGE_FILTERS  = True       # attaches each filter to its models
+AUTO_DEFAULT_IMAGE_FILTERS = True       # filter is on-by-default per chat
+```
+
+If the per-model filters do not appear in the Integrations menu, check:
+
+- `AUTO_INSTALL_IMAGE_FILTERS` and `AUTO_ATTACH_IMAGE_FILTERS` are both
+  `True`.
+- The pipe has been called at least once with a logged-in user (the
+  filters install during `pipes()` warmup).
+- Open WebUI Admin → Functions lists three entries:
+  `OR Image Filter`, `Gemini Options`, `Sourceful Options`.
+
+**Access control for non-admin users.** Pure-image-only models (FLUX,
+Sourceful Riverflow non-multimodal, Seedream) are inserted PRIVATE by
+default per the standard `NEW_MODEL_ACCESS_CONTROL` valve (default
+`admins`). Non-admin users will not see image-only models in the picker
+until an admin explicitly grants access via Admin → Models →
+[image model row] → Access. Multimodal models (gpt-5-image, gemini-
+image variants) follow the standard chat-catalog access policy.
+
+**Auto-default re-assert.** All applicable image filters are
+re-defaulted to enabled on every catalog metadata sync (typically
+every pipe `pipes()` call). If you manually disable an image filter
+for a chat, the next sync will re-default it. Set
+`AUTO_DEFAULT_IMAGE_FILTERS=False` to opt out of the re-assert.
+
+**Web Tools / Web Search guard.** The `OR Web Tools` filter (web
+search + web fetch + datetime) and the `OR Web Search` overlay are
+**capability-gated to skip image-output models** — these models do
+not support tool use and would fail with an HTTP 404 "No endpoints
+found that support tool use" if web search were attached. The same
+guard applies to video-generation models. See
+[`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+where `web_tools_supported` checks for `image_output` and
+`video_generation` capabilities.
+
+See [Configuration valves](#configuration-valves-admin) for the
+image-specific valves; the master `MODEL_CATALOG_REFRESH_SECONDS`
+TTL is shared with the video and chat catalogs.
+
+---
+
+## Image models
+
+| Model id | Display name | Output | Special knobs | Cost rate |
+|----------|--------------|:----:|---------------|-----------|
+| `openai/gpt-5-image` | OpenAI: GPT-5 Image | text + image | aspect_ratio, image_size | GPT-5 chat token economics |
+| `openai/gpt-5-image-mini` | OpenAI: GPT-5 Image Mini | text + image | aspect_ratio, image_size | Cheaper GPT-5 Image tier |
+| `openai/gpt-5.4-image-2` | OpenAI: GPT-5.4 Image 2 | text + image | aspect_ratio, image_size | Updated GPT-5.4 generation |
+| `google/gemini-2.5-flash-image` | Google: Gemini 2.5 Flash Image | text + image | aspect_ratio, image_size | Standard Gemini multimodal |
+| `google/gemini-3-pro-image-preview` | Google: Gemini 3 Pro Image (Preview) | text + image | aspect_ratio, image_size | Premium Gemini 3 with image |
+| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | + extended ratios (1:4/4:1/1:8/8:1), 0.5K size | Cost-optimized; 0.5K is ~50% cheaper than 1K |
+| `openrouter/auto` | OpenRouter: Auto (Image Routing) | varies | aspect_ratio, image_size | Auto-routes to best image model |
+| `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | + font_inputs (max 2, +$0.03 each), super_resolution_references (max 4, +$0.20 each) | Premium Sourceful tier |
+| `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | + font_inputs, super_resolution_references | Faster, cheaper Sourceful |
+| `sourceful/riverflow-v2-max-preview` | Sourceful: Riverflow V2 Max (Preview) | image only | aspect_ratio, image_size | Preview tier — specs may shift |
+| `sourceful/riverflow-v2-standard-preview` | Sourceful: Riverflow V2 Standard (Preview) | image only | aspect_ratio, image_size | Entry-tier Sourceful preview |
+| `sourceful/riverflow-v2-fast-preview` | Sourceful: Riverflow V2 Fast (Preview) | image only | aspect_ratio, image_size | Fast preview tier |
+| `black-forest-labs/flux.2-pro` | Black Forest Labs: FLUX.2 Pro | image only | aspect_ratio, image_size; seed support | Premium FLUX.2 |
+| `black-forest-labs/flux.2-max` | Black Forest Labs: FLUX.2 Max | image only | aspect_ratio, image_size; seed support | Highest FLUX.2 tier |
+| `black-forest-labs/flux.2-flex` | Black Forest Labs: FLUX.2 Flex | image only | aspect_ratio, image_size; seed support | Mid-tier FLUX.2 |
+| `black-forest-labs/flux.2-klein-4b` | Black Forest Labs: FLUX.2 Klein 4B | image only | aspect_ratio, image_size; seed support | Smallest, cheapest FLUX |
+| `bytedance-seed/seedream-4.5` | ByteDance Seed: Seedream 4.5 | image only | aspect_ratio, image_size; temperature, top_p | Image-only with sampling controls |
+
+Pick model selection rules of thumb:
+
+- **Custom typography on an image (text/logo rendering)** → Sourceful
+  Riverflow V2 Pro/Fast (only models with `font_inputs`).
+- **Image-to-image super-resolution** → Sourceful Riverflow V2 Pro/Fast
+  (only models with `super_resolution_references`).
+- **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → Gemini 3.1
+  Flash Image Preview (only model with extended aspect ratios).
+- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (~50%
+  cheaper than 1K) or FLUX.2 Klein 4B.
+- **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2 Pro,
+  Gemini 3 Pro Image.
+- **Want commentary alongside the image (chat-style)** → multimodal
+  text+image models (GPT-5 Image, Gemini Image variants).
+- **Deterministic regeneration with same prompt** → FLUX.2 family
+  (only models with seed support).
+- **Don't know which to pick** → `openrouter/auto` routes for you.
+
+---
+
+## Pure-image-only vs multimodal
+
+OpenRouter image-output models split into two categories that this pipe
+handles differently:
+
+### Pure-image-only
+
+These models output ONLY images, no text. The orchestrator injects
+`modalities: ["image"]` into the request body. Examples: all 5 Sourceful
+Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
+
+- **Catalog source**: discovered via `/api/v1/models?output_modalities=image`
+  in [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py).
+- **Registration**: registered into the shared model registry via
+  `OpenRouterModelRegistry.register_image_models()` ([`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py))
+  with `features = {"image_output", "image_gen_tool"}`. Stale-norm
+  cleanup runs on every refresh — if a model is dropped from the
+  catalog it disappears from the dropdown on next sync.
+- **Multimodal dedupe**: if a model has `text` in `output_modalities`,
+  `register_image_models` skips it (those stay in the chat catalog).
+- **Master-disable cleanup**: setting
+  `ENABLE_OPENROUTER_IMAGE_GENERATION=False` calls
+  `register_image_models([])` and `reset_image_fetch_timestamp()` so
+  models vanish from OWUI's dropdown immediately.
+
+### Multimodal (text + image)
+
+Models with both `text` AND `image` in `output_modalities` — GPT-5
+Image variants, Gemini Image variants. These already appear in the
+chat catalog via the standard `/api/v1/models` endpoint and are NOT
+re-registered as image-only. The orchestrator injects
+`modalities: ["image", "text"]` to ensure both modalities are emitted.
+
+- **Filter attach**: still receives `OR Image Filter` (generic) so
+  users can configure aspect ratio and image size.
+- **`openrouter/auto`**: this auto-router is treated as multimodal
+  (universal input modalities). Lives in the chat catalog.
+
+### `_inject_image_modalities()` (orchestrator)
+
+The body modification happens at [`requests/orchestrator.py`](../open_webui_openrouter_pipe/requests/orchestrator.py)
+in `_inject_image_modalities()`:
+
+```python
+def _inject_image_modalities(body, *, logger=None):
+    if not isinstance(body, dict):
+        return
+    raw_model = body.get("model")
+    if not isinstance(raw_model, str) or not raw_model:
+        return
+    if "modalities" in body:  # respect explicit user setting
+        return
+    spec = OpenRouterModelRegistry.spec(raw_model)
+    if not isinstance(spec, dict):
+        return
+    arch = spec.get("architecture") or {}
+    out_mods = arch.get("output_modalities") or []
+    if "image" not in out_mods:
+        return
+    if "text" in out_mods:
+        body["modalities"] = ["image", "text"]
+    else:
+        body["modalities"] = ["image"]
+```
+
+Key behavior:
+
+- **No-op on non-image models.** No injection if `output_modalities`
+  doesn't contain `image`.
+- **Respects user override.** If `body.modalities` is already set
+  (manual config or older filter), the orchestrator leaves it alone.
+- **Pure-image gets `["image"]`** to suppress text output.
+- **Multimodal gets `["image", "text"]`** to allow both.
+
+---
+
+## Per-model deep dive
+
+This section is the same content the in-chat `help` command renders, in
+written form. Skip to a model that matches your use case, or read all
+seventeen to get a feel for the catalog. All curated entries live in
+[`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
+in `_IMAGE_PER_MODEL_HELP_DATA`.
+
+### OpenAI: GPT-5 Image
+
+> **id**: `openai/gpt-5-image` · **multimodal**
+
+OpenAI's flagship multimodal text+image model — generates both text
+response AND inline images per turn. Best for chat-style image
+generation where you want commentary alongside the visual.
+
+- **Multimodal output:** model decides when to emit images based on
+  prompt — be explicit ("Generate an image of...") for reliability.
+- **Standard knobs:** 10 aspect ratios + 1K/2K/4K via the generic
+  filter; defaults to 1:1 1K when unset.
+- **Already in chat catalog** — generic image filter auto-attaches to
+  expose aspect_ratio/image_size knobs.
+- **Pricing follows GPT-5 chat token economics**; image output is
+  included in completion tokens.
+
+### OpenAI: GPT-5 Image Mini
+
+> **id**: `openai/gpt-5-image-mini` · **multimodal**
+
+Cost-efficient variant of GPT-5 Image with the same multimodal
+text+image output. Best for high-volume image generation, drafts, and
+iteration where premium-tier quality isn't required.
+
+- Same prompting style as GPT-5 Image — be explicit about wanting
+  images in the prompt.
+- Lower cost-per-token than GPT-5 Image; ideal for prototyping and
+  bulk runs.
+- Same standard aspect_ratio + image_size knob set; no Sourceful-only
+  or Gemini-only extensions.
+
+### OpenAI: GPT-5.4 Image 2
+
+> **id**: `openai/gpt-5.4-image-2` · **multimodal**
+
+Updated GPT-5.4 generation of multimodal text+image output. Improved
+prompt adherence and visual fidelity over GPT-5 Image.
+
+- Successor to GPT-5 Image — same modalities + image_config schema,
+  improved quality.
+- Use for production deliverables that need the latest OpenAI image
+  model.
+- Same standard knob set; standard 10 aspect ratios + 1K/2K/4K sizes.
+
+### Google: Gemini 2.5 Flash Image
+
+> **id**: `google/gemini-2.5-flash-image` · **multimodal**
+
+Google's standard Gemini multimodal text+image model. Best for
+prompt-following tasks with cinematic composition and natural-looking
+output. Outputs both text and image.
+
+- Standard 10 aspect ratios + 1K/2K/4K. **No 0.5K or extended ratios on
+  this variant** — those are Gemini 3.1 Flash Image Preview only.
+- Multimodal: model decides emission based on prompt; be explicit.
+- Strong at photoreal scenes and prompt-faithful composition.
+
+### Google: Gemini 3 Pro Image (Preview)
+
+> **id**: `google/gemini-3-pro-image-preview` · **multimodal**
+
+Premium tier of Gemini 3 with native image output. Highest fidelity
+Gemini image model OpenRouter exposes; best for hero shots and
+high-detail outputs.
+
+- Premium variant — higher cost than Flash; reserve for finals.
+- Standard 10 aspect ratios + 1K/2K/4K (no 0.5K — that's Flash-only).
+- Multimodal text+image output.
+
+### Google: Gemini 3.1 Flash Image (Preview)
+
+> **id**: `google/gemini-3.1-flash-image-preview` · **multimodal + Gemini Options filter**
+
+Cost-optimized Gemini 3.1 with native image output AND unique extended
+knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for ultrawide/tall
+layouts AND a 0.5K low-res tier for cheap iteration. **Only Gemini
+variant with these extensions.**
+
+- **Use the dedicated `Gemini Options` filter** for extended ratios
+  (4:1, 1:4, 8:1, 1:8) and 0.5K size.
+- Set aspect via the Gemini-extended valve OR the standard valve;
+  the Gemini one wins on collision (deep-merge semantics — second
+  filter's writes overwrite the first's).
+- 0.5K is ~50% cheaper than 1K — good for prompt iteration.
+
+### OpenRouter: Auto (Image Routing)
+
+> **id**: `openrouter/auto` · **router**
+
+OpenRouter's automatic routing for image generation. Routes to the
+best available image model based on prompt. Useful when you want
+OpenRouter to pick rather than committing to a specific provider.
+
+- Auto-routing — exact model used varies; check the response metadata
+  for routed model id.
+- Universal input modalities (text + image + audio + file + video) —
+  flexible request shape.
+- Standard knob set applies; provider-specific knobs (Gemini 0.5K,
+  Sourceful font_inputs) likely ignored if not the selected provider.
+
+### Sourceful: Riverflow V2 Pro
+
+> **id**: `sourceful/riverflow-v2-pro` · **pure-image-only + Sourceful Options filter**
+
+Sourceful's premium tier — pure image-only output with custom font
+rendering and image-to-image super-resolution. Strongest for marketing
+assets requiring exact text rendering at scale.
+
+- **PURE-image-only** — does NOT output text. Filter writes
+  `modalities=["image"]` for this model.
+- **`font_inputs`** (max 2, +$0.03/font) renders custom typefaces in
+  the image — supply `font_url` + matching text in the prompt.
+- **`super_resolution_references`** (max 4, +$0.20/ref) requires input
+  images in messages (image-to-image only).
+- Both extensions exposed via `Sourceful Options` filter; cardinality
+  caps validated at inlet (rejects 3+ font_inputs before submission).
+- **4.5MB request size limit** — pass image URLs instead of base64 to
+  avoid bloat.
+
+### Sourceful: Riverflow V2 Fast
+
+> **id**: `sourceful/riverflow-v2-fast` · **pure-image-only + Sourceful Options filter**
+
+Faster, cheaper variant of Riverflow V2 — same Sourceful extensions
+(`font_inputs`, `super_resolution_references`) at lower quality and
+reduced cost. Best for iteration before committing to a Pro render.
+
+- Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request
+  limit, image URLs preferred.
+- Use Fast for prompt iteration and font/reference tuning; switch to
+  Pro for finals.
+- Same Sourceful-specific knobs (`font_inputs`,
+  `super_resolution_references`) via dedicated filter.
+
+### Sourceful: Riverflow V2 Max (Preview)
+
+> **id**: `sourceful/riverflow-v2-max-preview` · **pure-image-only**
+
+Preview release of the highest-tier Riverflow variant. Higher fidelity
+than Pro but preview status means specs may shift. Pure-image-only
+output.
+
+- Preview — quality and pricing may change without notice.
+- **Does NOT support `font_inputs` / `super_resolution_references`** —
+  those are Pro/Fast only on the v2 line.
+- Standard 10 aspect ratios + 1K/2K/4K via the generic filter.
+
+### Sourceful: Riverflow V2 Standard (Preview)
+
+> **id**: `sourceful/riverflow-v2-standard-preview` · **pure-image-only**
+
+Standard preview release of Riverflow V2 — entry-tier quality and
+pricing. Pure-image-only.
+
+- Preview status — specs may change.
+- No Sourceful-specific extensions on this variant
+  (`font_inputs` / `super_resolution_references` are Pro/Fast only).
+- Standard knob set applies via generic filter.
+
+### Sourceful: Riverflow V2 Fast (Preview)
+
+> **id**: `sourceful/riverflow-v2-fast-preview` · **pure-image-only**
+
+Preview release of the fastest Riverflow tier. Pure-image-only with
+reduced quality versus Pro/Standard at lower cost.
+
+- Preview — pricing/quality may shift.
+- No Sourceful-specific extensions (`font_inputs` /
+  `super_resolution_references` are Pro/Fast non-preview only).
+- Standard knob set via generic filter.
+
+### Black Forest Labs: FLUX.2 Pro
+
+> **id**: `black-forest-labs/flux.2-pro` · **pure-image-only**
+
+Black Forest Labs' premium FLUX.2 model — pure-image-only with strong
+photorealism and prompt adherence. Best for high-quality deliverables.
+**Supports seed for deterministic generation.**
+
+- PURE-image-only — does NOT output text.
+- Seed support enables deterministic regeneration with same prompt +
+  seed.
+- Standard 10 aspect ratios + 1K/2K/4K via generic filter.
+- No Sourceful-only or Gemini-only extensions.
+
+### Black Forest Labs: FLUX.2 Max
+
+> **id**: `black-forest-labs/flux.2-max` · **pure-image-only**
+
+Highest-tier FLUX.2 — best fidelity in the Black Forest Labs lineup.
+Pure-image-only with seed support. Reserve for hero shots and finals
+where Pro isn't enough.
+
+- PURE-image-only — does NOT output text.
+- Seed enables deterministic regeneration.
+- Most expensive FLUX tier — use for finals only.
+
+### Black Forest Labs: FLUX.2 Flex
+
+> **id**: `black-forest-labs/flux.2-flex` · **pure-image-only**
+
+Mid-tier FLUX.2 balancing quality and cost. Pure-image-only with seed
+support. Best for general production work.
+
+- PURE-image-only.
+- Seed support; balanced cost-quality vs Pro/Max.
+- Standard knob set via generic filter.
+
+### Black Forest Labs: FLUX.2 Klein 4B
+
+> **id**: `black-forest-labs/flux.2-klein-4b` · **pure-image-only**
+
+Smallest FLUX.2 variant (4B parameters) — lowest cost in the FLUX
+lineup. Pure-image-only with seed support. Best for high-volume / draft
+work.
+
+- PURE-image-only — does NOT output text.
+- Seed support; cheapest FLUX tier.
+- Quality trades against cost — use for iteration, not finals.
+
+### ByteDance Seed: Seedream 4.5
+
+> **id**: `bytedance-seed/seedream-4.5` · **pure-image-only**
+
+ByteDance Seed's image-only model. Pure-image-only output; supports
+temperature and top_p for controlled generation.
+
+- PURE-image-only — does NOT output text.
+- **Supports `temperature`/`top_p` (unusual for image models)** —
+  useful for varied outputs from same prompt.
+- Standard knob set via generic filter; no model-specific extensions.
+
+---
+
+## Per-model parameter reference
+
+This section enumerates exactly which filter knobs each model exposes.
+
+### Standard knobs (all image models — generic filter)
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Image aspect ratio | Literal | `""`, `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9` | `""` = model default. |
+| Image size | Literal | `""`, `1K`, `2K`, `4K` | `""` = model default (1K). |
+
+### Gemini Flash Image Preview only (Gemini Options filter)
+
+Adds 4 extra aspect ratios + a 0.5K size tier. Only attached to models
+matching `^google/gemini-.*flash-image.*-preview$`.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Image aspect ratio (Gemini extended) | Literal | `""`, `1:4`, `4:1`, `1:8`, `8:1` | Ultrawide/tall layouts. Overrides generic aspect_ratio when set. |
+| Image size (Gemini-only 0.5K) | Literal | `""`, `0.5K` | Low-res tier (~50% cheaper than 1K). Overrides generic image_size when set. |
+
+### Sourceful Riverflow Pro/Fast only (Sourceful Options filter)
+
+Adds custom font rendering + image-to-image super-resolution. Only
+attached to models matching
+`^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$`.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Font inputs (JSON array) | str (JSON) | `[{"font_url": "...", "text": "..."}]` | Max 2, +$0.03 each. Validated at inlet (rejects 3+). |
+| Super-resolution references (JSON array) | str (JSON) | `["url1", "url2", ...]` | Max 4, +$0.20 each. Image-to-image only (requires input images). Validated at inlet. |
+
+**Pre-validation:** the Sourceful filter rejects oversized arrays
+**before** the HTTP call, surfacing a clear `ImageGenerationError`
+instead of an opaque 400 from the provider.
+
+---
+
+## Filter UserValve identifiers (master reference)
+
+The per-model parameter tables above use friendly UI labels ("Image
+aspect ratio"). Internally each maps to a Pydantic `UserValves`
+field with an `IMAGE_*` identifier rendered into the filter source.
+
+`Type` column reads as Pydantic field type. `Default` is the value
+treated as "leave model default" (skipped from the request).
+
+### Generic filter (always attached)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_ASPECT_RATIO` | `Literal["", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]` | `""` | `image_config.aspect_ratio` |
+| `IMAGE_SIZE` | `Literal["", "1K", "2K", "4K"]` | `""` | `image_config.image_size` |
+
+### Gemini Options filter (Gemini Flash Image Preview only)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_ASPECT_RATIO_EXTENDED` | `Literal["", "1:4", "4:1", "1:8", "8:1"]` | `""` | `image_config.aspect_ratio` (overrides generic) |
+| `IMAGE_SIZE_GEMINI` | `Literal["", "0.5K"]` | `""` | `image_config.image_size` (overrides generic) |
+
+### Sourceful Options filter (Sourceful Riverflow Pro/Fast only)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` |
+| `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` |
+
+### Conventions for "skip when default"
+
+A valve set to its **default value** (`""`) is **NOT** included in the
+request body — the upstream provider's own default applies. This
+matters because providers accept different defaults for the same
+parameter, and forcing a value overrides them. Specifically:
+
+- All image valves are `Literal` or `str` types.
+- Empty string `""` (after `.strip()`) → skipped, no body write.
+- Non-empty value → written to `body.image_config[<key>]`.
+
+### Routing (how filters interact)
+
+All image filters write to the same `body.image_config` dict via
+**shallow merge**. If the generic filter sets `aspect_ratio=16:9` and
+the Gemini Options filter sets `aspect_ratio=4:1`, the second filter's
+write wins (per-key overwrite). This is intentional: the Gemini Options
+filter is treated as more specific.
+
+**Model gates on extended filters:** the Gemini Options and Sourceful
+Options filters check `body.model` against their respective regex
+patterns at inlet time. If the filter is manually attached to a
+non-matching model, the inlet returns the body unchanged
+(defensive — protects against operator misconfiguration).
+
+---
+
+## The chat filter UI (UserValves)
+
+Each filter's UserValves are visible to end users as form fields under
+the per-filter settings icon in the Integrations menu. The display
+names are intentionally short to fit OWUI's narrow UI:
+
+| Filter ID | OWUI display name | UserValves shown |
+|-----------|-------------------|------------------|
+| `openrouter_image_filter_generic` | `OR Image Filter` | Image aspect ratio, Image size |
+| `openrouter_image_filter_gemini` | `Gemini Options` | Image aspect ratio (Gemini extended), Image size (Gemini-only 0.5K) |
+| `openrouter_image_filter_sourceful` | `Sourceful Options` | Font inputs (JSON array), Super-resolution references (JSON array) |
+
+### Filter installation (admin)
+
+Filter rows are auto-installed during `pipes()` warmup via
+[`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py).
+Each filter:
+
+- Is installed lazily — only on first model that needs it (e.g. the
+  Sourceful filter is only installed if a Sourceful Pro/Fast model is
+  in the available list).
+- Is wrapped in its own `try/except` so one filter's install failure
+  doesn't block the others.
+- Returns `dict[model_id, list[function_id]]` mapping each model to its
+  applicable filter ids. Both `model_id` and `original_id` keys point
+  to **separate list instances** (no aliasing — modifying one list
+  doesn't affect the other).
+
+### Filter attachment (admin)
+
+The catalog metadata sync at [`models/catalog_manager.py::_apply_image_filter_ids`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+writes the per-model `filterIds` list into each model's metadata, with
+removal-set logic that drops previously-attached ids no longer in the
+current set. This handles renamed filter functions and capability
+flips (e.g. if a model loses its `image_output` capability, its image
+filters get cleaned up automatically).
+
+`_apply_image_default_filter_ids` mirrors this for the
+`defaultFilterIds` list (the "default-on" semantics).
+
+---
+
+## The `help` command
+
+Typing the literal word `help` (no other text — case-sensitive,
+exactly four characters) in a chat against any image model returns a
+curated help blurb for that specific model. The renderer is
+[`integrations/image_help.py::render_image_help()`](../open_webui_openrouter_pipe/integrations/image_help.py).
+
+Help content is composed from `_IMAGE_PER_MODEL_HELP_DATA` entries:
+
+```
+# OpenAI: GPT-5 Image
+
+OpenAI's flagship multimodal text+image model — generates both text
+response AND inline images per turn. Best for chat-style image
+generation where you want commentary alongside the visual.
+
+## Tips & pitfalls
+- Multimodal output: model decides when to emit images based on
+  prompt — be explicit ("Generate an image of...") for reliability.
+- Standard 10 aspect ratios + 1K/2K/4K sizes via image_config; defaults
+  to 1:1 1K when unset.
+- Already in chat catalog — generic image filter auto-attaches to
+  expose aspect_ratio/image_size knobs.
+- Pricing follows GPT-5 chat token economics; image output is included
+  in completion tokens.
+
+## Knobs
+- `Image aspect ratio`: Frame shape (10 standard ratios from 1:1 to
+  21:9). Empty = model default.
+- `Image size`: Resolution tier (1K/2K/4K). Empty = model default (1K).
+```
+
+The `## Knobs` section is gated on the model — the Gemini Options
+knobs only render for Gemini Flash Image Preview models, the Sourceful
+Options knobs only render for Riverflow Pro/Fast.
+
+If a model isn't in the curated dataset (newly added by OpenRouter
+between catalog refreshes, for example), `help` falls back to the
+catalog metadata — display name, description, output/input modalities.
+
+---
+
+## Output rendering and message format
+
+Image responses follow the existing chat-completion image rendering
+pipeline that has handled `gpt-5-image` and similar multimodal models
+since well before this feature. **No new adapter, no new streaming
+handler, no new storage helper.** The pipeline:
+
+1. **OpenRouter response** comes back with `message.images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]`.
+2. [`api/gateway/chat_completions_adapter.py:418-447`](../open_webui_openrouter_pipe/api/gateway/chat_completions_adapter.py)
+   parses `message.images` and emits an `image_generation_call` item.
+3. [`streaming/streaming_core.py:595-631`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+   `_materialize_image_entry()` recursively resolves dicts (`url`,
+   `image_url`, `imageUrl`, `content_url`), decodes base64 fields
+   (`b64_json`, `b64`, `base64`, `data`, `image_base64`, `imageB64`),
+   validates size against `REMOTE_IMAGE_MAX_SIZE_MB`, persists via
+   `_persist_generated_image`, returns `/api/v1/files/{stored}/content`.
+4. [`streaming/streaming_core.py:633-661`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+   `_collect_image_output_urls()` resolves entries to a list of file
+   URLs.
+5. [`streaming/streaming_core.py:663-672`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+   `_render_image_markdown()` produces `![alt](url)` markdown that
+   OWUI renders inline.
+6. The renderer at [`streaming/streaming_core.py:1656-1692`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+   emits status, dedupes, and handles the final write.
+
+The rendered message looks like:
+
+```markdown
+![Generated image](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
+```
+
+OWUI displays the image inline with a download/copy/view-fullsize
+context menu. The file is registered in OWUI's `Files` table linked to
+the chat, surviving page reload.
+
+---
+
+## Pricing and cost display
+
+Pricing is pulled live from the OpenRouter catalog via the standard
+chat catalog refresh path (`MODEL_CATALOG_REFRESH_SECONDS` TTL). The
+status footer rendered on the assistant message includes the cost of
+the generation in dollars, derived from `prompt_tokens` /
+`completion_tokens` × the model's per-token rates.
+
+For multimodal models (GPT-5 Image, Gemini Image), image output counts
+as completion tokens — the cost is bundled. For pure-image-only models
+(FLUX, Sourceful, Seedream), token-based pricing applies via OpenRouter's
+standard usage accounting.
+
+**Sourceful upcharges:** `font_inputs` adds +$0.03 per font, and
+`super_resolution_references` adds +$0.20 per reference. These appear
+in the cost breakdown if you use those features.
+
+---
+
+## Configuration valves (admin)
+
+Four valves control the native image-generation subsystem. All are
+visible in Admin → Functions → OpenRouter pipe → Valves. Catalog TTL
+is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
+
+| Valve | Default | Range | Purpose |
+|-------|---------|-------|---------|
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False removes pure-image-only models from `pipes()` output AND clears them from OWUI's catalog (`register_image_models([])` runs once on the next cycle). Multimodal models stay since they're in the chat catalog. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install the three filter rows (generic, Gemini, Sourceful) in OWUI Functions table on `pipes()`. |
+| `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach the appropriate filter combination to each image-output model: generic to all, Gemini to gemini-flash-image-preview models, Sourceful to riverflow Pro/Fast. |
+| `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
+
+Related (existing) valves:
+
+| Valve | Default | Purpose |
+|-------|---------|---------|
+| `MODEL_CATALOG_REFRESH_SECONDS` | varies | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. |
+| `REMOTE_IMAGE_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
+
+Tuning hints:
+
+- **Disabling image generation completely**:
+  `ENABLE_OPENROUTER_IMAGE_GENERATION=False`. Pure-image-only models
+  vanish from the dropdown on next sync; multimodal models remain
+  (they're in the chat catalog).
+- **Want filters created but not auto-attached**: set
+  `AUTO_INSTALL_IMAGE_FILTERS=True`, `AUTO_ATTACH_IMAGE_FILTERS=False`.
+  Useful for testing — admins can attach manually via Admin → Models
+  → [model row] → Filters.
+- **Want auto-attach but not auto-default**:
+  `AUTO_DEFAULT_IMAGE_FILTERS=False`. The filter shows in Integrations
+  menu as off-by-default; users opt in per chat.
+
+---
+
+## Errors and troubleshooting
+
+### `OR Web Tools` filter showing on image models / 404 "No endpoints found that support tool use"
+
+If the user sees the OR Web Tools filter toggle on an image-output
+model (e.g. Sourceful Riverflow), and enabling it causes a 404, the
+capability gate may not be working. The pipe explicitly excludes
+image-output and video-generation models from Web Tools attach via
+the `web_tools_supported` check in
+[`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py):
+
+```python
+web_tools_supported = bool(
+    web_tools_filter_function_id
+    and (valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER)
+    and not pipe_capabilities.get("image_output")
+    and not pipe_capabilities.get("video_generation")
+)
+```
+
+If a model is mis-detected, check its `architecture.output_modalities`
+in the OpenRouter catalog — only models with `image` (and not `text`,
+or without `text` for pure-image-only) trigger the gate. Toggle
+`ENABLE_OPENROUTER_IMAGE_GENERATION` off → save → on → save to force a
+catalog sync; the gate is re-evaluated each sync.
+
+### Pure-image-only model not appearing in dropdown
+
+The catalog hasn't been fetched yet, or the master switch is off.
+Check:
+
+- `ENABLE_OPENROUTER_IMAGE_GENERATION=True` is set.
+- The pipe has been called at least once with a logged-in user.
+- The pipe's API key is valid — `pipes()` returns early without
+  registering the image catalog if auth fails.
+- Check the pipe logs for `Registered N OpenRouter image-output
+  model(s) into the catalog.` — if missing, the fetch failed
+  silently (the call is wrapped in a try/except that logs a warning).
+
+### Multimodal image model (gpt-5-image, gemini-image) appears but no image filter is attached
+
+The filter installer didn't run, or the catalog metadata sync hasn't
+completed since install. Check:
+
+- `AUTO_INSTALL_IMAGE_FILTERS=True` and `AUTO_ATTACH_IMAGE_FILTERS=True`.
+- Admin → Functions has an entry named `OR Image Filter`.
+- Restart the pipe to force a fresh `pipes()` cycle, or toggle
+  `AUTO_ATTACH_IMAGE_FILTERS` off → save → on → save.
+
+### `Sourceful Options` filter attached but knobs ignored on a non-Sourceful model
+
+The Sourceful filter has a model gate — if the body's `model` doesn't
+match `^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$`, the inlet
+returns the body unchanged. This is defensive behavior protecting
+against operator misconfiguration. To use the knobs, you must be on a
+Sourceful Pro or Fast model.
+
+Same applies to `Gemini Options` — only fires for
+`^google/gemini-.*flash-image.*-preview$`.
+
+### `font_inputs has 3 entries; max is 2.`
+
+The Sourceful filter's pre-validation rejected the input. The provider
+caps `font_inputs` at 2 and `super_resolution_references` at 4. This
+error is raised at filter inlet **before** the HTTP call so the user
+gets a clear message instead of an opaque 400 from the provider.
+Reduce the array size to fit the cap.
+
+### `IMAGE_FONT_INPUTS_JSON is not valid JSON`
+
+The Sourceful filter parses the `IMAGE_FONT_INPUTS_JSON` /
+`IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` valve as JSON. If the user
+input isn't valid JSON, the filter raises this error at inlet. Fix
+the JSON syntax — for example:
+
+```json
+[{"font_url": "https://example.com/Inter.woff2", "text": "Hello"}]
+```
+
+### Aspect ratio not honored on `openrouter/auto`
+
+Auto-routing means OpenRouter picks the underlying model. Some
+providers may not honor all aspect ratios. The router maps to the
+closest equivalent. To get exact aspect ratio, pick a specific model.
+
+### Image generation succeeds but no image renders inline
+
+Check:
+
+- The OpenRouter response has `message.images` populated (not an
+  empty list).
+- `REMOTE_IMAGE_MAX_SIZE_MB` is large enough — if the decoded image
+  exceeds it, persistence fails silently and the markdown contains a
+  broken file reference.
+- The pipe has filesystem write access to its temp dir and OWUI
+  storage (Local/S3/GCS/Azure) is healthy.
+- Check the pipe logs for `_persist_generated_image` errors.
+
+### Body validation error: `image_config` rejected at `CompletionsBody.model_validate`
+
+If you see a Pydantic validation error mentioning `image_config`, the
+type may have regressed. The field is `Optional[Dict[str, Any]]` per
+this feature — see [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py).
+If anyone changes it back to a scalar type, dict writes from the
+filters will fail validation.
+
+---
+
+## Architecture overview
+
+Roughly, in order of who-calls-who:
+
+```
+pipes()
+  ├─ ensure chat catalog loaded (existing)
+  ├─ ensure video catalog loaded (existing)
+  └─ if ENABLE_OPENROUTER_IMAGE_GENERATION:
+        ensure_image_catalog_loaded()
+          ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
+          ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
+          ├─ register_image_models()
+          │     ├─ skip multimodal (text in output_modalities)
+          │     ├─ stale-norm cleanup (drop models removed from catalog)
+          │     ├─ atomic publish (4 dict assignments, no await)
+          │     └─ features = {"image_output", "image_gen_tool"}
+          └─ if disabled: register_image_models([]) + reset_image_fetch_timestamp()
+
+  └─ if AUTO_INSTALL_IMAGE_FILTERS:
+        ensure_openrouter_image_filter_function_ids(available_models)
+          ├─ install generic filter (always, lazily)
+          ├─ install Gemini Options filter (if any Gemini Flash Image Preview model)
+          ├─ install Sourceful Options filter (if any Sourceful Pro/Fast model)
+          └─ each install in own try/except — partial failures isolated
+
+  └─ catalog_manager._update_or_insert_model_with_metadata()
+        ├─ pipe_capabilities.image_output gate
+        ├─ web_tools_supported = ... and not image_output
+        ├─ _apply_image_filter_ids(meta_dict)       — writes filterIds
+        └─ _apply_image_default_filter_ids(meta_dict) — writes defaultFilterIds
+
+pipe(body, ...)
+  └─ orchestrator._inject_image_modalities(body)
+        ├─ no-op if model not in registry or no image in output_modalities
+        ├─ pure-image: body["modalities"] = ["image"]
+        └─ multimodal: body["modalities"] = ["image", "text"]
+
+  └─ filter inlets (run by OWUI before pipe receives body)
+        ├─ generic: shallow-merge {aspect_ratio, image_size} into body.image_config
+        ├─ Gemini Options: model gate; merge extended ratios + 0.5K
+        └─ Sourceful Options: model gate; merge font_inputs + super_resolution_references
+              └─ pre-validate cardinality and JSON shape; raise ImageGenerationError on fail
+
+  └─ chat-completions request to OpenRouter → response with message.images[0]
+  └─ chat_completions_adapter parses message.images
+  └─ streaming_core._materialize_image_entry → _persist_generated_image → file URL
+  └─ streaming_core._render_image_markdown → "![alt](file_url)"
+  └─ OWUI renders inline image
+```
+
+Key invariant: **the existing image rendering pipeline is unmodified
+by this feature**. Pure-image-only models work end-to-end through the
+same `_materialize_image_entry` → `_persist_generated_image` →
+`_render_image_markdown` path that has handled `gpt-5-image` since
+well before this PR.
+
+Key files:
+
+- [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py)
+  — TTL-gated catalog fetch + master-disable cleanup.
+- [`integrations/image_client.py`](../open_webui_openrouter_pipe/integrations/image_client.py)
+  — HTTP client for `/api/v1/models?output_modalities=image`.
+- [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
+  — `_IMAGE_PER_MODEL_HELP_DATA` (17 entries), `_IMAGE_KNOB_GATE`,
+  `render_image_help()`.
+- [`filters/image_filter_renderer.py`](../open_webui_openrouter_pipe/filters/image_filter_renderer.py)
+  — generates filter source code for the three variants
+  (generic, Gemini Options, Sourceful Options).
+- [`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py)
+  — installs filter rows in OWUI Functions table; returns
+  per-model filter id mapping.
+- [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+  — `_apply_image_filter_ids`, `_apply_image_default_filter_ids`,
+  `pipe_capabilities.image_output` gate, capability-gated
+  `web_tools_supported` exclusion.
+- [`models/registry.py::register_image_models`](../open_webui_openrouter_pipe/models/registry.py)
+  — atomic registry merge with stale-norm cleanup; multimodal dedupe.
+- [`requests/orchestrator.py::_inject_image_modalities`](../open_webui_openrouter_pipe/requests/orchestrator.py)
+  — body modalities injection.
+- [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py)
+  — Pydantic `image_config: Optional[Dict[str, Any]]` field type fix.
+- [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
+  — 4 new valves + filter marker constant.
+
+**Files NOT touched** (pre-existing, reused as-is):
+
+- `chat_completions_adapter.py:418-447` — `message.images` parser.
+- `streaming/streaming_core.py:595-672` — image materialization, file
+  persistence, markdown rendering.
+- `storage/multimodal.py` — `_persist_generated_image` and friends.
+- The legacy `openrouter_image_gen` filter (OpenAI Responses-tool wiring).
+
+---
+
+## Limitations and non-goals
+
+- **Synchronous only.** Image generation is a single chat-completions
+  request — no polling lifecycle, no resume, no disconnect recovery.
+  If the request fails or the user disconnects, the generation is lost.
+  Re-submit to retry.
+- **No streaming intermediate frames.** OpenRouter doesn't stream
+  partial images; the response includes the full base64 image at once.
+- **No image-to-image except via Sourceful `super_resolution_references`.**
+  Standard chat-completion image generation is text-to-image. To use
+  reference images, attach them as standard chat input — the pipeline
+  passes them through to the model as user content.
+- **No batch generation.** One request, one image (or set of images
+  the model emits per turn). For batch use, send multiple chats.
+- **Multimodal models may emit text without an image.** GPT-5 Image
+  and Gemini Image variants decide based on prompt. Be explicit in
+  the prompt ("generate an image of...") if you want guaranteed
+  image output.
+- **Auto-router (`openrouter/auto`) doesn't honor all knobs.**
+  Provider-specific extensions (Sourceful `font_inputs`, Gemini 0.5K)
+  are likely ignored if not the selected provider. Use specific
+  models for guaranteed knob fidelity.
+- **No video output from these models.** Image-output models do not
+  generate video. For video, use the
+  [video-generation feature](openrouter_video_generation.md).

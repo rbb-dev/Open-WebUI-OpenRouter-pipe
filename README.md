@@ -4,71 +4,80 @@
 [![Version](https://img.shields.io/badge/version-2.4.2-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.9.1%2B-green.svg)](https://openwebui.com/)
 
-**Access 350+ AI models through one interface.**
+**390+ AI models. Chat, image, and video — all from your Open WebUI.**
 
-Use GPT-5.2, Gemini 3, Claude Opus, Llama 4, and hundreds more — all from your Open WebUI, all through OpenRouter's unified API.
+GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Riverflow — text, images, and video generation through OpenRouter's unified API. One key, one bill, every model that matters.
 
-![output](https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97)
+<p align="center">
+  <img width="49%" alt="chat" src="https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97" />
+  <img width="49%" alt="generation" src="https://github.com/user-attachments/assets/27681655-c494-408d-bc1a-b09e3d09f4c7" />
+</p>
 
 ---
 
 ## What this is (in one minute)
 
-* **OpenRouter Integration Subsystem for Open WebUI**: this isn't a standalone service. Open WebUI loads it as a Function / Pipe.
-* **Multimodal-aware routing adapters**: it inspects the payload (text + images/files/audio/video) and selects the appropriate endpoint + format the target model actually supports.
-* **Responses-first endpoint routing**: it builds canonical requests and routes to `/responses` or `/chat/completions` depending on model rules, fallback behaviour, or attachments.
-* **Operator controls via valves**: routing, limits, storage, security posture, telemetry, and templates.
-
-**If you fork this:** it’s worth keeping the tests and running them for changes (`pytest`) — and running `pyright` as well.  
-It keeps behaviour consistent and makes debugging a lot quicker.
-
-For the full documentation, start with `docs/README.md`.
-If you're reviewing code, start with the pytest test suite in `tests/`, 3200+ pytest tests with broad coverage.
-
-
-Check GitHub CI test workflows.
+* **OpenRouter Integration Subsystem for Open WebUI** — not a standalone service. Open WebUI loads it as a Function / Pipe.
+* **Multimodal-aware routing adapters** — inspects the payload (text + images/files/audio/video) and picks the endpoint and format the target model supports.
+* **Responses-first endpoint routing** — builds canonical requests and routes between `/responses` and `/chat/completions` based on model rules, fallbacks, or attachments.
+* **Native image and video generation** — exposed as regular chat models with per-model knobs.
+* **OpenRouter server tools** — `web_search`, `web_fetch`, and `datetime` behind one OWUI filter.
+* **Operator controls via valves** — routing, limits, storage, security, telemetry, and templates.
 
 ---
-
 
 ## What You Get
 
 🎯 **Every Model, One Place**
-GPT-5.2, Gemini 3, Claude Opus, Llama 4, DeepSeek, Qwen, Command R+ — browse them all, try them all, compare them all. One API key, one bill. Plus model variants (`:free`, `:thinking`, `:exacto`) for specialized routing.
+371 chat models, 13 video models, 16 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
+
+🎨 **Image Generation, Inline**
+16 image models — Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image. Type a prompt, get an image. Custom fonts, super-resolution, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
+
+🎬 **Video Generation**
+13 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
 
 🖼️ **Multimodal That Actually Works**
-Drop in images, PDFs, documents. The pipe figures out what each model supports and handles the rest.
+Drop in images, PDFs, audio, video. The pipe figures out what each model supports — `/responses` vs `/chat/completions`, file vs RAG, streaming vs not.
 
-🔧 **Tools & Web Search**
-Your Open WebUI tools work seamlessly. OpenRouter's native web search is one toggle away.
+🔧 **OpenRouter Server Tools**
+Web Search, Web Fetch, and Datetime — OpenRouter's server-side tools (run on their infrastructure, not yours, no client-side code). Any model can call them. Bundled into one toggleable filter; calls render as styled cards with citations.
 
 🛡️ **Zero Data Retention (ZDR) Controls**
-Filter to ZDR‑only models and enforce ZDR routing when privacy requirements demand it.
+Filter to ZDR-only models. Enforce ZDR routing when privacy demands it. Video models always treated as not-ZDR.
 
 🎨 **Complete Integration**
-Model icons and descriptions sync automatically. Capabilities show up in the UI. It feels native because it is.
+Model icons + descriptions + capabilities sync automatically. Per-chat cost display. Per-user cost attribution. Feels native because it is.
 
-💬 **Clear Communication**
-Helpful error messages, real-time status updates, and transparent cost tracking per request.
+---
+
+## What's New
+
+- **Native image generation** — 16 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image) with 3 per-family filters (generic, Gemini Options, Sourceful Options).
+- **Video generation** — 13 OpenRouter video models with per-model filters and inline `<video>` rendering.
+- **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime as one toggleable filter; tool execution cards with citations.
+- **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
+- **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
+- **Direct Uploads filter** — bypass OWUI RAG; forward chat attachments as `input_file` to OpenRouter.
 
 ---
 
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission controls, and graceful degradation — built for real workloads, not demos.
+Rate limiting, circuit breakers, request admission, graceful degradation. 3500+ pytest tests, both readable and compressed bundle variants.
 
 🔐 **Security First**
-Encrypted credential storage, SSRF protection with HTTPS-only remote fetches by default (HTTP allowlist available), no secrets in logs. Designed for environments where security reviews happen.
+Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).
 
 📊 **Cost & Attribution**
-Track spending per user, per session. Optional Redis export for billing integration. Know who's using what.
+Track spending per user, per session, per model. Optional Redis export for billing integration. Per-user concurrency caps for video and image generation.
 
 📝 **Audit Trail**
 Optional encrypted session logs for incident response. Request identifiers flow through to OpenRouter for end-to-end attribution.
 
-🛡️ **Enterprise Controls**
-Encryption, retention policies, request attribution, and operational hooks your governance program can build on.
+🏢 **Enterprise Controls**
+Provider routing policies, ZDR enforcement, retention controls, per-model access (admin curated), tool/feature kill switches via valves.
 
 ---
 
@@ -81,13 +90,11 @@ In Open WebUI: **Admin Panel** → **Functions** → **+** → **Import from Lin
 Pick one:
 
 **Readable bundle (easy to audit/edit):**
-
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled.py
 ```
 
 **Compressed bundle (routine installs; smaller payload, faster upload, same runtime behavior):**
-
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/latest/download/open_webui_openrouter_pipe_bundled_compressed.py
 ```
@@ -100,13 +107,11 @@ Both are automatically generated from the same modular source code on every rele
 For the latest development commits (may be unstable):
 
 **Readable bundle:**
-
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/download/dev/open_webui_openrouter_pipe_bundled.py
 ```
 
 **Compressed bundle:**
-
 ```
 https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/download/dev/open_webui_openrouter_pipe_bundled_compressed.py
 ```
@@ -123,11 +128,17 @@ Click the **⚙️ gear icon** on the pipe → paste your [OpenRouter API key](h
 
 **4. Select a Model**
 
-Back in the chat, click the model dropdown — you'll see all OpenRouter models. Pick one.
+Back in the chat, click the model dropdown — you'll see all OpenRouter chat, image, and video models. Pick one.
 
 **5. Chat!**
 
-That's it. Start talking.
+For image generation, just describe what you want. For video, type a prompt and the pipe submits, polls, downloads, and renders inline. For chat models with reasoning, the `<think>` tokens stream live.
+
+That's it.
+
+### Try the per-model help
+
+Type `help` (literally just that word, nothing else) in a chat against any image or video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. Different answer for every one of the 30+ generation models.
 
 ---
 
@@ -141,15 +152,50 @@ That's it. Start talking.
 
 ## Documentation
 
-Everything else lives in [`docs/`](docs/README.md):
+Every document in [`docs/`](docs/README.md):
 
-- [Configuration Reference](docs/valves_and_configuration_atlas.md) — all the knobs and switches
-- [Model Variants & Presets](docs/model_variants_and_presets.md) — using :free, :thinking, :exacto variants and OpenRouter presets
-- [Security Guide](docs/security_and_encryption.md) — production hardening
-- [Tool Integration](docs/tooling_and_integrations.md) — extending with tools
-- [Cost & Attribution](docs/openrouter_integrations_and_telemetry.md) — billing and tracking
-- [Zero Data Retention (ZDR)](docs/openrouter_zdr.md) — ZDR model filtering and enforcement
-- [Troubleshooting](docs/error_handling_and_user_experience.md) — when things go sideways
+**Get started**
+- [Valves & Configuration Atlas](docs/valves_and_configuration_atlas.md) — every valve, verified defaults
+- [Image Generation](docs/openrouter_image_generation.md) — models, filters, per-model knobs
+- [Video Generation](docs/openrouter_video_generation.md) — models, async lifecycle, resume behaviour
+- [Server Tools](docs/openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, legacy Image Gen
+- [Direct Uploads](docs/openrouter_direct_uploads.md) — bypass OWUI RAG, forward as `input_file`
+- [Provider Routing](docs/openrouter_provider_routing.md) — admin + user routing filters
+- [Variants & Presets](docs/model_variants_and_presets.md) — `:nitro`, `:exacto`, `@preset/...`
+- [Telemetry & Cost Attribution](docs/openrouter_integrations_and_telemetry.md) — identifiers, headers, exports
+- [Error Handling & UX](docs/error_handling_and_user_experience.md) — what users see, troubleshooting
+- [Web Search: OWUI vs OpenRouter](docs/web_search_owui_vs_openrouter_search.md) — when to use which
+
+**Security & compliance**
+- [Security & Encryption](docs/security_and_encryption.md) — credential storage, SSRF, hardening
+- [Zero Data Retention](docs/openrouter_zdr.md) — ZDR filtering and enforcement
+- [Persistence, Encryption & Storage](docs/persistence_encryption_and_storage.md) — what's stored, retention, ops
+- [Session Log Storage](docs/session_log_storage.md) — encrypted incident-response archives
+- [Request Identifiers & Abuse Attribution](docs/request_identifiers_and_abuse_attribution.md) — multi-user, privacy
+
+**Operations & performance**
+- [Concurrency Controls & Resilience](docs/concurrency_controls_and_resilience.md) — admission, breaker, tuning
+- [Streaming Pipeline & Emitters](docs/streaming_pipeline_and_emitters.md) — streaming lifecycle, perf tradeoffs
+- [Testing, Bootstrap & Operations](docs/testing_bootstrap_and_operations.md) — test harness, dev runbooks
+- [Production Readiness Report](docs/production_readiness_report.md) — assessment-style doc
+
+**Engineering deep dives**
+- [Developer Guide & Architecture](docs/developer_guide_and_architecture.md) — systems map, contributor reference
+- [Model Catalog & Routing Intelligence](docs/model_catalog_and_routing_intelligence.md) — catalog refresh, routing logic
+- [History Reconstruction & Context](docs/history_reconstruction_and_context.md) — context restoration on resume
+- [Multimodal Ingestion Pipeline](docs/multimodal_ingestion_pipeline.md) — image/audio/video processing
+- [Task Models & Housekeeping](docs/task_models_and_housekeeping.md) — task model wiring, sweepers
+- [Tooling & Integrations](docs/tooling_and_integrations.md) — plugin/tool integration patterns
+
+Plus [`CHANGELOG.md`](CHANGELOG.md) — audit trail of changes.
+
+---
+
+## Contributing & forking
+
+If you fork this, run the same checks CI does before pushing: `ruff check`, `pyright`, and `pytest`. CI validates the source plus both generated bundles (readable + compressed) on every push.
+
+For code review, start with the pytest suite in `tests/` — broad coverage across chat, image, video, tools, filters, persistence, and the streaming pipeline.
 
 ---
 
