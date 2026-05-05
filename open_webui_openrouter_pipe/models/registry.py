@@ -384,6 +384,28 @@ class OpenRouterModelRegistry:
                 models.extend(preserved_video_models)
                 models.sort(key=lambda m: str(m.get("name") or "").lower())
 
+        existing_image_only_norms = {
+            n for n, s in cls._specs.items()
+            if "image_output" in (s.get("features") or set())
+            and "video_generation" not in (s.get("features") or set())
+            and "text" not in ((s.get("architecture") or {}).get("output_modalities") or [])
+        }
+        if existing_image_only_norms:
+            for n in existing_image_only_norms:
+                if n not in specs:
+                    specs[n] = cls._specs[n]
+                if n not in id_map and n in cls._id_map:
+                    id_map[n] = cls._id_map[n]
+            existing_norms_after_video = {m.get("norm_id") for m in models}
+            preserved_image_models = [
+                m for m in cls._models
+                if m.get("norm_id") in existing_image_only_norms
+                and m.get("norm_id") not in existing_norms_after_video
+            ]
+            if preserved_image_models:
+                models.extend(preserved_image_models)
+                models.sort(key=lambda m: str(m.get("name") or "").lower())
+
         cls._models = models
         cls._specs = specs
         cls._id_map = id_map

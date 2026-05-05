@@ -193,6 +193,68 @@ def test_record_image_attempt_updates_clock():
     assert OpenRouterModelRegistry._last_image_attempt > 0.0
 
 
+@pytest.mark.asyncio
+async def test_chat_refresh_preserves_image_only_models():
+    """Regression: chat catalog _refresh() must preserve pure-image-only models.
+
+    Bug: pre-fix, /api/v1/models refresh rebuilt cls._models from chat catalog
+    only, wiping image-only models registered separately via register_image_models.
+    Symptom: Sourceful/FLUX/Seedream models would 'pop in/out' as TTL cycled,
+    rejected with not_in_catalog mid-session.
+    """
+    import aiohttp
+    from aioresponses import aioresponses
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry._last_fetch = 0.0
+    OpenRouterModelRegistry._next_refresh_after = 0.0
+
+    OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
+    pre_refresh_image_norms = {
+        n for n, s in OpenRouterModelRegistry._specs.items()
+        if "image_output" in (s.get("features") or set())
+        and "video_generation" not in (s.get("features") or set())
+        and "text" not in ((s.get("architecture") or {}).get("output_modalities") or [])
+    }
+    assert pre_refresh_image_norms, "Pre-condition: image-only models must be registered"
+
+    chat_catalog_payload = {
+        "data": [
+            {
+                "id": "openai/gpt-5",
+                "name": "OpenAI: GPT-5",
+                "context_length": 128000,
+                "supported_parameters": ["tools"],
+                "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+                "pricing": {"prompt": "0.000005", "completion": "0.000015"},
+            }
+        ]
+    }
+    with aioresponses() as mocked:
+        mocked.get(
+            "https://openrouter.ai/api/v1/models",
+            payload=chat_catalog_payload,
+        )
+        mocked.get(
+            "https://openrouter.ai/api/v1/endpoints/zdr",
+            payload={"data": []},
+        )
+        async with aiohttp.ClientSession() as session:
+            await OpenRouterModelRegistry._refresh(
+                session,
+                base_url="https://openrouter.ai/api/v1",
+                api_key="test",
+                logger=MagicMock(),
+            )
+
+    post_refresh_norms = {m["norm_id"] for m in OpenRouterModelRegistry._models}
+    missing = pre_refresh_image_norms - post_refresh_norms
+    assert not missing, f"Image-only models wiped by chat refresh: {missing}"
+    assert "openai.gpt-5" in post_refresh_norms, "Chat refresh should also register chat models"
+
+
 # =============================================================================
 # Filter renderer: 3 variants produce valid Python with unique markers
 # =============================================================================

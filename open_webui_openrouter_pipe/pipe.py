@@ -1822,6 +1822,16 @@ class Pipe:
                     logger=self.logger,
                     cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 )
+            if valves.ENABLE_OPENROUTER_IMAGE_GENERATION:
+                from .integrations.image_catalog import ensure_image_catalog_loaded
+
+                await ensure_image_catalog_loaded(
+                    session,
+                    valves=valves,
+                    api_key=api_key_value or "",
+                    logger=self.logger,
+                    cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+                )
         except ValueError as exc:
             await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
