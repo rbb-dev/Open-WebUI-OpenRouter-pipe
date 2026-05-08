@@ -31,9 +31,13 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     build_generic_image_filter_spec,
     build_gemini_image_filter_spec,
     build_sourceful_image_filter_spec,
+    build_recraft_common_image_filter_spec,
+    build_recraft_v3_image_filter_spec,
     render_generic_image_filter_source,
     render_gemini_image_filter_source,
     render_sourceful_image_filter_source,
+    render_recraft_common_image_filter_source,
+    render_recraft_v3_image_filter_source,
     sanitize_image_filter_id,
 )
 from open_webui_openrouter_pipe.integrations.image_help import (
@@ -264,6 +268,8 @@ async def test_chat_refresh_preserves_image_only_models():
     (render_generic_image_filter_source, "openrouter_image_filter_generic"),
     (render_gemini_image_filter_source, "openrouter_image_filter_gemini"),
     (render_sourceful_image_filter_source, "openrouter_image_filter_sourceful"),
+    (render_recraft_common_image_filter_source, "openrouter_image_filter_recraft"),
+    (render_recraft_v3_image_filter_source, "openrouter_image_filter_recraft_v3"),
 ])
 def test_filter_source_parses_as_valid_python(variant_fn, expected_id_suffix):
     import ast
@@ -277,11 +283,13 @@ def test_filter_specs_have_unique_markers_and_ids():
         build_generic_image_filter_spec(),
         build_gemini_image_filter_spec(),
         build_sourceful_image_filter_spec(),
+        build_recraft_common_image_filter_spec(),
+        build_recraft_v3_image_filter_spec(),
     ]
     markers = [s.marker for s in specs]
     function_ids = [s.function_id for s in specs]
-    assert len(set(markers)) == 3
-    assert len(set(function_ids)) == 3
+    assert len(set(markers)) == 5
+    assert len(set(function_ids)) == 5
     for spec in specs:
         assert spec.marker.startswith("openrouter_pipe:image_filter:v1:")
 
@@ -510,15 +518,16 @@ def test_gemini_filter_inlet_writes_extended_overrides():
 # =============================================================================
 
 
-def test_register_image_models_full_fixture_handles_all_17_entries():
-    """Full image-api dump (17 entries) registers without errors and dedupe works."""
+def test_register_image_models_full_fixture_handles_all_entries():
+    """Full image-api dump registers without errors and dedupe works.
+    Asserts every pure-image-only model in the catalog appears in _specs."""
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
 
     OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
 
-    # All 9 pure-image-only models registered
+    # All pure-image-only models registered
     pure_image_norm_ids = [
         ModelFamily.base_model(sanitize_model_id(mid))
         for mid in [
@@ -531,6 +540,10 @@ def test_register_image_models_full_fixture_handles_all_17_entries():
             "black-forest-labs/flux.2-max",
             "black-forest-labs/flux.2-flex",
             "black-forest-labs/flux.2-klein-4b",
+            "bytedance-seed/seedream-4.5",
+            "recraft/recraft-v3",
+            "recraft/recraft-v4",
+            "recraft/recraft-v4-pro",
         ]
     ]
     for norm_id in pure_image_norm_ids:
@@ -592,9 +605,9 @@ def test_sourceful_pattern_uses_fullmatch_anchors():
 
 
 def test_register_image_models_full_fixture_exact_pure_image_count():
-    """Exact-count assertion: register_image_models must add EXACTLY the 10
-    pure-image-only models from the fixture (5 Sourceful + 4 Flux + 1 Seedream),
-    NOT any of the 7 multimodal entries (gpt-5-image variants, gemini-image
+    """Exact-count assertion: register_image_models must add EXACTLY the 13
+    pure-image-only models from the fixture (5 Sourceful + 4 Flux + 1 Seedream
+    + 3 Recraft), NOT any multimodal entries (gpt-5-image variants, gemini-image
     variants, openrouter/auto — those land in chat catalog separately).
     """
     OpenRouterModelRegistry._specs = {}
@@ -607,8 +620,8 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
         norm_id for norm_id, spec in OpenRouterModelRegistry._specs.items()
         if "image_output" in (spec.get("features") or set())
     ]
-    assert len(image_only_specs) == 10, (
-        f"Expected 10 pure-image-only registrations, got {len(image_only_specs)}: {image_only_specs}"
+    assert len(image_only_specs) == 13, (
+        f"Expected 13 pure-image-only registrations, got {len(image_only_specs)}: {image_only_specs}"
     )
 
 
@@ -1492,3 +1505,339 @@ def test_inject_image_modalities_multimodal_via_chat_catalog_path():
     body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
     _inject_image_modalities(body)
     assert body["modalities"] == ["image", "text"]
+
+
+# =============================================================================
+# Recraft filters — common (V3/V4/V4 Pro) and V3-only extras
+# =============================================================================
+
+
+def test_recraft_common_filter_inlet_writes_strength_into_body():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_strength")
+    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.7)
+    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"] == {"strength": 0.7}
+
+
+def test_recraft_common_filter_skips_strength_when_zero():
+    """0.0 is the skip sentinel — should NOT write strength to body."""
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_strength_zero")
+    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.0)
+    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in body  # nothing written
+
+
+def test_recraft_common_filter_writes_rgb_colors():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb")
+    user_valves = module.Filter.UserValves(
+        IMAGE_RGB_COLORS_JSON="[[255, 0, 0], [0, 128, 0]]"
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"]["rgb_colors"] == [[255, 0, 0], [0, 128, 0]]
+
+
+def test_recraft_common_filter_writes_background_rgb():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_bg")
+    user_valves = module.Filter.UserValves(
+        IMAGE_BACKGROUND_RGB_JSON="[0, 0, 255]"
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"]["background_rgb_color"] == [0, 0, 255]
+
+
+def test_recraft_common_filter_rejects_oversaturated_rgb():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb_oversat")
+    user_valves = module.Filter.UserValves(
+        IMAGE_RGB_COLORS_JSON="[[300, 0, 0]]"
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="0-255"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_recraft_common_filter_rejects_wrong_rgb_arity():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb_arity")
+    user_valves = module.Filter.UserValves(
+        IMAGE_RGB_COLORS_JSON="[[255, 0]]"  # only 2 components
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="3-element"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_recraft_common_filter_rejects_malformed_json():
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_bad_json")
+    user_valves = module.Filter.UserValves(
+        IMAGE_RGB_COLORS_JSON="not valid json"
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="not valid JSON"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_recraft_common_filter_skips_non_recraft_model():
+    """Defensive gate: filter must no-op on non-Recraft models even if attached."""
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_gate")
+    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.7)
+    body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in body  # filter no-op on non-Recraft
+
+
+def test_recraft_common_filter_combines_all_three_params():
+    """All three Recraft Common params combined into a single image_config."""
+    source = render_recraft_common_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_combined")
+    user_valves = module.Filter.UserValves(
+        IMAGE_STRENGTH=0.6,
+        IMAGE_RGB_COLORS_JSON="[[255, 0, 0]]",
+        IMAGE_BACKGROUND_RGB_JSON="[255, 255, 255]",
+    )
+    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"] == {
+        "strength": 0.6,
+        "rgb_colors": [[255, 0, 0]],
+        "background_rgb_color": [255, 255, 255],
+    }
+
+
+# Recraft V3 Extras filter
+
+
+def test_recraft_v3_filter_inlet_writes_style():
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_style")
+    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"] == {"style": "Photorealism"}
+
+
+def test_recraft_v3_filter_inlet_writes_text_layout():
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_layout")
+    layout = (
+        '[{"text":"Hello","bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
+    )
+    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert body["image_config"]["text_layout"][0]["text"] == "Hello"
+    assert len(body["image_config"]["text_layout"][0]["bbox"]) == 4
+
+
+def test_recraft_v3_filter_skips_v4_silently():
+    """Per OpenRouter docs: V4 and V4 Pro do NOT support style or text_layout.
+    The filter must no-op on V4/V4 Pro even if manually attached."""
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_skip_v4")
+    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
+    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in body  # V4 skipped
+
+
+def test_recraft_v3_filter_skips_v4_pro_silently():
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_skip_v4pro")
+    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
+    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
+    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in body  # V4 Pro skipped too
+
+
+def test_recraft_v3_filter_rejects_bbox_out_of_range():
+    """bbox coords must be 0.0-1.0; 1.5 must raise."""
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_bbox_range")
+    layout = (
+        '[{"text":"Hello","bbox":[[1.5,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
+    )
+    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="0.0-1.0"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_recraft_v3_filter_rejects_wrong_bbox_arity():
+    """bbox must have exactly 4 corner points."""
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_bbox_arity")
+    layout = (
+        '[{"text":"Hello","bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55]]}]'  # only 3 corners
+    )
+    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="4-element"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_recraft_v3_filter_rejects_missing_text():
+    """text_layout entry without 'text' key must raise."""
+    source = render_recraft_v3_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_no_text")
+    layout = '[{"bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
+    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
+    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="non-empty string"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+# Pattern matching
+
+
+def test_recraft_common_pattern_matches_prefix():
+    """Recraft common pattern must match all recraft/recraft-* but not other prefixes."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    pat = FilterManager._RECRAFT_COMMON_IMAGE_PATTERN
+    assert pat.match("recraft/recraft-v3")
+    assert pat.match("recraft/recraft-v4")
+    assert pat.match("recraft/recraft-v4-pro")
+    assert pat.match("recraft/recraft-v5-future")
+    # Wrong prefix
+    assert not pat.match("evil/recraft-v3")
+    assert not pat.match("recraft/other-model")
+
+
+def test_recraft_v3_pattern_uses_fullmatch_anchors():
+    """Recraft V3 pattern must match V3 EXACTLY (not V3-something or v30)."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    pat = FilterManager._RECRAFT_V3_IMAGE_PATTERN
+    assert pat.fullmatch("recraft/recraft-v3")
+    # Suffix attacks
+    assert not pat.fullmatch("recraft/recraft-v30")
+    assert not pat.fullmatch("recraft/recraft-v3-extra")
+    assert not pat.fullmatch("recraft/recraft-v4")
+    assert not pat.fullmatch("recraft/recraft-v4-pro")
+
+
+# Installer auto-attach truth table for Recraft variants
+
+
+@pytest.mark.asyncio
+async def test_installer_attaches_recraft_v3_with_v3_extras():
+    """V3 model should get: generic + recraft + recraft_v3."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.register_image_models([
+        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v3"
+    ])
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
+
+    v3 = OpenRouterModelRegistry.list_models()[0]
+    result = await fm.ensure_openrouter_image_filter_function_ids([v3])
+
+    ids = result[v3["id"]]
+    assert "openrouter_image_filter_generic" in ids
+    assert "openrouter_image_filter_recraft" in ids
+    assert "openrouter_image_filter_recraft_v3" in ids
+    assert "openrouter_image_filter_gemini" not in ids
+    assert "openrouter_image_filter_sourceful" not in ids
+
+
+@pytest.mark.asyncio
+async def test_installer_attaches_recraft_v4_without_v3_extras():
+    """V4 model should get: generic + recraft (NO recraft_v3)."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.register_image_models([
+        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v4"
+    ])
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
+
+    v4 = OpenRouterModelRegistry.list_models()[0]
+    result = await fm.ensure_openrouter_image_filter_function_ids([v4])
+
+    ids = result[v4["id"]]
+    assert "openrouter_image_filter_generic" in ids
+    assert "openrouter_image_filter_recraft" in ids
+    assert "openrouter_image_filter_recraft_v3" not in ids
+
+
+@pytest.mark.asyncio
+async def test_installer_attaches_recraft_v4_pro_without_v3_extras():
+    """V4 Pro model should get: generic + recraft (NO recraft_v3) — same as V4."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.register_image_models([
+        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v4-pro"
+    ])
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
+
+    v4pro = OpenRouterModelRegistry.list_models()[0]
+    result = await fm.ensure_openrouter_image_filter_function_ids([v4pro])
+
+    ids = result[v4pro["id"]]
+    assert "openrouter_image_filter_generic" in ids
+    assert "openrouter_image_filter_recraft" in ids
+    assert "openrouter_image_filter_recraft_v3" not in ids
+
+
+# Help coverage
+
+
+def test_help_covers_all_three_recraft_models():
+    """All 3 Recraft entries must have curated help with knob descriptions."""
+    for model_id in ("recraft/recraft-v3", "recraft/recraft-v4", "recraft/recraft-v4-pro"):
+        assert model_id in IMAGE_HELP_BY_MODEL, f"Missing help entry for {model_id}"
+        entry = IMAGE_HELP_BY_MODEL[model_id]
+        assert entry["display_name"].startswith("Recraft:")
+        assert entry["best_known_for"]
+        assert entry["tips_and_pitfalls"]
+        assert entry["knob_descriptions"]
+
+
+def test_help_renders_v3_only_knobs_only_for_v3():
+    """The `Recraft style` and `Text layout` knob descriptions must appear ONLY
+    in the rendered V3 help, not V4 or V4 Pro."""
+    v3_help = render_image_help("recraft/recraft-v3")
+    v4_help = render_image_help("recraft/recraft-v4")
+    v4pro_help = render_image_help("recraft/recraft-v4-pro")
+
+    assert "Recraft style" in v3_help
+    assert "Text layout" in v3_help
+    assert "Recraft style" not in v4_help
+    assert "Text layout" not in v4_help
+    assert "Recraft style" not in v4pro_help
+    assert "Text layout" not in v4pro_help
+
+
+def test_help_renders_recraft_common_knobs_for_all_three():
+    """`Strength`, `RGB color palette`, and `Background RGB color` must appear
+    in all three Recraft model help blurbs."""
+    for model_id in ("recraft/recraft-v3", "recraft/recraft-v4", "recraft/recraft-v4-pro"):
+        rendered = render_image_help(model_id)
+        assert "Strength (image-to-image)" in rendered, f"missing in {model_id}"
+        assert "RGB color palette" in rendered, f"missing in {model_id}"
+        assert "Background RGB color" in rendered, f"missing in {model_id}"

@@ -147,19 +147,29 @@ TTL is shared with the video and chat catalogs.
 | `black-forest-labs/flux.2-flex` | Black Forest Labs: FLUX.2 Flex | image only | aspect_ratio, image_size; seed support | Mid-tier FLUX.2 |
 | `black-forest-labs/flux.2-klein-4b` | Black Forest Labs: FLUX.2 Klein 4B | image only | aspect_ratio, image_size; seed support | Smallest, cheapest FLUX |
 | `bytedance-seed/seedream-4.5` | ByteDance Seed: Seedream 4.5 | image only | aspect_ratio, image_size; temperature, top_p | Image-only with sampling controls |
+| `recraft/recraft-v3` | Recraft: Recraft V3 | image only | + strength, rgb_colors, background_rgb_color, **style** (V3 only), **text_layout** (V3 only) | Typography champion; only model with text-at-position |
+| `recraft/recraft-v4` | Recraft: Recraft V4 | image only | + strength, rgb_colors, background_rgb_color | Design-taste rebuild; 1024x1024; ~10s/image |
+| `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | + strength, rgb_colors, background_rgb_color | Print-ready 2048x2048 (~30s/image); $0.25/image |
 
 Pick model selection rules of thumb:
 
-- **Custom typography on an image (text/logo rendering)** → Sourceful
-  Riverflow V2 Pro/Fast (only models with `font_inputs`).
+- **Long-form text or precise text-at-position in images** → Recraft V3
+  (the only model with `text_layout` for explicit placement; renders
+  full sentences/paragraphs cleanly).
+- **Custom typography (font files) on an image** → Sourceful Riverflow
+  V2 Pro/Fast (only models with `font_inputs`).
+- **Print-ready high-resolution finals** → Recraft V4 Pro (2048x2048
+  with design-taste output) or FLUX.2 Max (4K).
 - **Image-to-image super-resolution** → Sourceful Riverflow V2 Pro/Fast
   (only models with `super_resolution_references`).
 - **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → Gemini 3.1
   Flash Image Preview (only model with extended aspect ratios).
 - **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (~50%
-  cheaper than 1K) or FLUX.2 Klein 4B.
+  cheaper than 1K), FLUX.2 Klein 4B, or Recraft V4.
 - **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2 Pro,
-  Gemini 3 Pro Image.
+  Gemini 3 Pro Image, Recraft V4 Pro.
+- **Color-palette-driven design (corporate brand colors)** → any
+  Recraft variant (`rgb_colors` + `background_rgb_color`).
 - **Want commentary alongside the image (chat-style)** → multimodal
   text+image models (GPT-5 Image, Gemini Image variants).
 - **Deterministic regeneration with same prompt** → FLUX.2 family
@@ -485,6 +495,74 @@ temperature and top_p for controlled generation.
   useful for varied outputs from same prompt.
 - Standard knob set via generic filter; no model-specific extensions.
 
+### Recraft: Recraft V3
+
+> **id**: `recraft/recraft-v3` · **pure-image-only + Recraft Options + Recraft V3 Extras filters**
+
+Recraft's typography champion — released October 2024, 20B parameters,
+held #1 on the Artificial Analysis benchmark for 5+ consecutive months
+at launch. The only AI image model that can render long-form text
+(full sentences/paragraphs) reliably AND place text at exact positions
+inside the image. Used in production by Shopify and Salesforce.
+~1K resolution output, pure-image-only.
+
+- PURE-image-only — does NOT output text in chat.
+- **Has the FULL Recraft knob set** (5 image_config params): strength,
+  rgb_colors, background_rgb_color, plus V3-only `style` and
+  `text_layout`. V4/V4 Pro lack the last two.
+- For text rendering: put exact wording in quotes in the prompt AND
+  use `text_layout` for precise placement (V3-exclusive feature).
+- `text_layout` uses normalized 0-1 coordinates; bbox is 4 corner
+  [x,y] points (TL, TR, BR, BL).
+- Image-to-image: only one input image supported. Use `strength`
+  (0.0-1.0) to control deviation; default 0.5.
+- Style names: see [Recraft style list](https://www.recraft.ai/docs/api-reference/styles).
+  Vector styles NOT supported via OpenRouter.
+
+### Recraft: Recraft V4
+
+> **id**: `recraft/recraft-v4` · **pure-image-only + Recraft Options filter**
+
+Recraft's February 2026 ground-up rebuild — "design taste meets image
+generation." 1024x1024 raster output, ~10s/image. Topped the
+Hugging Face Text-to-Image Arena (blind human preference) over
+Midjourney V8, DALL-E 3, FLUX, and Stable Diffusion. Strengths:
+balanced composition, cohesive color, clean readable embedded text
+(short / mid-length), and outputs that feel deliberate rather than
+stock-like. Best for infographics, signage, packaging, and rapid
+iteration on branded assets.
+
+- PURE-image-only.
+- Does NOT support `style` or `text_layout` — those are V3 ONLY.
+  For long-form text or precise placement use V3.
+- Has `strength` + `rgb_colors` + `background_rgb_color` (3 Recraft
+  image_config params).
+- Image-to-image: only one input image supported.
+- Limitations: photorealistic human faces and hands can be unreliable;
+  not the right tool for editorial portraiture.
+- Use V4 for fast iteration / social / web; switch to V4 Pro for
+  print-ready finals at 2K.
+
+### Recraft: Recraft V4 Pro
+
+> **id**: `recraft/recraft-v4-pro` · **pure-image-only + Recraft Options filter**
+
+Premium V4 — same design taste, 2x resolution. Outputs at 2048x2048
+(~4 megapixels), ~30s/image. Built for print-ready work where fine
+detail matters: magazine layouts, posters, billboards, packaging,
+editorial illustration. Same prompt accuracy and creative judgment as
+V4 but with sharper geometry, finer textures, and better
+anatomy/realism in complex compositions.
+
+- PURE-image-only.
+- Same image_config knobs as V4 (strength + rgb_colors +
+  background_rgb_color); NO style or text_layout (V3 only).
+- ~3x slower than V4 due to higher resolution — reserve for finals,
+  not iteration.
+- **$0.25 per image** — flat per-image fee, not per-token.
+- Image-to-image: only one input image supported.
+- Same human-subject limitations as V4.
+
 ---
 
 ## Per-model parameter reference
@@ -523,6 +601,32 @@ attached to models matching
 **before** the HTTP call, surfacing a clear `ImageGenerationError`
 instead of an opaque 400 from the provider.
 
+### Recraft V3 / V4 / V4 Pro (Recraft Options filter)
+
+Adds image-to-image deviation control + color palette steering. Only
+attached to models matching `^recraft/recraft-`.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Strength (image-to-image) | float | `0.0` – `1.0` | `0.0` = skip / use model default (`0.5`). Lower = closer to input image; higher = more creative deviation. Image-to-image only. |
+| RGB color palette (JSON array) | str (JSON) | `[[r,g,b], ...]` each 0-255 | Hints output palette. Multiple entries allowed. Validated at inlet (rejects malformed JSON, oversaturated components, wrong arity). |
+| Background RGB color (JSON array) | str (JSON) | single `[r,g,b]` each 0-255 | Forces a specific background color. Combinable with `rgb_colors`. Validated at inlet. |
+
+### Recraft V3 only (Recraft V3 Extras filter)
+
+Adds artistic style presets + precise text placement at exact
+positions. Only attached to `recraft/recraft-v3` exactly. V4 and V4 Pro
+do NOT support these per OpenRouter docs; the filter no-ops if
+manually attached to V4/V4 Pro.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Recraft style | str | e.g. `"Photorealism"` | Artistic style preset name. See [Recraft styles list](https://www.recraft.ai/docs/api-reference/styles). Vector styles NOT supported via OpenRouter. Empty = no style override. |
+| Text layout (JSON array) | str (JSON) | `[{text: str, bbox: [[x,y]×4]}]` | Place text strings at exact positions. `bbox` is 4 corner points in normalized 0.0–1.0 coords (order TL, TR, BR, BL). Validated at inlet (rejects malformed JSON, out-of-range bbox, wrong arity). |
+
+**Pre-validation:** the Recraft filters reject malformed input (bad
+JSON, RGB out of 0-255, bbox out of 0.0-1.0) **before** the HTTP call.
+
 ---
 
 ## Filter UserValve identifiers (master reference)
@@ -555,30 +659,55 @@ treated as "leave model default" (skipped from the request).
 | `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` |
 | `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` |
 
+### Recraft Options filter (all Recraft models)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_STRENGTH` | `float` (`ge=0.0, le=1.0`) | `0.0` (skip sentinel) | `image_config.strength` |
+| `IMAGE_RGB_COLORS_JSON` | `str` (JSON array) | `""` | `image_config.rgb_colors` |
+| `IMAGE_BACKGROUND_RGB_JSON` | `str` (JSON array) | `""` | `image_config.background_rgb_color` |
+
+### Recraft V3 Extras filter (Recraft V3 only)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_RECRAFT_STYLE` | `str` | `""` | `image_config.style` |
+| `IMAGE_TEXT_LAYOUT_JSON` | `str` (JSON array) | `""` | `image_config.text_layout` |
+
 ### Conventions for "skip when default"
 
-A valve set to its **default value** (`""`) is **NOT** included in the
+A valve set to its **default value** is **NOT** included in the
 request body — the upstream provider's own default applies. This
 matters because providers accept different defaults for the same
 parameter, and forcing a value overrides them. Specifically:
 
-- All image valves are `Literal` or `str` types.
-- Empty string `""` (after `.strip()`) → skipped, no body write.
-- Non-empty value → written to `body.image_config[<key>]`.
+- `Literal` and `str` valves: empty string `""` (after `.strip()`) → skipped.
+- `float` valves (e.g. `IMAGE_STRENGTH`): `0.0` is the skip sentinel.
+  If a user actually wants strength `0.0`, they can set `0.001` (visually
+  identical effect; same convention as `VIDEO_SEED`).
+- Non-default value → written to `body.image_config[<key>]`.
 
 ### Routing (how filters interact)
 
 All image filters write to the same `body.image_config` dict via
 **shallow merge**. If the generic filter sets `aspect_ratio=16:9` and
 the Gemini Options filter sets `aspect_ratio=4:1`, the second filter's
-write wins (per-key overwrite). This is intentional: the Gemini Options
-filter is treated as more specific.
+write wins (per-key overwrite). This is intentional: the more-specific
+filter overrides the generic.
 
-**Model gates on extended filters:** the Gemini Options and Sourceful
-Options filters check `body.model` against their respective regex
-patterns at inlet time. If the filter is manually attached to a
-non-matching model, the inlet returns the body unchanged
-(defensive — protects against operator misconfiguration).
+**Model gates on extended filters:** the Gemini Options, Sourceful
+Options, Recraft Options, and Recraft V3 Extras filters all check
+`body.model` against their respective regex patterns at inlet time.
+If the filter is manually attached to a non-matching model, the inlet
+returns the body unchanged (defensive — protects against operator
+misconfiguration).
+
+**Recraft V3 Extras silent no-op on V4/V4 Pro:** per OpenRouter docs
+V4 and V4 Pro do NOT support `style` or `text_layout`. If a user has
+the Recraft V3 Extras filter set with a style/text_layout value but
+switches to V4 mid-session, the filter silently drops those params on
+the V4 turn rather than erroring (since the user might switch back to
+V3 later).
 
 ---
 
@@ -593,6 +722,8 @@ names are intentionally short to fit OWUI's narrow UI:
 | `openrouter_image_filter_generic` | `OR Image Filter` | Image aspect ratio, Image size |
 | `openrouter_image_filter_gemini` | `Gemini Options` | Image aspect ratio (Gemini extended), Image size (Gemini-only 0.5K) |
 | `openrouter_image_filter_sourceful` | `Sourceful Options` | Font inputs (JSON array), Super-resolution references (JSON array) |
+| `openrouter_image_filter_recraft` | `Recraft Options` | Strength (image-to-image), RGB color palette (JSON array), Background RGB color (JSON array) |
+| `openrouter_image_filter_recraft_v3` | `Recraft V3 Extras` | Recraft style, Text layout (JSON array) |
 
 ### Filter installation (admin)
 

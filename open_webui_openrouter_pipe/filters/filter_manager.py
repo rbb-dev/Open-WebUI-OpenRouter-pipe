@@ -999,6 +999,8 @@ class Filter:
 
     _GEMINI_IMAGE_PATTERN = re.compile(r"^google/gemini-.*flash-image.*-preview$")
     _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$")
+    _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^recraft/recraft-")
+    _RECRAFT_V3_IMAGE_PATTERN = re.compile(r"^recraft/recraft-v3$")
 
     @staticmethod
     def render_openrouter_image_filter_source(variant: str) -> str:
@@ -1006,6 +1008,8 @@ class Filter:
             render_generic_image_filter_source,
             render_gemini_image_filter_source,
             render_sourceful_image_filter_source,
+            render_recraft_common_image_filter_source,
+            render_recraft_v3_image_filter_source,
         )
         if variant == "generic":
             return render_generic_image_filter_source()
@@ -1013,6 +1017,10 @@ class Filter:
             return render_gemini_image_filter_source()
         if variant == "sourceful":
             return render_sourceful_image_filter_source()
+        if variant == "recraft":
+            return render_recraft_common_image_filter_source()
+        if variant == "recraft_v3":
+            return render_recraft_v3_image_filter_source()
         raise ValueError(f"Unknown image filter variant: {variant!r}")
 
     @timed
@@ -1026,6 +1034,8 @@ class Filter:
         - generic_id always (for any model with `image_output` feature)
         - generic_id + gemini_id for Gemini Flash Image Preview models
         - generic_id + sourceful_id for Sourceful Riverflow Pro/Fast models
+        - generic_id + recraft_id for any Recraft model (V3, V4, V4 Pro)
+        - generic_id + recraft_id + recraft_v3_id for Recraft V3 only
 
         """
         from ..models.registry import ModelFamily
@@ -1034,6 +1044,8 @@ class Filter:
         generic_id: str | None = None
         gemini_id: str | None = None
         sourceful_id: str | None = None
+        recraft_id: str | None = None
+        recraft_v3_id: str | None = None
         # Sentinel: empty string means we attempted install and failed.
         for model in models:
             model_id = model.get("id")
@@ -1079,6 +1091,26 @@ class Filter:
                 if sourceful_id:
                     ids.append(sourceful_id)
 
+            if self._RECRAFT_COMMON_IMAGE_PATTERN.match(canonical_id):
+                if recraft_id is None:
+                    try:
+                        recraft_id = await self._ensure_single_image_filter_function_id("recraft")
+                    except Exception as exc:
+                        self.logger.debug("Recraft image filter install failed: %s", exc)
+                        recraft_id = ""
+                if recraft_id:
+                    ids.append(recraft_id)
+
+            if self._RECRAFT_V3_IMAGE_PATTERN.match(canonical_id):
+                if recraft_v3_id is None:
+                    try:
+                        recraft_v3_id = await self._ensure_single_image_filter_function_id("recraft_v3")
+                    except Exception as exc:
+                        self.logger.debug("Recraft V3 image filter install failed: %s", exc)
+                        recraft_v3_id = ""
+                if recraft_v3_id:
+                    ids.append(recraft_v3_id)
+
             if ids:
                 # list(ids) for both keys to avoid shared-reference aliasing
                 installed[model_id] = list(ids)
@@ -1094,6 +1126,8 @@ class Filter:
             build_generic_image_filter_spec,
             build_gemini_image_filter_spec,
             build_sourceful_image_filter_spec,
+            build_recraft_common_image_filter_spec,
+            build_recraft_v3_image_filter_spec,
         )
         if variant == "generic":
             spec = build_generic_image_filter_spec()
@@ -1101,6 +1135,10 @@ class Filter:
             spec = build_gemini_image_filter_spec()
         elif variant == "sourceful":
             spec = build_sourceful_image_filter_spec()
+        elif variant == "recraft":
+            spec = build_recraft_common_image_filter_spec()
+        elif variant == "recraft_v3":
+            spec = build_recraft_v3_image_filter_spec()
         else:
             raise ValueError(f"Unknown image filter variant: {variant!r}")
 

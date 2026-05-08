@@ -317,6 +317,92 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
         },
     },
+    "recraft/recraft-v3": {
+        "display_name": "Recraft: Recraft V3",
+        "best_known_for": (
+            "Recraft's typography champion — the only AI image model that can "
+            "render long-form text (full sentences and paragraphs) reliably AND "
+            "place text at exact positions inside the image. 20B parameters, "
+            "released Oct 2024, held #1 on the Artificial Analysis benchmark for "
+            "5+ consecutive months at launch (beating Midjourney/DALL-E/FLUX). "
+            "Used in production by Shopify and Salesforce. Pure-image-only at ~1K "
+            "resolution. Best for posters, signage, packaging, marketing assets "
+            "with embedded copy."
+        ),
+        "tips_and_pitfalls": [
+            "PURE-image-only — does NOT output text in chat.",
+            "ONLY Recraft variant with `style` and `text_layout`. V4 / V4 Pro lack both.",
+            "For text rendering: put exact wording in quotes in your prompt AND use `text_layout` for precise placement (V3-exclusive feature).",
+            "Style names: see https://www.recraft.ai/docs/api-reference/styles. Vector styles NOT supported via OpenRouter.",
+            "text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).",
+            "Image-to-image: only one input image supported. Use `strength` 0.0-1.0 to control deviation (default 0.5).",
+            "If you need newer composition / cleaner geometry → V4 / V4 Pro (but lose text_layout + style).",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Strength (image-to-image)": "0.0-1.0; 0.0 = skip / use model default (0.5). Lower = closer to input image.",
+            "RGB color palette (JSON array)": "JSON array of [r,g,b] arrays (each 0-255). Hints the output palette.",
+            "Background RGB color (JSON array)": "Single [r,g,b] array (each 0-255). Forces a specific background color.",
+            "Recraft style": "Artistic style preset (V3 only), e.g. \"Photorealism\". Empty = no style override.",
+            "Text layout (JSON array)": "Place text at exact positions (V3 ONLY). Each entry: {text, bbox: 4 [x,y] corners in 0-1 coords}.",
+        },
+    },
+    "recraft/recraft-v4": {
+        "display_name": "Recraft: Recraft V4",
+        "best_known_for": (
+            "Recraft's Feb 2026 ground-up rebuild — \"design taste meets image "
+            "generation.\" 1024x1024 raster output, ~10s/image. Topped the "
+            "Hugging Face Text-to-Image Arena (blind human preference) over "
+            "Midjourney V8, DALL-E 3, FLUX, and Stable Diffusion. Strengths: "
+            "balanced composition, cohesive color, clean readable embedded text "
+            "(short / mid-length), and outputs that feel deliberate rather than "
+            "stock-like. Best for infographics, signage, packaging, branded "
+            "social/web assets, and rapid iteration."
+        ),
+        "tips_and_pitfalls": [
+            "PURE-image-only.",
+            "Does NOT support `style` or `text_layout` — those are V3 ONLY. For long-form text or precise placement use V3.",
+            "Has `strength` + `rgb_colors` + `background_rgb_color` (3 Recraft image_config params).",
+            "Image-to-image: only one input image supported.",
+            "V4 limitations (per Recraft): photorealistic human faces and hands can be unreliable; not the right tool for editorial portraiture.",
+            "Use V4 for fast iteration and social/web assets; switch to V4 Pro for print-ready finals at 2K.",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Strength (image-to-image)": "0.0-1.0; 0.0 = skip / use model default (0.5).",
+            "RGB color palette (JSON array)": "JSON array of [r,g,b] arrays (each 0-255).",
+            "Background RGB color (JSON array)": "Single [r,g,b] array (each 0-255).",
+        },
+    },
+    "recraft/recraft-v4-pro": {
+        "display_name": "Recraft: Recraft V4 Pro",
+        "best_known_for": (
+            "Premium V4 — same design taste, 2x resolution. Outputs at 2048x2048 "
+            "(~4 megapixels), ~30s/image. Built for print-ready work where fine "
+            "detail matters: magazine layouts, posters, billboards, packaging, "
+            "editorial illustration. Same prompt accuracy and creative judgment "
+            "as V4 but with sharper geometry, finer textures, and better "
+            "anatomy/realism in complex compositions. Flat $0.25 per image on "
+            "OpenRouter."
+        ),
+        "tips_and_pitfalls": [
+            "PURE-image-only.",
+            "Same image_config knobs as V4 (strength + rgb_colors + background_rgb_color); NO style or text_layout (those are V3 ONLY).",
+            "~3x slower than V4 due to higher resolution — reserve for finals, not iteration.",
+            "$0.25 per image — flat per-image fee, not per-token.",
+            "Image-to-image: only one input image supported.",
+            "Same human-subject limitations as V4; not ideal for portraiture.",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Strength (image-to-image)": "0.0-1.0; 0.0 = skip / use model default (0.5).",
+            "RGB color palette (JSON array)": "JSON array of [r,g,b] arrays (each 0-255).",
+            "Background RGB color (JSON array)": "Single [r,g,b] array (each 0-255).",
+        },
+    },
 }
 
 # Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).
@@ -333,6 +419,11 @@ _IMAGE_KNOB_GATE: dict[str, str | None] = {
     "Image size (Gemini-only 0.5K)": "gemini_extended",
     "Font inputs (JSON array)": "sourceful_extended",
     "Super-resolution references (JSON array)": "sourceful_extended",
+    "Strength (image-to-image)": "recraft_common",
+    "RGB color palette (JSON array)": "recraft_common",
+    "Background RGB color (JSON array)": "recraft_common",
+    "Recraft style": "recraft_v3_only",
+    "Text layout (JSON array)": "recraft_v3_only",
 }
 
 
@@ -348,6 +439,17 @@ def _is_sourceful_pro_or_fast(model_id: str) -> bool:
     return bool(re.match(r"^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$", model_id or ""))
 
 
+def _is_recraft(model_id: str) -> bool:
+    """Match models eligible for Recraft common knobs (strength, rgb_colors, background_rgb_color)."""
+    import re
+    return bool(re.match(r"^recraft/recraft-", model_id or ""))
+
+
+def _is_recraft_v3(model_id: str) -> bool:
+    """Match models eligible for Recraft V3-only knobs (style, text_layout)."""
+    return (model_id or "") == "recraft/recraft-v3"
+
+
 def _image_knob_is_active(knob: str, model_id: str) -> bool:
     gate = _IMAGE_KNOB_GATE.get(knob)
     if gate is None:
@@ -356,6 +458,10 @@ def _image_knob_is_active(knob: str, model_id: str) -> bool:
         return _is_gemini_flash_image_preview(model_id)
     if gate == "sourceful_extended":
         return _is_sourceful_pro_or_fast(model_id)
+    if gate == "recraft_common":
+        return _is_recraft(model_id)
+    if gate == "recraft_v3_only":
+        return _is_recraft_v3(model_id)
     return False
 
 
