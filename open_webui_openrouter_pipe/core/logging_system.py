@@ -29,8 +29,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from open_webui_openrouter_pipe.core.config import Valves
-
 from .utils import _sanitize_path_component
 
 try:
@@ -85,7 +83,7 @@ class SessionLogger:
     request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
     user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
-    SESSION_LOG_MAX_LINES: int = Valves.model_fields["SESSION_LOG_MAX_LINES"].default
+    SESSION_LOG_MAX_LINES: int = 20000
     logs: Dict[str, deque[dict[str, Any]]] = {}
     _session_last_seen: Dict[str, float] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
