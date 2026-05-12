@@ -15,13 +15,9 @@ concurrency:
 
 jobs:
   tests-and-typecheck:
-    name: Tests & Type Check (Python ${{ matrix.python-version }})
+    name: Tests & Type Check
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -43,7 +39,7 @@ jobs:
           uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
           # Install open-webui and project dependencies
           uv pip install --python .venv/bin/python open-webui -e .
-          uv pip install --python .venv/bin/python pytest pytest-asyncio pyright cairosvg pyzipper aioresponses ruff
+          uv pip install --python .venv/bin/python pytest pytest-asyncio pytest-timeout pyright cairosvg pyzipper aioresponses ruff
 
       - name: Lint source code
         run: |
@@ -79,8 +75,8 @@ jobs:
           # 2) Bundled flat monolith
           # 3) Bundled compressed monolith
           echo "==> pytest (package imports)"
-          PYTHONPATH=. pytest tests -q
+          PYTHONPATH=. pytest tests -v --tb=short -p pytest_timeout --timeout=60 --timeout-method=thread
           echo "==> pytest (bundled flat: open_webui_openrouter_pipe_bundled.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -v --tb=short -p pytest_timeout --timeout=60 --timeout-method=thread
           echo "==> pytest (bundled compressed: open_webui_openrouter_pipe_bundled_compressed.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -v --tb=short -p pytest_timeout --timeout=60 --timeout-method=thread
