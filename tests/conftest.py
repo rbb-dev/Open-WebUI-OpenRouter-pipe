@@ -304,7 +304,7 @@ def _install_open_webui_stubs() -> None:
     # Stub for open_webui.utils.middleware (used by streaming_core.py)
     middleware_mod = cast(Any, _ensure_module("open_webui.utils.middleware"))
 
-    def _apply_source_context_to_messages(
+    async def _apply_source_context_to_messages(
         request_context: Any,
         messages: list[dict[str, Any]],
         sources: list[dict[str, Any]],
@@ -312,8 +312,12 @@ def _install_open_webui_stubs() -> None:
     ) -> list[dict[str, Any]]:
         """Stub for OWUI's apply_source_context_to_messages.
 
-        In real OWUI, this injects RAG context from sources into the messages
-        using <source> XML tags. We simulate that behavior here.
+        In real OWUI (≥0.9.x), this function is async. The stub mirrors that
+        signature so production code's `await` works against both real OWUI
+        and the test stub.
+
+        Injects RAG context from sources into the messages using <source> XML
+        tags. Simulates the real implementation's behavior.
         """
         if not sources or not messages:
             return messages

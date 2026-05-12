@@ -4,10 +4,11 @@ import asyncio
 import base64
 import contextlib
 import logging
+import re
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
@@ -18,10 +19,25 @@ from ..core.utils import (
     _iter_kind_marker_spans,
     _serialize_kind_marker,
 )
+from ..media import (
+    FrameExtractionError,
+    extract_frame,
+    make_thumbnail,
+)
 from ..models.registry import OpenRouterModelRegistry
 from ..storage.video_persistence import VideoPersistence
 from .video_client import OpenRouterVideoClient, extension_for_video_mime
 from .video_help import render_video_help
+from .video_intent import (
+    FramePlanEntry,
+    VideoIntentResult,
+    emit_telemetry_log,
+    render_clarification_message,
+    render_intent_disclosure_block,
+    resolve_intent,
+    resolve_intent_user_setting,
+    should_emit_confirmation_footer,
+)
 from .video_types import DownloadedVideo, VideoGenerationError, VideoLifecycleResult
 
 if TYPE_CHECKING:
@@ -40,6 +56,10 @@ class VideoGenerationAdapter:
         self._pipe = pipe
         self.logger = logger
         self._persistence = VideoPersistence(logger=logger)
+        self._intent_call_counts_per_chat: dict[str, int] = {}
+        self._intent_call_counts_per_user_day: dict[tuple[str, str], int] = {}
+        self._intent_breaker_until_ts: float = 0.0
+        self._intent_failure_notified_chats: set[str] = set()
 
     async def generate(
         self,
@@ -119,6 +139,12 @@ class VideoGenerationAdapter:
                 job_id = resume_job_id
                 await self._add_user_active_job(user_id, job_id)
                 await self._emit_status(event_emitter, "Resuming video generation job...", done=False, progress=5)
+                resumed_disclosure = ""
+                if persisted:
+                    from .video_intent import _INTENT_BLOCK_REGION_RE
+                    m = _INTENT_BLOCK_REGION_RE.search(persisted)
+                    if m:
+                        resumed_disclosure = m.group(0)
                 bg_task = self._create_lifecycle_task(
                     key=key,
                     job_id=job_id,
@@ -135,6 +161,7 @@ class VideoGenerationAdapter:
                     global_semaphore=global_semaphore,
                     message_lock=message_lock,
                     started_at=time.monotonic(),
+                    intent_disclosure_block=resumed_disclosure,
                 )
                 async with self._pipe._video_active_tasks_dict_lock:
                     self._pipe._video_active_tasks[key] = bg_task
@@ -152,6 +179,168 @@ class VideoGenerationAdapter:
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
                 return content
+
+            video_meta_pre = self._extract_video_metadata(metadata)
+            intent_result: "VideoIntentResult | None" = None
+            intent_disclosure_block = ""
+
+            if self._intent_classifier_should_run(
+                valves=valves,
+                persisted_content=persisted,
+                prompt=prompt,
+                body=body,
+                video_meta=video_meta_pre,
+                metadata=metadata if isinstance(metadata, dict) else None,
+                chat_id=chat_id if isinstance(chat_id, str) else "",
+                user_id=user_id if isinstance(user_id, str) else "",
+            ):
+                try:
+                    await self._emit_status(
+                        event_emitter, "Analyzing request...", done=False,
+                    )
+                    intent_result = await resolve_intent(
+                        body=body,
+                        video_meta=video_meta_pre,
+                        video_model=video_model or {},
+                        valves=valves,
+                        request=request,
+                        user_obj=user_obj or user,
+                        chat_id=chat_id if isinstance(chat_id, str) else "",
+                        logger=self.logger,
+                        fallback_prompt_text=prompt,
+                        metadata=metadata if isinstance(metadata, dict) else None,
+                    )
+                    self._intent_record_call(
+                        chat_id if isinstance(chat_id, str) else "",
+                        user_id if isinstance(user_id, str) else "",
+                    )
+                    if intent_result.classifier_failed:
+                        self._intent_record_failure()
+                        self.logger.warning(
+                            "video_intent classifier_failed=True; reason=%s; "
+                            "breaker tripped",
+                            intent_result.failure_reason or "<unknown>",
+                        )
+                        chat_key_f = (
+                            chat_id if isinstance(chat_id, str) and chat_id
+                            else "__no_chat_id__"
+                        )
+                        if chat_key_f in self._intent_failure_notified_chats:
+                            self.logger.debug(
+                                "first-failure toast suppressed (chat already "
+                                "notified): chat_key=%s", chat_key_f,
+                            )
+                        elif event_emitter is None:
+                            self.logger.warning(
+                                "first-failure toast suppressed: event_emitter "
+                                "is None (chat_key=%s)", chat_key_f,
+                            )
+                            self._intent_failure_notified_chats.add(chat_key_f)
+                        else:
+                            self._intent_failure_notified_chats.add(chat_key_f)
+                            try:
+                                await event_emitter({
+                                    "type": "notification",
+                                    "data": {
+                                        "type": "warning",
+                                        "content": (
+                                            "Intent inference unavailable; "
+                                            "using simple text-to-video."
+                                        ),
+                                    },
+                                })
+                                self.logger.info(
+                                    "first-failure toast emitted (chat_key=%s)",
+                                    chat_key_f,
+                                )
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "first-failure toast emission raised "
+                                    "(suppressed): %s", exc,
+                                )
+                    # Clarification short-circuit: emit the question, return.
+                    if (
+                        intent_result.clarification is not None
+                        and intent_result.clarification.needs
+                    ):
+                        clar_content = render_clarification_message(intent_result)
+                        await self._emit_status(
+                            event_emitter, "Need a quick clarification", done=True,
+                        )
+                        await self._emit_completion(event_emitter, clar_content)
+                        self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
+                        return clar_content
+                    # Materialise prior-video frames into video_meta["frame_images"]
+                    # so the existing _encode_frame_images path picks them up.
+                    overshoot_pref_raw = resolve_intent_user_setting(
+                        metadata, "frame_extraction_index",
+                        valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
+                    )
+                    overshoot_pref: Literal["first", "last"] = (
+                        "first" if overshoot_pref_raw == "first" else "last"
+                    )
+                    thumbs = await self._materialise_frame_plan(
+                        intent=intent_result,
+                        video_meta=video_meta_pre,
+                        request=request,
+                        user_obj=user_obj or user,
+                        chat_id=chat_id if isinstance(chat_id, str) else "",
+                        message_id=message_id if isinstance(message_id, str) else "",
+                        overshoot_fallback_index=overshoot_pref,
+                    )
+                    self._apply_uploaded_attachment_retargeting(
+                        intent_result, video_meta_pre,
+                    )
+                    if isinstance(metadata, dict):
+                        pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
+                        if isinstance(pipe_meta, dict):
+                            pipe_meta["video_generation"] = video_meta_pre
+                    confirm_mode = str(
+                        resolve_intent_user_setting(
+                            metadata, "confirm_mode",
+                            valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                        )
+                        or "on_reference"
+                    )
+                    if should_emit_confirmation_footer(
+                        intent_result, confirm_mode=confirm_mode,
+                    ):
+                        intent_disclosure_block = render_intent_disclosure_block(
+                            intent=intent_result,
+                            thumb_urls=[t for t in thumbs if t],
+                        )
+                    if intent_result.use_user_prompt:
+                        pass
+                    elif intent_result.prompt:
+                        prompt = intent_result.prompt
+                    # Telemetry: emit AFTER materialise has run so
+                    # `frames_extracted` reflects what actually happened, not
+                    # what the classifier asked for.
+                    self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.logger.warning(
+                        "video_intent classifier failed (degrade-open): %s", exc
+                    )
+                    self._intent_record_failure()
+                    chat_key = chat_id if isinstance(chat_id, str) else ""
+                    if chat_key and chat_key not in self._intent_failure_notified_chats:
+                        self._intent_failure_notified_chats.add(chat_key)
+                        if event_emitter is not None:
+                            with contextlib.suppress(Exception):
+                                await event_emitter({
+                                    "type": "notification",
+                                    "data": {
+                                        "type": "warning",
+                                        "content": (
+                                            "Intent inference unavailable; "
+                                            "using simple text-to-video."
+                                        ),
+                                    },
+                                })
+                    intent_result = None
+                    intent_disclosure_block = ""
 
             user_slot_acquired = await self._try_acquire_user_slot(user_id, valves)
             if not user_slot_acquired:
@@ -172,6 +361,7 @@ class VideoGenerationAdapter:
 
             video_meta = self._extract_video_metadata(metadata)
             frame_images = await self._encode_frame_images(video_meta, video_model, valves)
+            input_references = await self._encode_input_references(video_meta, valves)
             video_attachment_urls = await self._encode_video_attachments(video_meta, valves)
             audio_attachment_url = await self._encode_audio_attachment(video_meta, valves)
             provider_options = self._extract_provider_options(getattr(responses_body, "provider", None), metadata)
@@ -181,6 +371,7 @@ class VideoGenerationAdapter:
                 video_meta=video_meta,
                 video_model=video_model,
                 frame_images=frame_images,
+                input_references=input_references,
                 provider_options=provider_options,
                 video_attachment_urls=video_attachment_urls,
                 audio_attachment_url=audio_attachment_url,
@@ -208,6 +399,8 @@ class VideoGenerationAdapter:
                     job_id=job_id,
                     model_id=api_model_id,
                 )
+                if intent_disclosure_block:
+                    pending_content = intent_disclosure_block + "\n" + pending_content
                 with contextlib.suppress(Exception):
                     await event_emitter({
                         "type": "message",
@@ -229,6 +422,7 @@ class VideoGenerationAdapter:
                 global_semaphore=global_semaphore,
                 message_lock=message_lock,
                 started_at=time.monotonic(),
+                intent_disclosure_block=intent_disclosure_block,
             )
             async with self._pipe._video_active_tasks_dict_lock:
                 self._pipe._video_active_tasks[key] = bg_task
@@ -276,6 +470,7 @@ class VideoGenerationAdapter:
         global_semaphore: asyncio.Semaphore,
         message_lock: asyncio.Lock,
         started_at: float,
+        intent_disclosure_block: str = "",
     ) -> "asyncio.Task[VideoLifecycleResult]":
         task: asyncio.Task[VideoLifecycleResult] = asyncio.create_task(
             self._run_lifecycle_after_submit(
@@ -294,6 +489,7 @@ class VideoGenerationAdapter:
                 global_semaphore=global_semaphore,
                 message_lock=message_lock,
                 started_at=started_at,
+                intent_disclosure_block=intent_disclosure_block,
             ),
             name=f"openrouter-video-{job_id}",
         )
@@ -318,6 +514,7 @@ class VideoGenerationAdapter:
         global_semaphore: asyncio.Semaphore,
         message_lock: asyncio.Lock,
         started_at: float,
+        intent_disclosure_block: str = "",
     ) -> VideoLifecycleResult:
         content = ""
         failed = False
@@ -402,6 +599,8 @@ class VideoGenerationAdapter:
                 elapsed=elapsed,
                 usage=usage,
             )
+            if intent_disclosure_block:
+                content = intent_disclosure_block + "\n" + content
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
             await self._emit_status(event_emitter, description, done=True, progress=100)
             with contextlib.suppress(Exception):
@@ -432,6 +631,8 @@ class VideoGenerationAdapter:
             elapsed = max(0.0, time.monotonic() - started_at)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
+            if intent_disclosure_block:
+                content = intent_disclosure_block + "\n" + content
             description = f"Video generation failed: {reason}"
             await self._emit_status(event_emitter, description, done=True)
             return VideoLifecycleResult(
@@ -630,6 +831,7 @@ class VideoGenerationAdapter:
         provider_options: dict[str, Any],
         video_attachment_urls: list[str] | None = None,
         audio_attachment_url: str = "",
+        input_references: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": api_model_id,
@@ -656,6 +858,8 @@ class VideoGenerationAdapter:
         self._validate_passthrough_urls(payload)
         if frame_images:
             payload["frame_images"] = frame_images
+        if input_references:
+            payload["input_references"] = input_references
         if provider_options:
             payload["provider"] = {"options": self._normalise_provider_options(provider_options)}
         return payload
@@ -783,6 +987,74 @@ class VideoGenerationAdapter:
             seen_frame_types.add(frame_type)
         return encoded
 
+    async def _encode_input_references(
+        self,
+        video_meta: dict[str, Any],
+        valves: Any,
+    ) -> list[dict[str, Any]]:
+        """Encode prior-video frames intended as style/content reference images.
+
+        OpenRouter's /videos request accepts a top-level `input_references`
+        array of `ContentPartImage` objects (type=image_url, image_url={url}).
+        Unlike `frame_images`, these are not hard anchors — they guide the
+        model's generation without locking specific frames. The model decides
+        how to use them.
+
+        Returns the encoded list (possibly empty). Never raises on empty
+        input; raises VideoGenerationError on encoding/size failure.
+        """
+        raw = video_meta.get("input_references")
+        if not isinstance(raw, list) or not raw:
+            return []
+        max_bytes = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
+        total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
+        chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
+        allowed_mimes = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
+        encoded: list[dict[str, Any]] = []
+        total_bytes = 0
+
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            file_id = _clean_str(item.get("id"))
+            if not file_id:
+                continue
+            file_obj = await self._pipe._multimodal_handler._get_file_by_id(file_id)
+            if not file_obj:
+                raise VideoGenerationError(
+                    f"input_references image '{file_id}' could not be loaded from Open WebUI storage."
+                )
+            mime = self._pipe._multimodal_handler._infer_file_mime_type(file_obj)
+            mime = _clean_str(mime).split(";", 1)[0].lower()
+            if mime not in allowed_mimes:
+                raise VideoGenerationError(
+                    f"input_references image MIME '{mime or 'unknown'}' is not allowed."
+                )
+            b64 = await self._pipe._multimodal_handler._read_file_record_base64(
+                file_obj, chunk_size, max_bytes,
+            )
+            if not b64:
+                raise VideoGenerationError(
+                    f"input_references image '{file_id}' could not be encoded."
+                )
+            try:
+                decoded_len = len(base64.b64decode(b64, validate=False))
+            except Exception as exc:
+                raise VideoGenerationError(
+                    f"input_references image '{file_id}' contains invalid base64 data."
+                ) from exc
+            total_bytes += decoded_len
+            if total_bytes > total_max:
+                raise VideoGenerationError(
+                    f"input_references images exceed the total request limit "
+                    f"({total_bytes} bytes; max {total_max} bytes)."
+                )
+            encoded.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        return encoded
+
     async def _encode_attachment_data_url(
         self,
         item: dict[str, Any],
@@ -839,6 +1111,383 @@ class VideoGenerationAdapter:
             return {}
         video_meta = pipe_meta.get("video_generation")
         return dict(video_meta) if isinstance(video_meta, dict) else {}
+
+    def _intent_classifier_should_run(
+        self,
+        *,
+        valves: Any,
+        persisted_content: str,
+        prompt: str,
+        body: dict[str, Any],
+        video_meta: dict[str, Any],
+        metadata: Optional[dict[str, Any]] = None,
+        chat_id: str = "",
+        user_id: str = "",
+    ) -> bool:
+        """Apply short-circuit conditions for the intent classifier.
+
+        Reads `VIDEO_INTENT_ENABLED` from the per-request metadata first
+        (the per-model video filter writes the user's setting here when
+        admin has the master switch on); falls back to the admin valve.
+        """
+        if not bool(resolve_intent_user_setting(
+            metadata, "enabled", valves, "VIDEO_INTENT_ENABLED", True,
+        )):
+            return False
+        if not (prompt or "").strip():
+            return False
+        if prompt.strip().lower() == "help":
+            return False
+        if persisted_content and self._extract_video_job_marker(persisted_content):
+            return False
+        if getattr(valves, "VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT", True):
+            messages = body.get("messages") if isinstance(body, dict) else None
+            if isinstance(messages, list) and len(messages) <= 1:
+                has_attachments = bool(
+                    (isinstance(video_meta, dict) and (
+                        video_meta.get("frame_images")
+                        or video_meta.get("video_attachments")
+                    ))
+                )
+                if not has_attachments:
+                    return False
+        cap_chat = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0)
+        if cap_chat > 0 and chat_id:
+            if self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat:
+                return False
+        cap_day = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0)
+        if cap_day > 0 and user_id:
+            from datetime import datetime, timezone
+            day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            if self._intent_call_counts_per_user_day.get((user_id, day), 0) >= cap_day:
+                return False
+        if time.time() < self._intent_breaker_until_ts:
+            return False
+        return True
+
+    def _intent_record_call(self, chat_id: str, user_id: str) -> None:
+        """Increment the per-chat / per-user-day counters after a classifier call."""
+        if chat_id:
+            self._intent_call_counts_per_chat[chat_id] = (
+                self._intent_call_counts_per_chat.get(chat_id, 0) + 1
+            )
+        if user_id:
+            from datetime import datetime, timezone
+            day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            self._intent_call_counts_per_user_day[(user_id, day)] = (
+                self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
+            )
+
+    def _intent_record_failure(self) -> None:
+        """Open the in-process circuit breaker for 60 seconds after auth/quota errors."""
+        self._intent_breaker_until_ts = time.time() + 60.0
+
+    def _emit_intent_telemetry(
+        self,
+        intent: "VideoIntentResult",
+        *,
+        valves: Any,
+        chat_id: Any,
+    ) -> None:
+        """Emit the structured video_intent telemetry line. Called once per
+        terminal path (clarify / modify-fallback / classifier_failed-or-success)
+        AFTER materialise has run, so `frames_extracted` reads accurate.
+
+        Wrapped in suppress so a telemetry hiccup never breaks the user's video
+        request.
+        """
+        try:
+            emit_telemetry_log(
+                intent,
+                logger=self.logger,
+                chat_id=chat_id if isinstance(chat_id, str) else "",
+                log_decisions_enabled=bool(
+                    getattr(valves, "VIDEO_INTENT_LOG_DECISIONS", False)
+                ),
+            )
+        except Exception as exc:
+            self.logger.debug("emit_telemetry_log raised (suppressed): %s", exc)
+
+    def _apply_uploaded_attachment_retargeting(
+        self,
+        intent: "VideoIntentResult",
+        video_meta: dict[str, Any],
+    ) -> None:
+        """Apply classifier `uploaded_attachment` retargeting to existing
+        `video_meta["frame_images"]`.
+
+        When the user attaches an image via UI/filter and types
+        "use this as the last frame", the classifier returns
+        `{source: "uploaded_attachment", source_index: N, target: "last_frame"}`.
+        The validator preserves the entry through explicit-attachment precedence;
+        this helper updates the matching explicit attachment's `kind` field so
+        `_encode_frame_images` wires it through with the new target.
+
+        Targets that the underlying frame_image dict can't represent
+        (e.g. `input_reference` on a model that only supports first/last) are
+        recorded as a downgrade; the existing kind is left intact.
+        """
+        if not intent.frame_plan:
+            return
+        frame_images = video_meta.get("frame_images")
+        if not isinstance(frame_images, list):
+            return
+        retargeted = 0
+        for entry in intent.frame_plan:
+            if entry.source != "uploaded_attachment":
+                continue
+            idx = entry.source_index
+            if not isinstance(idx, int) or idx < 0 or idx >= len(frame_images):
+                intent.downgrades.append(
+                    f"retarget_skipped_invalid_index_{idx}"
+                )
+                continue
+            target = frame_images[idx]
+            if not isinstance(target, dict):
+                continue
+            existing_kind = target.get("kind")
+            if existing_kind != entry.target:
+                target["kind"] = entry.target
+                retargeted += 1
+        if retargeted:
+            intent.frames_retargeted += retargeted
+            self.logger.debug(
+                "_apply_uploaded_attachment_retargeting: rewrote %d frame "
+                "image kind(s) per classifier instruction", retargeted,
+            )
+
+    async def _materialise_frame_plan(
+        self,
+        *,
+        intent: "VideoIntentResult",
+        video_meta: dict[str, Any],
+        request: Any,
+        user_obj: Any,
+        chat_id: str,
+        message_id: str,
+        overshoot_fallback_index: Literal["first", "last"] = "last",
+    ) -> list[str]:
+        """For each prior_video_* entry in frame_plan, extract the frame from
+        the prior video file, upload it as a new OWUI image, and inject into
+        video_meta["frame_images"] so the existing _encode_frame_images path
+        wires it into the /videos call.
+
+        Any per-entry failure is logged and the entry is dropped (downgrade
+        noted in intent.downgrades). Returns a list of thumbnail URLs (one
+        per resolved frame) for the disclosure block — empty strings for
+        entries that failed.
+
+        `overshoot_fallback_index` controls which frame to use when an
+        `at_timestamp` entry asks for a moment past the prior video's
+        duration. Sourced from `VIDEO_INTENT_FRAME_EXTRACTION_INDEX`.
+        """
+        thumb_urls: list[str] = []
+        if not intent.frame_plan:
+            return thumb_urls
+
+        for entry in intent.frame_plan:
+            if entry.source == "uploaded_attachment":
+                thumb_urls.append("")
+                continue
+            if not entry.source.startswith("prior_video_"):
+                thumb_urls.append("")
+                continue
+
+            try:
+                file_id = await self._resolve_prior_video_file_id(
+                    entry, intent=intent, user_obj=user_obj,
+                )
+                if not file_id:
+                    intent.downgrades.append(
+                        f"prior_video_index_{entry.source_index}_unresolvable"
+                    )
+                    thumb_urls.append("")
+                    continue
+
+                tmp_path = await self._resolve_owui_file_path(
+                    file_id=file_id, request=request, user_obj=user_obj,
+                )
+                if tmp_path is None:
+                    intent.downgrades.append(
+                        f"prior_video_download_failed_idx_{entry.source_index}"
+                    )
+                    thumb_urls.append("")
+                    continue
+
+                try:
+                    if entry.source == "prior_video_first_frame":
+                        target = "first_frame"
+                        ts = None
+                    elif entry.source == "prior_video_last_frame":
+                        target = "last_frame"
+                        ts = None
+                    else:
+                        target = "at_timestamp"
+                        ts = entry.timestamp_seconds
+
+                    frame = await extract_frame(
+                        tmp_path, target=target, timestamp_seconds=ts,
+                        fallback_to_last_on_overshoot=True,
+                        overshoot_fallback_index=overshoot_fallback_index,
+                        logger=self.logger,
+                    )
+                    if frame.downgrade_note:
+                        intent.downgrades.append(frame.downgrade_note)
+                except FrameExtractionError as exc:
+                    self.logger.warning(
+                        "frame extraction failed for entry %s: %s",
+                        entry.source_index, exc,
+                    )
+                    intent.downgrades.append(
+                        f"frame_extract_failed_idx_{entry.source_index}"
+                    )
+                    thumb_urls.append("")
+                    continue
+
+                frame_file_id = await self._pipe._multimodal_handler._upload_to_owui_storage(
+                    request=request,
+                    user=user_obj,
+                    file_data=frame.image_bytes,
+                    filename=f"intent-frame-{entry.source}-{entry.source_index}.png",
+                    mime_type="image/png",
+                    chat_id=chat_id or None,
+                    message_id=message_id or None,
+                )
+                if not frame_file_id:
+                    intent.downgrades.append(
+                        f"frame_upload_failed_idx_{entry.source_index}"
+                    )
+                    thumb_urls.append("")
+                    continue
+
+                # Extraction + upload both succeeded — count it for telemetry.
+                # This is the authoritative "did the pipe actually do the
+                # work?" signal, distinct from "did the classifier ask for it".
+                intent.frames_extracted += 1
+
+                if entry.target in ("first_frame", "last_frame"):
+                    fi_list = video_meta.setdefault("frame_images", [])
+                    if isinstance(fi_list, list):
+                        fi_list.append({
+                            "id": frame_file_id,
+                            "frame_type": entry.target,
+                            "name": f"intent-frame-{entry.target}.png",
+                            "content_type": "image/png",
+                        })
+                elif entry.target == "input_reference":
+                    ir_list = video_meta.setdefault("input_references", [])
+                    if isinstance(ir_list, list):
+                        ir_list.append({
+                            "id": frame_file_id,
+                            "name": "intent-frame-input_reference.png",
+                            "content_type": "image/png",
+                        })
+
+                try:
+                    thumb = await asyncio.to_thread(make_thumbnail, frame.image_bytes)
+                    thumb_file_id = await self._pipe._multimodal_handler._upload_to_owui_storage(
+                        request=request,
+                        user=user_obj,
+                        file_data=thumb.image_bytes,
+                        filename=f"intent-thumb-{entry.source}-{entry.source_index}.jpg",
+                        mime_type="image/jpeg",
+                        chat_id=chat_id or None,
+                        message_id=message_id or None,
+                    )
+                    if thumb_file_id:
+                        thumb_urls.append(f"/api/v1/files/{thumb_file_id}/content")
+                    else:
+                        thumb_urls.append("")
+                except Exception as exc:
+                    self.logger.debug("thumbnail generation failed: %s", exc)
+                    thumb_urls.append("")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "_materialise_frame_plan entry failed (degrade-open): %s", exc
+                )
+                intent.downgrades.append("materialise_failed")
+                thumb_urls.append("")
+
+        return thumb_urls
+
+    async def _resolve_prior_video_file_id(
+        self,
+        entry: "FramePlanEntry",
+        *,
+        intent: "VideoIntentResult",
+        user_obj: Any,
+    ) -> str:
+        del user_obj
+        idx = entry.source_index
+        if not isinstance(idx, int) or not intent.prior_videos:
+            return ""
+        if idx < 0 or idx >= len(intent.prior_videos):
+            return ""
+        prior = intent.prior_videos[idx]
+        url = str(prior.get("file_url") or "")
+        clean = url.split("?", 1)[0].split("#", 1)[0]
+        marker = "/api/v1/files/"
+        start = clean.find(marker)
+        if start < 0:
+            return ""
+        start += len(marker)
+        tail = clean[start:]
+        if not tail or tail.startswith("/"):
+            return ""
+        candidate = tail.split("/", 1)[0]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate):
+            return ""
+        return candidate
+
+    async def _resolve_owui_file_path(
+        self,
+        *,
+        file_id: str,
+        request: Any,
+        user_obj: Any,
+    ) -> Optional[Path]:
+        del request
+        try:
+            file_obj = await self._pipe._multimodal_handler._get_file_by_id(file_id)
+            if file_obj is None:
+                return None
+            owner_id = getattr(file_obj, "user_id", None)
+            requester_id = getattr(user_obj, "id", None) if user_obj else None
+            if not owner_id or not requester_id or owner_id != requester_id:
+                self.logger.warning(
+                    "video_intent: refusing cross-user file access (file_id=%s)", file_id,
+                )
+                return None
+            raw_path = getattr(file_obj, "path", None)
+            if not raw_path:
+                return None
+            try:
+                src_path = Path(str(raw_path)).resolve(strict=True)
+            except (OSError, RuntimeError):
+                return None
+            if src_path.suffix.lower() not in {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"}:
+                self.logger.warning(
+                    "video_intent: rejecting non-video extension %s", src_path.suffix,
+                )
+                return None
+            try:
+                from open_webui.config import UPLOAD_DIR  # type: ignore[import-not-found]
+                allowed_root = Path(str(UPLOAD_DIR)).resolve(strict=True)
+                if not src_path.is_relative_to(allowed_root):
+                    self.logger.warning(
+                        "video_intent: file path escapes UPLOAD_DIR (%s)", src_path,
+                    )
+                    return None
+            except Exception:
+                pass
+            return src_path
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.debug("resolve owui file %s failed: %s", file_id, exc)
+            return None
 
     def _extract_provider_options(self, response_provider: Any, metadata: dict[str, Any]) -> dict[str, Any]:
         provider = response_provider if isinstance(response_provider, dict) else {}

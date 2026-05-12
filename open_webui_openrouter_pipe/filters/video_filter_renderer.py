@@ -69,6 +69,14 @@ class VideoFilterSpec:
     size_options: tuple[str, ...]
     seed_capable: bool = False
     audio_capable: bool = False
+    # Video intent classifier — when admin master switch is False, the renderer
+    # omits all four user-tunable intent fields and the inlet write block, so
+    # users see a filter UI free of intent knobs they can't influence.
+    intent_classifier_admin_enabled: bool = True
+    intent_enabled_default: bool = True
+    intent_max_clarifications_default: int = 1
+    intent_frame_default: str = "last"
+    intent_confirm_mode_default: str = "on_reference"
 
     @property
     def supports_frames(self) -> bool:
@@ -128,7 +136,15 @@ def _strip_vendor_prefix(name: str) -> str:
     return name.strip()
 
 
-def build_video_filter_spec(model_id: str, video_model: dict[str, Any] | None) -> VideoFilterSpec:
+_VALID_FRAME_DEFAULTS = ("first", "last")
+_VALID_CONFIRM_MODES = ("always", "on_reference", "low_confidence", "never")
+
+
+def build_video_filter_spec(
+    model_id: str,
+    video_model: dict[str, Any] | None,
+    admin_valves: Any = None,
+) -> VideoFilterSpec:
     model = video_model if isinstance(video_model, dict) else {}
     canonical_id = _clean_str(model.get("id")) or _clean_str(model_id)
     raw_name = _clean_str(model.get("name")) or canonical_id
@@ -140,6 +156,29 @@ def build_video_filter_spec(model_id: str, video_model: dict[str, Any] | None) -
     resolutions = _safe_literal_tuple(model.get("supported_resolutions"))
     frame_types = _safe_literal_tuple(model.get("supported_frame_images"))
     size_options = _safe_literal_tuple(model.get("supported_sizes") or model.get("supported_size_options"))
+
+    # Intent classifier defaults pulled from admin Valves so the rendered
+    # filter source captures the operator's site-wide preferences. When admin
+    # valves are not provided (e.g. tests, or callers that don't have a
+    # Valves instance handy), spec dataclass defaults are used.
+    intent_admin_enabled = True
+    intent_enabled_default = True
+    intent_max_clar = 1
+    intent_frame = "last"
+    intent_confirm = "on_reference"
+    if admin_valves is not None:
+        intent_admin_enabled = bool(getattr(admin_valves, "VIDEO_INTENT_ENABLED", True))
+        intent_enabled_default = intent_admin_enabled
+        raw_max_clar = getattr(admin_valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1)
+        if isinstance(raw_max_clar, int) and 0 <= raw_max_clar <= 3:
+            intent_max_clar = raw_max_clar
+        raw_frame = getattr(admin_valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last")
+        if isinstance(raw_frame, str) and raw_frame in _VALID_FRAME_DEFAULTS:
+            intent_frame = raw_frame
+        raw_confirm = getattr(admin_valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference")
+        if isinstance(raw_confirm, str) and raw_confirm in _VALID_CONFIRM_MODES:
+            intent_confirm = raw_confirm
+
     return VideoFilterSpec(
         model_id=canonical_id,
         display_name=display_name,
@@ -153,6 +192,11 @@ def build_video_filter_spec(model_id: str, video_model: dict[str, Any] | None) -
         size_options=size_options,
         seed_capable=model.get("seed") is True,
         audio_capable=model.get("generate_audio") is True,
+        intent_classifier_admin_enabled=intent_admin_enabled,
+        intent_enabled_default=intent_enabled_default,
+        intent_max_clarifications_default=intent_max_clar,
+        intent_frame_default=intent_frame,
+        intent_confirm_mode_default=intent_confirm,
     )
 
 
@@ -161,8 +205,9 @@ def render_video_filter_source(
     model_id: str,
     video_model: dict[str, Any] | None,
     pipe_metadata_key: str = _PIPE_METADATA_KEY,
+    admin_valves: Any = None,
 ) -> str:
-    spec = build_video_filter_spec(model_id, video_model)
+    spec = build_video_filter_spec(model_id, video_model, admin_valves=admin_valves)
     unhandled = sorted(set(spec.allowed_params) - _HANDLED_PASSTHROUGH_PARAMS)
     if unhandled:
         _logger.warning(
@@ -175,6 +220,11 @@ def render_video_filter_source(
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
     frame_block = _render_frame_block(spec)
+    intent_inlet_block = (
+        _render_intent_inlet_block()
+        if spec.intent_classifier_admin_enabled
+        else ""
+    )
     source = f'''"""OpenRouter video generation companion filter."""
 
 from __future__ import annotations
@@ -346,6 +396,7 @@ class Filter:
                 video_meta.pop("audio_attachments", None)
             pipe_meta["video_generation"] = video_meta
 
+{intent_inlet_block}
             if provider_options:
                 pipe_meta["provider"] = self._deep_merge_pipe_provider(pipe_meta.get("provider"), provider_options)
 
@@ -647,7 +698,104 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
                 "        )"
             )
         )
+
+    # Video intent classifier — emitted only when the admin master switch is
+    # on, so users see these knobs only in deployments where the feature is
+    # available. When admin disables the master switch, the next pipes()
+    # refresh content-diffs the new (smaller) source against stored and
+    # rewrites the OWUI filter row in place.
+    if spec.intent_classifier_admin_enabled:
+        fields.append(
+            _field_block(
+                'VIDEO_INTENT_ENABLED: bool = Field(\n'
+                f'            default={spec.intent_enabled_default!r},\n'
+                '            title="Reuse previous videos",\n'
+                '            description=(\n'
+                '                "When on, follow-up requests like \\"make it black\\" or '
+                '\\"continue this scene\\" keep working with the previous video — you get the '
+                'same scene with the change applied. When off, each video is generated only '
+                'from your latest message and ignores everything that came before, so \\"make '
+                'it black\\" would just create a new, unrelated video."\n'
+                '            ),\n'
+                '        )'
+            )
+        )
+        fields.append(
+            _field_block(
+                'VIDEO_INTENT_MAX_CLARIFICATIONS: int = Field(\n'
+                f'            default={spec.intent_max_clarifications_default},\n'
+                '            ge=0,\n'
+                '            le=3,\n'
+                '            title="Clarifying question limit",\n'
+                '            description=(\n'
+                '                "When your request is unclear (for example, you have two '
+                'previous videos and say \\"make the last one red\\"), the chat can ask a '
+                'short clarifying question to pick the right one. This is how many such '
+                'questions are allowed in a row before the chat just goes with its best '
+                'guess. Set to 0 to skip questions entirely."\n'
+                '            ),\n'
+                '        )'
+            )
+        )
+        fields.append(
+            _field_block(
+                'VIDEO_INTENT_FRAME_EXTRACTION_INDEX: Literal["first", "last"] = Field(\n'
+                f'            default={spec.intent_frame_default!r},\n'
+                '            title="Which frame to use from previous video",\n'
+                '            description=(\n'
+                '                "When the previous video is reused as a starting point, this '
+                'is the frame taken from it. last = the final frame, used to continue the '
+                'action from where it ended (the usual pick). first = the opening frame, '
+                'used to restart the scene from how it began."\n'
+                '            ),\n'
+                '        )'
+            )
+        )
+        fields.append(
+            _field_block(
+                'VIDEO_INTENT_CONFIRM_MODE: Literal["always", "on_reference", "low_confidence", "never"] = Field(\n'
+                f'            default={spec.intent_confirm_mode_default!r},\n'
+                '            title="Show what was reused",\n'
+                '            description=(\n'
+                '                "When a previous video or image is reused, the chat can show '
+                'a small thumbnail confirming which one — so you can stop and retry if the '
+                'wrong thing was picked. always = show for every video. on_reference '
+                '= only show when something was actually reused. low_confidence = only '
+                'show when the chat was unsure of its choice. never = hide entirely."\n'
+                '            ),\n'
+                '        )'
+            )
+        )
     return "\n".join(fields)
+
+
+def _render_intent_inlet_block() -> str:
+    """Inlet code that pushes user-set intent valves into request metadata.
+
+    The pipe consumer (`integrations/video.py`, `integrations/video_intent.py`)
+    reads ``__metadata__["openrouter_pipe"]["video_intent"]`` first and falls
+    back to the admin Valves when no key is set, so emitting None for an unset
+    user valve preserves the admin default.
+
+    Always emitted alongside the four UserValves fields above (i.e. only when
+    admin VIDEO_INTENT_ENABLED=True). When disabled, the consumer never sees
+    a `video_intent` key and falls back to the admin valve which itself is
+    False, short-circuiting the classifier.
+    """
+    return (
+        "            intent_settings: dict[str, Any] = {}\n"
+        "            for _user_field, _meta_key in (\n"
+        '                ("VIDEO_INTENT_ENABLED", "enabled"),\n'
+        '                ("VIDEO_INTENT_MAX_CLARIFICATIONS", "max_clarifications"),\n'
+        '                ("VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "frame_extraction_index"),\n'
+        '                ("VIDEO_INTENT_CONFIRM_MODE", "confirm_mode"),\n'
+        "            ):\n"
+        '                _value = getattr(user_valves, _user_field, None)\n'
+        '                if _value is not None:\n'
+        '                    intent_settings[_meta_key] = _value\n'
+        '            if intent_settings:\n'
+        '                pipe_meta["video_intent"] = intent_settings\n'
+    )
 
 
 def _render_param_lines(spec: VideoFilterSpec) -> str:

@@ -1711,6 +1711,107 @@ class Valves(BaseModel):
         default=_OPENROUTER_VIDEO_GEN_FILTER_MARKER,
         description="Marker string used to identify the installed OpenRouter Video Generation filter function.",
     )
+    # -------------------------------------------------------------------------
+    # Video intent classifier — analyses chat history and attachments to decide
+    # what the next video request should reference (prior video frame, attached
+    # image, fresh text-to-video, etc.) and optionally asks one clarifying
+    # question when the user's intent is genuinely ambiguous.
+    # -------------------------------------------------------------------------
+    VIDEO_INTENT_ENABLED: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the video intent classifier. When False, video "
+            "requests bypass the classifier entirely and only the latest user "
+            "message is sent to the video model — no cross-turn context, no "
+            "clarifying questions, no automatic frame reuse from prior videos."
+        ),
+    )
+    VIDEO_INTENT_TASK_MODEL_MODE: Literal["internal", "external"] = Field(
+        default="external",
+        description=(
+            "Which Open WebUI global Task Model to use as the intent classifier. "
+            "'internal' uses TASK_MODEL, 'external' uses TASK_MODEL_EXTERNAL."
+        ),
+    )
+    VIDEO_INTENT_TASK_MODEL_FALLBACK: Literal["none", "other_task_model"] = Field(
+        default="other_task_model",
+        description=(
+            "Fallback strategy when the chosen task model fails. 'none' disables "
+            "fallback; 'other_task_model' switches between internal/external."
+        ),
+    )
+    VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT: bool = Field(
+        default=True,
+        description=(
+            "When True, skip the classifier on the very first turn of a fresh "
+            "chat that has no attachments. There is nothing for the classifier "
+            "to reference in that case (no prior video, no attached image), so "
+            "the call is wasted task-model spend. Turn off only if you want "
+            "the classifier to ask a clarifying question on opening prompts "
+            "like 'make it red' that have no context."
+        ),
+    )
+    VIDEO_INTENT_MAX_CLARIFICATIONS: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description=(
+            "Per-session cap on consecutive clarifying questions. 0 disables the "
+            "clarification loop entirely (always proceeds with best-guess interpretation). "
+            "Default 1 = at most one question, then degrade to best-guess."
+        ),
+    )
+    VIDEO_INTENT_FRAME_EXTRACTION_INDEX: Literal["first", "last"] = Field(
+        default="last",
+        description=(
+            "When extracting a frame from a prior video for image-to-video continuation, "
+            "which frame to grab by default. 'last' matches 'continue this scene' intent."
+        ),
+    )
+    VIDEO_INTENT_TIMEOUT_S: int = Field(
+        default=8,
+        ge=1,
+        le=60,
+        description=(
+            "Hard timeout (seconds) for the classifier task-model call. If the "
+            "call exceeds this or fails for any reason, the pipe falls back to "
+            "sending only the latest user message to the video model. The paid "
+            "video generation request still proceeds — the classifier never "
+            "blocks generation."
+        ),
+    )
+    VIDEO_INTENT_CONFIRM_MODE: Literal["always", "on_reference", "low_confidence", "never"] = Field(
+        default="on_reference",
+        description=(
+            "When to surface the Intent Disclosure Block confirmation footer. 'always' = "
+            "every gen; 'on_reference' (default) = only when reusing a prior video's frame "
+            "or attached image; 'low_confidence' = only when classifier confidence is low; "
+            "'never' = no confirmation."
+        ),
+    )
+    VIDEO_INTENT_MAX_CALLS_PER_CHAT: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cost guard: maximum task-model calls per chat session. 0 (default) = unlimited. "
+            "Admin sets a positive integer to enforce a per-chat ceiling."
+        ),
+    )
+    VIDEO_INTENT_MAX_CALLS_PER_USER_DAY: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cost guard: maximum task-model calls per user per day. 0 (default) = unlimited. "
+            "Admin sets a positive integer to enforce a per-user-per-day ceiling."
+        ),
+    )
+    VIDEO_INTENT_LOG_DECISIONS: bool = Field(
+        default=False,
+        description=(
+            "When True, log full intent classification JSON (mode, confidence, reasoning) "
+            "at INFO. Off by default to avoid leaking prompts into shared logs."
+        ),
+    )
     AUTO_ATTACH_DIRECT_UPLOADS_FILTER: bool = Field(
         default=True,
         description=(

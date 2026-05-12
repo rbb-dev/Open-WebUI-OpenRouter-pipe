@@ -893,8 +893,8 @@ class Filter:
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
         )
 
-    @staticmethod
     def render_openrouter_video_gen_filter_source(
+        self,
         *,
         model_id: str = "openrouter/video",
         video_model: dict[str, Any] | None = None,
@@ -905,6 +905,7 @@ class Filter:
             model_id=model_id,
             video_model=video_model,
             pipe_metadata_key=_PIPE_METADATA_KEY,
+            admin_valves=self.valves,
         )
 
     @timed

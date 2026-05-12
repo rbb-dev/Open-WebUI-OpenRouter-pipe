@@ -5826,7 +5826,8 @@ class TestApplySourceContextResponsesApi:
     """
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_function_returns_messages_with_citation_context(self):
+    @pytest.mark.asyncio
+    async def test_function_returns_messages_with_citation_context(self):
         """Test that function injects RAG template with citation instructions."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -5855,7 +5856,7 @@ class TestApplySourceContextResponsesApi:
         ]
         user_message = "What is the weather?"
 
-        result = _apply_source_context_responses_api(messages, sources, user_message, request_context=mock_request)
+        result = await _apply_source_context_responses_api(messages, sources, user_message, request_context=mock_request)
 
         # The result should contain citation instructions
         result_str = str(result)
@@ -5865,7 +5866,8 @@ class TestApplySourceContextResponsesApi:
         )
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_function_handles_responses_api_format(self):
+    @pytest.mark.asyncio
+    async def test_function_handles_responses_api_format(self):
         """Test that function handles Responses API format (type=input_text)."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -5897,7 +5899,7 @@ class TestApplySourceContextResponsesApi:
             }
         ]
 
-        result = _apply_source_context_responses_api(messages, sources, "Search for news", request_context=mock_request)
+        result = await _apply_source_context_responses_api(messages, sources, "Search for news", request_context=mock_request)
 
         # Should have modified the message
         assert result != messages or any(
@@ -5905,7 +5907,8 @@ class TestApplySourceContextResponsesApi:
         ), "Function should inject source context into Responses API format messages"
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_function_handles_chat_completions_format(self):
+    @pytest.mark.asyncio
+    async def test_function_handles_chat_completions_format(self):
         """Test that function handles Chat Completions format (type=text)."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -5937,13 +5940,14 @@ class TestApplySourceContextResponsesApi:
             }
         ]
 
-        result = _apply_source_context_responses_api(messages, sources, "Search query", request_context=mock_request)
+        result = await _apply_source_context_responses_api(messages, sources, "Search query", request_context=mock_request)
 
         # Should have modified the message
         result_str = str(result)
         assert "<source" in result_str, "Function should inject source context"
 
-    def test_function_returns_unmodified_on_empty_sources(self):
+    @pytest.mark.asyncio
+    async def test_function_returns_unmodified_on_empty_sources(self):
         """Test that function returns original messages when sources is empty."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -5951,11 +5955,12 @@ class TestApplySourceContextResponsesApi:
 
         messages = [{"role": "user", "content": "Hello"}]
 
-        result = _apply_source_context_responses_api(messages, [], "Hello")
+        result = await _apply_source_context_responses_api(messages, [], "Hello")
 
         assert result == messages, "Should return original messages when no sources"
 
-    def test_function_returns_unmodified_on_empty_user_message(self):
+    @pytest.mark.asyncio
+    async def test_function_returns_unmodified_on_empty_user_message(self):
         """Test that function returns original messages when user_message is empty."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -5964,11 +5969,12 @@ class TestApplySourceContextResponsesApi:
         messages = [{"role": "user", "content": "Hello"}]
         sources = [{"document": ["test"], "metadata": [{}]}]
 
-        result = _apply_source_context_responses_api(messages, sources, "")
+        result = await _apply_source_context_responses_api(messages, sources, "")
 
         assert result == messages, "Should return original messages when no user_message"
 
-    def test_function_preserves_function_call_items_with_mock(self):
+    @pytest.mark.asyncio
+    async def test_function_preserves_function_call_items_with_mock(self):
         """Test function_call preservation using mocking (no OWUI required).
 
         This test verifies the separation logic works correctly by mocking
@@ -5980,7 +5986,7 @@ class TestApplySourceContextResponsesApi:
         original_owui_fn = sc._owui_apply_source_context
 
         # Mock the OWUI function to return messages unchanged
-        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
+        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
             return messages  # Return input unchanged
 
         try:
@@ -6011,7 +6017,7 @@ class TestApplySourceContextResponsesApi:
             # Create a mock request context
             mock_request = MagicMock()
 
-            result = sc._apply_source_context_responses_api(
+            result = await sc._apply_source_context_responses_api(
                 input_items, sources, "Search", request_context=mock_request
             )
 
@@ -6034,13 +6040,14 @@ class TestApplySourceContextResponsesApi:
             # Restore original value
             sc._owui_apply_source_context = original_owui_fn
 
-    def test_function_reinserts_transformed_messages_into_original_slots_with_mock(self):
+    @pytest.mark.asyncio
+    async def test_function_reinserts_transformed_messages_into_original_slots_with_mock(self):
         """Test transformed messages are written back into their original positions."""
         import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
         original_owui_fn = sc._owui_apply_source_context
 
-        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
+        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
             transformed_messages = []
             for idx, message in enumerate(messages):
                 transformed = dict(message)
@@ -6081,7 +6088,7 @@ class TestApplySourceContextResponsesApi:
             ]
             sources = [{"document": ["test"], "metadata": [{}]}]
 
-            result = sc._apply_source_context_responses_api(
+            result = await sc._apply_source_context_responses_api(
                 input_items,
                 sources,
                 "Search for test",
@@ -6101,13 +6108,14 @@ class TestApplySourceContextResponsesApi:
         finally:
             sc._owui_apply_source_context = original_owui_fn
 
-    def test_function_returns_original_when_message_count_changes(self, caplog):
+    @pytest.mark.asyncio
+    async def test_function_returns_original_when_message_count_changes(self, caplog):
         """Test mismatched message counts skip source context instead of reordering input."""
         import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
         original_owui_fn = sc._owui_apply_source_context
 
-        def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
+        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
             return list(messages) + [{"role": "assistant", "content": "extra message"}]
 
         try:
@@ -6132,7 +6140,7 @@ class TestApplySourceContextResponsesApi:
                 logging.WARNING,
                 logger="open_webui_openrouter_pipe.streaming.source_context",
             ):
-                result = sc._apply_source_context_responses_api(
+                result = await sc._apply_source_context_responses_api(
                     input_items,
                     sources,
                     "Search",
@@ -6145,7 +6153,8 @@ class TestApplySourceContextResponsesApi:
             sc._owui_apply_source_context = original_owui_fn
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_source_tags_have_sequential_ids(self):
+    @pytest.mark.asyncio
+    async def test_source_tags_have_sequential_ids(self):
         """Test that source tags have sequential id attributes (1, 2, 3...)."""
         from open_webui_openrouter_pipe.streaming.streaming_core import (
             _apply_source_context_responses_api,
@@ -6173,14 +6182,15 @@ class TestApplySourceContextResponsesApi:
             }
         ]
 
-        result = _apply_source_context_responses_api(messages, sources, "Search", request_context=mock_request)
+        result = await _apply_source_context_responses_api(messages, sources, "Search", request_context=mock_request)
         result_str = str(result)
 
         assert 'id="1"' in result_str, "First source should have id=1"
         assert 'id="2"' in result_str, "Second source should have id=2"
 
     @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_function_preserves_function_call_items(self):
+    @pytest.mark.asyncio
+    async def test_function_preserves_function_call_items(self):
         """Test that function_call and function_call_output items are preserved.
 
         This is critical: the adapter must not strip non-message items like
@@ -6234,7 +6244,7 @@ class TestApplySourceContextResponsesApi:
             }
         ]
 
-        result = _apply_source_context_responses_api(input_items, sources, "Search for news", request_context=mock_request)
+        result = await _apply_source_context_responses_api(input_items, sources, "Search for news", request_context=mock_request)
 
         # Count item types in result
         messages = [i for i in result if isinstance(i, dict) and i.get("type") == "message"]

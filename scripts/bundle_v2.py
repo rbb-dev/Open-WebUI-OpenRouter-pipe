@@ -791,7 +791,7 @@ id: open_webui_openrouter_pipe
 description: OpenRouter Responses API integration for Open WebUI (flat monolith{description_suffix})
 required_open_webui_version: 0.9.1
 version: {version}
-requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
+requirements: aiohttp, cryptography, fastapi, httpx, imageio, imageio-ffmpeg, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
 license: MIT
 """'''
 
@@ -997,7 +997,7 @@ def assemble(
     parts.append("")
 
     for short_name, body in module_blocks:
-        parts.append(f"# ── {short_name} " + "─" * max(1, 77 - len(short_name) - 4))
+        parts.append(f"# -- {short_name} " + "-" * max(1, 77 - len(short_name) - 4))
         parts.append("")
         parts.append(body)
         parts.append("")
@@ -1077,7 +1077,7 @@ id: open_webui_openrouter_pipe
 description: OpenRouter Responses API integration for Open WebUI (bundled and compressed monolith)
 required_open_webui_version: 0.9.1
 version: {version}
-requirements: aiohttp, cryptography, fastapi, httpx, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
+requirements: aiohttp, cryptography, fastapi, httpx, imageio, imageio-ffmpeg, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow
 license: MIT
 """'''
 

@@ -22,6 +22,8 @@ dependencies = [
   "cryptography",
   "fastapi",
   "httpx",
+  "imageio",
+  "imageio-ffmpeg",
   "lz4",
   "Pillow",
   "pydantic",

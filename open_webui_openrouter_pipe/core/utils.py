@@ -702,14 +702,33 @@ _KIND_MARKER_NAMESPACE = "openrouter:v1:"
 _KIND_MARKER_RE = re.compile(
     r"^\[" + re.escape(_KIND_MARKER_NAMESPACE) + r"([a-z][a-z0-9_-]*):([^\]]+)\]: #$"
 )
+_KIND_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_KIND_FORBIDDEN_BODY_CHARS = (
+    "\n", "\r", "]", "\x1c", "\x1d", "\x1e", "\x85", " ", " ",
+)
 
 
 def _serialize_kind_marker(kind: str, body: str) -> str:
     if not isinstance(kind, str) or not kind:
         raise ValueError("kind must be a non-empty string")
+    if not _KIND_NAME_RE.match(kind):
+        raise ValueError(f"invalid kind format: {kind!r}")
     if not isinstance(body, str) or not body:
         raise ValueError("body must be a non-empty string")
+    for ch in _KIND_FORBIDDEN_BODY_CHARS:
+        if ch in body:
+            raise ValueError(f"marker body contains forbidden character: {ord(ch):#x}")
     return f"[{_KIND_MARKER_NAMESPACE}{kind}:{body}{_MARKER_SUFFIX}"
+
+
+def _safe_marker_body(body: str) -> str:
+    """Sanitize a string for use as a marker body — strip forbidden chars."""
+    if not isinstance(body, str):
+        body = str(body or "")
+    for ch in _KIND_FORBIDDEN_BODY_CHARS:
+        body = body.replace(ch, " ")
+    body = body.strip()
+    return body or "_"
 
 
 def _extract_kind_marker(line: str) -> tuple[str, str] | None:

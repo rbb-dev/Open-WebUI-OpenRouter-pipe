@@ -245,7 +245,7 @@ def _chat_messages_to_responses_input(messages: list) -> list:
     return result
 
 
-def _apply_source_context_responses_api(
+async def _apply_source_context_responses_api(
     input_items: list,
     sources: list,
     user_message: str,
@@ -304,7 +304,7 @@ def _apply_source_context_responses_api(
     # Step 3: Apply OWUI's source context injection (handles RAG template, citation formatting)
     # Pass include_content=False (OWUI ≥0.8.4) to avoid duplicating tool result
     # content inside <source> tags — the content is already in the tool result message.
-    modified_chat_messages = _owui_apply_source_context(
+    modified_chat_messages = await _owui_apply_source_context(
         request_context,
         chat_messages,
         sources,
@@ -2348,7 +2348,7 @@ class StreamingHandler:
                                 )
                                 if user_message:
                                     input_before = len(body.input)
-                                    body.input = _apply_source_context_responses_api(
+                                    body.input = await _apply_source_context_responses_api(
                                         list(body.input),
                                         collected_sources,
                                         user_message,

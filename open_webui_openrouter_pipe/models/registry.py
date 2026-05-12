@@ -48,6 +48,8 @@ PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
     "openai/gpt-5.3-codex",
     "openai/gpt-5.4",
     "openai/gpt-5.4-pro",
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-pro",
 )
 
 
