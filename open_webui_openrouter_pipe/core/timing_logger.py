@@ -38,13 +38,13 @@ from typing import Any, Callable, Deque, Dict, List, Optional, TypeVar
 # Global file output state
 # -----------------------------------------------------------------------------
 
-_timing_file_lock = threading.Lock()
+_timing_file_lock = threading.RLock()
 _timing_file_path: Optional[Path] = None
 _timing_file_handle: Optional[Any] = None  # File object when open
 
 # Per-request timing buffer (kept for session log integration if needed)
 _timing_events: Dict[str, Deque[Dict[str, Any]]] = {}
-_timing_lock = threading.Lock()
+_timing_lock = threading.RLock()
 
 # Context variables for per-request state
 _timing_enabled: ContextVar[bool] = ContextVar("timing_enabled", default=False)
