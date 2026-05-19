@@ -417,6 +417,33 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Style": "Free-text passthrough that lets you bias the look (e.g. \"cinematic\", \"anamorphic\", \"documentary handheld\"); since the OpenAI API has no formal style enum, prompt language remains the primary stylistic lever.",
         },
     },
+    "x-ai/grok-imagine-video": {
+        "display_name": "xAI: Grok Imagine Video",
+        "best_known_for": (
+            "xAI's fast text-, image-, and reference-conditioned video generator, "
+            "producing short clips (1-15 seconds, 24 fps) at 480p or 720p across "
+            "seven aspect ratios. Best for rapid iteration where you want tight "
+            "control over duration in 1-second increments (rather than the 4/6/8 "
+            "tier other models impose) and the option to anchor on a first frame "
+            "for image-to-video continuity. Charged per output-second by "
+            "resolution; image conditioning adds a flat per-image surcharge."
+        ),
+        "tips_and_pitfalls": [
+            "Duration is free-form 1-15 seconds — pick the exact length you need; cost scales linearly per second.",
+            "Resolution drives price: 480p is the iteration tier, 720p the finishing tier; there is no 1080p/4K on this model.",
+            "Single-frame conditioning only — `first_frame` is supported but `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints locked.",
+            "Seven aspect ratios cover landscape, vertical, square, and 4:3 / 3:2 photo formats; pick by destination platform.",
+            "Image conditioning adds a small per-image surcharge (~$0.002/image) on top of the per-second video cost.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Pick clip length in seconds from 1 through 15 — Grok Imagine Video is unique here in offering per-second granularity rather than fixed tiers; cost scales linearly per second.",
+            "Aspect ratio": "Choose from 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, or 2:3 — broader landscape/portrait/square/photo coverage than Sora or Veo Lite.",
+            "Resolution": "Picks 480p (cheaper iteration) or 720p (finishing); resolution drives the per-second SKU.",
+            "Size": "Pin exact pixel dimensions when you need a specific canvas (e.g. 854×480 for legacy SD, 1280×720 for HD).",
+            "Frames": "Image conditioning — `first_frame` for image-to-video continuity, none for pure text-to-video. `last_frame` is not supported on this model.",
+            "Provider options JSON": "Free-form JSON passthrough for OpenRouter/xAI fields not covered by the dedicated valves.",
+        },
+    },
 }
 
 
@@ -480,12 +507,50 @@ _SKU_MODIFIERS: tuple[tuple[str, str], ...] = (
     ("image_to_video", "image-to-video"),
 )
 
-_SKU_BASE_LABELS: dict[str, str] = {
-    "duration_seconds": "per second",
-    "video_tokens": "per video token",
-}
+# Tuple-of-pairs (not dict) so the longest-prefix-match invariant is
+# structurally guaranteed: iteration order is fixed by source position,
+# making it impossible for an alphabetizer or auto-formatter to silently
+# break label resolution. Longer composite tokens MUST come before shorter
+# prefixes so the first-match-wins logic in _format_sku_unit picks the
+# right base.
+_SKU_BASE_LABELS: tuple[tuple[str, str], ...] = (
+    ("video_output_second", "per output second"),
+    ("image_input", "per input image"),
+    ("duration_seconds", "per second"),
+    ("video_tokens", "per video token"),
+)
 
 _SKU_RESOLUTION_TAGS: tuple[str, ...] = ("480p", "720p", "1024p", "1080p", "2k", "4k")
+
+# OpenRouter's newer SKU format encodes the unit in the key prefix rather than
+# the value: keys like "cents_per_video_output_second_720p" mean the numeric
+# value is denominated in cents. We convert to dollars at display time so the
+# help panel uses one consistent currency convention.
+_CENTS_PER_PREFIX = "cents_per_"
+
+
+def _format_cents_as_dollars(cents_value: str) -> str:
+    """Convert a cents value (as string) to a dollars display string.
+
+    Examples: "0.2" -> "0.002", "5" -> "0.05", "7" -> "0.07". Preserves
+    significant digits without trailing zeros while guaranteeing at least 2
+    decimal places. Returns the input verbatim if it can't be parsed as a
+    float (defensive — OpenRouter values are always numeric strings, but
+    keep the formatter total).
+    """
+    try:
+        dollars = float(cents_value) / 100.0
+    except (TypeError, ValueError):
+        return cents_value
+    if dollars == 0:
+        return "0.00"
+    formatted = f"{dollars:.6f}".rstrip("0")
+    if formatted.endswith("."):
+        return formatted + "00"
+    decimals = formatted.split(".", 1)[1]
+    if len(decimals) < 2:
+        return formatted + "0"
+    return formatted
 
 
 def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
@@ -498,7 +563,13 @@ def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
             continue
         unit = _format_sku_unit(raw_key)
         value = str(raw_value).strip()
-        bullets.append((raw_key, f"- {unit}: ${value}"))
+        # Cents-prefixed keys carry their unit in the key; convert the cents
+        # value to dollars so the whole panel uses one currency convention.
+        # Other keys retain the historical "$" prefix (value already in dollars).
+        if raw_key.lower().startswith(_CENTS_PER_PREFIX):
+            bullets.append((raw_key, f"- {unit}: ${_format_cents_as_dollars(value)}"))
+        else:
+            bullets.append((raw_key, f"- {unit}: ${value}"))
     if not bullets:
         return ""
     bullets.sort(key=lambda pair: pair[0])
@@ -509,6 +580,10 @@ def _format_sku_unit(raw_key: str) -> str:
     key = (raw_key or "").strip().lower()
     if not key:
         return "per unit"
+    # Strip the cents-per prefix — callers handle the unit symbol; here we only
+    # need to expose the base label to the existing token-matching logic.
+    if key.startswith(_CENTS_PER_PREFIX):
+        key = key[len(_CENTS_PER_PREFIX):]
     remainder = key
     modifiers: list[str] = []
     for token, label in _SKU_MODIFIERS:
@@ -526,7 +601,7 @@ def _format_sku_unit(raw_key: str) -> str:
                 remainder = remainder[: -(len(tag) + 1)].rstrip("_")
             break
     base_label = ""
-    for base_token, label in _SKU_BASE_LABELS.items():
+    for base_token, label in _SKU_BASE_LABELS:
         if remainder == base_token or remainder.startswith(base_token):
             base_label = label
             remainder = remainder[len(base_token):].lstrip("_")

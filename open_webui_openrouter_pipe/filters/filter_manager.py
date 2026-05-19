@@ -1002,6 +1002,7 @@ class Filter:
     _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$")
     _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^recraft/recraft-")
     _RECRAFT_V3_IMAGE_PATTERN = re.compile(r"^recraft/recraft-v3$")
+    _GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^x-ai/grok-imagine-image-")
 
     @staticmethod
     def render_openrouter_image_filter_source(variant: str) -> str:
@@ -1011,6 +1012,7 @@ class Filter:
             render_sourceful_image_filter_source,
             render_recraft_common_image_filter_source,
             render_recraft_v3_image_filter_source,
+            render_grok_image_filter_source,
         )
         if variant == "generic":
             return render_generic_image_filter_source()
@@ -1022,6 +1024,8 @@ class Filter:
             return render_recraft_common_image_filter_source()
         if variant == "recraft_v3":
             return render_recraft_v3_image_filter_source()
+        if variant == "grok":
+            return render_grok_image_filter_source()
         raise ValueError(f"Unknown image filter variant: {variant!r}")
 
     @timed
@@ -1037,6 +1041,7 @@ class Filter:
         - generic_id + sourceful_id for Sourceful Riverflow Pro/Fast models
         - generic_id + recraft_id for any Recraft model (V3, V4, V4 Pro)
         - generic_id + recraft_id + recraft_v3_id for Recraft V3 only
+        - generic_id + grok_id for any Grok Imagine image model
 
         """
         from ..models.registry import ModelFamily
@@ -1047,6 +1052,7 @@ class Filter:
         sourceful_id: str | None = None
         recraft_id: str | None = None
         recraft_v3_id: str | None = None
+        grok_id: str | None = None
         # Sentinel: empty string means we attempted install and failed.
         for model in models:
             model_id = model.get("id")
@@ -1112,6 +1118,16 @@ class Filter:
                 if recraft_v3_id:
                     ids.append(recraft_v3_id)
 
+            if self._GROK_IMAGINE_IMAGE_PATTERN.match(canonical_id):
+                if grok_id is None:
+                    try:
+                        grok_id = await self._ensure_single_image_filter_function_id("grok")
+                    except Exception as exc:
+                        self.logger.debug("Grok Imagine image filter install failed: %s", exc)
+                        grok_id = ""
+                if grok_id:
+                    ids.append(grok_id)
+
             if ids:
                 # list(ids) for both keys to avoid shared-reference aliasing
                 installed[model_id] = list(ids)
@@ -1129,6 +1145,7 @@ class Filter:
             build_sourceful_image_filter_spec,
             build_recraft_common_image_filter_spec,
             build_recraft_v3_image_filter_spec,
+            build_grok_image_filter_spec,
         )
         if variant == "generic":
             spec = build_generic_image_filter_spec()
@@ -1140,6 +1157,8 @@ class Filter:
             spec = build_recraft_common_image_filter_spec()
         elif variant == "recraft_v3":
             spec = build_recraft_v3_image_filter_spec()
+        elif variant == "grok":
+            spec = build_grok_image_filter_spec()
         else:
             raise ValueError(f"Unknown image filter variant: {variant!r}")
 

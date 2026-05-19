@@ -603,6 +603,29 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Background RGB color (JSON array)": "Single [r,g,b] array (each 0-255). Effect on vector output is undocumented.",
         },
     },
+    "x-ai/grok-imagine-image-quality": {
+        "display_name": "xAI: Grok Imagine Image Quality",
+        "best_known_for": (
+            "xAI's fast, high-fidelity image generation and editing model. "
+            "Accepts text prompts and optional reference images; produces "
+            "photorealistic outputs at 1K or 2K. Best for photoreal scenes, "
+            "compositional control, and workflows that need Grok-only tall "
+            "phone-screen aspect ratios (9:19.5, 9:20, 1:2, 2:1) or an `auto` "
+            "ratio that lets the model pick frame shape from prompt."
+        ),
+        "tips_and_pitfalls": [
+            "Use the Grok aspect ratio knob (14 values, including phone-tall and `auto`) for Grok-specific frames. The generic knob's 10-value set still works but won't expose the wide/tall variants.",
+            "`n` lets you fan out 1-10 variations per request — cost scales linearly. Pick `n=1` (default) for iteration; bump to 3-5 for exploration.",
+            "Multimodal input: pair the prompt with reference images for editing/style transfer.",
+            "Charged per image output ($0.01/image at OpenRouter's listed rate).",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Generic 10-value ratio (kept for compatibility). Prefer the Grok-specific knob below for Grok-only frames.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Image aspect ratio (Grok Imagine)": "Grok-supported 14 values including tall phone formats (9:19.5, 9:20, 1:2, 2:1) and `auto`. Overrides the generic aspect ratio when set.",
+            "Number of images (1-10)": "Number of images per request. 0 = skip (default 1). Cost scales linearly.",
+        },
+    },
 }
 
 # Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).
@@ -624,6 +647,8 @@ _IMAGE_KNOB_GATE: dict[str, str | None] = {
     "Background RGB color (JSON array)": "recraft_common",
     "Recraft style": "recraft_v3_only",
     "Text layout (JSON array)": "recraft_v3_only",
+    "Image aspect ratio (Grok Imagine)": "grok_imagine",
+    "Number of images (1-10)": "grok_imagine",
 }
 
 
@@ -650,6 +675,12 @@ def _is_recraft_v3(model_id: str) -> bool:
     return (model_id or "") == "recraft/recraft-v3"
 
 
+def _is_grok_imagine_image(model_id: str) -> bool:
+    """Match models eligible for Grok Imagine-specific knobs (14 aspect ratios, n)."""
+    import re
+    return bool(re.match(r"^x-ai/grok-imagine-image-", model_id or ""))
+
+
 def _image_knob_is_active(knob: str, model_id: str) -> bool:
     gate = _IMAGE_KNOB_GATE.get(knob)
     if gate is None:
@@ -662,6 +693,8 @@ def _image_knob_is_active(knob: str, model_id: str) -> bool:
         return _is_recraft(model_id)
     if gate == "recraft_v3_only":
         return _is_recraft_v3(model_id)
+    if gate == "grok_imagine":
+        return _is_grok_imagine_image(model_id)
     return False
 
 

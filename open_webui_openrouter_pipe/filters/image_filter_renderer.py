@@ -1,7 +1,8 @@
 """Image generation filter source code renderer.
 
-Five filter variants — `generic`, `gemini`, `sourceful`, `recraft`, `recraft_v3` —
-written to `body.image_config` as top-level request fields per OpenRouter's
+Six filter variants — `generic`, `gemini`, `sourceful`, `recraft`, `recraft_v3`,
+`grok` — written to `body.image_config` as top-level request fields per
+OpenRouter's
 [image-generation.md](.external/openrouter_docs/guides/overview/multimodal/image-generation.md).
 The pipe's orchestrator injects `body.modalities` separately based on the
 registered model's `architecture.output_modalities` so filters do not need
@@ -13,6 +14,7 @@ Filter assignment rules (driven by `filter_manager.ensure_openrouter_image_filte
 - Models matching `^sourceful/riverflow-v\\d+(\\.\\d+)?-(pro|fast)$` ALSO get **sourceful** filter (font_inputs + super_resolution_references)
 - Models matching `^recraft/recraft-` ALSO get **recraft** filter (strength + rgb_colors + background_rgb_color)
 - Models matching `^recraft/recraft-v3$` ALSO get **recraft_v3** filter (style + text_layout — V3 only per OpenRouter docs)
+- Models matching `^x-ai/grok-imagine-image-` ALSO get **grok** filter (Grok-specific 14-value aspect_ratio set + `n` count)
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ _IMAGE_FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
 class ImageFilterSpec:
     """Metadata for an image-generation filter variant."""
 
-    variant: str  # "generic" | "gemini" | "sourceful" | "recraft" | "recraft_v3"
+    variant: str  # "generic" | "gemini" | "sourceful" | "recraft" | "recraft_v3" | "grok"
     function_id: str
     display_name: str
     marker: str
@@ -89,6 +91,15 @@ def build_recraft_v3_image_filter_spec() -> ImageFilterSpec:
         function_id=sanitize_image_filter_id("recraft_v3"),
         display_name="Recraft V3 Extras",
         marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:recraft_v3",
+    )
+
+
+def build_grok_image_filter_spec() -> ImageFilterSpec:
+    return ImageFilterSpec(
+        variant="grok",
+        function_id=sanitize_image_filter_id("grok"),
+        display_name="Grok Imagine Options",
+        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:grok",
     )
 
 
@@ -789,6 +800,126 @@ class Filter:
         )
         if text_layout_raw:
             overrides["text_layout"] = self._validate_text_layout(text_layout_raw)
+
+        if overrides:
+            existing = body.get("image_config")
+            if not isinstance(existing, dict):
+                existing = {{}}
+            else:
+                existing = dict(existing)
+            existing.update(overrides)
+            body["image_config"] = existing
+        return body
+'''
+
+
+def render_grok_image_filter_source() -> str:
+    """Render the Grok Imagine image filter — Grok-specific aspect_ratio set + `n` count.
+
+    Attached only to models matching `^x-ai/grok-imagine-image-`. Provides:
+    - `aspect_ratio`: 14-value enum (Grok-supported ratios including tall phone
+      formats `9:19.5`/`19.5:9`/`9:20`/`20:9`/`1:2`/`2:1` and `auto`)
+    - `n`: int 1-10, number of images per request (0 = skip / use model default)
+
+    Shallow-merges into body.image_config alongside the generic filter (per-key
+    overwrite). When this filter's Grok aspect_ratio is set, it takes precedence
+    over the generic filter's standard 10-value ratio.
+    """
+    spec = build_grok_image_filter_spec()
+    return f'''"""OpenRouter image generation companion filter — Grok Imagine extensions."""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # pragma: no cover
+    SRC_LOG_LEVELS = {{}}
+
+OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
+IMAGE_FILTER_VARIANT = "{spec.variant}"
+
+_GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^x-ai/grok-imagine-image-")
+
+
+class Filter:
+    toggle = True
+
+    class Valves(BaseModel):
+        priority: int = Field(default=0)
+
+    class UserValves(BaseModel):
+        IMAGE_GROK_ASPECT_RATIO: Literal[
+            "", "1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2",
+            "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto",
+        ] = Field(
+            default="",
+            title="Image aspect ratio (Grok Imagine)",
+            description=(
+                "Grok Imagine supports 14 aspect ratios (including tall phone "
+                "formats and `auto`). Overrides the generic aspect_ratio when "
+                "set. Empty = use generic filter's value."
+            ),
+        )
+        IMAGE_GROK_N: int = Field(
+            default=0,
+            ge=0,
+            le=10,
+            title="Number of images (1-10)",
+            description=(
+                "Grok Imagine only. Number of images to generate per request "
+                "(1-10). 0 = skip / use model default (1). Higher values "
+                "multiply cost linearly."
+            ),
+        )
+
+    def __init__(self) -> None:
+        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
+        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
+        self.toggle = True
+        self.valves = self.Valves()
+
+    def inlet(
+        self,
+        body: dict,
+        __metadata__: Optional[dict] = None,
+        __user__: Optional[dict] = None,
+    ) -> dict:
+        if not isinstance(body, dict):
+            return body
+        # Model gate: only emit Grok-specific knobs for Grok Imagine image
+        # models. Defends against operator misconfiguration (filter manually
+        # attached to non-Grok model would otherwise emit invalid params).
+        model_id = body.get("model") or ""
+        if not isinstance(model_id, str) or not _GROK_IMAGINE_IMAGE_PATTERN.match(model_id):
+            return body
+        user_valves = None
+        if isinstance(__user__, dict):
+            uv_raw = __user__.get("valves")
+            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
+                try:
+                    user_valves = self.UserValves.model_validate(
+                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
+                    )
+                except Exception:
+                    user_valves = self.UserValves()
+            elif isinstance(uv_raw, self.UserValves):
+                user_valves = uv_raw
+        if user_valves is None:
+            user_valves = self.UserValves()
+
+        overrides: dict = {{}}
+        grok_aspect = (user_valves.IMAGE_GROK_ASPECT_RATIO or "").strip()
+        if grok_aspect:
+            overrides["aspect_ratio"] = grok_aspect
+        # 0 is the skip sentinel — users wanting the default 1 can leave it at 0.
+        if user_valves.IMAGE_GROK_N > 0:
+            overrides["n"] = int(user_valves.IMAGE_GROK_N)
 
         if overrides:
             existing = body.get("image_config")
