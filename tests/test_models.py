@@ -293,7 +293,7 @@ async def test_fetch_frontend_model_catalog_success(pipe_instance_async) -> None
 
     with aioresponses() as mocked:
         mocked.get(
-            "https://openrouter.ai/api/frontend/models",
+            "https://openrouter.ai/api/frontend/v1/catalog/models",
             payload={"data": [{"slug": "test/model"}]},
         )
         session = pipe._create_http_session()
@@ -312,7 +312,7 @@ async def test_fetch_frontend_model_catalog_http_error(pipe_instance_async) -> N
 
     with aioresponses() as mocked:
         mocked.get(
-            "https://openrouter.ai/api/frontend/models",
+            "https://openrouter.ai/api/frontend/v1/catalog/models",
             status=500,
         )
         session = pipe._create_http_session()
@@ -332,7 +332,7 @@ async def test_fetch_frontend_model_catalog_invalid_json_type(pipe_instance_asyn
     with aioresponses() as mocked:
         # Return a list instead of dict
         mocked.get(
-            "https://openrouter.ai/api/frontend/models",
+            "https://openrouter.ai/api/frontend/v1/catalog/models",
             payload=[{"slug": "test/model"}],
         )
         session = pipe._create_http_session()
@@ -351,7 +351,7 @@ async def test_fetch_frontend_model_catalog_connection_error(pipe_instance_async
 
     with aioresponses() as mocked:
         mocked.get(
-            "https://openrouter.ai/api/frontend/models",
+            "https://openrouter.ai/api/frontend/v1/catalog/models",
             exception=Exception("Connection failed"),
         )
         session = pipe._create_http_session()
