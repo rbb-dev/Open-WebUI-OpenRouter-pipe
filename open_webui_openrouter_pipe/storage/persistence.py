@@ -1172,7 +1172,10 @@ class ArtifactStore:
                     level="warning",
                 )
             self._record_failure(user_id)
-            return {}
+            # Return the Redis hits already fetched above, not {} — discarding
+            # them when the DB breaker is open silently drops artifacts that
+            # were available (every other early-return here returns `cached`).
+            return cached
 
         try:
             fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids)

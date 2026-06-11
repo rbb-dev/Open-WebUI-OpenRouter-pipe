@@ -815,6 +815,29 @@ async def test_db_fetch_no_db_executor(pipe_instance):
 
 
 @pytest.mark.asyncio
+async def test_db_fetch_breaker_open_returns_cached_not_empty(pipe_instance):
+    """When the DB breaker is open, _db_fetch must return the Redis hits it
+    already fetched rather than discarding them with an empty dict."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    store._emit_notification = None
+
+    # id-1 is warm in Redis; id-2 is missing -> forces the DB path
+    async def _fake_redis_fetch(_chat_id, item_ids):
+        return {"id-1": {"type": "cached"}}
+
+    store._redis_fetch_rows = _fake_redis_fetch
+    # Force the per-user DB circuit breaker open
+    store._db_breaker_allows = lambda _uid: False
+
+    result = await store._db_fetch("chat", "msg", ["id-1", "id-2"])
+    assert result == {"id-1": {"type": "cached"}}, (
+        "breaker-open path must preserve already-fetched Redis hits"
+    )
+
+
+@pytest.mark.asyncio
 async def test_db_fetch_resets_failure_on_success(pipe_instance, monkeypatch):
     """Test _db_fetch resets failure count on success (line 1132)."""
     _install_fake_store(pipe_instance)
