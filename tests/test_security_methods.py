@@ -135,9 +135,13 @@ async def test_is_safe_url_respects_disabled_valve(pipe_instance_async):
 
 @pytest.mark.asyncio
 async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, monkeypatch):
-    """_download_remote_url should short-circuit when SSRF validation fails."""
-    guard = AsyncMock(return_value=False)
-    monkeypatch.setattr(pipe_instance_async._multimodal_handler, "_is_safe_url", guard)
+    """_download_remote_url should short-circuit when SSRF validation fails.
+
+    The gate is _prepare_pinned_request (returns None when blocked); no HTTP
+    client may be created before that decision.
+    """
+    guard = AsyncMock(return_value=None)
+    monkeypatch.setattr(pipe_instance_async._multimodal_handler, "_prepare_pinned_request", guard)
 
     class _FailingClient:
         def __init__(self, *args, **kwargs):

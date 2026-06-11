@@ -20,7 +20,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, NamedTuple, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 # External dependencies
 import aiohttp
@@ -1006,13 +1006,17 @@ class MultimodalHandler:
         if not url.lower().startswith(("http://", "https://")):
             return None
 
-        # SSRF protection + HTTPS-only default: Validate URL is safe and allowed
-        if not await self._is_safe_url(url):
+        # SSRF protection + HTTPS-only default: validate the URL and pin the
+        # connection to a validated IP so httpx cannot re-resolve the host to a
+        # rebound private address between validation and connect.
+        pinned = await self._prepare_pinned_request(url)
+        if pinned is None:
             self.logger.error(
                 "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
                 url,
             )
             return None
+        request_url, pin_headers, pin_extensions = pinned
 
         max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
         initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
@@ -1050,7 +1054,12 @@ class MultimodalHandler:
                         )
 
                     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                        async with client.stream("GET", url) as response:
+                        async with client.stream(
+                            "GET",
+                            request_url,
+                            headers=pin_headers or None,
+                            extensions=pin_extensions or None,
+                        ) as response:
                             try:
                                 response.raise_for_status()
                             except httpx.HTTPStatusError as exc:
@@ -1130,12 +1139,14 @@ class MultimodalHandler:
         url = (url or "").strip()
         if not url.lower().startswith(("http://", "https://")):
             return None
-        if not await self._is_safe_url(url):
+        pinned = await self._prepare_pinned_request(url)
+        if pinned is None:
             self.logger.error(
                 "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
                 url,
             )
             return None
+        request_url, pin_headers, pin_extensions = pinned
 
         max_retries = self.valves.REMOTE_DOWNLOAD_MAX_RETRIES
         initial_delay = self.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS
@@ -1182,9 +1193,15 @@ class MultimodalHandler:
                     if dest_path.exists():
                         dest_path.unlink()
 
-                    request_headers = dict(extra_headers) if extra_headers else None
+                    request_headers = dict(extra_headers) if extra_headers else {}
+                    request_headers.update(pin_headers)  # original Host for the pinned IP
                     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                        async with client.stream("GET", url, headers=request_headers) as response:
+                        async with client.stream(
+                            "GET",
+                            request_url,
+                            headers=request_headers or None,
+                            extensions=pin_extensions or None,
+                        ) as response:
                             try:
                                 response.raise_for_status()
                             except httpx.HTTPStatusError as exc:
@@ -1268,11 +1285,7 @@ class MultimodalHandler:
         Returns:
             True if URL is safe (not targeting private networks) and allowed by HTTP policy
         """
-        if not self._is_insecure_http_allowed(url):
-            return False
-        if not self.valves.ENABLE_SSRF_PROTECTION:
-            return True
-        return await asyncio.to_thread(self._is_safe_url_blocking, url)
+        return await asyncio.to_thread(self._request_ips_blocking, url) is not None
 
     def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, Optional[int]]]:
         """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""
@@ -1365,13 +1378,46 @@ class MultimodalHandler:
     def _is_safe_url_blocking(self, url: str) -> bool:
         """Blocking implementation of the SSRF guard (runs in a thread).
 
-        HTTP is disabled by default and only allowed when explicitly allowlisted.
+        Delegates to the single `_request_ips_blocking` gate so the HTTP
+        policy, the ENABLE_SSRF_PROTECTION valve, and address validation are
+        sequenced identically to `_is_safe_url` and `_prepare_pinned_request`.
 
         Args:
             url: URL to validate
 
         Returns:
-            True if URL is safe, False if it targets private/reserved networks
+            True if URL is allowed, False if blocked
+        """
+        return self._request_ips_blocking(url) is not None
+
+    def _request_ips_blocking(self, url: str) -> Optional[list[str]]:
+        """Single SSRF gate (blocking): sequences the insecure-HTTP policy,
+        the ENABLE_SSRF_PROTECTION valve, and address validation in one place
+        so the pre-flight checks and the pinned download path cannot drift.
+
+        Returns:
+            None      — blocked (HTTP policy or address validation failed)
+            []        — allowed WITHOUT an IP pin (SSRF protection disabled)
+            non-empty — allowed; pin the connection to one of these IPs
+        """
+        if not self._is_insecure_http_allowed(url):
+            return None
+        if not self.valves.ENABLE_SSRF_PROTECTION:
+            return []
+        return self._resolve_validated_ips(url)
+
+    def _resolve_validated_ips(self, url: str) -> Optional[list[str]]:
+        """Resolve the URL's host and return every resolved IP (as strings) iff
+        ALL of them are public addresses; return None if resolution fails or ANY
+        address targets a private/reserved range.
+
+        Single source of truth for SSRF address validation. Returning the
+        validated IPs lets the download path PIN the connection to one of them
+        (see _build_pinned_request), closing the DNS-rebinding TOCTOU gap where
+        httpx would otherwise re-resolve the host at connect time and reach a
+        different (private) IP than the one validated here. Conservative by
+        design: a host resolving to a mix of public and private IPs is rejected
+        outright, since the connection could be steered to the private one.
         """
         try:
             import ipaddress
@@ -1380,14 +1426,9 @@ class MultimodalHandler:
 
             parsed = urlparse(url)
             host = parsed.hostname
-            scheme = (parsed.scheme or "").lower()
-
-            if scheme == "http" and not self._is_insecure_http_allowed(url):
-                return False
-
             if not host:
                 self.logger.warning(f"URL has no hostname: {url}")
-                return False
+                return None
 
             ip_objects: list[IPv4Address | IPv6Address] = []
             seen_ips: set[str] = set()
@@ -1412,10 +1453,10 @@ class MultimodalHandler:
                     addrinfo = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
                 except (socket.gaierror, UnicodeError):
                     self.logger.warning(f"DNS resolution failed for: {host}")
-                    return False
+                    return None
                 except Exception as exc:  # pragma: no cover - defensive guard
                     self.logger.error(f"Unexpected DNS error for {host}: {exc}")
-                    return False
+                    return None
 
                 for _, _, _, _, sockaddr in addrinfo:
                     if not sockaddr:
@@ -1425,12 +1466,12 @@ class MultimodalHandler:
                         resolved_ip = ipaddress.ip_address(ip_str)
                     except ValueError:
                         self.logger.warning(f"Invalid IP address format: {ip_str}")
-                        return False
+                        return None
                     _record_ip(resolved_ip)
 
             if not ip_objects:
                 self.logger.warning(f"No IP addresses resolved for: {host}")
-                return False
+                return None
 
             for ip in ip_objects:
                 if ip.is_private:
@@ -1449,14 +1490,66 @@ class MultimodalHandler:
                     continue
 
                 self.logger.warning(f"Blocked SSRF attempt to {reason} IP: {url} ({ip})")
-                return False
+                return None
 
-            return True
+            return [ip.compressed for ip in ip_objects]
 
         except Exception as exc:
             # Defensive: treat validation errors as unsafe
             self.logger.error(f"URL safety validation failed for {url}: {exc}")
-            return False
+            return None
+
+    def _build_pinned_request(
+        self, url: str, ip: str
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """Rewrite `url` to connect to the already-validated `ip` while keeping
+        the original Host header and TLS SNI/cert verification for the hostname.
+
+        Returns (request_url, headers, extensions) for an httpx call that cannot
+        be DNS-rebound: the URL host is the IP literal (so httpx connects there
+        with no further resolution), the Host header carries the original
+        hostname (so virtual-hosted servers route correctly), and for https the
+        sni_hostname extension makes the TLS handshake present/verify the
+        original hostname (httpcore: server_hostname = sni_hostname or host).
+        """
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        ip_host = f"[{ip}]" if ":" in ip else ip  # bracket IPv6 literals
+        # Preserve userinfo if present (rare for download URLs).
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+        netloc = f"{userinfo}{ip_host}"
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        request_url = urlunparse(parsed._replace(netloc=netloc))
+        host_header = f"{host}:{parsed.port}" if parsed.port else host
+        headers = {"Host": host_header}
+        extensions: dict[str, Any] = {}
+        if (parsed.scheme or "").lower() == "https":
+            extensions = {"sni_hostname": host}
+        return (request_url, headers, extensions)
+
+    async def _prepare_pinned_request(
+        self, url: str
+    ) -> Optional[tuple[str, dict[str, str], dict[str, Any]]]:
+        """Validate `url` against the SSRF guard and return (request_url,
+        headers, extensions) for an IP-pinned httpx request, or None if blocked.
+
+        When SSRF protection is disabled, the URL is returned unchanged with no
+        pin (matching the legacy _is_safe_url fast-path). Otherwise the host is
+        resolved+validated exactly once and the connection is pinned to a
+        validated IP, so httpx cannot re-resolve to a rebound private address.
+        """
+        ips = await asyncio.to_thread(self._request_ips_blocking, url)
+        if ips is None:
+            return None
+        if not ips:
+            return (url, {}, {})
+        return self._build_pinned_request(url, ips[0])
 
     def _is_youtube_url(self, url: Optional[str]) -> bool:
         """Check if URL is a valid YouTube video URL.

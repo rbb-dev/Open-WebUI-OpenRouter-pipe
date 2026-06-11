@@ -1530,7 +1530,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_uses_default_timeout_when_none(self, pipe_instance_async):
         """Should use default timeout when timeout_seconds is None and valve is None."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.HTTP_CONNECT_TIMEOUT_SECONDS = None
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1584,7 +1584,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_normalizes_image_jpg_to_jpeg(self, pipe_instance_async):
         """Should normalize image/jpg to image/jpeg."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1616,7 +1616,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_rejects_content_length_exceeding_limit(self, pipe_instance_async):
         """Should reject files when Content-Length exceeds limit."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1646,7 +1646,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_handles_invalid_content_length(self, pipe_instance_async):
         """Should handle non-integer Content-Length gracefully."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1681,7 +1681,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_skips_empty_chunks(self, pipe_instance_async):
         """Should skip empty chunks during streaming."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1715,7 +1715,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_aborts_when_streaming_exceeds_limit(self, pipe_instance_async):
         """Should abort download when streaming data exceeds size limit."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 0.001
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -1749,7 +1749,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_returns_none_on_final_exception(self, pipe_instance_async):
         """Should return None and log error on unrecoverable exception."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
@@ -1766,7 +1766,7 @@ class TestDownloadRemoteUrl:
     @pytest.mark.asyncio
     async def test_handles_http_404_error(self, pipe_instance_async):
         """Should return None on non-retryable HTTP errors like 404."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = AsyncMock()
@@ -1808,6 +1808,14 @@ class TestIsSafeUrlBlocking:
         """Should return False for URL with no hostname."""
         result = pipe_instance._multimodal_handler._is_safe_url_blocking("file:///local/path")
         assert result is False
+
+    def test_honors_ssrf_valve_like_async_wrapper(self, pipe_instance):
+        """The blocking validator must sequence the same gate as _is_safe_url:
+        with SSRF protection disabled it allows without resolving, keeping the
+        pre-flight and connect-time policy decisions consistent."""
+        pipe_instance.valves.ENABLE_SSRF_PROTECTION = False
+        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
+        assert result is True
 
     def test_blocks_loopback_ip(self, pipe_instance):
         """Should block loopback IP addresses."""
@@ -2882,7 +2890,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_successful(self, pipe_instance_async):
         """Should download remote file successfully."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         test_content = b"fake image data"
 
         with patch("httpx.AsyncClient") as mock_client:
@@ -2905,7 +2913,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_normalizes_mime_type(self, pipe_instance_async):
         """Should normalize image/jpg to image/jpeg."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.headers = {"content-type": "image/jpg; charset=utf-8"}
@@ -2923,7 +2931,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_rejects_files_over_default_limit(self, pipe_instance_async):
         """Should reject files larger than the configured limit (default 50MB)."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
         limit_bytes = pipe_instance_async._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
 
@@ -2954,7 +2962,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_network_error_returns_none(self, pipe_instance_async):
         """Should retry on network errors and return None when exhausted."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
@@ -2972,7 +2980,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_does_not_retry_on_client_errors(self, pipe_instance_async):
         """Should not retry on non-429 HTTP 4xx errors."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         url = "https://example.com/forbidden.png"
         request = httpx.Request("GET", url)
         response = httpx.Response(status_code=403, request=request)
@@ -2994,7 +3002,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_blocks_unsafe_url(self, pipe_instance_async):
         """SSRF guard should abort before making any HTTP request."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=False)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(return_value=None)
 
         with patch("httpx.AsyncClient") as mock_client:
             result = await pipe_instance_async._multimodal_handler._download_remote_url("https://example.com/image.jpg")
@@ -3004,7 +3012,7 @@ class TestRemoteURLDownloading:
     @pytest.mark.asyncio
     async def test_download_retries_on_429_then_succeeds(self, pipe_instance_async):
         """HTTP 429 should trigger a retry and succeed on a later attempt."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 1
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
@@ -4140,7 +4148,7 @@ class TestDownloadRetryTimeoutExceeded:
     @pytest.mark.asyncio
     async def test_download_retry_timeout_exceeded(self, pipe_instance_async):
         """Should return None when retry timeout is exceeded."""
-        pipe_instance_async._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
+        pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         # Set very short timeout so it expires quickly
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 3
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0.01
@@ -4409,6 +4417,109 @@ class TestEnsureStorageUserCacheInsideLock:
 
         finally:
             multimodal_module.Users = original_users
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SSRF DNS-rebinding: connection pinning tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestSSRFConnectionPinning:
+    """The download path pins the connection to a validated IP so httpx cannot
+    re-resolve the host to a rebound private address between the SSRF check and
+    the TCP connect (DNS-rebinding TOCTOU)."""
+
+    def test_build_pinned_request_rewrites_host_keeps_sni_and_host_header(self, pipe_instance):
+        handler = pipe_instance._multimodal_handler
+        request_url, headers, extensions = handler._build_pinned_request(
+            "https://example.com:8443/path/to?x=1", "93.184.216.34"
+        )
+        assert request_url == "https://93.184.216.34:8443/path/to?x=1"
+        assert headers == {"Host": "example.com:8443"}
+        assert extensions == {"sni_hostname": "example.com"}
+
+    def test_build_pinned_request_brackets_ipv6(self, pipe_instance):
+        handler = pipe_instance._multimodal_handler
+        request_url, headers, extensions = handler._build_pinned_request(
+            "https://example.com/img.png", "2606:2800:220:1:248:1893:25c8:1946"
+        )
+        assert request_url == "https://[2606:2800:220:1:248:1893:25c8:1946]/img.png"
+        assert headers == {"Host": "example.com"}
+        assert extensions == {"sni_hostname": "example.com"}
+
+    def test_build_pinned_request_http_has_no_sni(self, pipe_instance):
+        handler = pipe_instance._multimodal_handler
+        request_url, headers, extensions = handler._build_pinned_request(
+            "http://example.com/a", "93.184.216.34"
+        )
+        assert request_url == "http://93.184.216.34/a"
+        assert headers == {"Host": "example.com"}
+        assert extensions == {}  # no TLS -> no SNI override
+
+    @pytest.mark.asyncio
+    async def test_prepare_passthrough_when_ssrf_disabled(self, pipe_instance_async):
+        handler = pipe_instance_async._multimodal_handler
+        pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = False
+        result = await handler._prepare_pinned_request("https://example.com/x")
+        assert result == ("https://example.com/x", {}, {})  # unchanged, no pin
+
+    @pytest.mark.asyncio
+    async def test_prepare_pins_validated_ip_when_ssrf_enabled(self, pipe_instance_async):
+        handler = pipe_instance_async._multimodal_handler
+        pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
+        handler._resolve_validated_ips = Mock(return_value=["93.184.216.34"])
+        request_url, headers, extensions = await handler._prepare_pinned_request(
+            "https://example.com/img.jpg"
+        )
+        assert request_url == "https://93.184.216.34/img.jpg"
+        assert headers == {"Host": "example.com"}
+        assert extensions == {"sni_hostname": "example.com"}
+
+    @pytest.mark.asyncio
+    async def test_prepare_blocks_when_resolution_unsafe(self, pipe_instance_async):
+        handler = pipe_instance_async._multimodal_handler
+        pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
+        handler._resolve_validated_ips = Mock(return_value=None)  # rebound/private
+        result = await handler._prepare_pinned_request("https://example.com/img.jpg")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_connects_to_pinned_ip_not_hostname(self, pipe_instance_async):
+        """End-to-end: the httpx request targets the validated IP, with the
+        original Host header and SNI — so httpx never re-resolves the host."""
+        handler = pipe_instance_async._multimodal_handler
+        pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
+        handler._resolve_validated_ips = Mock(return_value=["93.184.216.34"])
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = Mock()
+            mock_response.headers = {"content-type": "image/png"}
+            mock_response.raise_for_status = Mock()
+            _set_aiter_bytes(mock_response, [b"img"])
+
+            client_instance = AsyncMock()
+            client_instance.stream = Mock(return_value=_make_stream_context(response=mock_response))
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=client_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await handler._download_remote_url("https://example.com/img.png")
+
+        assert result is not None
+        assert result["url"] == "https://example.com/img.png"  # original url preserved for callers
+        args, kwargs = client_instance.stream.call_args
+        assert args[0] == "GET"
+        assert args[1] == "https://93.184.216.34/img.png"  # pinned IP, not the hostname
+        assert kwargs["headers"] == {"Host": "example.com"}
+        assert kwargs["extensions"] == {"sni_hostname": "example.com"}
+
+    def test_resolve_validated_ips_accepts_public_blocks_private(self, pipe_instance):
+        handler = pipe_instance._multimodal_handler
+        # literal public IP -> returned for pinning
+        assert handler._resolve_validated_ips("https://93.184.216.34/x") == ["93.184.216.34"]
+        # literal private / loopback / cloud-metadata -> blocked
+        assert handler._resolve_validated_ips("https://127.0.0.1/x") is None
+        assert handler._resolve_validated_ips("https://10.0.0.5/x") is None
+        assert handler._resolve_validated_ips("https://169.254.169.254/meta") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
