@@ -25,6 +25,7 @@ from ...requests.debug import (
 from ...core.errors import (
     _build_openrouter_api_error,
 )
+from ...core.utils import _apply_retry_after_metadata
 from .responses_adapter import _should_retry_stream
 # Imports from api.transforms
 from ..transforms import (
@@ -242,10 +243,7 @@ class ChatCompletionsAdapter:
                         if breaker_key:
                             self._pipe._circuit_breaker.record_failure(breaker_key)
                         extra_meta: dict[str, Any] = {}
-                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                        if retry_after:
-                            extra_meta["retry_after"] = retry_after
-                            extra_meta["retry_after_seconds"] = retry_after
+                        _apply_retry_after_metadata(extra_meta, resp.headers)
                         rate_scope = (
                             resp.headers.get("X-RateLimit-Scope")
                             or resp.headers.get("x-ratelimit-scope")
@@ -662,10 +660,7 @@ class ChatCompletionsAdapter:
                         if breaker_key:
                             self._pipe._circuit_breaker.record_failure(breaker_key)
                         extra_meta: dict[str, Any] = {}
-                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                        if retry_after:
-                            extra_meta["retry_after"] = retry_after
-                            extra_meta["retry_after_seconds"] = retry_after
+                        _apply_retry_after_metadata(extra_meta, resp.headers)
                         rate_scope = (
                             resp.headers.get("X-RateLimit-Scope")
                             or resp.headers.get("x-ratelimit-scope")

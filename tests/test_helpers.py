@@ -1946,3 +1946,92 @@ def test_format_final_status_description_with_icons(pipe_instance):
         description
         == "T 3.21s  20.0 tps | $0.012345 | TOT 160 (IN 120, OUT 40, CACHE 20, REASON 5)"
     )
+
+
+# -----------------------------------------------------------------------------
+# Retry-After metadata helper + template rendering
+# -----------------------------------------------------------------------------
+
+
+def test_apply_retry_after_metadata_records_raw_and_parsed_seconds():
+    """The shared helper stores the raw header plus rounded parsed seconds
+    (delta-seconds and HTTP-date forms), and leaves metadata untouched when
+    the header is absent; junk values store the raw header only."""
+    from open_webui_openrouter_pipe.core.utils import _apply_retry_after_metadata
+
+    meta: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta, {"Retry-After": "120"})
+    assert meta == {"retry_after": "120", "retry_after_seconds": 120}
+
+    # HTTP-date in the past clamps to 0 — and 0 must be stored, not dropped.
+    meta2: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta2, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+    assert meta2["retry_after"] == "Wed, 21 Oct 2015 07:28:00 GMT"
+    assert meta2["retry_after_seconds"] == 0
+
+    # lowercase header variant
+    meta3: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta3, {"retry-after": "5"})
+    assert meta3["retry_after_seconds"] == 5
+
+    # absent header -> untouched; junk -> raw only
+    meta4: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta4, {})
+    assert meta4 == {}
+    meta5: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta5, {"Retry-After": "not-a-date"})
+    assert meta5 == {"retry_after": "not-a-date"}
+
+
+def test_retry_after_seconds_zero_renders_as_zero_not_raw_header():
+    """A parsed retry_after_seconds of 0 (expired HTTP-date) must render as
+    '0', not fall through a truthiness chain to the raw date string (which
+    the 429 template suffixes with 's' -> '...GMTs')."""
+    payload = json.dumps({"error": {"message": "rate limited", "code": 429}})
+    err = ow._build_openrouter_api_error(
+        429, "Too Many Requests", payload, requested_model="demo",
+        extra_metadata={
+            "retry_after": "Wed, 21 Oct 2015 07:28:00 GMT",
+            "retry_after_seconds": 0,
+        },
+    )
+    rendered = err.to_markdown(template="{retry_after_seconds}")
+    assert rendered == "0"
+
+
+@pytest.mark.asyncio
+async def test_report_openrouter_error_expired_retry_after_not_rendered_raw(pipe_instance_async):
+    """End-to-end through _report_openrouter_error: an expired HTTP-date
+    Retry-After (parsed retry_after_seconds == 0) must not leak the raw date
+    into the rendered message as '<date>s'. The formatter's context hint must
+    select by presence (0 wins over the raw header); the default template's
+    {{#if}} guard then treats 0 as absent and suppresses the line entirely."""
+    pipe = pipe_instance_async
+
+    class _CaptureEmitter:
+        def __init__(self):
+            self.events = []
+
+        async def __call__(self, event):
+            self.events.append(event)
+
+    emitter = _CaptureEmitter()
+    payload = json.dumps({"error": {"message": "rate limited", "code": 429}})
+    err = ow._build_openrouter_api_error(
+        429, "Too Many Requests", payload, requested_model="demo",
+        extra_metadata={
+            "retry_after": "Wed, 21 Oct 2015 07:28:00 GMT",
+            "retry_after_seconds": 0,
+        },
+    )
+    await pipe._ensure_error_formatter()._report_openrouter_error(
+        err,
+        event_emitter=emitter,
+        normalized_model_id="demo",
+        api_model_id="demo",
+    )
+    rendered = " ".join(
+        str(e.get("data", {}).get("content", "")) for e in emitter.events
+    )
+    assert rendered, "formatter must emit a message"
+    assert "GMT" not in rendered, "raw HTTP-date must never reach the user"

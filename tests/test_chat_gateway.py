@@ -432,6 +432,42 @@ async def test_chat_completions_streaming_error_with_retry_after(pipe_instance_a
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_streaming_error_http_date_retry_after(pipe_instance_async):
+    """An HTTP-date Retry-After header must be parsed to numeric seconds, not
+    stored as the raw date string (which would render '...GMTs' in the error)."""
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            payload={"error": {"message": "Rate limited"}},
+            status=429,
+            headers={"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"},
+        )
+
+        with pytest.raises(OpenRouterAPIError) as exc_info:
+            async for _event in pipe.send_openai_chat_completions_streaming_request(
+                session,
+                {"model": "openai/gpt-4o", "stream": True, "input": []},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                valves=valves,
+            ):
+                pass
+
+        await session.close()
+
+    ras = exc_info.value.metadata.get("retry_after_seconds")
+    assert isinstance(ras, (int, float)), f"expected numeric retry_after_seconds, got {ras!r}"
+    assert ras > 0
+    assert ras != "Wed, 21 Oct 2099 07:28:00 GMT"
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_streaming_error_500(pipe_instance_async):
     """Test error handling for 500 status — now raises OpenRouterAPIError."""
     from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError

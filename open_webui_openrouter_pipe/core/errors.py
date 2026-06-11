@@ -354,11 +354,14 @@ def _build_error_template_values(
     metadata_json = error.metadata_json or _pretty_json(error.metadata)
     provider_raw_json = error.provider_raw_json or _pretty_json(error.provider_raw)
     context = context or {}
-    retry_after = (
-        context.get("retry_after_seconds")
-        or error.metadata.get("retry_after_seconds")
-        or error.metadata.get("retry_after")
-    )
+    # Select by presence, not truthiness: a parsed retry_after_seconds of 0
+    # (expired HTTP-date) is falsy but must still win over the raw header,
+    # otherwise the template renders "<date>s".
+    retry_after = context.get("retry_after_seconds")
+    if retry_after is None:
+        retry_after = error.metadata.get("retry_after_seconds")
+    if retry_after is None:
+        retry_after = error.metadata.get("retry_after")
     replacements: dict[str, Any] = {
         "heading": heading,
         "detail": detail,
@@ -395,7 +398,7 @@ def _build_error_template_values(
         "user_id": context.get("user_id", ""),
         "support_email": context.get("support_email", ""),
         "support_url": context.get("support_url", ""),
-        "retry_after_seconds": retry_after or "",
+        "retry_after_seconds": "" if retry_after is None else retry_after,
         "rate_limit_type": error.metadata.get("rate_limit_type") or "",
         "required_cost": error.metadata.get("required_cost") or "",
         "account_balance": error.metadata.get("account_balance") or "",

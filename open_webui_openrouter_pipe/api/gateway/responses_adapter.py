@@ -18,6 +18,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
 from ...core.errors import OpenRouterAPIError, _build_openrouter_api_error
 from ...core.timing_logger import timed, timing_mark
+from ...core.utils import _apply_retry_after_metadata
 from ...streaming.nagle_coalescer import NagleCoalescer, _MAX_DRAIN_PER_CYCLE
 from ...requests.debug import (
     _debug_print_error_response,
@@ -150,10 +151,7 @@ class ResponsesAdapter:
                                     if breaker_key:
                                         self._pipe._circuit_breaker.record_failure(breaker_key)
                                     extra_meta: dict[str, Any] = {}
-                                    retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                                    if retry_after:
-                                        extra_meta["retry_after"] = retry_after
-                                        extra_meta["retry_after_seconds"] = retry_after
+                                    _apply_retry_after_metadata(extra_meta, resp.headers)
                                     rate_scope = (
                                         resp.headers.get("X-RateLimit-Scope")
                                         or resp.headers.get("x-ratelimit-scope")
@@ -492,10 +490,7 @@ class ResponsesAdapter:
                         if breaker_key:
                             self._pipe._circuit_breaker.record_failure(breaker_key)
                         extra_meta: dict[str, Any] = {}
-                        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                        if retry_after:
-                            extra_meta["retry_after"] = retry_after
-                            extra_meta["retry_after_seconds"] = retry_after
+                        _apply_retry_after_metadata(extra_meta, resp.headers)
                         rate_scope = (
                             resp.headers.get("X-RateLimit-Scope")
                             or resp.headers.get("x-ratelimit-scope")

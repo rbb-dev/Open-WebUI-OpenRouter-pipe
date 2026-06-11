@@ -246,11 +246,13 @@ class ErrorFormatter:
             self._pipe._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
         template_to_use = template or self._select_openrouter_template(exc.status)
-        retry_after_hint = (
-            exc.metadata.get("retry_after_seconds")
-            or exc.metadata.get("retry_after")
-        )
-        if retry_after_hint and not context_defaults.get("retry_after_seconds"):
+        # Select by presence, not truthiness: a parsed retry_after_seconds of
+        # 0 (expired HTTP-date) must win over the raw date header, otherwise
+        # the template renders "<date>s".
+        retry_after_hint = exc.metadata.get("retry_after_seconds")
+        if retry_after_hint is None:
+            retry_after_hint = exc.metadata.get("retry_after")
+        if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
             context_defaults["retry_after_seconds"] = retry_after_hint
         self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
         if event_emitter:

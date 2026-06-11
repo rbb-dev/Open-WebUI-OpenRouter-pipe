@@ -629,6 +629,23 @@ def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
         return None
 
 
+def _apply_retry_after_metadata(meta: dict[str, Any], headers: Any) -> None:
+    """Record a response's Retry-After header in error metadata.
+
+    Stores the raw header under ``retry_after`` and, when parseable
+    (delta-seconds or HTTP-date per RFC 7231), the rounded integer seconds
+    under ``retry_after_seconds`` so error templates can render "...s".
+    Single shared implementation for every gateway/pipe 4xx error site.
+    """
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if not retry_after:
+        return
+    meta["retry_after"] = retry_after
+    parsed = _retry_after_seconds(retry_after)
+    if parsed is not None:
+        meta["retry_after_seconds"] = round(parsed)
+
+
 # -----------------------------------------------------------------------------
 # ULID Marker System
 # -----------------------------------------------------------------------------
