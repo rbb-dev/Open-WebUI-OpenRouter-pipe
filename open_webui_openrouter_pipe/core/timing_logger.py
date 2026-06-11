@@ -55,6 +55,13 @@ _timing_request_id: ContextVar[Optional[str]] = ContextVar(
 # Maximum events per request to prevent unbounded growth
 MAX_TIMING_EVENTS = 10000
 
+# Maximum number of distinct requests retained in the in-memory buffer. The
+# per-request entries are only cleared by test helpers, never in production, so
+# without this cap the dict grows once per request forever when ENABLE_TIMING_LOG
+# is on. Oldest requests are evicted beyond this bound (the JSONL file remains
+# the complete record).
+MAX_TIMING_REQUESTS = 256
+
 
 # -----------------------------------------------------------------------------
 # TimingEvent dataclass
@@ -124,6 +131,11 @@ def _record_event(event: TimingEvent) -> None:
     # Also store in per-request buffer for potential session log integration
     with _timing_lock:
         if request_id not in _timing_events:
+            # Bound the number of retained requests (dicts are insertion-ordered,
+            # so the first key is the oldest). Evict oldest before inserting.
+            while len(_timing_events) >= MAX_TIMING_REQUESTS:
+                oldest = next(iter(_timing_events))
+                _timing_events.pop(oldest, None)
             _timing_events[request_id] = deque(maxlen=MAX_TIMING_EVENTS)
         _timing_events[request_id].append(record)
 

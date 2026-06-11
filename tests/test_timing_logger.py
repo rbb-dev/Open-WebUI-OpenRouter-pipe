@@ -622,3 +622,22 @@ class TestTimingScopeContextManager:
             result = 42
 
         assert result == 42
+
+
+def test_timing_events_buffer_evicts_oldest_requests(monkeypatch):
+    """The in-memory _timing_events dict is bounded: beyond MAX_TIMING_REQUESTS
+    distinct requests the oldest are evicted, so it can't grow once-per-request
+    forever when ENABLE_TIMING_LOG is on (the JSONL file stays complete)."""
+    monkeypatch.setattr(tl, "MAX_TIMING_REQUESTS", 3)
+    with tl._timing_lock:
+        tl._timing_events.clear()
+
+    for i in range(10):
+        tl.set_timing_context(f"req-{i}", enabled=True)
+        tl._record_event(
+            tl.TimingEvent(ts=float(i), wall_ts=1234567890.0 + i, event="mark", label="x")
+        )
+
+    assert len(tl._timing_events) == 3, "buffer must stay bounded at MAX_TIMING_REQUESTS"
+    assert "req-9" in tl._timing_events, "most recent request must be retained"
+    assert "req-0" not in tl._timing_events, "oldest request must be evicted"
