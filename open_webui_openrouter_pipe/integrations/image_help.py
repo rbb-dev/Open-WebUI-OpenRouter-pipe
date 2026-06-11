@@ -143,6 +143,26 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Image size": "Resolution tier. Auto-router may map to closest equivalent.",
         },
     },
+    "microsoft/mai-image-2.5": {
+        "display_name": "Microsoft: MAI-Image-2.5",
+        "best_known_for": (
+            "Microsoft's high-quality image generation model served via Azure "
+            "AI Foundry — photorealistic and artistic output from text prompts "
+            "with optional reference-image input. Best for general-purpose "
+            "photoreal work on Azure-backed infrastructure with token-based "
+            "pricing ($5/M tokens) instead of per-image billing."
+        ),
+        "tips_and_pitfalls": [
+            "Supports 7 aspect ratios (1:1 default, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3) — all available through the generic aspect ratio knob; 4:5/5:4/21:9 are NOT supported by this model.",
+            "Token-priced ($5/M) rather than per-image — long prompts cost proportionally more.",
+            "Multimodal input: accepts reference images alongside the text prompt for editing/guidance.",
+            "No model-specific extensions — the generic filter covers everything this model accepts.",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape — this model supports 7 of the 10 standard ratios (1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3). Empty = 1:1 default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default (1024px tier).",
+        },
+    },
     "sourceful/riverflow-v2-pro": {
         "display_name": "Sourceful: Riverflow V2 Pro",
         "best_known_for": (
@@ -153,7 +173,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text. Filter writes modalities=['image'] for this model.",
             "font_inputs (max 2, +$0.03/font) renders custom typefaces in the image — supply font_url + matching text in the prompt.",
-            "super_resolution_references (max 4, +$0.20/ref) requires input images in messages (image-to-image only).",
+            "super_resolution_references (max 4, +$0.20/ref) requires input images in messages (image-to-image only). V2 Pro/Fast only — Riverflow 2.5 dropped this parameter.",
             "Both extensions exposed via 'Sourceful Options' filter; cardinality caps validated at inlet (rejects 3+ font_inputs before submission).",
             "4.5MB request size limit — pass image URLs instead of base64 to avoid bloat.",
         ],
@@ -161,7 +181,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
             "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
             "Font inputs (JSON array)": "JSON array of {font_url, text} objects for custom typeface rendering. Max 2, +$0.03 each.",
-            "Super-resolution references (JSON array)": "JSON array of URL strings for image-to-image upscaling. Max 4, +$0.20 each. Image-to-image only.",
+            "Super-resolution references (JSON array)": "JSON array of URL strings for image-to-image upscaling. Max 4, +$0.20 each. Image-to-image only. V2 Pro/Fast only.",
         },
     },
     "sourceful/riverflow-v2-fast": {
@@ -175,13 +195,66 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request limit, image URLs preferred.",
             "Use Fast for prompt iteration and font/reference tuning; switch to Pro for finals.",
-            "Same Sourceful-specific knobs (font_inputs, super_resolution_references) via dedicated filter.",
+            "Same Sourceful-specific knobs (font_inputs, super_resolution_references) via dedicated filter. super_resolution_references is V2 Pro/Fast only — dropped in Riverflow 2.5.",
         ],
         "knob_descriptions": {
             "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
             "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
             "Font inputs (JSON array)": "JSON array of {font_url, text} objects. Max 2, +$0.03 each.",
-            "Super-resolution references (JSON array)": "JSON array of URL strings for image-to-image upscaling. Max 4, +$0.20 each. Image-to-image only.",
+            "Super-resolution references (JSON array)": "JSON array of URL strings for image-to-image upscaling. Max 4, +$0.20 each. Image-to-image only. V2 Pro/Fast only.",
+        },
+    },
+    "sourceful/riverflow-v2.5-pro": {
+        "display_name": "Sourceful: Riverflow V2.5 Pro",
+        "best_known_for": (
+            "The most powerful variant of Sourceful's Riverflow 2.5 lineup — "
+            "a unified text-to-image and image-to-image family. Best for "
+            "top-tier control and quality-sensitive outputs: brand assets, "
+            "marketing finals, and work that benefits from the new 2.5 "
+            "self-scoring and background controls. From $0.13/image "
+            "(finalized per job at completion)."
+        ),
+        "tips_and_pitfalls": [
+            "PURE-image-only — does NOT output text.",
+            "ONE dedicated filter — 'Sourceful V2.5 Options' — carries every 2.5 knob: font_inputs (max 2, +$0.03/font, carried over from V2) plus the new scoring_prompt + scoring_rubric (self-scored candidate selection) and background_mode (original/transparent/solid) + background_hex_color.",
+            "super_resolution_references is NOT supported — Riverflow 2.5 dropped it (V2 Pro/Fast only); the knob does not exist on 2.5 models.",
+            "Supports reasoning effort up to xhigh (low/medium/high/xhigh) through the standard reasoning controls.",
+            "Pricing is dynamic — the quoted from-$0.13/image floor is finalized per job based on billable processing.",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Font inputs (JSON array)": "JSON array of {font_url, text} objects for custom typeface rendering. Max 2, +$0.03 each.",
+            "Scoring prompt": "Free-text instruction the model uses to self-score candidates before returning the best one.",
+            "Scoring rubric": "Free-text rubric describing what a good output looks like; pairs with the scoring prompt.",
+            "Background mode": "original keeps the generated background, transparent removes it (PNG alpha), solid fills with the hex color.",
+            "Background hex color": "#RGB or #RRGGBB fill color. Requires background mode 'solid'.",
+        },
+    },
+    "sourceful/riverflow-v2.5-fast": {
+        "display_name": "Sourceful: Riverflow V2.5 Fast",
+        "best_known_for": (
+            "The speed-optimized variant of Sourceful's Riverflow 2.5 lineup "
+            "— best for production deployments and latency-critical "
+            "workflows. Same unified text-to-image and image-to-image family "
+            "and the same 2.5 extras as Pro at a fraction of the cost. From "
+            "$0.019/image (finalized per job at completion)."
+        ),
+        "tips_and_pitfalls": [
+            "PURE-image-only — does NOT output text.",
+            "Use Fast for iteration and high-volume production; switch to V2.5 Pro for quality-sensitive finals.",
+            "ONE dedicated filter — 'Sourceful V2.5 Options' — carries every 2.5 knob: font_inputs (max 2, +$0.03/font, carried over from V2) plus scoring_prompt + scoring_rubric and background_mode + background_hex_color.",
+            "super_resolution_references is NOT supported — Riverflow 2.5 dropped it (V2 Pro/Fast only); the knob does not exist on 2.5 models.",
+            "Supports reasoning effort low/medium/high (xhigh is Pro-only) through the standard reasoning controls.",
+        ],
+        "knob_descriptions": {
+            "Image aspect ratio": "Frame shape (10 standard ratios). Empty = model default.",
+            "Image size": "Resolution tier (1K/2K/4K). Empty = model default.",
+            "Font inputs (JSON array)": "JSON array of {font_url, text} objects. Max 2, +$0.03 each.",
+            "Scoring prompt": "Free-text instruction the model uses to self-score candidates before returning the best one.",
+            "Scoring rubric": "Free-text rubric describing what a good output looks like; pairs with the scoring prompt.",
+            "Background mode": "original keeps the generated background, transparent removes it (PNG alpha), solid fills with the hex color.",
+            "Background hex color": "#RGB or #RRGGBB fill color. Requires background mode 'solid'.",
         },
     },
     "sourceful/riverflow-v2-max-preview": {
@@ -641,7 +714,11 @@ _IMAGE_KNOB_GATE: dict[str, str | None] = {
     "Image aspect ratio (Gemini extended)": "gemini_extended",
     "Image size (Gemini-only 0.5K)": "gemini_extended",
     "Font inputs (JSON array)": "sourceful_extended",
-    "Super-resolution references (JSON array)": "sourceful_extended",
+    "Super-resolution references (JSON array)": "sourceful_v2_superres",
+    "Scoring prompt": "sourceful_v25",
+    "Scoring rubric": "sourceful_v25",
+    "Background mode": "sourceful_v25",
+    "Background hex color": "sourceful_v25",
     "Strength (image-to-image)": "recraft_common",
     "RGB color palette (JSON array)": "recraft_common",
     "Background RGB color (JSON array)": "recraft_common",
@@ -659,9 +736,21 @@ def _is_gemini_flash_image_preview(model_id: str) -> bool:
 
 
 def _is_sourceful_pro_or_fast(model_id: str) -> bool:
-    """Match models eligible for Sourceful-extended knobs (font_inputs, super_resolution_references)."""
+    """Match models eligible for Sourceful-extended knobs (font_inputs — V2 and newer)."""
     import re
     return bool(re.match(r"^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$", model_id or ""))
+
+
+def _is_sourceful_v2_superres(model_id: str) -> bool:
+    """Match models eligible for super_resolution_references (V2 Pro/Fast ONLY — dropped in 2.5)."""
+    import re
+    return bool(re.match(r"^sourceful/riverflow-v2-(pro|fast)$", model_id or ""))
+
+
+def _is_sourceful_v25(model_id: str) -> bool:
+    """Match models eligible for Riverflow 2.5 extras (scoring + background controls)."""
+    import re
+    return bool(re.match(r"^sourceful/riverflow-v2\.5-(pro|fast)$", model_id or ""))
 
 
 def _is_recraft(model_id: str) -> bool:
@@ -689,6 +778,10 @@ def _image_knob_is_active(knob: str, model_id: str) -> bool:
         return _is_gemini_flash_image_preview(model_id)
     if gate == "sourceful_extended":
         return _is_sourceful_pro_or_fast(model_id)
+    if gate == "sourceful_v2_superres":
+        return _is_sourceful_v2_superres(model_id)
+    if gate == "sourceful_v25":
+        return _is_sourceful_v25(model_id)
     if gate == "recraft_common":
         return _is_recraft(model_id)
     if gate == "recraft_v3_only":

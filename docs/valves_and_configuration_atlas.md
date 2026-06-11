@@ -180,8 +180,8 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get the generic image filter attached for `image_config` knobs. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Automatically install/update the OpenRouter native image filters in Open WebUI: `OR Image Filter` (generic, all image models), `Gemini Options` (Gemini Flash Image Preview only), `Sourceful Options` (Sourceful Riverflow Pro/Fast only), `Recraft Options` (all Recraft models), `Recraft V3 Extras` (Recraft V3 only). |
-| `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Automatically attach the appropriate native image filters to image-output models: generic to all, Gemini-extended to `^google/gemini-.*flash-image.*-preview$`, Sourceful-extended to `^sourceful/riverflow-v\d+(\.\d+)?-(pro\|fast)$`. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Automatically install/update the OpenRouter native image filters in Open WebUI: `OR Image Filter` (generic, all image models), `Gemini Options` (Gemini Flash Image Preview only), `Sourceful Options` (Riverflow V2 Pro/Fast only), `Sourceful V2.5 Options` (Riverflow 2.5 Pro/Fast only — the single Sourceful filter for 2.5), `Recraft Options` (all Recraft models), `Recraft V3 Extras` (Recraft V3 only), `Grok Imagine Options` (Grok Imagine image models only). |
+| `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Automatically attach the appropriate native image filters to image-output models: generic to all, Gemini-extended to `^google/gemini-.*flash-image.*-preview$`, Sourceful to `^sourceful/riverflow-v2-(pro\|fast)$`, Sourceful V2.5 to `^sourceful/riverflow-v2\.5-(pro\|fast)$` (one Sourceful filter per Riverflow version), Recraft to `^recraft/recraft-`, Recraft V3 Extras to `recraft/recraft-v3` exactly, Grok Imagine to `^x-ai/grok-imagine-image-`. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_image_default_filter_ids` in `models/catalog_manager.py`. |
 
 Notes:
@@ -375,7 +375,7 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Models in both lists get filters with admin defaults and user overrides. |
 
 Notes:
-- Provider routing filters are generated dynamically from OpenRouter's `/api/frontend/models` catalog.
+- Provider routing filters are generated dynamically from OpenRouter's `/api/frontend/v1/catalog/models` catalog.
 - Each filter exposes an **ORDER dropdown** with all provider priority permutations (using human-readable provider names).
 - Admin-only filters use `toggle=False` (always run, cannot be disabled per-chat).
 - User-configurable filters use `toggle=True` (can be toggled on/off per-chat).

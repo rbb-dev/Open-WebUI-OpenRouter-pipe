@@ -29,13 +29,13 @@ GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Ri
 ## What You Get
 
 🎯 **Every Model, One Place**
-371 chat models, 13 video models, 16 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
+350+ chat models, 14 video models, 31 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
 
 🎨 **Image Generation, Inline**
-16 image models — Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image. Type a prompt, get an image. Custom fonts, super-resolution, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
+31 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Custom fonts, transparent backgrounds, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
 
 🎬 **Video Generation**
-13 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
+14 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, xAI Grok Imagine. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
 
 🖼️ **Multimodal That Actually Works**
 Drop in images, PDFs, audio, video. The pipe figures out what each model supports — `/responses` vs `/chat/completions`, file vs RAG, streaming vs not.
@@ -53,8 +53,8 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 
 ## What's New
 
-- **Native image generation** — 16 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image) with 3 per-family filters (generic, Gemini Options, Sourceful Options).
-- **Video generation** — 13 OpenRouter video models with per-model filters and inline `<video>` rendering.
+- **Native image generation** — 31 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, xAI Grok Imagine, Microsoft MAI) with 7 per-family filters (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras, Grok Imagine Options).
+- **Video generation** — 14 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime as one toggleable filter; tool execution cards with citations.
 - **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
@@ -65,7 +65,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission, graceful degradation. 3500+ pytest tests, both readable and compressed bundle variants.
+Rate limiting, circuit breakers, request admission, graceful degradation. 3800+ pytest tests, both readable and compressed bundle variants.
 
 🔐 **Security First**
 Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).

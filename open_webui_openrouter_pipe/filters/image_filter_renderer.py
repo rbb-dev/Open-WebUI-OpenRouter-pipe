@@ -1,8 +1,8 @@
 """Image generation filter source code renderer.
 
-Six filter variants — `generic`, `gemini`, `sourceful`, `recraft`, `recraft_v3`,
-`grok` — written to `body.image_config` as top-level request fields per
-OpenRouter's
+Seven filter variants — `generic`, `gemini`, `sourceful`, `sourceful_v25`,
+`recraft`, `recraft_v3`, `grok` — written to `body.image_config` as top-level
+request fields per OpenRouter's
 [image-generation.md](.external/openrouter_docs/guides/overview/multimodal/image-generation.md).
 The pipe's orchestrator injects `body.modalities` separately based on the
 registered model's `architecture.output_modalities` so filters do not need
@@ -11,7 +11,13 @@ runtime registry access.
 Filter assignment rules (driven by `filter_manager.ensure_openrouter_image_filter_function_ids`):
 - **All** models with `image` in `output_modalities` get the **generic** filter
 - Models matching `^google/gemini-.*flash-image.*-preview$` ALSO get **gemini** filter (extended aspect ratios + 0.5K)
-- Models matching `^sourceful/riverflow-v\\d+(\\.\\d+)?-(pro|fast)$` ALSO get **sourceful** filter (font_inputs + super_resolution_references)
+- Models matching `^sourceful/riverflow-v2-(pro|fast)$` ALSO get **sourceful** filter
+  (font_inputs + super_resolution_references — Riverflow V2 only)
+- Models matching `^sourceful/riverflow-v2\\.5-(pro|fast)$` ALSO get **sourceful_v25** filter
+  (font_inputs + scoring_prompt + scoring_rubric + background_mode + background_hex_color).
+  Riverflow versions get ONE dedicated Sourceful filter each, never two — 2.5 dropped
+  super_resolution_references and added the scoring/background params, so stacking a
+  shared filter would expose dead knobs.
 - Models matching `^recraft/recraft-` ALSO get **recraft** filter (strength + rgb_colors + background_rgb_color)
 - Models matching `^recraft/recraft-v3$` ALSO get **recraft_v3** filter (style + text_layout — V3 only per OpenRouter docs)
 - Models matching `^x-ai/grok-imagine-image-` ALSO get **grok** filter (Grok-specific 14-value aspect_ratio set + `n` count)
@@ -32,7 +38,7 @@ _IMAGE_FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
 class ImageFilterSpec:
     """Metadata for an image-generation filter variant."""
 
-    variant: str  # "generic" | "gemini" | "sourceful" | "recraft" | "recraft_v3" | "grok"
+    variant: str  # "generic" | "gemini" | "sourceful" | "sourceful_v25" | "recraft" | "recraft_v3" | "grok"
     function_id: str
     display_name: str
     marker: str
@@ -73,6 +79,15 @@ def build_sourceful_image_filter_spec() -> ImageFilterSpec:
         function_id=sanitize_image_filter_id("sourceful"),
         display_name="Sourceful Options",
         marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:sourceful",
+    )
+
+
+def build_sourceful_v25_image_filter_spec() -> ImageFilterSpec:
+    return ImageFilterSpec(
+        variant="sourceful_v25",
+        function_id=sanitize_image_filter_id("sourceful_v25"),
+        display_name="Sourceful V2.5 Options",
+        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:sourceful_v25",
     )
 
 
@@ -308,9 +323,13 @@ class Filter:
 
 
 def render_sourceful_image_filter_source() -> str:
-    """Render the Sourceful-specific image filter — font_inputs + super_resolution_references.
+    """Render the Sourceful V2 image filter — font_inputs + super_resolution_references.
 
-    Attached only to models matching `^sourceful/riverflow-v\\d+(\\.\\d+)?-(pro|fast)$`.
+    Attached only to models matching `^sourceful/riverflow-v2-(pro|fast)$`.
+    Riverflow 2.5 has its own dedicated filter (`sourceful_v25`) because 2.5
+    dropped super_resolution_references — each Riverflow version gets exactly
+    one Sourceful filter, never a stacked pair.
+
     Pre-validates cardinality caps (max 2 font_inputs, max 4 super_resolution_references)
     and rejects invalid input BEFORE submission so users get clear errors instead of
     cryptic provider 400s.
@@ -335,7 +354,9 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_SOURCEFUL_MODEL_PATTERN = re.compile(r"^sourceful/riverflow-v\\d+(\\.\\d+)?-(pro|fast)$")
+# V2 Pro/Fast ONLY — Riverflow 2.5 gets its own dedicated filter (sourceful_v25)
+# because 2.5 dropped super_resolution_references.
+_SOURCEFUL_MODEL_PATTERN = re.compile(r"^sourceful/riverflow-v2-(pro|fast)$")
 _MAX_FONT_INPUTS = 2
 _MAX_SUPER_RESOLUTION_REFERENCES = 4
 
@@ -366,9 +387,10 @@ class Filter:
             default="",
             title="Super-resolution references (JSON array)",
             description=(
-                'Sourceful-only image-to-image super-resolution. JSON array of URL strings. '
-                'Max 4 entries, +$0.20 each. Image-to-image only (requires input images in messages). '
-                'Empty = none.'
+                'Riverflow V2 image-to-image super-resolution (2.5 does not '
+                'support this). JSON array of URL strings. Max 4 entries, '
+                '+$0.20 each. Image-to-image only (requires input images in '
+                'messages). Empty = none.'
             ),
         )
 
@@ -402,9 +424,10 @@ class Filter:
     ) -> dict:
         if not isinstance(body, dict):
             return body
-        # Model gate: only emit Sourceful-specific knobs for Riverflow Pro/Fast
-        # variants. Defends against operator misconfiguration (filter manually
-        # attached to non-Sourceful model would otherwise emit invalid params).
+        # Model gate: only emit V2-specific knobs for Riverflow V2 Pro/Fast.
+        # Riverflow 2.5 has its own dedicated filter; this one no-ops there.
+        # Defends against operator misconfiguration (filter manually attached
+        # to any other model would otherwise emit invalid params).
         model_id = body.get("model") or ""
         if not isinstance(model_id, str) or not _SOURCEFUL_MODEL_PATTERN.match(model_id):
             return body
@@ -460,6 +483,213 @@ class Filter:
                         f"super_resolution_references[{{idx}}] must be a non-empty URL string."
                     )
             overrides["super_resolution_references"] = super_refs
+
+        if overrides:
+            existing = body.get("image_config")
+            if not isinstance(existing, dict):
+                existing = {{}}
+            else:
+                existing = dict(existing)
+            existing.update(overrides)
+            body["image_config"] = existing
+        return body
+'''
+
+
+def render_sourceful_v25_image_filter_source() -> str:
+    """Render the dedicated Riverflow 2.5 filter — fonts + scoring + background.
+
+    Attached only to models matching `^sourceful/riverflow-v2\\.5-(pro|fast)$`.
+    This is the SINGLE Sourceful filter for 2.5 models (the V2 `sourceful`
+    filter does not attach to them): it carries `font_inputs` over from V2
+    (same max-2 validation) plus everything 2.5 added — `scoring_prompt`,
+    `scoring_rubric`, `background_mode` (original/transparent/solid), and
+    `background_hex_color`. There is intentionally NO super_resolution_references
+    knob: Riverflow 2.5 dropped that parameter. The hex color requires
+    `background_mode=solid` — validated at inlet so users get a clear error
+    instead of a cryptic provider 400.
+    """
+    spec = build_sourceful_v25_image_filter_spec()
+    return f'''"""OpenRouter image generation companion filter — Sourceful Riverflow 2.5."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # pragma: no cover
+    SRC_LOG_LEVELS = {{}}
+
+OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
+IMAGE_FILTER_VARIANT = "{spec.variant}"
+
+_SOURCEFUL_V25_MODEL_PATTERN = re.compile(r"^sourceful/riverflow-v2\\.5-(pro|fast)$")
+_HEX_COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{{3}}|[0-9a-fA-F]{{6}})$")
+_MAX_FONT_INPUTS = 2
+
+
+class ImageGenerationError(Exception):
+    """Raised at inlet when Riverflow 2.5 input validation fails (malformed
+    JSON, font_inputs cardinality > 2, malformed hex color,
+    background_hex_color without background_mode=solid)."""
+
+
+class Filter:
+    toggle = True
+
+    class Valves(BaseModel):
+        priority: int = Field(default=0)
+
+    class UserValves(BaseModel):
+        IMAGE_FONT_INPUTS_JSON: str = Field(
+            default="",
+            title="Font inputs (JSON array)",
+            description=(
+                'Sourceful-only font rendering. JSON array of objects: '
+                '[{{"font_url": "https://...", "text": "..."}}]. Max 2 entries, +$0.03 each. '
+                'Empty = none.'
+            ),
+        )
+        IMAGE_SCORING_PROMPT: str = Field(
+            default="",
+            title="Scoring prompt",
+            description=(
+                "Riverflow 2.5 only. Free-text instruction the model uses to "
+                "self-score candidate generations before returning the best "
+                "one. Empty = no scoring prompt."
+            ),
+        )
+        IMAGE_SCORING_RUBRIC: str = Field(
+            default="",
+            title="Scoring rubric",
+            description=(
+                "Riverflow 2.5 only. Free-text rubric describing what a good "
+                "output looks like; used with the scoring prompt to rank "
+                "candidates. Empty = no rubric."
+            ),
+        )
+        IMAGE_BACKGROUND_MODE: Literal["", "original", "transparent", "solid"] = Field(
+            default="",
+            title="Background mode",
+            description=(
+                "Riverflow 2.5 only. 'original' keeps the generated "
+                "background, 'transparent' removes it (PNG alpha), 'solid' "
+                "fills it with the hex color below. Empty = model default."
+            ),
+        )
+        IMAGE_BACKGROUND_HEX_COLOR: str = Field(
+            default="",
+            title="Background hex color",
+            description=(
+                "Riverflow 2.5 only. Solid background fill color as #RGB or "
+                "#RRGGBB (e.g. #FFFFFF). Requires background mode 'solid'. "
+                "Empty = none."
+            ),
+        )
+
+    def __init__(self) -> None:
+        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
+        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
+        self.toggle = True
+        self.valves = self.Valves()
+
+    def _parse_json_list(self, raw: str, field: str) -> list:
+        cleaned = (raw or "").strip()
+        if not cleaned:
+            return []
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise ImageGenerationError(
+                f"{{field}} is not valid JSON: {{exc}}"
+            )
+        if not isinstance(parsed, list):
+            raise ImageGenerationError(
+                f"{{field}} must be a JSON array, got {{type(parsed).__name__}}"
+            )
+        return parsed
+
+    def inlet(
+        self,
+        body: dict,
+        __metadata__: Optional[dict] = None,
+        __user__: Optional[dict] = None,
+    ) -> dict:
+        if not isinstance(body, dict):
+            return body
+        # Model gate: only emit 2.5-specific knobs for Riverflow 2.5 Pro/Fast.
+        # Defends against operator misconfiguration (filter manually attached
+        # to another model would otherwise emit invalid params).
+        model_id = body.get("model") or ""
+        if not isinstance(model_id, str) or not _SOURCEFUL_V25_MODEL_PATTERN.match(model_id):
+            return body
+        user_valves = None
+        if isinstance(__user__, dict):
+            uv_raw = __user__.get("valves")
+            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
+                try:
+                    user_valves = self.UserValves.model_validate(
+                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
+                    )
+                except Exception:
+                    user_valves = self.UserValves()
+            elif isinstance(uv_raw, self.UserValves):
+                user_valves = uv_raw
+        if user_valves is None:
+            user_valves = self.UserValves()
+
+        overrides: dict = {{}}
+
+        font_inputs = self._parse_json_list(
+            user_valves.IMAGE_FONT_INPUTS_JSON, "IMAGE_FONT_INPUTS_JSON"
+        )
+        if font_inputs:
+            if len(font_inputs) > _MAX_FONT_INPUTS:
+                raise ImageGenerationError(
+                    f"font_inputs has {{len(font_inputs)}} entries; max is {{_MAX_FONT_INPUTS}}."
+                )
+            for idx, entry in enumerate(font_inputs):
+                if not isinstance(entry, dict):
+                    raise ImageGenerationError(
+                        f"font_inputs[{{idx}}] must be an object with 'font_url' and 'text', "
+                        f"got {{type(entry).__name__}}."
+                    )
+                if not entry.get("font_url") or not entry.get("text"):
+                    raise ImageGenerationError(
+                        f"font_inputs[{{idx}}] requires non-empty 'font_url' and 'text'."
+                    )
+            overrides["font_inputs"] = font_inputs
+
+        scoring_prompt = (user_valves.IMAGE_SCORING_PROMPT or "").strip()
+        if scoring_prompt:
+            overrides["scoring_prompt"] = scoring_prompt
+
+        scoring_rubric = (user_valves.IMAGE_SCORING_RUBRIC or "").strip()
+        if scoring_rubric:
+            overrides["scoring_rubric"] = scoring_rubric
+
+        bg_mode = (user_valves.IMAGE_BACKGROUND_MODE or "").strip()
+        bg_hex = (user_valves.IMAGE_BACKGROUND_HEX_COLOR or "").strip()
+        if bg_hex:
+            if bg_mode != "solid":
+                raise ImageGenerationError(
+                    "IMAGE_BACKGROUND_HEX_COLOR requires background mode 'solid' "
+                    f"(current mode: {{bg_mode or 'model default'}})."
+                )
+            if not _HEX_COLOR_PATTERN.match(bg_hex):
+                raise ImageGenerationError(
+                    f"IMAGE_BACKGROUND_HEX_COLOR must be #RGB or #RRGGBB, got {{bg_hex!r}}."
+                )
+        if bg_mode:
+            overrides["background_mode"] = bg_mode
+        if bg_hex:
+            overrides["background_hex_color"] = bg_hex
 
         if overrides:
             existing = body.get("image_config")

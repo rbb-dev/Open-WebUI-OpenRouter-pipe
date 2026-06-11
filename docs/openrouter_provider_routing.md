@@ -16,7 +16,7 @@ The **Provider Routing Filters** integration generates dedicated Open WebUI filt
 
 When you configure provider routing for a model, the pipe:
 
-1. **Fetches provider data** from OpenRouter's `/api/frontend/models` catalog
+1. **Fetches provider data** from OpenRouter's `/api/frontend/v1/catalog/models` catalog
 2. **Generates a dedicated filter** for each model with human-readable dropdown options
 3. **Installs the filter** in Open WebUI's Functions database
 4. **Attaches the filter** to the model so it appears in the Integrations menu
@@ -161,7 +161,7 @@ Provider routing is **not applied** to task model requests (title generation, ta
 
 ## Provider catalog source
 
-Provider data comes from OpenRouter's `/api/frontend/models` endpoint, which returns one entry per model+provider combination:
+Provider data comes from OpenRouter's `/api/frontend/v1/catalog/models` endpoint, which returns one entry per model+provider combination:
 
 ```json
 {

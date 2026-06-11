@@ -31,13 +31,17 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     build_generic_image_filter_spec,
     build_gemini_image_filter_spec,
     build_sourceful_image_filter_spec,
+    build_sourceful_v25_image_filter_spec,
     build_recraft_common_image_filter_spec,
     build_recraft_v3_image_filter_spec,
+    build_grok_image_filter_spec,
     render_generic_image_filter_source,
     render_gemini_image_filter_source,
     render_sourceful_image_filter_source,
+    render_sourceful_v25_image_filter_source,
     render_recraft_common_image_filter_source,
     render_recraft_v3_image_filter_source,
+    render_grok_image_filter_source,
     sanitize_image_filter_id,
 )
 from open_webui_openrouter_pipe.integrations.image_help import (
@@ -260,7 +264,7 @@ async def test_chat_refresh_preserves_image_only_models():
 
 
 # =============================================================================
-# Filter renderer: 3 variants produce valid Python with unique markers
+# Filter renderer: all 7 variants produce valid Python with unique markers
 # =============================================================================
 
 
@@ -268,8 +272,10 @@ async def test_chat_refresh_preserves_image_only_models():
     (render_generic_image_filter_source, "openrouter_image_filter_generic"),
     (render_gemini_image_filter_source, "openrouter_image_filter_gemini"),
     (render_sourceful_image_filter_source, "openrouter_image_filter_sourceful"),
+    (render_sourceful_v25_image_filter_source, "openrouter_image_filter_sourceful_v25"),
     (render_recraft_common_image_filter_source, "openrouter_image_filter_recraft"),
     (render_recraft_v3_image_filter_source, "openrouter_image_filter_recraft_v3"),
+    (render_grok_image_filter_source, "openrouter_image_filter_grok"),
 ])
 def test_filter_source_parses_as_valid_python(variant_fn, expected_id_suffix):
     import ast
@@ -283,13 +289,15 @@ def test_filter_specs_have_unique_markers_and_ids():
         build_generic_image_filter_spec(),
         build_gemini_image_filter_spec(),
         build_sourceful_image_filter_spec(),
+        build_sourceful_v25_image_filter_spec(),
         build_recraft_common_image_filter_spec(),
         build_recraft_v3_image_filter_spec(),
+        build_grok_image_filter_spec(),
     ]
     markers = [s.marker for s in specs]
     function_ids = [s.function_id for s in specs]
-    assert len(set(markers)) == 5
-    assert len(set(function_ids)) == 5
+    assert len(set(markers)) == 7
+    assert len(set(function_ids)) == 7
     for spec in specs:
         assert spec.marker.startswith("openrouter_pipe:image_filter:v1:")
 
@@ -323,6 +331,37 @@ def test_sourceful_filter_source_includes_font_inputs_and_super_res():
     assert "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON" in source
     assert "_MAX_FONT_INPUTS = 2" in source
     assert "_MAX_SUPER_RESOLUTION_REFERENCES = 4" in source
+    # The Sourceful Options filter is V2 Pro/Fast ONLY — Riverflow 2.5 gets its
+    # own dedicated filter instead (one Sourceful filter per version, never two)
+    assert r"^sourceful/riverflow-v2-(pro|fast)$" in source
+
+
+def test_sourceful_v25_filter_source_is_the_single_25_filter():
+    """The dedicated 2.5 filter carries fonts (from V2) + all 2.5 additions,
+    and intentionally has NO super-resolution knob (dropped in 2.5)."""
+    source = render_sourceful_v25_image_filter_source()
+    assert "IMAGE_FONT_INPUTS_JSON" in source
+    assert "_MAX_FONT_INPUTS = 2" in source
+    assert "IMAGE_SCORING_PROMPT" in source
+    assert "IMAGE_SCORING_RUBRIC" in source
+    assert "IMAGE_BACKGROUND_MODE" in source
+    assert "IMAGE_BACKGROUND_HEX_COLOR" in source
+    assert "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON" not in source
+    # Model gate is v2.5-exact; hex validation pattern survives f-string escaping
+    assert r"^sourceful/riverflow-v2\.5-(pro|fast)$" in source
+    assert "[0-9a-fA-F]{3}" in source and "[0-9a-fA-F]{6}" in source
+    for mode in ["original", "transparent", "solid"]:
+        assert f'"{mode}"' in source
+
+
+def test_grok_filter_source_includes_grok_ratios_and_count():
+    source = render_grok_image_filter_source()
+    assert "IMAGE_GROK_ASPECT_RATIO" in source
+    assert "IMAGE_GROK_N" in source
+    # Grok-only tall/auto ratios beyond the generic 10
+    for aspect in ["9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto"]:
+        assert f'"{aspect}"' in source
+    assert r"^x-ai/grok-imagine-image-" in source
 
 
 # =============================================================================
@@ -389,18 +428,65 @@ def test_gemini_pattern_matches_flash_image_preview_variants():
     assert not pat.match("google/gemini-2.5-flash-image")  # no -preview
 
 
-def test_sourceful_pattern_matches_pro_and_fast_only():
+def test_sourceful_pattern_matches_v2_pro_and_fast_only():
+    """One Sourceful filter per Riverflow version: the V2 'Sourceful Options'
+    filter must NOT attach to 2.5 (which has its own dedicated filter) nor to
+    hypothetical future versions (they get their own filter when added)."""
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
     pat = FilterManager._SOURCEFUL_IMAGE_PATTERN
     assert pat.match("sourceful/riverflow-v2-pro")
     assert pat.match("sourceful/riverflow-v2-fast")
-    # Forward-compat: future v3 variants
-    assert pat.match("sourceful/riverflow-v3-pro")
+    # Riverflow 2.5 gets the dedicated sourceful_v25 filter instead
+    assert not pat.match("sourceful/riverflow-v2.5-pro")
+    assert not pat.match("sourceful/riverflow-v2.5-fast")
+    # Future versions deliberately excluded — per-version dedicated filters
+    assert not pat.match("sourceful/riverflow-v3-pro")
     # Should NOT match: preview variants, max
     assert not pat.match("sourceful/riverflow-v2-max-preview")
     assert not pat.match("sourceful/riverflow-v2-standard-preview")
     assert not pat.match("sourceful/riverflow-v2-fast-preview")
+
+
+def test_sourceful_v25_pattern_matches_25_pro_and_fast_only():
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    pat = FilterManager._SOURCEFUL_V25_IMAGE_PATTERN
+    assert pat.match("sourceful/riverflow-v2.5-pro")
+    assert pat.match("sourceful/riverflow-v2.5-fast")
+    # V2 must NOT get the 2.5 extras filter
+    assert not pat.match("sourceful/riverflow-v2-pro")
+    assert not pat.match("sourceful/riverflow-v2-fast")
+    # Other versions / preview variants excluded
+    assert not pat.match("sourceful/riverflow-v3-pro")
+    assert not pat.match("sourceful/riverflow-v2.5-fast-preview")
+
+
+def test_grok_imagine_pattern_matches_image_models_only():
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    pat = FilterManager._GROK_IMAGINE_IMAGE_PATTERN
+    assert pat.match("x-ai/grok-imagine-image-quality")
+    # Video sibling and chat models must NOT match
+    assert not pat.match("x-ai/grok-imagine-video")
+    assert not pat.match("x-ai/grok-4")
+
+
+def test_mai_image_matches_no_family_pattern():
+    """microsoft/mai-image-2.5 gets the generic filter ONLY — no documented
+    model-specific params, so no family pattern may claim it."""
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    model_id = "microsoft/mai-image-2.5"
+    for pat in (
+        FilterManager._GEMINI_IMAGE_PATTERN,
+        FilterManager._SOURCEFUL_IMAGE_PATTERN,
+        FilterManager._SOURCEFUL_V25_IMAGE_PATTERN,
+        FilterManager._RECRAFT_COMMON_IMAGE_PATTERN,
+        FilterManager._RECRAFT_V3_IMAGE_PATTERN,
+        FilterManager._GROK_IMAGINE_IMAGE_PATTERN,
+    ):
+        assert not pat.match(model_id), f"{pat.pattern} unexpectedly claims {model_id}"
 
 
 # =============================================================================
@@ -413,6 +499,10 @@ def test_image_help_covers_pure_image_models():
     pure_image_models = [
         "sourceful/riverflow-v2-pro",
         "sourceful/riverflow-v2-fast",
+        "sourceful/riverflow-v2.5-pro",
+        "sourceful/riverflow-v2.5-fast",
+        "microsoft/mai-image-2.5",
+        "x-ai/grok-imagine-image-quality",
         "black-forest-labs/flux.2-pro",
         "bytedance-seed/seedream-4.5",
     ]
@@ -474,6 +564,53 @@ def test_render_image_help_sourceful_knobs_only_for_pro_and_fast():
         "sourceful/riverflow-v2-max-preview", IMAGE_BY_ID["sourceful/riverflow-v2-max-preview"]
     )
     assert "Font inputs (JSON array)" not in max_preview_help
+
+
+def test_render_image_help_sourceful_v25_shows_extras_but_not_super_res():
+    """Riverflow 2.5 help lists fonts + 2.5 extras; super-res (dropped in 2.5)
+    must not appear. V2 help keeps the super-res knob."""
+    for model_id in ["sourceful/riverflow-v2.5-pro", "sourceful/riverflow-v2.5-fast"]:
+        rendered = render_image_help(model_id, IMAGE_BY_ID[model_id])
+        assert "Font inputs (JSON array)" in rendered
+        assert "Scoring prompt" in rendered
+        assert "Scoring rubric" in rendered
+        assert "Background mode" in rendered
+        assert "Background hex color" in rendered
+        assert "Super-resolution references (JSON array)" not in rendered, (
+            f"{model_id} help must not advertise the dropped super-res param"
+        )
+
+    v2_help = render_image_help(
+        "sourceful/riverflow-v2-pro", IMAGE_BY_ID["sourceful/riverflow-v2-pro"]
+    )
+    assert "Super-resolution references (JSON array)" in v2_help
+
+
+def test_render_image_help_mai_image_generic_knobs_only():
+    rendered = render_image_help(
+        "microsoft/mai-image-2.5", IMAGE_BY_ID["microsoft/mai-image-2.5"]
+    )
+    assert "Microsoft: MAI-Image-2.5" in rendered
+    assert "Image aspect ratio" in rendered
+    assert "Image size" in rendered
+    # No family-specific knobs may leak into MAI help
+    for foreign_knob in [
+        "Font inputs (JSON array)",
+        "Scoring prompt",
+        "Image aspect ratio (Gemini extended)",
+        "Strength (image-to-image)",
+        "Image aspect ratio (Grok Imagine)",
+    ]:
+        assert foreign_knob not in rendered
+
+
+def test_render_image_help_grok_shows_grok_knobs():
+    rendered = render_image_help(
+        "x-ai/grok-imagine-image-quality", IMAGE_BY_ID["x-ai/grok-imagine-image-quality"]
+    )
+    assert "xAI: Grok Imagine Image Quality" in rendered
+    assert "Image aspect ratio (Grok Imagine)" in rendered
+    assert "Number of images (1-10)" in rendered
 
 
 def test_render_image_help_generic_knobs_present_for_all_models():
@@ -605,10 +742,11 @@ def test_sourceful_pattern_uses_fullmatch_anchors():
 
 
 def test_register_image_models_full_fixture_exact_pure_image_count():
-    """Exact-count assertion: register_image_models must add EXACTLY the 13
-    pure-image-only models from the fixture (5 Sourceful + 4 Flux + 1 Seedream
-    + 3 Recraft), NOT any multimodal entries (gpt-5-image variants, gemini-image
-    variants, openrouter/auto — those land in chat catalog separately).
+    """Exact-count assertion: register_image_models must add EXACTLY the 17
+    pure-image-only models from the fixture (7 Sourceful + 4 Flux + 1 Seedream
+    + 3 Recraft + 1 Microsoft MAI + 1 Grok Imagine), NOT any multimodal entries
+    (gpt-5-image variants, gemini-image variants, openrouter/auto — those land
+    in chat catalog separately).
     """
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
@@ -620,8 +758,8 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
         norm_id for norm_id, spec in OpenRouterModelRegistry._specs.items()
         if "image_output" in (spec.get("features") or set())
     ]
-    assert len(image_only_specs) == 13, (
-        f"Expected 13 pure-image-only registrations, got {len(image_only_specs)}: {image_only_specs}"
+    assert len(image_only_specs) == 17, (
+        f"Expected 17 pure-image-only registrations, got {len(image_only_specs)}: {image_only_specs}"
     )
 
 
@@ -744,6 +882,132 @@ def test_sourceful_filter_inlet_rejects_excess_super_resolution_references():
 
     with pytest.raises(module.ImageGenerationError, match="super_resolution_references"):
         module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_sourceful_filter_inlet_fully_no_ops_on_v25_models():
+    """One Sourceful filter per Riverflow version: the V2 'Sourceful Options'
+    filter must leave 2.5 bodies completely untouched (model gate), even with
+    malformed valve values — 2.5 models use the dedicated sourceful_v25 filter."""
+    source = render_sourceful_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_gate")
+    user_valves = module.Filter.UserValves(
+        IMAGE_FONT_INPUTS_JSON='[{"font_url": "https://x/f.ttf", "text": "Hi"}]',
+        IMAGE_SUPER_RESOLUTION_REFERENCES_JSON='["https://x/ref.png"]',
+    )
+
+    # V2 — both knobs emitted
+    v2_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
+    module.Filter().inlet(v2_body, __metadata__={}, __user__={"valves": user_valves})
+    assert "font_inputs" in v2_body["image_config"]
+    assert "super_resolution_references" in v2_body["image_config"]
+
+    # 2.5 — the V2 filter does not touch the body at all
+    v25_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
+    module.Filter().inlet(v25_body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in v25_body, (
+        "the V2 Sourceful filter must not attach knobs to Riverflow 2.5 models"
+    )
+
+    # Even malformed JSON is inert on 2.5 (model gate precedes parsing)...
+    bad_valves = module.Filter.UserValves(
+        IMAGE_SUPER_RESOLUTION_REFERENCES_JSON="{not valid json",
+    )
+    inert_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-fast", "messages": []}
+    module.Filter().inlet(inert_body, __metadata__={}, __user__={"valves": bad_valves})
+    assert "image_config" not in inert_body
+
+    # ...while the same malformed value still raises loudly on V2
+    v2_bad: dict[str, Any] = {"model": "sourceful/riverflow-v2-fast", "messages": []}
+    with pytest.raises(module.ImageGenerationError, match="not valid JSON"):
+        module.Filter().inlet(v2_bad, __metadata__={}, __user__={"valves": bad_valves})
+
+
+def test_sourceful_v25_filter_inlet_writes_fonts_and_extras_only_for_25_models():
+    source = render_sourceful_v25_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_runtime")
+    user_valves = module.Filter.UserValves(
+        IMAGE_FONT_INPUTS_JSON='[{"font_url": "https://x/f.ttf", "text": "Hi"}]',
+        IMAGE_SCORING_PROMPT="crisp vector logo",
+        IMAGE_SCORING_RUBRIC="sharp edges, flat colors",
+        IMAGE_BACKGROUND_MODE="solid",
+        IMAGE_BACKGROUND_HEX_COLOR="#0AF",
+    )
+
+    v25_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-fast", "messages": []}
+    module.Filter().inlet(v25_body, __metadata__={}, __user__={"valves": user_valves})
+    assert v25_body["image_config"] == {
+        "font_inputs": [{"font_url": "https://x/f.ttf", "text": "Hi"}],
+        "scoring_prompt": "crisp vector logo",
+        "scoring_rubric": "sharp edges, flat colors",
+        "background_mode": "solid",
+        "background_hex_color": "#0AF",
+    }
+
+    # V2 model with the SAME valves — must be ignored (model gate)
+    v2_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
+    module.Filter().inlet(v2_body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in v2_body
+
+
+def test_sourceful_v25_filter_inlet_rejects_excess_font_inputs():
+    """The dedicated 2.5 filter enforces the same font cardinality cap as V2."""
+    source = render_sourceful_v25_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_fontcap")
+
+    too_many = json.dumps([
+        {"font_url": "https://example.com/1.ttf", "text": "a"},
+        {"font_url": "https://example.com/2.ttf", "text": "b"},
+        {"font_url": "https://example.com/3.ttf", "text": "c"},
+    ])
+    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON=too_many)
+    body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
+
+    with pytest.raises(module.ImageGenerationError, match="font_inputs"):
+        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
+
+
+def test_sourceful_v25_filter_inlet_validates_background_hex():
+    source = render_sourceful_v25_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_hex")
+    body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
+
+    # Hex without solid mode → clear inlet error
+    no_mode = module.Filter.UserValves(IMAGE_BACKGROUND_HEX_COLOR="#FFFFFF")
+    with pytest.raises(module.ImageGenerationError, match="solid"):
+        module.Filter().inlet(dict(body), __metadata__={}, __user__={"valves": no_mode})
+
+    # Malformed hex → clear inlet error
+    bad_hex = module.Filter.UserValves(
+        IMAGE_BACKGROUND_MODE="solid", IMAGE_BACKGROUND_HEX_COLOR="red"
+    )
+    with pytest.raises(module.ImageGenerationError, match="#RGB or #RRGGBB"):
+        module.Filter().inlet(dict(body), __metadata__={}, __user__={"valves": bad_hex})
+
+    # transparent mode alone is valid (no hex required)
+    transparent = module.Filter.UserValves(IMAGE_BACKGROUND_MODE="transparent")
+    out_body = dict(body)
+    module.Filter().inlet(out_body, __metadata__={}, __user__={"valves": transparent})
+    assert out_body["image_config"] == {"background_mode": "transparent"}
+
+
+def test_grok_filter_inlet_writes_grok_knobs_only_for_grok_models():
+    source = render_grok_image_filter_source()
+    module = _load_filter_from_source(source, "test_image_filter_grok_runtime")
+    user_valves = module.Filter.UserValves(IMAGE_GROK_ASPECT_RATIO="9:19.5", IMAGE_GROK_N=4)
+
+    grok_body: dict[str, Any] = {"model": "x-ai/grok-imagine-image-quality", "messages": []}
+    module.Filter().inlet(grok_body, __metadata__={}, __user__={"valves": user_valves})
+    assert grok_body["image_config"] == {"aspect_ratio": "9:19.5", "n": 4}
+
+    # Non-Grok model with the SAME valves — must be ignored (model gate)
+    other_body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
+    module.Filter().inlet(other_body, __metadata__={}, __user__={"valves": user_valves})
+    assert "image_config" not in other_body
+
+    # n=0 is the skip sentinel; empty ratio skipped too
+    defaults_body: dict[str, Any] = {"model": "x-ai/grok-imagine-image-quality", "messages": []}
+    module.Filter().inlet(defaults_body, __metadata__={}, __user__={"valves": module.Filter.UserValves()})
+    assert "image_config" not in defaults_body
 
 
 def test_sourceful_filter_inlet_rejects_invalid_json():

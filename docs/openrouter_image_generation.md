@@ -1,6 +1,6 @@
 # OpenRouter Image Generation
 
-This pipe exposes OpenRouter's seventeen native image-output models as
+This pipe exposes OpenRouter's thirty-one native image-output models as
 selectable chat models in Open WebUI. You pick an image model in the chat
 header (just like any other LLM), type a prompt, and the pipe submits a
 chat-completions request with `modalities: ["image"]` (or
@@ -54,9 +54,14 @@ will be removed from the dropdown immediately.
    separate menu.
 3. (Optional) Open the Integrations menu (puzzle-piece icon below the
    prompt input). The `OR Image Filter` toggle is auto-attached and
-   default-on. For Gemini Flash Image Preview models, you'll also see
-   `Gemini Options`. For Sourceful Riverflow Pro/Fast models, you'll
-   see `Sourceful Options`. All applicable filters are default-on.
+   default-on. Model families with extra parameters also get their own
+   filter rows: `Gemini Options` (Gemini Flash Image Preview),
+   `Sourceful Options` (Riverflow V2 Pro/Fast), `Sourceful V2.5
+   Options` (Riverflow 2.5 Pro/Fast — the single Sourceful filter for
+   2.5, carrying fonts plus the 2.5-only knobs), `Recraft Options`
+   (all Recraft models), `Recraft V3 Extras` (Recraft V3 only), and
+   `Grok Imagine Options` (xAI Grok Imagine image models). All
+   applicable filters are default-on.
 4. (Optional) Click any filter's settings icon to set per-message
    overrides — aspect ratio, image size, custom fonts (Sourceful), etc.
 5. Type your prompt and press send.
@@ -82,7 +87,7 @@ Out-of-the-box defaults are sensible for most deployments:
 
 ```
 ENABLE_OPENROUTER_IMAGE_GENERATION = True
-AUTO_INSTALL_IMAGE_FILTERS = True       # creates the 3 filter rows
+AUTO_INSTALL_IMAGE_FILTERS = True       # creates the 7 filter rows
 AUTO_ATTACH_IMAGE_FILTERS  = True       # attaches each filter to its models
 AUTO_DEFAULT_IMAGE_FILTERS = True       # filter is on-by-default per chat
 ```
@@ -93,8 +98,10 @@ If the per-model filters do not appear in the Integrations menu, check:
   `True`.
 - The pipe has been called at least once with a logged-in user (the
   filters install during `pipes()` warmup).
-- Open WebUI Admin → Functions lists three entries:
-  `OR Image Filter`, `Gemini Options`, `Sourceful Options`.
+- Open WebUI Admin → Functions lists seven entries:
+  `OR Image Filter`, `Gemini Options`, `Sourceful Options`,
+  `Sourceful V2.5 Options`, `Recraft Options`, `Recraft V3 Extras`,
+  `Grok Imagine Options`.
 
 **Access control for non-admin users.** Pure-image-only models (FLUX,
 Sourceful Riverflow non-multimodal, Seedream) are inserted PRIVATE by
@@ -137,8 +144,11 @@ TTL is shared with the video and chat catalogs.
 | `google/gemini-3-pro-image-preview` | Google: Gemini 3 Pro Image (Preview) | text + image | aspect_ratio, image_size | Premium Gemini 3 with image |
 | `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | + extended ratios (1:4/4:1/1:8/8:1), 0.5K size | Cost-optimized; 0.5K is ~50% cheaper than 1K |
 | `openrouter/auto` | OpenRouter: Auto (Image Routing) | varies | aspect_ratio, image_size | Auto-routes to best image model |
-| `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | + font_inputs (max 2, +$0.03 each), super_resolution_references (max 4, +$0.20 each) | Premium Sourceful tier |
-| `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | + font_inputs, super_resolution_references | Faster, cheaper Sourceful |
+| `microsoft/mai-image-2.5` | Microsoft: MAI-Image-2.5 | image only | aspect_ratio (7 of the 10 standard ratios), image_size | $5/M tokens via Azure AI Foundry |
+| `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | + font_inputs (max 2, +$0.03 each), super_resolution_references (max 4, +$0.20 each — V2 only) | Premium Sourceful tier |
+| `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | + font_inputs, super_resolution_references (V2 only) | Faster, cheaper Sourceful |
+| `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | + font_inputs; scoring_prompt, scoring_rubric, background_mode, background_hex_color (2.5 extras). NO super_resolution_references | From $0.13/image (finalized per job) |
+| `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | + font_inputs; scoring_prompt, scoring_rubric, background_mode, background_hex_color (2.5 extras). NO super_resolution_references | From $0.019/image (finalized per job) |
 | `sourceful/riverflow-v2-max-preview` | Sourceful: Riverflow V2 Max (Preview) | image only | aspect_ratio, image_size | Preview tier — specs may shift |
 | `sourceful/riverflow-v2-standard-preview` | Sourceful: Riverflow V2 Standard (Preview) | image only | aspect_ratio, image_size | Entry-tier Sourceful preview |
 | `sourceful/riverflow-v2-fast-preview` | Sourceful: Riverflow V2 Fast (Preview) | image only | aspect_ratio, image_size | Fast preview tier |
@@ -150,6 +160,15 @@ TTL is shared with the video and chat catalogs.
 | `recraft/recraft-v3` | Recraft: Recraft V3 | image only | + strength, rgb_colors, background_rgb_color, **style** (V3 only), **text_layout** (V3 only) | Typography champion; only model with text-at-position |
 | `recraft/recraft-v4` | Recraft: Recraft V4 | image only | + strength, rgb_colors, background_rgb_color | Design-taste rebuild; 1024x1024; ~10s/image |
 | `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | + strength, rgb_colors, background_rgb_color | Print-ready 2048x2048 (~30s/image); $0.25/image |
+| `recraft/recraft-v4-vector` | Recraft: Recraft V4 Vector | image only (SVG) | + strength, rgb_colors, background_rgb_color | True SVG output; scales without quality loss |
+| `recraft/recraft-v4-pro-vector` | Recraft: Recraft V4 Pro Vector | image only (SVG) | + strength, rgb_colors, background_rgb_color | High-fidelity SVG finals |
+| `recraft/recraft-v4.1` | Recraft: Recraft V4.1 | image only | + strength, rgb_colors, background_rgb_color | Aesthetic refresh of V4; 1024x1024; ~10s/image |
+| `recraft/recraft-v4.1-pro` | Recraft: Recraft V4.1 Pro | image only | + strength, rgb_colors, background_rgb_color | Print-ready 2048x2048 with V4.1 aesthetics |
+| `recraft/recraft-v4.1-vector` | Recraft: Recraft V4.1 Vector | image only (SVG) | + strength, rgb_colors, background_rgb_color | V4.1 aesthetics, SVG output |
+| `recraft/recraft-v4.1-pro-vector` | Recraft: Recraft V4.1 Pro Vector | image only (SVG) | + strength, rgb_colors, background_rgb_color | Highest-fidelity SVG finals |
+| `recraft/recraft-v4.1-utility` | Recraft: Recraft V4.1 Utility | image only | + strength, rgb_colors, background_rgb_color | General-purpose (non-aesthetic) tier; 1024x1024 |
+| `recraft/recraft-v4.1-utility-pro` | Recraft: Recraft V4.1 Utility Pro | image only | + strength, rgb_colors, background_rgb_color | General-purpose at 2048x2048 |
+| `x-ai/grok-imagine-image-quality` | xAI: Grok Imagine Image Quality | image only | + Grok aspect_ratio set (14 values incl. 9:19.5/9:20/1:2/auto), n (1-10 images per request) | $0.01/image |
 
 Pick model selection rules of thumb:
 
@@ -157,17 +176,28 @@ Pick model selection rules of thumb:
   (the only model with `text_layout` for explicit placement; renders
   full sentences/paragraphs cleanly).
 - **Custom typography (font files) on an image** → Sourceful Riverflow
-  V2 Pro/Fast (only models with `font_inputs`).
-- **Print-ready high-resolution finals** → Recraft V4 Pro (2048x2048
-  with design-taste output) or FLUX.2 Max (4K).
+  V2 or V2.5 Pro/Fast (only models with `font_inputs`).
+- **Print-ready high-resolution finals** → Recraft V4/V4.1 Pro
+  (2048x2048 with design-taste output) or FLUX.2 Max (4K).
 - **Image-to-image super-resolution** → Sourceful Riverflow V2 Pro/Fast
-  (only models with `super_resolution_references`).
+  ONLY (`super_resolution_references` was dropped in Riverflow 2.5).
+- **Transparent or solid-color backgrounds** → Riverflow 2.5 Pro/Fast
+  (`background_mode` original/transparent/solid + `background_hex_color`).
+- **Self-scored candidate selection (model picks its best attempt)** →
+  Riverflow 2.5 Pro/Fast (`scoring_prompt` + `scoring_rubric`).
+- **Vector (SVG) output for logos/icons** → Recraft V4/V4.1 Vector
+  variants (true `<svg>`, scales infinitely).
 - **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → Gemini 3.1
   Flash Image Preview (only model with extended aspect ratios).
+- **Tall phone-screen ratios (9:19.5, 9:20) or auto-ratio** → xAI Grok
+  Imagine Image Quality (14-value Grok ratio set).
+- **Multiple variations per request** → Grok Imagine Image Quality
+  (`n` up to 10 images per call; cost scales linearly).
 - **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (~50%
-  cheaper than 1K), FLUX.2 Klein 4B, or Recraft V4.
-- **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2 Pro,
-  Gemini 3 Pro Image, Recraft V4 Pro.
+  cheaper than 1K), FLUX.2 Klein 4B, Riverflow V2.5 Fast (from
+  $0.019/image), or Recraft V4.1 Utility.
+- **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2.5 Pro,
+  Gemini 3 Pro Image, Recraft V4.1 Pro, or Microsoft MAI-Image-2.5.
 - **Color-palette-driven design (corporate brand colors)** → any
   Recraft variant (`rgb_colors` + `background_rgb_color`).
 - **Want commentary alongside the image (chat-style)** → multimodal
@@ -186,7 +216,7 @@ handles differently:
 ### Pure-image-only
 
 These models output ONLY images, no text. The orchestrator injects
-`modalities: ["image"]` into the request body. Examples: all 5 Sourceful
+`modalities: ["image"]` into the request body. Examples: all 7 Sourceful
 Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 
 - **Catalog source**: discovered via `/api/v1/models?output_modalities=image`
@@ -257,8 +287,8 @@ Key behavior:
 ## Per-model deep dive
 
 This section is the same content the in-chat `help` command renders, in
-written form. Skip to a model that matches your use case, or read all
-seventeen to get a feel for the catalog. All curated entries live in
+written form. Skip to a model that matches your use case, or read them
+all to get a feel for the catalog. All curated entries live in
 [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
 in `_IMAGE_PER_MODEL_HELP_DATA`.
 
@@ -363,6 +393,26 @@ OpenRouter to pick rather than committing to a specific provider.
 - Standard knob set applies; provider-specific knobs (Gemini 0.5K,
   Sourceful font_inputs) likely ignored if not the selected provider.
 
+### Microsoft: MAI-Image-2.5
+
+> **id**: `microsoft/mai-image-2.5` · **pure-image-only, generic filter only**
+
+Microsoft's high-quality image generation model served via Azure AI
+Foundry — photorealistic and artistic output from text prompts with
+optional reference-image input. Best for general-purpose photoreal
+work on Azure-backed infrastructure with token-based pricing ($5/M
+tokens) instead of per-image billing.
+
+- Supports 7 aspect ratios (1:1 default, 4:3, 3:4, 16:9, 9:16, 3:2,
+  2:3) — all available through the generic aspect ratio knob;
+  4:5/5:4/21:9 are NOT supported by this model.
+- Token-priced ($5/M) rather than per-image — long prompts cost
+  proportionally more.
+- Multimodal input: accepts reference images alongside the text prompt
+  for editing/guidance.
+- No model-specific extensions — the generic filter covers everything
+  this model accepts.
+
 ### Sourceful: Riverflow V2 Pro
 
 > **id**: `sourceful/riverflow-v2-pro` · **pure-image-only + Sourceful Options filter**
@@ -396,6 +446,48 @@ reduced cost. Best for iteration before committing to a Pro render.
   Pro for finals.
 - Same Sourceful-specific knobs (`font_inputs`,
   `super_resolution_references`) via dedicated filter.
+
+### Sourceful: Riverflow V2.5 Pro
+
+> **id**: `sourceful/riverflow-v2.5-pro` · **pure-image-only + Sourceful V2.5 Options filter**
+
+The most powerful variant of Sourceful's Riverflow 2.5 lineup — a
+unified text-to-image and image-to-image family. Best for top-tier
+control and quality-sensitive outputs: brand assets, marketing finals,
+and work that benefits from the new 2.5 self-scoring and background
+controls. From $0.13/image (finalized per job at completion).
+
+- PURE-image-only — does NOT output text.
+- ONE dedicated filter — Sourceful V2.5 Options — carries every 2.5
+  knob: font_inputs (max 2, +$0.03/font, carried over from V2) plus
+  scoring_prompt + scoring_rubric (self-scored candidate selection)
+  and background_mode (original/transparent/solid) +
+  background_hex_color.
+- super_resolution_references is NOT supported — Riverflow 2.5 dropped
+  it (V2 Pro/Fast only); the knob does not exist on 2.5 models.
+- Supports reasoning effort up to xhigh (low/medium/high/xhigh).
+- Pricing is dynamic — the from-$0.13/image floor is finalized per job
+  based on billable processing.
+
+### Sourceful: Riverflow V2.5 Fast
+
+> **id**: `sourceful/riverflow-v2.5-fast` · **pure-image-only + Sourceful V2.5 Options filter**
+
+The speed-optimized variant of Sourceful's Riverflow 2.5 lineup — best
+for production deployments and latency-critical workflows. Same
+unified text-to-image and image-to-image family and the same 2.5
+extras as Pro at a fraction of the cost. From $0.019/image (finalized
+per job at completion).
+
+- PURE-image-only — does NOT output text.
+- Use Fast for iteration and high-volume production; switch to V2.5
+  Pro for quality-sensitive finals.
+- ONE dedicated filter — Sourceful V2.5 Options — with font_inputs
+  plus the 2.5 extras (scoring_prompt, scoring_rubric,
+  background_mode, background_hex_color).
+- super_resolution_references is NOT supported (dropped in 2.5); the
+  knob does not exist on 2.5 models.
+- Supports reasoning effort low/medium/high (xhigh is Pro-only).
 
 ### Sourceful: Riverflow V2 Max (Preview)
 
@@ -563,6 +655,137 @@ anatomy/realism in complex compositions.
 - Image-to-image: only one input image supported.
 - Same human-subject limitations as V4.
 
+### Recraft: Recraft V4 Vector
+
+> **id**: `recraft/recraft-v4-vector` · **pure-image-only (SVG) + Recraft Options filter**
+
+Vector (SVG) variant of V4 — true `<svg>` output destined for logos,
+icon sets, and flat illustrations that need to scale and edit
+downstream. OpenRouter returns the SVG inline as a
+`data:image/svg+xml;base64,...` URL; OWUI renders it natively.
+
+- Output is SVG, not PNG/JPEG — scales infinitely without quality loss.
+- Prefer simple, graphic prompts (logos, icons, flat illustrations)
+  over photoreal subjects.
+- `rgb_colors`/`background_rgb_color` are sent through, but how the
+  vector model honors them is undocumented — verify visually.
+- `strength` image-to-image works but input is rasterised internally;
+  output is SVG either way.
+
+### Recraft: Recraft V4 Pro Vector
+
+> **id**: `recraft/recraft-v4-pro-vector` · **pure-image-only (SVG) + Recraft Options filter**
+
+High-fidelity SVG counterpart to V4 Pro — ~2K-equivalent detail in
+true vector output. Use V4 Vector for iteration; V4 Pro Vector for
+final logo/brand deliverables.
+
+- Same SVG caveats as V4 Vector (graphic prompts, undocumented color
+  steering, rasterised i2i input).
+- Higher fidelity, slower, costlier than V4 Vector — reserve for finals.
+
+### Recraft: Recraft V4.1
+
+> **id**: `recraft/recraft-v4.1` · **pure-image-only + Recraft Options filter**
+
+V4.1 is Recraft's May 2026 aesthetic refresh of V4 — same 1024x1024
+raster output, same image_config surface, but tuned for stronger
+composition, color cohesion, and visual polish. Best for marketing
+assets, social posts, and hero imagery where V4 felt
+almost-but-not-quite-right aesthetically. Same speed envelope as V4
+(~10s/image).
+
+- PURE-image-only.
+- Same knobs as V4 (strength + rgb_colors + background_rgb_color);
+  NO style or text_layout (V3 ONLY).
+- Drop-in successor to V4 — try V4.1 first; fall back to V4 if its
+  aesthetic doesn't suit a specific brand.
+- Image-to-image: only one input image supported.
+- For general-purpose / cost-sensitive work without aesthetic emphasis,
+  prefer the V4.1 Utility variants.
+
+### Recraft: Recraft V4.1 Pro
+
+> **id**: `recraft/recraft-v4.1-pro` · **pure-image-only + Recraft Options filter**
+
+High-resolution counterpart to V4.1 — same aesthetic tuning at
+2048x2048 (~4 MP), ~30s/image. Built for print-ready aesthetic work:
+magazine layouts, posters, billboards, editorial illustration. Use
+V4.1 for iteration, V4.1 Pro for finals.
+
+- PURE-image-only; same knob set as V4.1.
+- ~3x slower than V4.1 due to higher resolution — reserve for finals.
+- Same human-subject limitations as the V4 family.
+
+### Recraft: Recraft V4.1 Vector
+
+> **id**: `recraft/recraft-v4.1-vector` · **pure-image-only (SVG) + Recraft Options filter**
+
+Vector (SVG) variant of V4.1 — V4.1's aesthetic tuning with ~1K
+equivalent detail and true `<svg>` output. Best for aesthetic-driven
+logos, icon sets, and flat illustrations destined for vector editing.
+Faster/cheaper than V4.1 Pro Vector for iteration.
+
+- Same SVG caveats as the V4 vector variants.
+- Use V4.1 Vector for iteration; V4.1 Pro Vector for finals.
+
+### Recraft: Recraft V4.1 Pro Vector
+
+> **id**: `recraft/recraft-v4.1-pro-vector` · **pure-image-only (SVG) + Recraft Options filter**
+
+The highest-fidelity vector variant — V4.1 aesthetics, ~2K equivalent
+detail, true SVG. Best for high-polish logos, editorial icon sets, and
+brand assets that must scale and edit downstream.
+
+- Same SVG caveats as the other vector variants.
+- Try V4.1 Pro Vector first for final vector work; it carries the same
+  aesthetic advantage over V4 Pro Vector that V4.1 has over V4.
+
+### Recraft: Recraft V4.1 Utility
+
+> **id**: `recraft/recraft-v4.1-utility` · **pure-image-only + Recraft Options filter**
+
+Recraft's general-purpose V4.1 variant — drops the aesthetic-tuning
+bias in exchange for broader subject coverage and cheaper generation.
+Best for spot illustrations, diagrams, placeholder/stock imagery, and
+any work where "on-brand aesthetics" is not the goal. 1024x1024.
+
+- Pick Utility over regular V4.1 when you need versatility, not polish.
+- Same knob set as V4.1; NO style or text_layout (V3 ONLY).
+- Switch to regular V4.1 (aesthetic) or V4.1 Pro (print) when output
+  quality matters.
+
+### Recraft: Recraft V4.1 Utility Pro
+
+> **id**: `recraft/recraft-v4.1-utility-pro` · **pure-image-only + Recraft Options filter**
+
+High-resolution counterpart to V4.1 Utility — 2048x2048 (~4 MP)
+general-purpose raster output. Use for general-purpose finals where
+aesthetic polish is not the goal; otherwise prefer V4.1 Pro.
+
+- ~3x slower than V4.1 Utility due to higher resolution.
+- Same knob set and limitations as the rest of the V4.1 family.
+
+### xAI: Grok Imagine Image Quality
+
+> **id**: `x-ai/grok-imagine-image-quality` · **pure-image-only + Grok Imagine Options filter**
+
+xAI's fast, high-fidelity image generation and editing model. Accepts
+text prompts and optional reference images; produces photorealistic
+outputs at 1K or 2K. Best for photoreal scenes, compositional control,
+and workflows that need Grok-only tall phone-screen aspect ratios
+(9:19.5, 9:20, 1:2, 2:1) or an `auto` ratio that lets the model pick
+frame shape from the prompt.
+
+- Use the Grok aspect ratio knob (14 values, including phone-tall and
+  `auto`) for Grok-specific frames; the generic knob's 10-value set
+  still works but won't expose the wide/tall variants.
+- `n` fans out 1-10 variations per request — cost scales linearly.
+  Pick n=1 (default) for iteration; bump to 3-5 for exploration.
+- Multimodal input: pair the prompt with reference images for
+  editing/style transfer.
+- Charged per image output ($0.01/image at OpenRouter's listed rate).
+
 ---
 
 ## Per-model parameter reference
@@ -586,22 +809,46 @@ matching `^google/gemini-.*flash-image.*-preview$`.
 | Image aspect ratio (Gemini extended) | Literal | `""`, `1:4`, `4:1`, `1:8`, `8:1` | Ultrawide/tall layouts. Overrides generic aspect_ratio when set. |
 | Image size (Gemini-only 0.5K) | Literal | `""`, `0.5K` | Low-res tier (~50% cheaper than 1K). Overrides generic image_size when set. |
 
-### Sourceful Riverflow Pro/Fast only (Sourceful Options filter)
+### Riverflow V2 Pro/Fast only (Sourceful Options filter)
 
 Adds custom font rendering + image-to-image super-resolution. Only
-attached to models matching
-`^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$`.
+attached to models matching `^sourceful/riverflow-v2-(pro|fast)$`
+(Riverflow 2.5 has its own dedicated filter below).
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Font inputs (JSON array) | str (JSON) | `[{"font_url": "...", "text": "..."}]` | Max 2, +$0.03 each. Validated at inlet (rejects 3+). |
-| Super-resolution references (JSON array) | str (JSON) | `["url1", "url2", ...]` | Max 4, +$0.20 each. Image-to-image only (requires input images). Validated at inlet. |
+| Font inputs (JSON array) | str (JSON) | `[{"font_url": "...", "text": "..."}]` | Max 2, +$0.03 each. Validated at inlet (rejects 3+). V2 and 2.5. |
+| Super-resolution references (JSON array) | str (JSON) | `["url1", "url2", ...]` | Max 4, +$0.20 each. Image-to-image only (requires input images). Validated at inlet. V2-only parameter (2.5 dropped it). |
 
 **Pre-validation:** the Sourceful filter rejects oversized arrays
 **before** the HTTP call, surfacing a clear `ImageGenerationError`
 instead of an opaque 400 from the provider.
 
-### Recraft V3 / V4 / V4 Pro (Recraft Options filter)
+### Riverflow 2.5 Pro/Fast only (Sourceful V2.5 Options filter)
+
+The single Sourceful filter for 2.5 models — fonts carried over from
+V2 plus the params 2.5 introduced. Only attached to models matching
+`^sourceful/riverflow-v2\.5-(pro|fast)$`.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Font inputs (JSON array) | str (JSON) | `[{"font_url": "...", "text": "..."}]` | Max 2, +$0.03 each. Validated at inlet (rejects 3+). Same knob as V2. |
+| Scoring prompt | str | free text | Instruction the model uses to self-score candidates before returning the best one. |
+| Scoring rubric | str | free text | Rubric describing what a good output looks like; pairs with the scoring prompt. |
+| Background mode | Literal | `""`, `original`, `transparent`, `solid` | `transparent` removes the background (PNG alpha); `solid` fills with the hex color below. |
+| Background hex color | str | `#RGB` / `#RRGGBB` | Requires Background mode `solid`. Validated at inlet (format + mode pairing). |
+
+### Grok Imagine image models only (Grok Imagine Options filter)
+
+Adds the Grok-specific 14-value aspect-ratio set and multi-image
+count. Only attached to models matching `^x-ai/grok-imagine-image-`.
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Image aspect ratio (Grok Imagine) | Literal | `""`, 1:1, 3:4, 4:3, 9:16, 16:9, 2:3, 3:2, 9:19.5, 19.5:9, 9:20, 20:9, 1:2, 2:1, auto | Overrides the generic aspect_ratio when set. |
+| Number of images (1-10) | int | `0`–`10` | `0` = skip (model default 1). Cost scales linearly per image. |
+
+### Recraft (all variants — Recraft Options filter)
 
 Adds image-to-image deviation control + color palette steering. Only
 attached to models matching `^recraft/recraft-`.
@@ -652,12 +899,36 @@ treated as "leave model default" (skipped from the request).
 | `IMAGE_ASPECT_RATIO_EXTENDED` | `Literal["", "1:4", "4:1", "1:8", "8:1"]` | `""` | `image_config.aspect_ratio` (overrides generic) |
 | `IMAGE_SIZE_GEMINI` | `Literal["", "0.5K"]` | `""` | `image_config.image_size` (overrides generic) |
 
-### Sourceful Options filter (Sourceful Riverflow Pro/Fast only)
+### Sourceful Options filter (Riverflow V2 Pro/Fast only)
+
+Riverflow 2.5 models do NOT get this filter — they use the dedicated
+`Sourceful V2.5 Options` filter below (one Sourceful filter per
+version, never two).
 
 | Identifier | Type | Default | Maps to body field |
 |------------|------|---------|---------------------|
 | `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` |
-| `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` |
+| `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` (V2-only parameter — Riverflow 2.5 dropped it) |
+
+### Sourceful V2.5 Options filter (Riverflow 2.5 Pro/Fast only)
+
+The single Sourceful filter for 2.5 models: fonts carried over from
+V2 plus everything 2.5 added. Intentionally no super-resolution knob.
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` |
+| `IMAGE_SCORING_PROMPT` | `str` | `""` | `image_config.scoring_prompt` |
+| `IMAGE_SCORING_RUBRIC` | `str` | `""` | `image_config.scoring_rubric` |
+| `IMAGE_BACKGROUND_MODE` | `Literal["", "original", "transparent", "solid"]` | `""` | `image_config.background_mode` |
+| `IMAGE_BACKGROUND_HEX_COLOR` | `str` (`#RGB` or `#RRGGBB`) | `""` | `image_config.background_hex_color` (requires `IMAGE_BACKGROUND_MODE="solid"`; validated at inlet) |
+
+### Grok Imagine Options filter (xAI Grok Imagine image models only)
+
+| Identifier | Type | Default | Maps to body field |
+|------------|------|---------|---------------------|
+| `IMAGE_GROK_ASPECT_RATIO` | `Literal["", "1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto"]` | `""` | `image_config.aspect_ratio` (overrides generic) |
+| `IMAGE_GROK_N` | `int` (`ge=0, le=10`) | `0` (skip sentinel) | `image_config.n` |
 
 ### Recraft Options filter (all Recraft models)
 
@@ -696,11 +967,19 @@ write wins (per-key overwrite). This is intentional: the more-specific
 filter overrides the generic.
 
 **Model gates on extended filters:** the Gemini Options, Sourceful
-Options, Recraft Options, and Recraft V3 Extras filters all check
-`body.model` against their respective regex patterns at inlet time.
-If the filter is manually attached to a non-matching model, the inlet
-returns the body unchanged (defensive — protects against operator
-misconfiguration).
+Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras,
+and Grok Imagine Options filters all check `body.model` against their
+respective regex patterns at inlet time. If the filter is manually
+attached to a non-matching model, the inlet returns the body unchanged
+(defensive — protects against operator misconfiguration).
+
+**One Sourceful filter per Riverflow version:** the Sourceful Options
+filter attaches to V2 Pro/Fast only (`^sourceful/riverflow-v2-(pro|fast)$`)
+and the Sourceful V2.5 Options filter to 2.5 Pro/Fast only — never
+both on one model. 2.5 dropped `super_resolution_references` and added
+the scoring/background params, so a shared filter would expose dead
+knobs; instead each version's filter carries exactly the knobs its
+models accept (fonts appear in both).
 
 **Recraft V3 Extras silent no-op on V4/V4 Pro:** per OpenRouter docs
 V4 and V4 Pro do NOT support `style` or `text_layout`. If a user has
@@ -724,6 +1003,8 @@ names are intentionally short to fit OWUI's narrow UI:
 | `openrouter_image_filter_sourceful` | `Sourceful Options` | Font inputs (JSON array), Super-resolution references (JSON array) |
 | `openrouter_image_filter_recraft` | `Recraft Options` | Strength (image-to-image), RGB color palette (JSON array), Background RGB color (JSON array) |
 | `openrouter_image_filter_recraft_v3` | `Recraft V3 Extras` | Recraft style, Text layout (JSON array) |
+| `openrouter_image_filter_sourceful_v25` | `Sourceful V2.5 Options` | Font inputs (JSON array), Scoring prompt, Scoring rubric, Background mode, Background hex color |
+| `openrouter_image_filter_grok` | `Grok Imagine Options` | Image aspect ratio (Grok Imagine), Number of images (1-10) |
 
 ### Filter installation (admin)
 
@@ -862,8 +1143,8 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False removes pure-image-only models from `pipes()` output AND clears them from OWUI's catalog (`register_image_models([])` runs once on the next cycle). Multimodal models stay since they're in the chat catalog. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install the three filter rows (generic, Gemini, Sourceful) in OWUI Functions table on `pipes()`. |
-| `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach the appropriate filter combination to each image-output model: generic to all, Gemini to gemini-flash-image-preview models, Sourceful to riverflow Pro/Fast. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install the seven filter rows (generic, Gemini, Sourceful, Sourceful V2.5, Recraft, Recraft V3, Grok Imagine) in OWUI Functions table on `pipes()`. |
+| `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach the appropriate filter combination to each image-output model: generic to all, Gemini to gemini-flash-image-preview models, Sourceful to Riverflow V2 Pro/Fast, Sourceful V2.5 to Riverflow 2.5 Pro/Fast (one Sourceful filter per version), Recraft to all Recraft models, Recraft V3 to recraft-v3 only, Grok Imagine to grok-imagine-image models. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
 
 Related (existing) valves:
@@ -940,11 +1221,13 @@ completed since install. Check:
 
 ### `Sourceful Options` filter attached but knobs ignored on a non-Sourceful model
 
-The Sourceful filter has a model gate — if the body's `model` doesn't
-match `^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$`, the inlet
-returns the body unchanged. This is defensive behavior protecting
-against operator misconfiguration. To use the knobs, you must be on a
-Sourceful Pro or Fast model.
+The Sourceful filters have model gates — `Sourceful Options` only
+fires when the body's `model` matches
+`^sourceful/riverflow-v2-(pro|fast)$`, and `Sourceful V2.5 Options`
+only when it matches `^sourceful/riverflow-v2\.5-(pro|fast)$`; the
+inlet otherwise returns the body unchanged. This is defensive behavior
+protecting against operator misconfiguration. To use the knobs, you
+must be on the matching Riverflow version (Pro or Fast).
 
 Same applies to `Gemini Options` — only fires for
 `^google/gemini-.*flash-image.*-preview$`.
@@ -1061,11 +1344,12 @@ Key files:
 - [`integrations/image_client.py`](../open_webui_openrouter_pipe/integrations/image_client.py)
   — HTTP client for `/api/v1/models?output_modalities=image`.
 - [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
-  — `_IMAGE_PER_MODEL_HELP_DATA` (17 entries), `_IMAGE_KNOB_GATE`,
+  — `_IMAGE_PER_MODEL_HELP_DATA` (32 entries), `_IMAGE_KNOB_GATE`,
   `render_image_help()`.
 - [`filters/image_filter_renderer.py`](../open_webui_openrouter_pipe/filters/image_filter_renderer.py)
-  — generates filter source code for the three variants
-  (generic, Gemini Options, Sourceful Options).
+  — generates filter source code for the seven variants
+  (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options,
+  Recraft Options, Recraft V3 Extras, Grok Imagine Options).
 - [`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py)
   — installs filter rows in OWUI Functions table; returns
   per-model filter id mapping.

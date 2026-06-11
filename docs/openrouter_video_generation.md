@@ -1,6 +1,6 @@
 # OpenRouter Video Generation
 
-This pipe exposes OpenRouter's eleven async video-generation models as
+This pipe exposes OpenRouter's fourteen async video-generation models as
 selectable chat models in Open WebUI. You pick a video model in the chat
 header (just like any other LLM), type a prompt, and the pipe submits a
 job, polls until completion, downloads the generated video into Open WebUI
@@ -91,7 +91,7 @@ If the per-model filters do not appear in the Integrations menu, check:
   `True`.
 - The pipe has been called at least once with a logged-in user (the
   filters install during `pipes()` warmup).
-- OpenRouter Admin → Functions lists 11+ entries named ` Veo 3.1 Lite`,
+- OpenRouter Admin → Functions lists 14 entries named ` Veo 3.1 Lite`,
   ` Seedance 2.0`, etc. (note the leading space — that's intentional, see
   [The chat filter UI](#the-chat-filter-ui-uservalves)).
 
@@ -132,24 +132,26 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Token-based, $0.000007/token |
 | `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; ~30% cheaper; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | $0.0000056/token |
 | `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. Longest clips (up to 20s). **Text-only — no frame images.** | ✅ | ❌ | none | $0.30/s @ 720p, $0.50/s @ 1080p |
+| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. **Silent — no audio.** | ❌ | ❌ | first only | $0.05/s @ 480p, $0.07/s @ 720p (+$0.002/input image) |
 
 Pick model selection rules of thumb:
 
-- **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk).
+- **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk), Grok Imagine Video (from $0.05/s).
 - **Hero shot for client work** → Veo 3.1 (full) or Seedance 2.0.
 - **Multi-shot story with consistent characters** → Wan 2.7 or Seedance 2.0.
 - **Dialogue / lip-sync from a reference voice** → Wan 2.7 (audio passthrough), Seedance 1.5 Pro.
 - **Physics realism / human motion** → Sora 2 Pro, Hailuo 2.3.
 - **Longest clip** → Sora 2 Pro (20s).
-- **No audio needed (cheapest path)** → Hailuo 2.3, or set `Audio = off` on Veo Lite.
+- **Exact clip length (e.g. precisely 7s)** → Grok Imagine Video (only model with 1-second duration granularity; others use fixed tiers).
+- **No audio needed (cheapest path)** → Hailuo 2.3, Grok Imagine Video, or set `Audio = off` on Veo Lite.
 
 ---
 
 ## Per-model deep dive
 
 This section is the same content the in-chat `help` command renders, in
-written form. Skip to a model that matches your use case, or read all
-eleven to get a feel for the catalog. Every paragraph here is grounded
+written form. Skip to a model that matches your use case, or read them
+all to get a feel for the catalog. Every paragraph here is grounded
 in the OpenRouter catalog metadata + targeted public research on each
 model's reputation, papers, and signature features.
 
@@ -492,6 +494,35 @@ full 1080p.
   (resolution drives the tier), so treat them as soft hints rather than
   guaranteed switches.
 
+### xAI: Grok Imagine Video
+
+> **id**: `x-ai/grok-imagine-video`
+
+xAI's fast text-, image-, and reference-conditioned video generator,
+producing short clips at 24fps in 480p or 720p across seven aspect
+ratios. Its standout differentiator is duration granularity: any
+integer from 1 to 15 seconds, where every other model in the catalog
+locks you into fixed tiers (4/6/8 or similar). Charged per output
+second by resolution with a small surcharge per input image, it is one
+of the cheapest paths to video in the catalog and well suited to rapid
+iteration and high-volume production.
+
+**Tips & pitfalls**
+
+- Duration is any integer 1–15 seconds — cost scales linearly per
+  second, so a 3s draft costs a fifth of a 15s final.
+- Resolution drives price: 480p ($0.05/s) for iteration, 720p
+  ($0.07/s) for finishing. There is no 1080p/4K tier.
+- **Silent — no audio generation.** Pair with external audio in post if
+  needed.
+- Single-frame conditioning only: `first_frame` is supported,
+  `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints
+  locked.
+- Image conditioning adds ~$0.002 per input image on top of the
+  per-second cost.
+- No deterministic seed and no negative prompt
+  (`allowed_passthrough_parameters` is empty).
+
 ---
 
 ## Per-model parameter reference
@@ -618,6 +649,19 @@ is also the spec for what you can change per-message.
 
 **No frames knob** (catalog says `supported_frame_images: null` — text-to-video only). **No seed knob** (`seed: false`). **No negative prompt.**
 
+### xAI: Grok Imagine Video
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 1–15 (any integer) | **Only model with 1-second granularity.** Cost scales per second. |
+| Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Widest landscape/portrait/square/photo coverage in catalog. |
+| Resolution | Literal | 480p, 720p | $0.05/s vs $0.07/s — resolution drives the SKU. |
+| Size | Literal | 14 dimensions | e.g. 854×480, 1280×720, 720×1280, 480×480. |
+| Frames | Literal | first only | Image-to-video via first frame; no last frame. |
+| Provider options JSON | str | raw JSON | |
+
+**No audio knob** (`generate_audio: null` — silent output). **No seed knob** (`seed: null`). **No negative prompt** (`allowed_passthrough_parameters` is empty).
+
 ---
 
 ## Filter UserValve identifiers (master reference)
@@ -636,14 +680,14 @@ the catalog condition under which the valve renders.
 
 | Identifier | Type | Default | Maps to API field | Gate (catalog condition) | Exposed on |
 |------------|------|---------|-------------------|---------------------------|------------|
-| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 13 |
-| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | all 13 |
-| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 13 |
-| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 13 |
-| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 13 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 10 (all except Sora 2 Pro) |
+| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 14 |
+| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | all 14 |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 14 |
+| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 14 |
+| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 14 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 13 (all except Sora 2 Pro) |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | Veo trio, Kling, Wan 2.6, Wan 2.7 |
-| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | top-level `generate_audio: true` in catalog | 10 (all except Hailuo) |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | top-level `generate_audio: true` in catalog | 12 (all except Hailuo and Grok Imagine Video) |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | top-level `seed: true` in catalog | 8 (Veo trio, Wan 2.6, Wan 2.7, Seedance trio) |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` in `allowed_passthrough_parameters` | Wan 2.6, Wan 2.7 |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` in `allowed_passthrough_parameters` | Wan 2.7 |

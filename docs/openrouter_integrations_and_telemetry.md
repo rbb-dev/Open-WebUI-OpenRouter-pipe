@@ -354,7 +354,7 @@ What it syncs (best-effort):
   - Web search is **augmented** using OpenRouter’s public frontend catalog signals (in addition to `/models` pricing), so models like `x-ai/grok-4` and `openai/gpt-4o` can correctly show `web_search` even when `pricing.web_search` is `0`.
 
 Data sources / egress:
-- Fetches `https://openrouter.ai/api/frontend/models` (no auth) to discover icons and frontend-only capability signals.
+- Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and frontend-only capability signals.
 - Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`).
 
 Controls:
