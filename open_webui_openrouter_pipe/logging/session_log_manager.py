@@ -843,9 +843,24 @@ class SessionLogManager:
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
         for evt in events:
-            # Key: timestamp + request_id + lineno + message hash
+            # Key: timestamp + request_id + lineno + message hash.
+            # Normalise `created` to the archive's millisecond-ISO form — the
+            # SAME serialization the writer uses (logging_system.py:
+            # isoformat(timespec="milliseconds"), which TRUNCATES to ms). DB
+            # events carry full float precision; archive-round-tripped events
+            # are ms-truncated. Re-serializing both guarantees identical keys;
+            # rounding would not (round vs truncate disagree for ~half of all
+            # timestamps), so the same event from DB and archive would fail to
+            # dedup and duplicate the log line.
+            created_raw = evt.get("created", 0)
+            try:
+                created_key: Any = datetime.datetime.fromtimestamp(
+                    float(created_raw), tz=datetime.timezone.utc
+                ).isoformat(timespec="milliseconds")
+            except (TypeError, ValueError, OSError, OverflowError):
+                created_key = created_raw
             key = "{}:{}:{}:{}".format(
-                evt.get("created", 0),
+                created_key,
                 evt.get("request_id", ""),
                 evt.get("lineno", 0),
                 hash(str(evt.get("message", ""))),

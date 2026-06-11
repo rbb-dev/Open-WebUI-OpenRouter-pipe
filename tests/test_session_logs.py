@@ -595,6 +595,45 @@ class TestDedupeSessionLogEvents:
         result = pipe._session_log_manager.dedupe_events([])
         assert result == []
 
+    def test_dedupes_db_and_archive_twin_at_ms_precision(self, pipe_instance) -> None:
+        """An event from the DB (full float precision) and the SAME event
+        round-tripped through an archive (ms-truncated by the writer's
+        isoformat(timespec="milliseconds")) must dedupe to one entry.
+
+        `created` ends in .1238 (4th decimal >= 5): rounding to ms gives .124
+        for the DB event but the archive truncates to .123, so a round()-based
+        key would FAIL to dedupe. Re-serialising both to the archive's ms-ISO
+        form keys them identically.
+        """
+        import datetime
+
+        mgr = pipe_instance._session_log_manager
+        created = 1700000000.1238  # 4th decimal >= 5 -> round() != truncate
+        db_evt = {"created": created, "request_id": "req1", "lineno": 42, "message": "hello"}
+        # Build the archive twin exactly as the read path does: serialise to the
+        # writer's ms-ISO form, then convert back via _convert_jsonl_to_internal.
+        ts = datetime.datetime.fromtimestamp(
+            created, tz=datetime.timezone.utc
+        ).isoformat(timespec="milliseconds")
+        archive_evt = mgr._convert_jsonl_to_internal(
+            {"ts": ts, "request_id": "req1", "lineno": 42, "message": "hello"}
+        )
+        # Precision really was lost in the round-trip (else the test proves nothing).
+        assert archive_evt["created"] != created
+
+        result = mgr.dedupe_events([db_evt, archive_evt])
+        assert len(result) == 1
+
+    def test_keeps_events_one_millisecond_apart(self, pipe_instance) -> None:
+        """Events that genuinely differ by >= 1ms stay distinct (no over-dedup)."""
+        mgr = pipe_instance._session_log_manager
+        events = [
+            {"created": 1700000000.123, "request_id": "req1", "lineno": 42, "message": "hello"},
+            {"created": 1700000000.124, "request_id": "req1", "lineno": 42, "message": "hello"},
+        ]
+        result = mgr.dedupe_events(events)
+        assert len(result) == 2
+
 
 class TestReadSessionLogArchiveEvents:
     """Tests for _read_session_log_archive_events helper."""
