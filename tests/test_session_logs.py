@@ -975,10 +975,22 @@ def test_session_logger_concurrent_writes_same_request() -> None:
 
     assert request_id in SessionLogger.logs
     buffer = SessionLogger.logs[request_id]
-    expected_min_messages = min(
-        num_threads * messages_per_thread, SessionLogger.SESSION_LOG_MAX_LINES
-    )
-    assert len(buffer) == expected_min_messages
+    # SessionLogger.logs is a process-global deque routed by the request_id
+    # ContextVar, so any incidental log line emitted elsewhere while a worker
+    # thread holds this request_id also lands here. Assert the real concurrency
+    # invariant — every worker message survived intact, none lost or corrupted —
+    # rather than an exact buffer length, which a stray line makes flaky.
+    worker_messages = {
+        str(e.get("message"))
+        for e in buffer
+        if isinstance(e, dict) and str(e.get("message", "")).startswith("Worker ")
+    }
+    expected_messages = {
+        f"Worker {idx} message {i}"
+        for idx in range(num_threads)
+        for i in range(messages_per_thread)
+    }
+    assert worker_messages == expected_messages
 
     SessionLogger.logs.clear()
     SessionLogger._session_last_seen.clear()
