@@ -396,6 +396,8 @@ class EventEmitterHandler:
         self,
         event_emitter: EventEmitter | None,
         embeds: list[str],
+        *,
+        replace: bool = False,
     ) -> None:
         """Emit embedded HTML content from tool results to the UI.
 
@@ -406,6 +408,10 @@ class EventEmitterHandler:
         Args:
             event_emitter: Event emitter for UI communication
             embeds: List of HTML strings to embed in the response
+            replace: When True, OpenWebUI swaps the message's existing embeds for
+                this set instead of appending. Omitted from the payload when False
+                so existing callers stay byte-identical on the wire. No production
+                caller currently sets this.
 
         Note:
             This method is called after tool execution when HTML embeds are
@@ -415,9 +421,12 @@ class EventEmitterHandler:
             return
 
         try:
+            data: dict[str, object] = {"embeds": embeds}
+            if replace:
+                data["replace"] = True
             await event_emitter({
                 "type": "embeds",
-                "data": {"embeds": embeds},
+                "data": data,
             })
         except Exception as exc:
             self.logger.debug("Failed to emit embeds event: %s", exc)

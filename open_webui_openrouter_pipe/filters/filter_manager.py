@@ -28,6 +28,8 @@ from ..core.config import (
     _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_FUSION_FILTER_MARKER,
+    _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
@@ -711,6 +713,47 @@ class FilterManager:
             log_label="OpenRouter Web Tools filter",
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+        )
+
+    # =========================================================================
+    # OPENROUTER FUSION FILTER
+    # =========================================================================
+
+    async def ensure_openrouter_fusion_filter_function_id(self) -> str | None:
+        """Ensure the OpenRouter Fusion filter exists (and is up to date), returning its OWUI function id."""
+        from .fusion_filter_renderer import (
+            FUSION_FILTER_DISPLAY_NAME,
+            render_openrouter_fusion_filter_source,
+        )
+
+        def _matches(content: str) -> bool:
+            if not isinstance(content, str) or not content:
+                return False
+            return _OPENROUTER_FUSION_FILTER_MARKER in content and "class Filter" in content
+
+        return await self._ensure_filter_installed(
+            desired_source=render_openrouter_fusion_filter_source(
+                marker=_OPENROUTER_FUSION_FILTER_MARKER,
+            ).strip() + "\n",
+            desired_name=FUSION_FILTER_DISPLAY_NAME,
+            desired_meta={
+                "description": (
+                    "Configure OpenRouter Fusion (multi-model judge panel): panel models, judge, "
+                    "preset, and optional force-run. Acts on the openrouter/fusion model."
+                ),
+                "toggle": True,
+                "manifest": {
+                    "title": FUSION_FILTER_DISPLAY_NAME,
+                    "id": _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
+                    "version": "0.1.0",
+                    "license": "MIT",
+                },
+            },
+            preferred_id=_OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
+            auto_install_valve="AUTO_INSTALL_FUSION_FILTER",
+            log_label="OpenRouter Fusion filter",
+            matches_candidate=_matches,
+            primary_marker=_OPENROUTER_FUSION_FILTER_MARKER,
         )
 
     # =========================================================================

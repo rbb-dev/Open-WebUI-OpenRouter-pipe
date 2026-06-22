@@ -1515,22 +1515,23 @@ def test_apply_image_filter_ids_truth_table(
     """End-to-end truth table for the apply functions across all 5 critical
     combinations of (auto_attach, auto_default, supported)."""
     from open_webui_openrouter_pipe.models.catalog_manager import (
-        _apply_image_filter_ids,
-        _apply_image_default_filter_ids,
+        _apply_list_filter_ids,
+        _apply_list_default_filter_ids,
     )
 
     meta_dict: dict[str, Any] = {}
-    _apply_image_filter_ids(
+    _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=supported,
-        auto_attach_image_filter=auto_attach,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=supported,
+        auto_attach=auto_attach,
+        prune_key="image_filter_ids",
     )
-    _apply_image_default_filter_ids(
+    _apply_list_default_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=supported,
-        auto_default_image_filter=auto_default,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=supported,
+        auto_default=auto_default,
     )
 
     assert meta_dict.get("filterIds", []) == expect_filter_ids
@@ -1542,7 +1543,7 @@ def test_apply_image_filter_ids_cleans_up_stale_previously_attached():
     `image_filter_function_ids`, the stale id must be removed from filterIds.
     Also verify pipe_meta["image_filter_ids"] is updated to track the new
     set so the NEXT cleanup cycle sees the right "previous" baseline."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_filter_ids
 
     meta_dict: dict[str, Any] = {
         "filterIds": ["openrouter_image_filter_generic", "openrouter_image_filter_old"],
@@ -1550,11 +1551,12 @@ def test_apply_image_filter_ids_cleans_up_stale_previously_attached():
             "image_filter_ids": ["openrouter_image_filter_old"],  # stale: old previously-attached
         },
     }
-    _apply_image_filter_ids(
+    _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     # Stale id removed, generic kept
     assert "openrouter_image_filter_old" not in meta_dict["filterIds"]
@@ -1566,22 +1568,24 @@ def test_apply_image_filter_ids_cleans_up_stale_previously_attached():
 def test_apply_image_filter_ids_idempotent_when_unchanged():
     """Running apply twice with same inputs returns False the second time
     (no change → no metadata mutation)."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_filter_ids
 
     meta_dict: dict[str, Any] = {}
-    first = _apply_image_filter_ids(
+    first = _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     assert first is True
 
-    second = _apply_image_filter_ids(
+    second = _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     assert second is False  # No changes on second call
 
@@ -1589,16 +1593,17 @@ def test_apply_image_filter_ids_idempotent_when_unchanged():
 def test_apply_image_filter_ids_preserves_unrelated_filter_ids():
     """Apply must NOT touch unrelated filter ids in the model's filterIds list
     (e.g. user-attached community filters, OWUI built-in filters)."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_filter_ids
 
     meta_dict: dict[str, Any] = {
         "filterIds": ["my_custom_filter", "owui_translate_filter"],
     }
-    _apply_image_filter_ids(
+    _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     assert "my_custom_filter" in meta_dict["filterIds"]
     assert "owui_translate_filter" in meta_dict["filterIds"]
@@ -1607,14 +1612,15 @@ def test_apply_image_filter_ids_preserves_unrelated_filter_ids():
 
 def test_apply_image_filter_ids_two_filter_dict_order_preserved():
     """When applying [generic, sourceful], both ids land in filterIds in order."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_filter_ids
 
     meta_dict: dict[str, Any] = {}
-    _apply_image_filter_ids(
+    _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic", "openrouter_image_filter_sourceful"],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic", "openrouter_image_filter_sourceful"],
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     assert meta_dict["filterIds"] == [
         "openrouter_image_filter_generic",
@@ -1625,18 +1631,19 @@ def test_apply_image_filter_ids_two_filter_dict_order_preserved():
 def test_apply_image_filter_ids_dedupes_input():
     """If `image_filter_function_ids` contains duplicates, the resulting filterIds
     must NOT contain duplicates (dedupe via _dedupe_preserve_order)."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_filter_ids
 
     meta_dict: dict[str, Any] = {}
-    _apply_image_filter_ids(
+    _apply_list_filter_ids(
         meta_dict,
-        image_filter_function_ids=[
+        filter_function_ids=[
             "openrouter_image_filter_generic",
             "openrouter_image_filter_sourceful",
             "openrouter_image_filter_generic",  # duplicate
         ],
-        image_filter_supported=True,
-        auto_attach_image_filter=True,
+        filter_supported=True,
+        auto_attach=True,
+        prune_key="image_filter_ids",
     )
     assert meta_dict["filterIds"] == [
         "openrouter_image_filter_generic",
@@ -1647,14 +1654,14 @@ def test_apply_image_filter_ids_dedupes_input():
 def test_apply_image_default_filter_ids_skips_when_filter_id_not_in_filterIds():
     """default-on must require the id to actually be in filterIds first
     (don't leave a model in 'default on' state for a filter that isn't attached)."""
-    from open_webui_openrouter_pipe.models.catalog_manager import _apply_image_default_filter_ids
+    from open_webui_openrouter_pipe.models.catalog_manager import _apply_list_default_filter_ids
 
     meta_dict: dict[str, Any] = {"filterIds": []}  # empty — generic NOT attached
-    result = _apply_image_default_filter_ids(
+    result = _apply_list_default_filter_ids(
         meta_dict,
-        image_filter_function_ids=["openrouter_image_filter_generic"],
-        image_filter_supported=True,
-        auto_default_image_filter=True,
+        filter_function_ids=["openrouter_image_filter_generic"],
+        filter_supported=True,
+        auto_default=True,
     )
     assert result is False
     assert "defaultFilterIds" not in meta_dict

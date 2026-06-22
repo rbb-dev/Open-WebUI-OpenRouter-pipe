@@ -25,6 +25,7 @@ from aioresponses import aioresponses
 from conftest import Pipe
 from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+from open_webui_openrouter_pipe.filters.fusion_filter_renderer import is_fusion_model
 
 
 # -----------------------------------------------------------------------------
@@ -1874,3 +1875,85 @@ class TestReasoningEffortNoEventEmitter:
 
                 assert result == "Test response after retry"
                 assert call_count[0] == 2
+
+
+def _gate_valves(*, fusion_enabled: bool = True):
+    valves = Mock()
+    valves.ENABLE_OPENROUTER_FUSION = fusion_enabled
+    return valves
+
+
+class TestFusionLiveGate:
+    """RequestOrchestrator fusion-live-UI activation: gate logic and the process_request thread-through."""
+
+    _FUSION_FORMS = (
+        "openrouter/fusion",
+        "openrouter.openrouter/fusion",
+        "openrouter.fusion",
+        "open_webui_openrouter_pipe.openrouter.fusion",
+    )
+    _NON_FUSION = ("openai/gpt-4o", "anthropic/claude-opus", "openrouter/auto")
+
+    @pytest.mark.asyncio
+    async def test_arms_for_every_fusion_id_form(self, orchestrator_and_pipe):
+        orchestrator, _pipe = orchestrator_and_pipe
+        for model in self._FUSION_FORMS:
+            assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model(model), False) is True
+
+    @pytest.mark.asyncio
+    async def test_never_arms_for_non_fusion_models(self, orchestrator_and_pipe):
+        orchestrator, _pipe = orchestrator_and_pipe
+        for model in self._NON_FUSION:
+            assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model(model), False) is False
+
+    @pytest.mark.asyncio
+    async def test_direct_connection_never_arms(self, orchestrator_and_pipe):
+        orchestrator, _pipe = orchestrator_and_pipe
+        assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model("openrouter/fusion"), True) is False
+
+    @pytest.mark.asyncio
+    async def test_master_switch_off_never_arms(self, orchestrator_and_pipe):
+        orchestrator, _pipe = orchestrator_and_pipe
+        assert orchestrator._resolve_fusion_live_enabled(_gate_valves(fusion_enabled=False), is_fusion_model("openrouter/fusion"), False) is False
+
+    @pytest.mark.asyncio
+    async def test_process_request_threads_enabled_to_streaming_loop(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        mock_valves.ENABLE_OPENROUTER_FUSION = True
+        captured: dict[str, Any] = {}
+
+        async def fake_loop(*_args, **kwargs):
+            captured.update(kwargs)
+            return "answer"
+
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=fake_loop)
+
+        result = await orchestrator.process_request(
+            body={"model": "openrouter/fusion", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="openrouter/fusion",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"openrouter/fusion"},
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert result == "answer"
+        assert captured.get("fusion_live_enabled") is True

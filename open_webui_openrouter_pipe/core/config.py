@@ -62,6 +62,11 @@ _OPENROUTER_VIDEO_GEN_FILTER_MARKER = "openrouter_pipe:video_filter:v1"
 # models via `body.image_config` request fields per image-generation.md.
 _OPENROUTER_IMAGE_FILTER_MARKER = "openrouter_pipe:image_filter:v1"
 
+# OpenRouter Fusion filter — configures the openrouter/fusion multi-model judge
+# panel via body.plugins ({"id": "fusion", ...}); see docs/openrouter_fusion.md.
+_OPENROUTER_FUSION_FILTER_MARKER = "openrouter_pipe:fusion_filter:v1"
+_OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID = "openrouter_fusion"
+
 _DIRECT_UPLOADS_FILTER_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
 _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_direct_uploads"
 
@@ -1636,6 +1641,23 @@ class Valves(BaseModel):
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
         description="Always keep the per-model video filter enabled by default on its video model. Re-asserted on every sync because video models require their filter to function.",
+    )
+    # ── OpenRouter Fusion filter (multi-model judge panel) ──
+    ENABLE_OPENROUTER_FUSION: bool = Field(
+        default=True,
+        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and auto-wires it to the openrouter/fusion model.",
+    )
+    AUTO_INSTALL_FUSION_FILTER: bool = Field(
+        default=True,
+        description="Automatically install/update the OpenRouter Fusion filter function in Open WebUI.",
+    )
+    AUTO_ATTACH_FUSION_FILTER: bool = Field(
+        default=True,
+        description="Automatically attach the OpenRouter Fusion filter to the openrouter/fusion model only (so its panel/judge options appear in the Integrations menu). Never attaches to other models.",
+    )
+    AUTO_DEFAULT_FUSION_FILTER: bool = Field(
+        default=True,
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Re-asserted on every sync.",
     )
     VIDEO_INITIAL_POLL_DELAY_SECONDS: float = Field(
         default=5.0,

@@ -153,6 +153,14 @@ class ModelFamily:
         norm = cls.base_model(model_id)
         return cls._DYNAMIC_SPECS.get(norm) or {}
 
+    @classmethod
+    def display_name(cls, model_id: str) -> Optional[str]:
+        """Return the OpenRouter catalog display name for ``model_id`` if cached."""
+        spec = cls._lookup_spec(model_id)
+        full = spec.get("full_model") if isinstance(spec, dict) else None
+        name = full.get("name") if isinstance(full, dict) else None
+        return name if isinstance(name, str) and name else None
+
 
 _PHASE_SUPPORTED_MODELS_BASE = frozenset(
     ModelFamily.base_model(model_id) for model_id in PHASE_SUPPORTED_MODELS

@@ -70,27 +70,27 @@ def _ensure_pipe_meta(meta_dict: dict) -> dict:
     return pipe_meta
 
 
-def _apply_image_filter_ids(
+def _apply_list_filter_ids(
     meta_dict: dict,
     *,
-    image_filter_function_ids: list[str] | None,
-    image_filter_supported: bool,
-    auto_attach_image_filter: bool,
+    filter_function_ids: list[str] | None,
+    filter_supported: bool,
+    auto_attach: bool,
+    prune_key: str,
 ) -> bool:
-
-    if not image_filter_function_ids or not auto_attach_image_filter:
+    if not filter_function_ids or not auto_attach:
         return False
     normalized = _normalize_id_list(meta_dict, "filterIds")
     pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
     previous_ids: list[str] = []
     if isinstance(pipe_meta, dict):
-        prev = pipe_meta.get("image_filter_ids")
+        prev = pipe_meta.get(prune_key)
         if isinstance(prev, list):
             previous_ids = [p for p in prev if isinstance(p, str) and p]
-    current_set = set(image_filter_function_ids)
+    current_set = set(filter_function_ids)
     had = set(normalized)
     wanted = set(had)
-    if image_filter_supported:
+    if filter_supported:
         wanted |= current_set
     else:
         wanted -= current_set
@@ -99,36 +99,35 @@ def _apply_image_filter_ids(
             wanted.discard(prev_fid)
     if wanted == had:
         return False
-    if image_filter_supported:
-        for fid in image_filter_function_ids:
+    if filter_supported:
+        for fid in filter_function_ids:
             if fid not in normalized:
                 normalized.append(fid)
     normalized = [fid for fid in normalized if fid in wanted]
     meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
     pipe_meta = _ensure_pipe_meta(meta_dict)
-    pipe_meta["image_filter_ids"] = list(image_filter_function_ids)
+    pipe_meta[prune_key] = list(filter_function_ids)
     meta_dict[_PIPE_METADATA_KEY] = pipe_meta
     return True
 
 
-def _apply_image_default_filter_ids(
+def _apply_list_default_filter_ids(
     meta_dict: dict,
     *,
-    image_filter_function_ids: list[str] | None,
-    image_filter_supported: bool,
-    auto_default_image_filter: bool,
+    filter_function_ids: list[str] | None,
+    filter_supported: bool,
+    auto_default: bool,
 ) -> bool:
-
     if (
-        not auto_default_image_filter
-        or not image_filter_function_ids
-        or not image_filter_supported
+        not auto_default
+        or not filter_function_ids
+        or not filter_supported
     ):
         return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
-    for fid in image_filter_function_ids:
+    for fid in filter_function_ids:
         if fid in filter_ids and fid not in default_ids:
             default_ids.append(fid)
             changed = True
@@ -441,6 +440,8 @@ class ModelCatalogManager:
             or valves.AUTO_ATTACH_VIDEO_FILTERS
             or valves.AUTO_INSTALL_IMAGE_FILTERS
             or valves.AUTO_ATTACH_IMAGE_FILTERS
+            or valves.AUTO_INSTALL_FUSION_FILTER
+            or valves.AUTO_ATTACH_FUSION_FILTER
             or provider_routing_enabled
         ):
             return
@@ -473,6 +474,10 @@ class ModelCatalogManager:
             valves.AUTO_INSTALL_IMAGE_FILTERS,
             valves.AUTO_ATTACH_IMAGE_FILTERS,
             valves.AUTO_DEFAULT_IMAGE_FILTERS,
+            valves.ENABLE_OPENROUTER_FUSION,
+            valves.AUTO_INSTALL_FUSION_FILTER,
+            valves.AUTO_ATTACH_FUSION_FILTER,
+            valves.AUTO_DEFAULT_FUSION_FILTER,
             valves.ENABLE_WEB_SEARCH,
             valves.ENABLE_WEB_FETCH,
             valves.ENABLE_DATETIME,
@@ -765,6 +770,8 @@ class ModelCatalogManager:
             or valves.AUTO_ATTACH_VIDEO_FILTERS
             or valves.AUTO_INSTALL_IMAGE_FILTERS
             or valves.AUTO_ATTACH_IMAGE_FILTERS
+            or valves.AUTO_INSTALL_FUSION_FILTER
+            or valves.AUTO_ATTACH_FUSION_FILTER
             or provider_routing_enabled
         ):
             return
@@ -940,6 +947,18 @@ class ModelCatalogManager:
                 except Exception as exc:
                     self.logger.debug("OpenRouter Image filter ensure failed: %s", exc)
                     image_filter_function_ids = {}
+
+            fusion_filter_function_id: str | None = None
+            if valves.ENABLE_OPENROUTER_FUSION and (
+                valves.AUTO_INSTALL_FUSION_FILTER or valves.AUTO_ATTACH_FUSION_FILTER
+            ):
+                try:
+                    fusion_filter_function_id = (
+                        await self._pipe._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
+                    )
+                except Exception as exc:
+                    self.logger.debug("OpenRouter Fusion filter ensure failed: %s", exc)
+                    fusion_filter_function_id = None
 
             direct_uploads_filter_function_id: str | None = None
             if (
@@ -1182,6 +1201,22 @@ class ModelCatalogManager:
                     and pipe_capabilities.get("image_output")
                 )
 
+                # Fusion filter: auto-wire to the openrouter/fusion model ONLY.
+                # openrouter_id is the sanitized OWUI id ("openrouter.fusion"); original_id
+                # is the raw slug ("openrouter/fusion"). is_fusion_model handles both forms,
+                # but we test both ids anyway, mirroring the image/video lookups above.
+                from ..filters.fusion_filter_renderer import is_fusion_model
+                fusion_filter_ids_for_model: list[str] = []
+                if fusion_filter_function_id and (
+                    is_fusion_model(openrouter_id) or is_fusion_model(str(original_id or ""))
+                ):
+                    fusion_filter_ids_for_model = [fusion_filter_function_id]
+                auto_attach_fusion = bool(
+                    fusion_filter_ids_for_model
+                    and valves.ENABLE_OPENROUTER_FUSION
+                    and valves.AUTO_ATTACH_FUSION_FILTER
+                )
+
                 # Look up provider routing filter ID for this model.
                 # Use original_id (e.g., "openai/gpt-4o") rather than the sanitized OWUI id.
                 pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
@@ -1204,6 +1239,7 @@ class ModelCatalogManager:
                     and not auto_attach_direct_uploads
                     and not auto_attach_video_gen
                     and not auto_attach_image_filter
+                    and not auto_attach_fusion
                     and not pr_filter_id
                     and not image_gen_filter_function_id
                 ):
@@ -1240,6 +1276,13 @@ class ModelCatalogManager:
                             auto_default_image_filter=bool(
                                 auto_attach_image_filter
                                 and valves.AUTO_DEFAULT_IMAGE_FILTERS
+                            ),
+                            fusion_filter_function_ids=fusion_filter_ids_for_model,
+                            fusion_filter_supported=bool(fusion_filter_ids_for_model),
+                            auto_attach_fusion_filter=auto_attach_fusion,
+                            auto_default_fusion_filter=bool(
+                                auto_attach_fusion
+                                and valves.AUTO_DEFAULT_FUSION_FILTER
                             ),
                             provider_routing_filter_id=pr_filter_id,
                             valid_openrouter_filter_ids=_valid_openrouter_filter_ids,
@@ -1357,6 +1400,10 @@ class ModelCatalogManager:
         image_filter_supported: bool = False,
         auto_attach_image_filter: bool = False,
         auto_default_image_filter: bool = False,
+        fusion_filter_function_ids: list[str] | None = None,
+        fusion_filter_supported: bool = False,
+        auto_attach_fusion_filter: bool = False,
+        auto_default_fusion_filter: bool = False,
         provider_routing_filter_id: str | None = None,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
@@ -1725,19 +1772,37 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
-            if _apply_image_filter_ids(
+            if _apply_list_filter_ids(
                 meta_dict,
-                image_filter_function_ids=image_filter_function_ids,
-                image_filter_supported=image_filter_supported,
-                auto_attach_image_filter=auto_attach_image_filter,
+                filter_function_ids=image_filter_function_ids,
+                filter_supported=image_filter_supported,
+                auto_attach=auto_attach_image_filter,
+                prune_key="image_filter_ids",
             ):
                 meta_updated = True
 
-            if _apply_image_default_filter_ids(
+            if _apply_list_default_filter_ids(
                 meta_dict,
-                image_filter_function_ids=image_filter_function_ids,
-                image_filter_supported=image_filter_supported,
-                auto_default_image_filter=auto_default_image_filter,
+                filter_function_ids=image_filter_function_ids,
+                filter_supported=image_filter_supported,
+                auto_default=auto_default_image_filter,
+            ):
+                meta_updated = True
+
+            if _apply_list_filter_ids(
+                meta_dict,
+                filter_function_ids=fusion_filter_function_ids,
+                filter_supported=fusion_filter_supported,
+                auto_attach=auto_attach_fusion_filter,
+                prune_key="fusion_filter_ids",
+            ):
+                meta_updated = True
+
+            if _apply_list_default_filter_ids(
+                meta_dict,
+                filter_function_ids=fusion_filter_function_ids,
+                filter_supported=fusion_filter_supported,
+                auto_default=auto_default_fusion_filter,
             ):
                 meta_updated = True
 
@@ -1802,17 +1867,31 @@ class ModelCatalogManager:
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_default_video_gen_filter=auto_default_video_gen_filter,
             )
-            _apply_image_filter_ids(
+            _apply_list_filter_ids(
                 meta_dict,
-                image_filter_function_ids=image_filter_function_ids,
-                image_filter_supported=image_filter_supported,
-                auto_attach_image_filter=auto_attach_image_filter,
+                filter_function_ids=image_filter_function_ids,
+                filter_supported=image_filter_supported,
+                auto_attach=auto_attach_image_filter,
+                prune_key="image_filter_ids",
             )
-            _apply_image_default_filter_ids(
+            _apply_list_default_filter_ids(
                 meta_dict,
-                image_filter_function_ids=image_filter_function_ids,
-                image_filter_supported=image_filter_supported,
-                auto_default_image_filter=auto_default_image_filter,
+                filter_function_ids=image_filter_function_ids,
+                filter_supported=image_filter_supported,
+                auto_default=auto_default_image_filter,
+            )
+            _apply_list_filter_ids(
+                meta_dict,
+                filter_function_ids=fusion_filter_function_ids,
+                filter_supported=fusion_filter_supported,
+                auto_attach=auto_attach_fusion_filter,
+                prune_key="fusion_filter_ids",
+            )
+            _apply_list_default_filter_ids(
+                meta_dict,
+                filter_function_ids=fusion_filter_function_ids,
+                filter_supported=fusion_filter_supported,
+                auto_default=auto_default_fusion_filter,
             )
             if _apply_provider_routing_filter_ids(meta_dict):
                 self.logger.debug(

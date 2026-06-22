@@ -5711,6 +5711,43 @@ class TestEventEmitterFilesEmbeds:
             "data": {"embeds": embeds},
         })
 
+    @pytest.mark.asyncio
+    async def test_emit_embeds_replace_adds_flag(self):
+        """replace=True adds OpenWebUI's replace flag so the embed is swapped in place."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        embeds = ["<iframe src='...'></iframe>"]
+        await handler._emit_embeds(mock_emitter, embeds, replace=True)
+
+        mock_emitter.assert_called_once_with({
+            "type": "embeds",
+            "data": {"embeds": embeds, "replace": True},
+        })
+
+    @pytest.mark.asyncio
+    async def test_emit_embeds_default_omits_replace(self):
+        """Default call stays byte-identical (no replace key) so existing callers are unaffected."""
+        from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
+
+        mock_emitter = AsyncMock()
+        handler = EventEmitterHandler(
+            logger=logging.getLogger("test"),
+            valves=MagicMock(),
+            pipe_instance=MagicMock(),
+        )
+
+        await handler._emit_embeds(mock_emitter, ["<b>x</b>"])
+
+        sent = mock_emitter.call_args.args[0]
+        assert "replace" not in sent["data"]
+
 
 class TestOwuiImports:
     """Tests for OpenWebUI function imports."""

@@ -456,6 +456,8 @@ def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> 
     pipe.valves.AUTO_ATTACH_VIDEO_FILTERS = False
     pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = False
     pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
+    pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
+    pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
         [{"id": "test"}],
@@ -514,6 +516,10 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         pipe.valves.AUTO_INSTALL_IMAGE_FILTERS,
         pipe.valves.AUTO_ATTACH_IMAGE_FILTERS,
         pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS,
+        pipe.valves.ENABLE_OPENROUTER_FUSION,
+        pipe.valves.AUTO_INSTALL_FUSION_FILTER,
+        pipe.valves.AUTO_ATTACH_FUSION_FILTER,
+        pipe.valves.AUTO_DEFAULT_FUSION_FILTER,
         pipe.valves.ENABLE_WEB_SEARCH,
         pipe.valves.ENABLE_WEB_FETCH,
         pipe.valves.ENABLE_DATETIME,
@@ -527,6 +533,85 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         pipe_identifier="test_pipe",
     )
     assert pipe._catalog_manager._model_metadata_sync_task is None
+
+
+def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
+    pipe_instance, monkeypatch
+) -> None:
+    """A change to any Fusion valve must invalidate the sync key and reschedule.
+
+    Regression: the four Fusion valves were absent from the sync key, so toggling
+    AUTO_ATTACH/AUTO_DEFAULT_FUSION_FILTER silently did nothing until some other
+    tracked valve changed.
+    """
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+    pipe.valves.AUTO_ATTACH_FUSION_FILTER = True
+
+    created = {"called": False}
+
+    def _fake_create_task(coro, *args, **kwargs):
+        created["called"] = True
+        coro.close()  # never scheduled; avoid "coroutine was never awaited"
+        task = Mock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.models.catalog_manager.asyncio.create_task",
+        _fake_create_task,
+    )
+
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+    last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
+    last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
+    last_image_fetch = OpenRouterModelRegistry.last_image_fetch()
+
+    # Seed a key identical to what production builds now, EXCEPT the Fusion attach
+    # flag is inverted (the state before the admin toggled it). If the Fusion
+    # valves are part of the key, production computes a different key and reschedules.
+    pipe._catalog_manager._model_metadata_sync_key = (
+        "test_pipe",
+        float(last_fetch or 0.0),
+        float(last_video_fetch or 0.0),
+        float(last_image_fetch or 0.0),
+        pipe.valves.MODEL_ID,
+        pipe.valves.UPDATE_MODEL_IMAGES,
+        pipe.valves.UPDATE_MODEL_CAPABILITIES,
+        pipe.valves.UPDATE_MODEL_DESCRIPTIONS,
+        pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
+        pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
+        pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
+        pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
+        pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
+        pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
+        pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
+        pipe.valves.AUTO_INSTALL_VIDEO_FILTERS,
+        pipe.valves.AUTO_ATTACH_VIDEO_FILTERS,
+        pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS,
+        pipe.valves.ENABLE_VIDEO_GENERATION,
+        pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION,
+        pipe.valves.AUTO_INSTALL_IMAGE_FILTERS,
+        pipe.valves.AUTO_ATTACH_IMAGE_FILTERS,
+        pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS,
+        pipe.valves.ENABLE_OPENROUTER_FUSION,
+        pipe.valves.AUTO_INSTALL_FUSION_FILTER,
+        not pipe.valves.AUTO_ATTACH_FUSION_FILTER,
+        pipe.valves.AUTO_DEFAULT_FUSION_FILTER,
+        pipe.valves.ENABLE_WEB_SEARCH,
+        pipe.valves.ENABLE_WEB_FETCH,
+        pipe.valves.ENABLE_DATETIME,
+        pipe.valves.ENABLE_IMAGE_GENERATION,
+        pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
+        pipe.valves.USER_PROVIDER_ROUTING_MODELS,
+    )
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}],
+        pipe_identifier="test_pipe",
+    )
+    assert created["called"] is True
 
 
 def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_instance) -> None:
@@ -567,6 +652,8 @@ async def test_sync_model_metadata_returns_early_no_valves(pipe_instance_async) 
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+    pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
+    pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
 
     # Should return early without error
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="test_pipe")

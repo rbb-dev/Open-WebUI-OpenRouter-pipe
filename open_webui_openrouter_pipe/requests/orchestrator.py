@@ -31,6 +31,7 @@ from .sanitizer import _sanitize_request_input
 from ..integrations.anthropic import _is_anthropic_model_id
 from ..storage.users import get_user_by_id
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
+from ..filters.fusion_filter_renderer import is_fusion_model
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -82,6 +83,13 @@ class RequestOrchestrator:
         """
         self._pipe = pipe
         self.logger = logger
+
+    def _resolve_fusion_live_enabled(self, valves: "Pipe.Valves", is_fusion: bool, is_direct: bool) -> bool:
+        return bool(
+            valves.ENABLE_OPENROUTER_FUSION
+            and is_fusion
+            and not is_direct
+        )
 
     @timed
     async def process_request(
@@ -568,6 +576,21 @@ class RequestOrchestrator:
             else:
                 responses_body.provider = {"zdr": True}
 
+        is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
+        fusion_model = is_fusion_model(responses_body.model)
+        if fusion_model and endpoint_override == "chat_completions":
+            self.logger.warning(
+                "OpenRouter Fusion requires the /responses endpoint; overriding "
+                "endpoint_override=chat_completions to responses for model=%s",
+                responses_body.model,
+            )
+            endpoint_override = "responses"
+        fusion_live_enabled = self._resolve_fusion_live_enabled(valves, fusion_model, is_direct)
+        self.logger.debug(
+            "Fusion live UI gate: model=%s fusion=%s fusion_enable=%s direct=%s -> enabled=%s",
+            responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,
+        )
+
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
             if responses_body.max_output_tokens is None:
                 default_max = ModelFamily.max_completion_tokens(responses_body.model)
@@ -852,6 +875,7 @@ class RequestOrchestrator:
                         request_context=__request__,
                         user_obj=user_model,
                         pipe_identifier=pipe_identifier,
+                        fusion_live_enabled=fusion_live_enabled,
                     )
                 # Return final text (non-streaming)
                 return await self._pipe._streaming_handler._run_nonstreaming_loop(
@@ -866,6 +890,7 @@ class RequestOrchestrator:
                     request_context=__request__,
                     user_obj=user_model,
                     pipe_identifier=pipe_identifier,
+                    fusion_live_enabled=fusion_live_enabled,
                 )
             except OpenRouterAPIError as exc:
                 api_model_label = getattr(responses_body, "api_model", None) or responses_body.model

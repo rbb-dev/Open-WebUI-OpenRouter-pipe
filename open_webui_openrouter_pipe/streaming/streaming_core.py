@@ -49,6 +49,7 @@ from ..core.logging_system import SessionLogger
 
 # Import EventEmitter type alias
 from .event_emitter import EventEmitter
+from .fusion_embed import FusionDeliberationState, build_fusion_embed_html
 
 # Import timing instrumentation
 from ..core.timing_logger import timed, timing_mark
@@ -422,6 +423,7 @@ class StreamingHandler:
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
+        fusion_live_enabled: bool = False,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -533,6 +535,63 @@ class StreamingHandler:
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
         thinking_status_enabled = thinking_mode in {"status", "both"}
         reasoning_throttle = ReasoningStatusThrottle()
+
+        fusion_armed = bool(fusion_live_enabled)
+        fusion_state = FusionDeliberationState() if fusion_armed else None
+        fusion_embed_emitted = False
+        fusion_embed_task: asyncio.Task[None] | None = None
+
+        def _add_fusion_name(names: dict[str, str], mid: str) -> None:
+            if mid in names:
+                return
+            display = ModelFamily.display_name(mid)
+            if not display and mid.startswith("~"):
+                display = ModelFamily.display_name(mid[1:])
+            if display:
+                names[mid] = display
+
+        def _fusion_model_names() -> dict[str, str]:
+            names: dict[str, str] = {}
+            if fusion_state is None:
+                return names
+            for fusion_ev in fusion_state.events:
+                if not isinstance(fusion_ev, dict):
+                    continue
+                for _name_key in ("model", "judge_model"):
+                    _mid = fusion_ev.get(_name_key)
+                    if isinstance(_mid, str):
+                        _add_fusion_name(names, _mid)
+                _resp = fusion_ev.get("response")
+                if isinstance(_resp, dict) and isinstance(_resp.get("model"), str):
+                    _add_fusion_name(names, _resp["model"])
+            return names
+
+        async def _emit_fusion_embed_once() -> None:
+            nonlocal fusion_embed_emitted
+            if fusion_embed_emitted or not (fusion_armed and fusion_state is not None and event_emitter):
+                return
+            fusion_embed_emitted = True
+            try:
+                await self._pipe._event_emitter_handler._emit_embeds(
+                    event_emitter, [build_fusion_embed_html(fusion_state, _fusion_model_names())]
+                )
+            except Exception:
+                self.logger.debug("Failed to emit fusion embed", exc_info=True)
+
+        async def _emit_fusion_embed_after_roster() -> None:
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                return
+            await _emit_fusion_embed_once()
+
+        async def _emit_fusion_event(fusion_ev: dict) -> None:
+            if not (fusion_armed and event_emitter):
+                return
+            try:
+                await event_emitter({"type": "fusion:event", "data": {"event": fusion_ev}})
+            except Exception:
+                self.logger.debug("Failed to emit fusion event", exc_info=True)
 
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit readable status updates for reasoning text without flooding."""
@@ -1201,6 +1260,50 @@ class StreamingHandler:
                                         reasoning_completed_emitted = True
                             continue
 
+                    if fusion_armed and fusion_state is not None and etype and (
+                        etype.startswith("response.fusion_call")
+                        or (
+                            etype in ("response.output_item.added", "response.output_item.done")
+                            and isinstance(event.get("item"), dict)
+                            and event["item"].get("type") == "openrouter:fusion"
+                        )
+                    ):
+                        _fusion_ms = fusion_state.record(event)
+                        if _fusion_ms == "fusion_open":
+                            assistant_message = ""
+                            if fusion_embed_task is None:
+                                fusion_embed_task = asyncio.create_task(
+                                    _emit_fusion_embed_after_roster()
+                                )
+                        if _fusion_ms:
+                            await _emit_fusion_event(event)
+                        continue
+
+                    if fusion_armed and fusion_state is not None and etype in ("response.created", "response.in_progress"):
+                        fusion_state.record(event)
+
+                    if fusion_armed and fusion_state is not None:
+                        _ans_oi = event.get("output_index")
+                        _post_fusion = (
+                            fusion_state.fusion_index is not None
+                            and isinstance(_ans_oi, int)
+                            and _ans_oi > fusion_state.fusion_index
+                        )
+                        if fusion_state.fusion_index is None and etype in (
+                            "response.output_text.delta",
+                            "response.output_text.done",
+                        ):
+                            fusion_state.record(event)
+                        elif _post_fusion and etype in (
+                            "response.output_text.delta",
+                            "response.output_text.done",
+                        ):
+                            fusion_state.record(event)
+                            await _emit_fusion_embed_once()
+                            if etype == "response.output_text.done" and not assistant_message:
+                                assistant_message = event.get("text") or ""
+                            await _emit_fusion_event(event)
+
                     # --- Emit partial delta assistant message
                     if etype == "response.output_text.delta":
                         note_model_activity()  # Cancel thinking tasks when actual output starts
@@ -1213,6 +1316,7 @@ class StreamingHandler:
                                 and not responding_status_sent
                                 and not reasoning_stream_active
                                 and event_emitter
+                                and not fusion_armed
                             ):
                                 provider_status_seen = True
                                 responding_status_sent = True
@@ -1223,14 +1327,15 @@ class StreamingHandler:
                                     }
                                 )
                             assistant_message += normalized_delta
-                            await event_emitter(
-                                {
-                                    "type": "chat:message:delta",
-                                    "data": {
-                                        "content": normalized_delta,
-                                    },
-                                }
-                            )
+                            if not fusion_armed:
+                                await event_emitter(
+                                    {
+                                        "type": "chat:message:delta",
+                                        "data": {
+                                            "content": normalized_delta,
+                                        },
+                                    }
+                                )
                         continue
 
                     if etype == "response.content_part.done":
@@ -1880,6 +1985,20 @@ class StreamingHandler:
 
                     # --- Capture final response payload for this loop
                     if etype in ("response.completed", "response.done"):
+                        if fusion_armed and fusion_state is not None:
+                            _fusion_resp = event.get("response")
+                            if isinstance(_fusion_resp, dict) and "elapsed_seconds" not in _fusion_resp:
+                                _fc = _fusion_resp.get("created_at")
+                                _fco = _fusion_resp.get("completed_at")
+                                if isinstance(_fc, (int, float)) and isinstance(_fco, (int, float)) and _fco >= _fc:
+                                    _fusion_resp["elapsed_seconds"] = round(float(_fco) - float(_fc), 1)
+                                else:
+                                    _fstart = stream_started_at or request_started_at
+                                    if _fstart is not None:
+                                        _fusion_resp["elapsed_seconds"] = round(max(0.0, perf_counter() - _fstart), 1)
+                            if fusion_state.record(event):
+                                await _emit_fusion_embed_once()
+                                await _emit_fusion_event(event)
                         note_model_activity()  # Ensure thinking tasks are cancelled when response completes
                         final_response = event.get("response", {})
                         response_completed_at = perf_counter()
@@ -1910,7 +2029,7 @@ class StreamingHandler:
                     if event_emitter:
                         await self._pipe._event_emitter_handler._emit_completion(
                             event_emitter,
-                            content=assistant_message,
+                            content=None if fusion_armed else assistant_message,
                             done=True,
                         )
                     break
@@ -1941,12 +2060,14 @@ class StreamingHandler:
                 if usage:
                     usage["turn_count"] = 1
                     usage["function_call_count"] = sum(
-                        1 for i in final_response["output"] if i["type"] == "function_call"
+                        1
+                        for i in (final_response.get("output") or [])
+                        if isinstance(i, dict) and i.get("type") == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
                     # Pass content=None on tool-only turns (assistant_message=="")
                     # to avoid overwriting displayed reasoning/tool cards in OWUI.
-                    intermediate_content = assistant_message if assistant_message else None
+                    intermediate_content = None if fusion_armed else (assistant_message if assistant_message else None)
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=intermediate_content,
@@ -2732,6 +2853,9 @@ class StreamingHandler:
                     except Exception as exc:
                         self.logger.error("Failed to emit final status in finally: %s", exc)
 
+            resolved_chat_id = str(metadata.get("chat_id") or "")
+            from ..logging.session_log_manager import resolve_message_id
+            resolved_message_id = resolve_message_id(metadata)
             request_id = SessionLogger.request_id.get() or ""
             if request_id:
                 with SessionLogger._state_lock:
@@ -2740,9 +2864,6 @@ class StreamingHandler:
                     self.logger.debug("Collected %d session log entries for request %s.", len(log_events), request_id)
                 resolved_user_id = str(user_id or metadata.get("user_id") or "")
                 resolved_session_id = str(metadata.get("session_id") or "")
-                resolved_chat_id = str(metadata.get("chat_id") or "")
-                from ..logging.session_log_manager import resolve_message_id
-                resolved_message_id = resolve_message_id(metadata)
                 segment_status = "complete"
                 if was_cancelled:
                     segment_status = "cancelled"
@@ -2777,6 +2898,61 @@ class StreamingHandler:
                         terminal,
                         exc_info=True,
                     )
+
+            if fusion_embed_task is not None and not fusion_embed_task.done():
+                fusion_embed_task.cancel()
+
+            if (
+                fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
+                and assistant_message and not error_occurred and not was_cancelled
+            ):
+                assistant_message = (
+                    '<details type="fusion_answer" done="true">\n'
+                    '<summary>Final answer</summary>\n\n'
+                    + assistant_message
+                    + '\n</details>'
+                )
+
+            if (
+                fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
+                and fusion_state.events and Chats is not None and not was_cancelled
+            ):
+                try:
+                    if resolved_chat_id and resolved_message_id:
+                        if assistant_message:
+                            fusion_state.synthesize_missing_analysis()
+                        _fusion_html = build_fusion_embed_html(
+                            fusion_state, _fusion_model_names(), final=True
+                        )
+                        _content = assistant_message
+
+                        async def _persist_fusion_snapshot() -> None:
+                            _kept: list[object] = []
+                            try:
+                                _existing = await Chats.get_message_by_id_and_message_id(
+                                    resolved_chat_id, resolved_message_id
+                                )
+                                _raw = (_existing or {}).get("embeds")
+                                if isinstance(_raw, list):
+                                    _kept = [
+                                        e for e in _raw
+                                        if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
+                                    ]
+                            except Exception:
+                                _kept = []
+                            _kept.append(_fusion_html)
+                            _payload: dict[str, object] = {"embeds": _kept}
+                            if _content:
+                                _payload["content"] = _content
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                resolved_chat_id, resolved_message_id, _payload
+                            )
+
+                        await asyncio.shield(_persist_fusion_snapshot())
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.logger.debug("Failed to persist terminal fusion snapshot", exc_info=True)
 
             if not was_cancelled:
                 await _flush_pending("finalize")
@@ -2816,18 +2992,29 @@ class StreamingHandler:
 
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
-            if (not was_cancelled) and chat_id and message_id and emitted_citations and Chats is not None:
-                try:
-                    await Chats.upsert_message_to_chat_by_id_and_message_id(
-                        chat_id, message_id, {"sources": emitted_citations}
-                    )
-                except Exception as exc:
-                    self.logger.warning("Failed to persist citations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
-                    await self._pipe._event_emitter_handler._emit_notification(
-                        event_emitter,
-                        "Unable to save citations for this response. Output was delivered successfully.",
-                        level="warning",
-                    )
+
+            async def _persist_message_field(
+                field_key: str, data: Any, *, log_label: str, notify_label: str
+            ) -> None:
+                if (not was_cancelled) and chat_id and message_id and data and Chats is not None:
+                    try:
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            chat_id, message_id, {field_key: data}
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            "Failed to persist %s for chat_id=%s message_id=%s: %s",
+                            log_label, chat_id, message_id, exc,
+                        )
+                        await self._pipe._event_emitter_handler._emit_notification(
+                            event_emitter,
+                            f"Unable to save {notify_label} for this response. Output was delivered successfully.",
+                            level="warning",
+                        )
+
+            await _persist_message_field(
+                "sources", emitted_citations, log_label="citations", notify_label="citations"
+            )
             assistant_annotations: list[Any] = []
             assistant_reasoning_details: list[Any] = []
             if final_response and isinstance(final_response.get("output"), list):
@@ -2845,36 +3032,13 @@ class StreamingHandler:
                     if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
                         assistant_reasoning_details.extend(raw_reasoning_details)
 
-            if (not was_cancelled) and chat_id and message_id and assistant_annotations and Chats is not None:
-                try:
-                    await Chats.upsert_message_to_chat_by_id_and_message_id(
-                        chat_id, message_id, {"annotations": assistant_annotations}
-                    )
-                except Exception as exc:
-                    self.logger.warning("Failed to persist annotations for chat_id=%s message_id=%s: %s", chat_id, message_id, exc)
-                    await self._pipe._event_emitter_handler._emit_notification(
-                        event_emitter,
-                        "Unable to save file annotations for this response. Output was delivered successfully.",
-                        level="warning",
-                    )
-
-            if (not was_cancelled) and chat_id and message_id and assistant_reasoning_details and Chats is not None:
-                try:
-                    await Chats.upsert_message_to_chat_by_id_and_message_id(
-                        chat_id, message_id, {"reasoning_details": assistant_reasoning_details}
-                    )
-                except Exception as exc:
-                    self.logger.warning(
-                        "Failed to persist reasoning_details for chat_id=%s message_id=%s: %s",
-                        chat_id,
-                        message_id,
-                        exc,
-                    )
-                    await self._pipe._event_emitter_handler._emit_notification(
-                        event_emitter,
-                        "Unable to save reasoning details for this response. Output was delivered successfully.",
-                        level="warning",
-                    )
+            await _persist_message_field(
+                "annotations", assistant_annotations, log_label="annotations", notify_label="file annotations"
+            )
+            await _persist_message_field(
+                "reasoning_details", assistant_reasoning_details,
+                log_label="reasoning_details", notify_label="reasoning details"
+            )
 
         # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
         return assistant_message
@@ -2896,6 +3060,7 @@ class StreamingHandler:
         request_context: Optional[Request] = None,
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
+        fusion_live_enabled: bool = False,
     ) -> str | dict[str, Any]:
         """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
 
@@ -2926,6 +3091,7 @@ class StreamingHandler:
             request_context=request_context,
             user_obj=user_obj,
             pipe_identifier=pipe_identifier,
+            fusion_live_enabled=fusion_live_enabled,
         )
 
 

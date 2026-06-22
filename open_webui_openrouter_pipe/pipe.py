@@ -860,6 +860,20 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
             except Exception:
                 pass
+        if self.valves.ENABLE_OPENROUTER_FUSION and self.valves.AUTO_INSTALL_FUSION_FILTER:
+            try:
+                await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
+            except Exception as exc:
+                self.logger.debug("AUTO_INSTALL_FUSION_FILTER failed: %s", exc)
+        elif not self.valves.ENABLE_OPENROUTER_FUSION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                ff = await _Funcs.get_function_by_id("openrouter_fusion")
+                if ff and getattr(ff, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_fusion", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
+            except Exception:
+                pass
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
