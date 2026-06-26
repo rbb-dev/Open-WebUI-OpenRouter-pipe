@@ -192,7 +192,6 @@ class SessionLogManager:
     # Worker Thread Management
     # =========================================================================
 
-    @timed
     def stop_workers(self) -> None:
         """Stop session log background threads (best effort)."""
         if self._stop_event:

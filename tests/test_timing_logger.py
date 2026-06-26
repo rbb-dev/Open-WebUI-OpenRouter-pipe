@@ -641,3 +641,12 @@ def test_timing_events_buffer_evicts_oldest_requests(monkeypatch):
     assert len(tl._timing_events) == 3, "buffer must stay bounded at MAX_TIMING_REQUESTS"
     assert "req-9" in tl._timing_events, "most recent request must be retained"
     assert "req-0" not in tl._timing_events, "oldest request must be evicted"
+
+
+def test_pipe_teardown_chain_emits_no_timing_events_under_active_context():
+    from open_webui_openrouter_pipe import Pipe
+
+    pipe = Pipe()
+    tl.set_timing_context("req-teardown-probe", enabled=True)
+    pipe.shutdown()
+    assert tl.get_timing_events("req-teardown-probe") == []

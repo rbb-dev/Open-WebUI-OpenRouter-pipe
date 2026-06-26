@@ -1376,7 +1376,6 @@ class Pipe:
             return
         self._schedule_close()
 
-    @timed
     def shutdown(self) -> None:
         artifact_store = getattr(self, "_artifact_store", None)
         if artifact_store:
@@ -1547,7 +1546,6 @@ class Pipe:
             with contextlib.suppress(Exception):
                 slm._pipe = None  # type: ignore[assignment]
 
-    @timed
     def __del__(self) -> None:
         """Best-effort cleanup hook for garbage collection."""
         if getattr(self, "_closed", False):
