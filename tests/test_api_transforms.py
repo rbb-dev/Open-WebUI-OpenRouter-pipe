@@ -418,6 +418,22 @@ class TestResponsesPayloadToChatCompletionsPayload:
             assert text_block is not None
             assert text_block.get("cache_control") == {"type": "ephemeral"}
 
+    def test_drops_toplevel_cache_control(self):
+        """Top-level cache_control is /responses-only and must not leak into the chat payload."""
+        payload = {
+            "model": "anthropic/claude-sonnet-4.6",
+            "cache_control": {"type": "ephemeral"},
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hi"}],
+                }
+            ],
+        }
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert "cache_control" not in result
+
     def test_non_dict_returns_empty(self):
         """Test non-dict input returns empty dict."""
         assert _responses_payload_to_chat_completions_payload("not a dict") == {}  # type: ignore[arg-type]

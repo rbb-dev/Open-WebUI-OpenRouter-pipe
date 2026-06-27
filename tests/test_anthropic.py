@@ -23,7 +23,11 @@ import pytest
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
-from open_webui_openrouter_pipe.integrations.anthropic import _maybe_apply_anthropic_prompt_caching, _is_anthropic_model_id
+from open_webui_openrouter_pipe.integrations.anthropic import (
+    _maybe_apply_anthropic_prompt_caching,
+    _maybe_apply_responses_toplevel_cache_control,
+    _is_anthropic_model_id,
+)
 
 
 def _get_cache_control_from_block(block: dict) -> dict | None:
@@ -1245,3 +1249,58 @@ def test_strip_cache_control_from_tools():
     Pipe._strip_cache_control_from_input(tools)
     assert not Pipe._input_contains_cache_control(tools)
     assert "cache_control" not in tools[0]
+
+
+# ============================================================================
+# Responses-API top-level cache_control (/responses caching)
+# ============================================================================
+
+
+def test_responses_toplevel_cache_control_applied_5m(pipe_instance):
+    """Top-level cache_control (no ttl for 5m) is added for anthropic models."""
+    valves = pipe_instance.valves.model_copy(
+        update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True, "ANTHROPIC_PROMPT_CACHE_TTL": "5m"}
+    )
+    body = {"model": "anthropic/claude-sonnet-4.6", "input": []}
+    _maybe_apply_responses_toplevel_cache_control(body, valves=valves)
+    assert body["cache_control"] == {"type": "ephemeral"}
+
+
+def test_responses_toplevel_cache_control_applied_1h(pipe_instance):
+    """The 1h TTL adds ttl to the top-level cache_control."""
+    valves = pipe_instance.valves.model_copy(
+        update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True, "ANTHROPIC_PROMPT_CACHE_TTL": "1h"}
+    )
+    body = {"model": "anthropic/claude-opus-4.6", "input": []}
+    _maybe_apply_responses_toplevel_cache_control(body, valves=valves)
+    assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_responses_toplevel_cache_control_disabled(pipe_instance):
+    """No cache_control when caching is disabled."""
+    valves = pipe_instance.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": False})
+    body = {"model": "anthropic/claude-sonnet-4.6", "input": []}
+    _maybe_apply_responses_toplevel_cache_control(body, valves=valves)
+    assert "cache_control" not in body
+
+
+def test_responses_toplevel_cache_control_skips_non_anthropic(pipe_instance):
+    """No cache_control for non-anthropic models."""
+    valves = pipe_instance.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    body = {"model": "openai/gpt-4o", "input": []}
+    _maybe_apply_responses_toplevel_cache_control(body, valves=valves)
+    assert "cache_control" not in body
+
+
+def test_responses_toplevel_cache_control_idempotent(pipe_instance):
+    """An existing cache_control is left untouched (not downgraded)."""
+    valves = pipe_instance.valves.model_copy(
+        update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True, "ANTHROPIC_PROMPT_CACHE_TTL": "5m"}
+    )
+    body = {
+        "model": "anthropic/claude-sonnet-4.6",
+        "input": [],
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+    }
+    _maybe_apply_responses_toplevel_cache_control(body, valves=valves)
+    assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

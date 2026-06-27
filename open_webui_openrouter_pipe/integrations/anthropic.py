@@ -117,3 +117,26 @@ def _maybe_apply_anthropic_prompt_caching(
                 if cache_control_payload.get("ttl") and "ttl" not in existing_cc:
                     existing_cc["ttl"] = cache_control_payload["ttl"]
             break
+
+
+def _maybe_apply_responses_toplevel_cache_control(
+    request_body: dict[str, Any],
+    *,
+    valves: "Pipe.Valves",
+) -> None:
+    """Enable Claude prompt caching on /responses via a single top-level cache_control.
+
+    The Responses API ignores per-block cache_control breakpoints; only this top-level
+    field is honored. Applied for `anthropic/...` models when caching is enabled.
+    """
+    if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
+        return
+    if not _is_anthropic_model_id(request_body.get("model")):
+        return
+    existing = request_body.get("cache_control")
+    if isinstance(existing, dict) and existing:
+        return
+    payload: dict[str, Any] = {"type": "ephemeral"}
+    if valves.ANTHROPIC_PROMPT_CACHE_TTL == "1h":
+        payload["ttl"] = "1h"
+    request_body["cache_control"] = payload

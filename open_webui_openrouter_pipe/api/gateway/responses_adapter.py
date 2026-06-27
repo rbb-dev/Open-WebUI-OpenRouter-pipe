@@ -26,6 +26,7 @@ from ...requests.debug import (
     _debug_print_response,
 )
 from ...core.logging_system import SessionLogger
+from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
 
 if TYPE_CHECKING:
     from ...pipe import Pipe
@@ -103,6 +104,7 @@ class ResponsesAdapter:
             request_body.get("model"),
             valves=effective_valves,
         )
+        _maybe_apply_responses_toplevel_cache_control(request_body, valves=effective_valves)
         _debug_print_request(headers, request_body, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
 
@@ -473,6 +475,12 @@ class ResponsesAdapter:
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": _select_openrouter_http_referer(effective_valves),
         }
+        self._pipe._maybe_apply_anthropic_beta_headers(
+            headers,
+            request_params.get("model"),
+            valves=effective_valves,
+        )
+        _maybe_apply_responses_toplevel_cache_control(request_params, valves=effective_valves)
         _debug_print_request(headers, request_params, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
 

@@ -34,7 +34,7 @@ import json
 from typing import Any
 
 import pytest
-from aioresponses import aioresponses
+from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import ResponsesAdapter
@@ -2399,3 +2399,110 @@ def test_should_retry_stream_no_retry_after_emit():
     # Non-network errors are never retried, regardless of emit state.
     assert _should_retry_stream(False, ValueError("x")) is False
     assert _should_retry_stream(False, None) is False
+
+
+# ============================================================================
+# Anthropic top-level cache_control on /responses (Issue #48)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_responses_streaming_injects_anthropic_toplevel_cache_control(pipe_instance_async):
+    """Streaming /responses requests for anthropic models carry a top-level cache_control and the interleaved-thinking header."""
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+            "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True,
+        }
+    )
+    session = pipe._create_http_session(valves)
+    captured: dict[str, Any] = {}
+
+    def _callback(url, **kwargs):
+        captured.update(kwargs)
+        return CallbackResult(
+            status=200,
+            body=(_completed_sse() + "data: [DONE]\n\n").encode("utf-8"),
+            content_type="text/event-stream",
+        )
+
+    with aioresponses() as mock_http:
+        mock_http.post("https://openrouter.ai/api/v1/responses", callback=_callback)
+        async for _ in pipe.send_openai_responses_streaming_request(
+            session,
+            {"model": "anthropic/claude-sonnet-4.6", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            pass
+        await session.close()
+
+    assert captured.get("json", {}).get("cache_control") == {"type": "ephemeral"}
+    assert "interleaved-thinking-2025-05-14" in (captured.get("headers", {}) or {}).get("x-anthropic-beta", "")
+
+
+@pytest.mark.asyncio
+async def test_responses_nonstreaming_injects_anthropic_toplevel_cache_control(pipe_instance_async):
+    """Non-streaming /responses requests for anthropic models carry top-level cache_control (1h) and the interleaved-thinking header."""
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "1h",
+            "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": True,
+        }
+    )
+    session = pipe._create_http_session(valves)
+    captured: dict[str, Any] = {}
+
+    def _callback(url, **kwargs):
+        captured.update(kwargs)
+        return CallbackResult(status=200, payload={"output": [], "usage": {"input_tokens": 5, "output_tokens": 1}})
+
+    with aioresponses() as mock_http:
+        mock_http.post("https://openrouter.ai/api/v1/responses", callback=_callback)
+        await pipe.send_openai_responses_nonstreaming_request(
+            session,
+            {"model": "anthropic/claude-sonnet-4.6", "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        )
+        await session.close()
+
+    assert captured.get("json", {}).get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    assert "interleaved-thinking-2025-05-14" in (captured.get("headers", {}) or {}).get("x-anthropic-beta", "")
+
+
+@pytest.mark.asyncio
+async def test_responses_no_toplevel_cache_control_for_non_anthropic(pipe_instance_async):
+    """Non-anthropic /responses requests do not get a top-level cache_control."""
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(update={"ENABLE_ANTHROPIC_PROMPT_CACHING": True})
+    session = pipe._create_http_session(valves)
+    captured: dict[str, Any] = {}
+
+    def _callback(url, **kwargs):
+        captured.update(kwargs)
+        return CallbackResult(
+            status=200,
+            body=(_completed_sse() + "data: [DONE]\n\n").encode("utf-8"),
+            content_type="text/event-stream",
+        )
+
+    with aioresponses() as mock_http:
+        mock_http.post("https://openrouter.ai/api/v1/responses", callback=_callback)
+        async for _ in pipe.send_openai_responses_streaming_request(
+            session,
+            {"model": "openai/gpt-4o", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+        ):
+            pass
+        await session.close()
+
+    assert "cache_control" not in captured.get("json", {})

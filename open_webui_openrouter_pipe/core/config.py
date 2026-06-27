@@ -651,8 +651,8 @@ class Valves(BaseModel):
         default="responses",
         description=(
             "Which OpenRouter endpoint to use by default. "
-            "`responses` uses /responses (best feature coverage). "
-            "`chat_completions` uses /chat/completions (needed for some providers/features like cache_control breakpoints on Anthropic)."
+            "`responses` uses /responses (best feature coverage; Anthropic prompt caching is applied via a top-level cache_control). "
+            "`chat_completions` uses /chat/completions (per-block cache_control breakpoints; needed for Bedrock/Vertex-routed Claude caching and some provider features)."
         ),
     )
     FORCE_CHAT_COMPLETIONS_MODELS: str = Field(
@@ -902,9 +902,10 @@ class Valves(BaseModel):
         default=True,
         title="Anthropic prompt caching",
         description=(
-            "When True and the selected model is `anthropic/...`, insert `cache_control` breakpoints into "
-            "system/user text blocks to enable Claude prompt caching and reduce per-turn costs for large "
-            "stable prefixes (system prompts, tools, RAG context)."
+            "When True and the selected model is `anthropic/...`, enable Claude prompt caching to reduce "
+            "per-turn costs for large stable prefixes (system prompts, tools, RAG context). On /responses a "
+            "top-level cache_control is sent (routes Anthropic-direct, excluding Bedrock/Vertex); on "
+            "/chat/completions per-block cache_control breakpoints are used (works across all providers)."
         ),
     )
     ANTHROPIC_PROMPT_CACHE_TTL: Literal["5m", "1h"] = Field(
