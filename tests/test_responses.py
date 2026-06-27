@@ -1726,22 +1726,33 @@ def test_auto_context_trimming_enabled_by_default(minimal_pipe):
     from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
     apply_context_transforms(responses, auto_context_trimming=minimal_pipe.valves.AUTO_CONTEXT_TRIMMING)
-    assert responses.transforms == ["middle-out"]
+    assert responses.plugins == [{"id": "context-compression"}]
 
 
-def test_auto_context_trimming_respects_explicit_transforms(minimal_pipe):
+def test_auto_context_trimming_ignores_legacy_transforms_field(minimal_pipe):
+    """A caller-supplied (deprecated) transforms list is not honored; the valve drives
+    behaviour and appends the context-compression plugin regardless."""
     from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT, transforms=["custom"])
     apply_context_transforms(responses, auto_context_trimming=True)
-    assert responses.transforms == ["custom"]
+    assert responses.plugins == [{"id": "context-compression"}]
 
 
 def test_auto_context_trimming_disabled_via_valve(minimal_pipe):
     from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
     responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
     apply_context_transforms(responses, auto_context_trimming=False)
-    assert responses.transforms is None
+    assert responses.plugins is None
     assert responses.truncation == "disabled"
+
+
+def test_auto_context_trimming_serializes_plugin_not_transforms(minimal_pipe):
+    from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
+    responses = ResponsesBody(model="test", input=_STUBBED_INPUT)
+    apply_context_transforms(responses, auto_context_trimming=True)
+    dumped = responses.model_dump(exclude_none=True)
+    assert dumped.get("plugins") == [{"id": "context-compression"}]
+    assert "transforms" not in dumped
 
 
 def test_auto_context_trimming_disabled_preserves_explicit_truncation(minimal_pipe):

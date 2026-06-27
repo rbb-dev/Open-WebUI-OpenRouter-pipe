@@ -1685,8 +1685,10 @@ def apply_context_transforms(responses_body: "ResponsesBody", *, auto_context_tr
         if responses_body.truncation is None:
             responses_body.truncation = "disabled"
         return
-    if responses_body.transforms is None:
-        responses_body.transforms = ["middle-out"]
+    plugins = list(responses_body.plugins or [])
+    if not any(isinstance(entry, dict) and entry.get("id") == "context-compression" for entry in plugins):
+        plugins.append({"id": "context-compression"})
+        responses_body.plugins = plugins
 
 
 def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tuple[str, str, str]]:

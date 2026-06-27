@@ -1160,37 +1160,62 @@ class TestVariantEnforcement:
 class TestContextTransforms:
     """Tests for context transforms."""
 
-    def test_apply_context_transforms_sets_middle_out(self):
-        """Test that apply_context_transforms sets middle-out transform."""
+    def test_apply_context_transforms_adds_context_compression_plugin(self):
+        """Test that apply_context_transforms appends the context-compression plugin."""
         from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
         body = ResponsesBody(model="test", input=[])
-        assert body.transforms is None
+        assert body.plugins is None
 
         apply_context_transforms(body, auto_context_trimming=True)
 
-        assert body.transforms == ["middle-out"]
+        assert body.plugins == [{"id": "context-compression"}]
+        assert body.transforms is None
 
     def test_apply_context_transforms_skips_if_disabled(self):
-        """Test that apply_context_transforms skips if auto_context_trimming is False."""
+        """Test that apply_context_transforms adds no plugin when auto_context_trimming is False."""
         from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
         body = ResponsesBody(model="test", input=[])
         apply_context_transforms(body, auto_context_trimming=False)
 
-        assert body.transforms is None
+        assert body.plugins is None
 
-    def test_apply_context_transforms_preserves_existing(self):
-        """Test that apply_context_transforms preserves existing transforms."""
+    def test_apply_context_transforms_does_not_duplicate_existing_plugin(self):
+        """Test that an existing context-compression plugin is not duplicated."""
         from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
 
         body = ResponsesBody(model="test", input=[])
-        body.transforms = ["custom-transform"]
+        body.plugins = [{"id": "context-compression"}]
 
         apply_context_transforms(body, auto_context_trimming=True)
 
-        # Should not override
-        assert body.transforms == ["custom-transform"]
+        assert body.plugins == [{"id": "context-compression"}]
+
+    def test_apply_context_transforms_appends_alongside_other_plugins(self):
+        """Test that context-compression is appended without clobbering existing plugins."""
+        from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
+
+        body = ResponsesBody(model="test", input=[])
+        body.plugins = [{"id": "file-parser", "pdf": {"engine": "native"}}]
+
+        apply_context_transforms(body, auto_context_trimming=True)
+
+        assert body.plugins == [
+            {"id": "file-parser", "pdf": {"engine": "native"}},
+            {"id": "context-compression"},
+        ]
+
+    def test_apply_context_transforms_tolerates_non_dict_plugin_entries(self):
+        """Test that a malformed (non-dict) plugins entry does not break the dedup guard."""
+        from open_webui_openrouter_pipe.api.transforms import apply_context_transforms
+
+        body = ResponsesBody(model="test", input=[])
+        body.plugins = ["not-a-dict"]
+
+        apply_context_transforms(body, auto_context_trimming=True)
+
+        assert body.plugins == ["not-a-dict", {"id": "context-compression"}]
 
 
 # =============================================================================

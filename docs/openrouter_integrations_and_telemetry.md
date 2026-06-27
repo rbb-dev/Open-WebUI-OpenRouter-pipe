@@ -46,7 +46,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
 | `trace` | OpenRouter Broadcast observability metadata; a JSON object forwarded as-is to OpenRouter's tracing destinations (Datadog, Langfuse, LangSmith, webhook, etc.). This pipe supports `openrouter_trace` as an OWUI convenience mapping to this field. |
-| `transforms` | OpenRouter transforms list (for example automatic middle-out trimming when enabled). |
+| `transforms` | Deprecated OpenRouter transforms list (forwarded only if explicitly supplied). Automatic context trimming now uses the `context-compression` plugin — see §4. |
 | `background` | Run the request in the background (OpenRouter extension). |
 | `frequency_penalty` | Frequency penalty for sampling (-2 to 2). |
 | `image_config` | Image generation configuration (OpenRouter extension). |
@@ -371,13 +371,13 @@ Operational note:
 
 ---
 
-## 4. Auto context trimming (OpenRouter transforms)
+## 4. Auto context trimming (context-compression plugin)
 
-When `AUTO_CONTEXT_TRIMMING=True`, the pipe may attach OpenRouter’s `middle-out` transform by setting `transforms=["middle-out"]` **only when the request has no `transforms` list already**.
+When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array **only when no context-compression plugin is already present**. (This replaces the deprecated top-level `transforms=["middle-out"]` shape; `middle-out` is now the plugin’s internal compression engine.)
 
 Operational guidance:
 - Leave this enabled if you want long prompts to degrade gracefully instead of failing due to context limits.
-- Disable it if you manage `transforms` explicitly in your deployment.
+- Disable it if you manage context compression explicitly in your deployment.
 
 ---
 

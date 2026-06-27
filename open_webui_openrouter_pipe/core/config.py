@@ -920,9 +920,9 @@ class Valves(BaseModel):
         default=True,
         title="Auto context trimming",
         description=(
-            "When enabled, automatically attaches OpenRouter's `middle-out` transform so long prompts "
+            "When enabled, automatically enables OpenRouter's `context-compression` plugin so long prompts "
             "are trimmed from the middle instead of failing with context errors. Disable if your deployment "
-            "manages `transforms` manually."
+            "manages context compression manually."
         ),
     )
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(

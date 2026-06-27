@@ -124,9 +124,9 @@ For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools
 
 When `USE_MODEL_MAX_OUTPUT_TOKENS=True`, the pipe can set `max_output_tokens` using the provider-advertised `max_completion_tokens` derived from the catalog. When it is disabled, the pipe clears `max_output_tokens` so provider limits and upstream defaults apply.
 
-### 4.6 Auto context trimming (transforms)
+### 4.6 Auto context trimming (context-compression plugin)
 
-When `AUTO_CONTEXT_TRIMMING=True`, the pipe may attach OpenRouter’s `middle-out` transform by setting `transforms=["middle-out"]` only when the request does not already specify `transforms`.
+When `AUTO_CONTEXT_TRIMMING=True`, the pipe enables OpenRouter’s `context-compression` plugin by appending `{"id": "context-compression"}` to the request’s `plugins` array only when no context-compression plugin is already present.
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
 
