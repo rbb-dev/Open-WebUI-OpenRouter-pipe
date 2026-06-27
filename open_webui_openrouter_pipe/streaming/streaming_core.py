@@ -1917,6 +1917,32 @@ class StreamingHandler:
                                 )
                                 await _emit_tool_result(call_id=effective_id, result_text=result_text)
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
+                            title = None
+                            if valves.SHOW_TOOL_CARDS:
+                                tool_name = item_type.split(":", 1)[1] or item_type
+                                result_data = item.get("result")
+                                if result_data is None:
+                                    result_data = {
+                                        k: v for k, v in item.items()
+                                        if k not in ("type", "id", "status")
+                                    } or None
+                                try:
+                                    result_text = (
+                                        json.dumps(result_data, indent=2, ensure_ascii=False)
+                                        if result_data is not None
+                                        else str(item.get("status") or "completed")
+                                    )
+                                except (TypeError, ValueError):
+                                    result_text = str(result_data)
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name=tool_name,
+                                    arguments="{}",
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
                         elif item_type == "reasoning":

@@ -28,7 +28,7 @@ class Filter:
             default=0,
             description="Priority level for the filter operations.",
         )
-        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel"] = Field(
+        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(
             default="auto",
             description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",
         )
@@ -43,6 +43,12 @@ class Filter:
             ge=0,
             description="Cap on total search results across all queries in one request. 0 means no cap.",
         )
+        WEB_SEARCH_MAX_CHARACTERS: int = Field(
+            default=0,
+            ge=0,
+            le=100000,
+            description="Max characters of content per search result (1-100000). 0 means no cap. Takes precedence over context size when set.",
+        )
         WEB_SEARCH_ALLOWED_DOMAINS: str = Field(
             default="",
             description="Comma-separated list of domains to restrict search results to. Empty means no restriction.",
@@ -51,7 +57,7 @@ class Filter:
             default="",
             description="Comma-separated list of domains to exclude from search results.",
         )
-        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl"] = Field(
+        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] = Field(
             default="auto",
             description="Web fetch backend. auto lets OpenRouter choose the best engine for each URL.",
         )
@@ -152,6 +158,8 @@ class Filter:
             ws_params["max_results"] = self.valves.WEB_SEARCH_MAX_RESULTS
             if self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS > 0:
                 ws_params["max_total_results"] = self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS
+            if self.valves.WEB_SEARCH_MAX_CHARACTERS > 0:
+                ws_params["max_characters"] = self.valves.WEB_SEARCH_MAX_CHARACTERS
             ws_params["search_context_size"] = user_valves.WEB_SEARCH_CONTEXT_SIZE
             allowed = self._csv_list(self.valves.WEB_SEARCH_ALLOWED_DOMAINS)
             if allowed:

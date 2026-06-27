@@ -401,7 +401,7 @@ class FilterManager:
         ]
         if enable_web_search:
             valves_fields.extend([
-                '        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel"] = Field(\n'
+                '        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(\n'
                 '            default="auto",\n'
                 '            description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",\n'
                 '        )',
@@ -416,6 +416,12 @@ class FilterManager:
                 '            ge=0,\n'
                 '            description="Cap on total search results across all queries in one request. 0 means no cap.",\n'
                 '        )',
+                '        WEB_SEARCH_MAX_CHARACTERS: int = Field(\n'
+                '            default=0,\n'
+                '            ge=0,\n'
+                '            le=100000,\n'
+                '            description="Max characters of content per search result (1-100000). 0 means no cap. Takes precedence over context size when set.",\n'
+                '        )',
                 '        WEB_SEARCH_ALLOWED_DOMAINS: str = Field(\n'
                 '            default="",\n'
                 '            description="Comma-separated list of domains to restrict search results to. Empty means no restriction.",\n'
@@ -427,7 +433,7 @@ class FilterManager:
             ])
         if enable_web_fetch:
             valves_fields.extend([
-                '        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl"] = Field(\n'
+                '        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] = Field(\n'
                 '            default="auto",\n'
                 '            description="Web fetch backend. auto lets OpenRouter choose the best engine for each URL.",\n'
                 '        )',
@@ -509,6 +515,8 @@ class FilterManager:
                 '            ws_params["max_results"] = self.valves.WEB_SEARCH_MAX_RESULTS\n'
                 '            if self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS > 0:\n'
                 '                ws_params["max_total_results"] = self.valves.WEB_SEARCH_MAX_TOTAL_RESULTS\n'
+                '            if self.valves.WEB_SEARCH_MAX_CHARACTERS > 0:\n'
+                '                ws_params["max_characters"] = self.valves.WEB_SEARCH_MAX_CHARACTERS\n'
                 '            ws_params["search_context_size"] = user_valves.WEB_SEARCH_CONTEXT_SIZE\n'
                 '            allowed = self._csv_list(self.valves.WEB_SEARCH_ALLOWED_DOMAINS)\n'
                 '            if allowed:\n'

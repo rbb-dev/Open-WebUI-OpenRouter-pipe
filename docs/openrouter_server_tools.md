@@ -83,12 +83,13 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `WEB_SEARCH_ENGINE` | `Literal["auto","native","exa","firecrawl","parallel"]` | `auto` | Web search backend. `auto` lets OpenRouter choose, `native` uses the model provider, others use specific engines. |
+| `WEB_SEARCH_ENGINE` | `Literal["auto","native","exa","firecrawl","parallel","perplexity"]` | `auto` | Web search backend. `auto` lets OpenRouter choose, `native` uses the model provider, others use specific engines. |
 | `WEB_SEARCH_MAX_RESULTS` | `int` | `5` | Maximum number of search results per query (1-25). |
 | `WEB_SEARCH_MAX_TOTAL_RESULTS` | `int` | `0` | Cap on total search results across all queries in one request. 0 means no cap. |
+| `WEB_SEARCH_MAX_CHARACTERS` | `int` | `0` | Max characters of content per search result (1-100000). 0 means no cap. Takes precedence over context size when set. |
 | `WEB_SEARCH_ALLOWED_DOMAINS` | `str` | `""` | Comma-separated list of domains to restrict search results to. Empty means no restriction. |
 | `WEB_SEARCH_EXCLUDED_DOMAINS` | `str` | `""` | Comma-separated list of domains to exclude from search results. |
-| `WEB_FETCH_ENGINE` | `Literal["auto","native","exa","openrouter","firecrawl"]` | `auto` | Web fetch backend. `auto` lets OpenRouter choose the best engine for each URL. |
+| `WEB_FETCH_ENGINE` | `Literal["auto","native","exa","openrouter","firecrawl","parallel"]` | `auto` | Web fetch backend. `auto` lets OpenRouter choose the best engine for each URL. |
 | `WEB_FETCH_MAX_USES` | `int` | `0` | Maximum number of URL fetches per request. 0 means no limit. |
 | `WEB_FETCH_MAX_CONTENT_TOKENS` | `int` | `0` | Maximum tokens of fetched content to return per URL. 0 means no limit. |
 | `WEB_FETCH_ALLOWED_DOMAINS` | `str` | `""` | Comma-separated list of domains allowed for fetching. Empty means allow all. |

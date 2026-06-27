@@ -101,7 +101,10 @@ class NonStreamingAdapter:
                                         yield {"type": "response.output_text.delta", "delta": text_val}
                         yield {"type": "response.output_item.done", "item": item}
                         continue
-                    if item.get("type") in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call"}:
+                    item_type = item.get("type")
+                    if item_type in {"reasoning", "web_search_call", "file_search_call", "image_generation_call", "local_shell_call"} or (
+                        isinstance(item_type, str) and item_type.startswith("openrouter:")
+                    ):
                         yield {"type": "response.output_item.done", "item": item}
                     if item.get("type") == "function_call":
                         yield {"type": "response.output_item.added", "item": dict(item, status="in_progress")}

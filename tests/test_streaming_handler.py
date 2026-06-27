@@ -11223,6 +11223,44 @@ class TestOpenRouterServerToolCards:
         assert function_calls[0]["item"]["name"] == "datetime"
 
     @pytest.mark.asyncio
+    async def test_openrouter_unknown_server_tool_renders_via_fallback(self, monkeypatch, pipe_instance_async):
+        """An unhandled openrouter:* item still renders a tool card via the generic fallback, not vanish."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+
+        events = [
+            {"type": "response.output_item.added", "item": {"type": "openrouter:future_tool", "id": "ft-1", "status": "in_progress"}},
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:future_tool", "id": "ft-1", "status": "completed",
+                "result": {"answer": "42"}}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
+        function_calls = [e for e in added_items
+                          if e.get("item", {}).get("type") == "function_call"
+                          and e.get("item", {}).get("call_id") == "ft-1"]
+        function_outputs = [e for e in added_items
+                           if e.get("item", {}).get("type") == "function_call_output"
+                           and e.get("item", {}).get("call_id") == "ft-1"]
+        assert len(function_calls) == 1, "Unknown openrouter:* tool should still emit a tool card"
+        assert len(function_outputs) == 1
+        assert function_calls[0]["item"]["name"] == "future_tool"
+        output_text = function_outputs[0]["item"]["output"][0]["text"]
+        assert "42" in output_text
+
+    @pytest.mark.asyncio
     async def test_openrouter_datetime_card_suppressed_when_show_tool_cards_off(self, monkeypatch, pipe_instance_async):
         """When SHOW_TOOL_CARDS is False (default), no card events are emitted."""
         pipe = pipe_instance_async

@@ -71,6 +71,20 @@ def _inject_image_modalities(
         )
 
 
+def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for tool_key, tool_params in server_tools.items():
+        if not isinstance(tool_key, str) or not tool_key.strip():
+            continue
+        entry: dict[str, Any] = {"type": f"openrouter:{tool_key}"}
+        if isinstance(tool_params, dict) and tool_params:
+            cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
+            if cleaned_params:
+                entry["parameters"] = cleaned_params
+        entries.append(entry)
+    return entries
+
+
 class RequestOrchestrator:
     """Orchestrates the processing of transformed OpenRouter requests."""
 
@@ -830,15 +844,7 @@ class RequestOrchestrator:
         server_tools = (__metadata__ or {}).get(_PIPE_METADATA_KEY, {}).get("server_tools", {})
         if isinstance(server_tools, dict) and server_tools:
             tools_list = list(responses_body.tools or [])
-            for tool_key, tool_params in server_tools.items():
-                if not isinstance(tool_key, str) or not tool_key.strip():
-                    continue
-                entry: dict[str, Any] = {"type": f"openrouter:{tool_key}"}
-                if isinstance(tool_params, dict) and tool_params:
-                    cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != "" and v != 0}
-                    if cleaned_params:
-                        entry["parameters"] = cleaned_params
-                tools_list.append(entry)
+            tools_list.extend(_build_server_tool_entries(server_tools))
             if tools_list:
                 responses_body.tools = tools_list
                 self.logger.debug(

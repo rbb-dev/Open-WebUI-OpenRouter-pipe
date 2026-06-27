@@ -250,6 +250,62 @@ async def test_nonstreaming_responses_special_item_types(pipe_instance_async):
 
 
 @pytest.mark.asyncio
+async def test_nonstreaming_responses_reemits_openrouter_server_tool_items(pipe_instance_async):
+    """Non-streaming /responses must re-emit openrouter:* server-tool items so they render.
+
+    Regression: the adapter previously re-emitted only a hardcoded set
+    (reasoning/web_search_call/file_search_call/image_generation_call/local_shell_call),
+    silently dropping openrouter:datetime / web_search / web_fetch / image_generation in
+    non-streaming mode.
+    """
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    response_json = {
+        "id": "resp_123",
+        "output": [
+            {"type": "openrouter:datetime", "id": "dt-1", "datetime": "2026-06-27T13:00:00+10:00", "timezone": "Australia/Sydney"},
+            {"type": "openrouter:web_fetch", "id": "wf-1", "url": "https://example.com", "result": {"content": "page text"}},
+            {"type": "openrouter:web_search", "id": "ws-1", "status": "completed"},
+            {"type": "openrouter:image_generation", "id": "ig-1", "result": "https://img"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done!"}],
+            },
+        ],
+        "usage": {"input_tokens": 5, "output_tokens": 2},
+    }
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            payload=response_json,
+        )
+
+        events = []
+        async for event in pipe.send_openrouter_nonstreaming_request_as_events(
+            session,
+            {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "What time is it?"}]},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=valves,
+            endpoint_override="responses",
+        ):
+            events.append(event)
+
+        await session.close()
+
+    item_done_events = [e for e in events if e.get("type") == "response.output_item.done"]
+    item_types = {e.get("item", {}).get("type") for e in item_done_events}
+    assert "openrouter:datetime" in item_types
+    assert "openrouter:web_fetch" in item_types
+    assert "openrouter:web_search" in item_types
+    assert "openrouter:image_generation" in item_types
+
+
+@pytest.mark.asyncio
 async def test_nonstreaming_responses_function_call(pipe_instance_async):
     """Test _run_responses handles function_call items."""
     pipe = pipe_instance_async

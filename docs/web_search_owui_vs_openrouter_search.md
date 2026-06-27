@@ -19,7 +19,7 @@ Open WebUI has a built-in **Web Search** feature. Separately, OpenRouter provide
 
 - An OpenRouter server tool passed in the `tools` array of the API request.
 - The **model** decides when to search (tool calling), and OpenRouter executes the search server-side.
-- Supports engine selection (`auto`, `native`, `exa`, `firecrawl`, `parallel`), result limits, domain restrictions, and location-aware results.
+- Supports engine selection (`auto`, `native`, `exa`, `firecrawl`, `parallel`, `perplexity`), result limits, per-result character caps, domain restrictions, and location-aware results.
 - Configured via the **OpenRouter Web Tools** companion filter (admin valves for engines/limits, user valves for per-chat toggles and preferences).
 
 ---
