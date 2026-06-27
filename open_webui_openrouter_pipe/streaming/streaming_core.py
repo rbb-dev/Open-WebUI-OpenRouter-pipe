@@ -86,6 +86,7 @@ from ..api.transforms import (
     _apply_disable_native_websearch_to_payload,
     _apply_provider_routing_params_to_payload,
     _parse_url_citation_annotations,
+    _unhandled_citation_types,
     _strip_disable_model_settings_params,
 )
 
@@ -518,6 +519,7 @@ class StreamingHandler:
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
         citation_excerpt_max = 1000
+        unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
         model_started = asyncio.Event()
@@ -1056,8 +1058,33 @@ class StreamingHandler:
                 return candidate.strip()
             return ""
 
+        async def _notify_unhandled_citations(raw_annotations: Any) -> None:
+            """Warn (status + toast) once if the response carries a citation type we can't
+            render yet (e.g. file_citation). Never alters or halts the answer."""
+            nonlocal unhandled_citation_notified
+            if unhandled_citation_notified:
+                return
+            unhandled = _unhandled_citation_types(raw_annotations)
+            if not unhandled:
+                return
+            unhandled_citation_notified = True
+            type_label = ", ".join(sorted(unhandled))
+            self.logger.debug("Unhandled citation annotation type(s): %s", type_label)
+            await self._pipe._event_emitter_handler._emit_status(
+                event_emitter,
+                "Some source citations in this response couldn't be displayed.",
+                done=True,
+            )
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter,
+                f"This response included a citation type this pipe can't render yet ({type_label}). "
+                "Your answer is unaffected — please report this so support can be added.",
+                level="warning",
+            )
+
         async def _emit_annotation_citations(raw_annotations: Any) -> None:
             """Emit url_citation citations, skipping any URL already emitted (per-URL dedup)."""
+            await _notify_unhandled_citations(raw_annotations)
             if not isinstance(raw_annotations, list) or not raw_annotations:
                 return
             for url, title, content in _parse_url_citation_annotations(raw_annotations):
@@ -1498,6 +1525,7 @@ class StreamingHandler:
                     # --- Citations from inline annotations (emit metadata only) ---------------
                     if etype == "response.output_text.annotation.added":
                         ann = event.get("annotation") or {}
+                        await _notify_unhandled_citations([ann])
                         if ann.get("type") == "url_citation":
                             payload = ann.get("url_citation") if isinstance(ann.get("url_citation"), dict) else ann
                             url = (payload.get("url") or "").strip()

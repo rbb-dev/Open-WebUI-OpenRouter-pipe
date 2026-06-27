@@ -11371,6 +11371,67 @@ class TestOpenRouterServerToolCards:
         assert "excerpt B" in by_url["https://b.com"]["data"]["document"]
 
     @pytest.mark.asyncio
+    async def test_unhandled_file_citation_notifies_without_breaking(self, pipe_instance_async):
+        """A citation type we can't render yet (file_citation) emits ONE warning toast + a
+        status note, but never breaks the response or the url_citation rendering."""
+        pipe = pipe_instance_async
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "x", "annotations": [
+                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A", "content": "exA"}},
+                    {"type": "file_citation", "file_id": "f-1", "filename": "doc.pdf", "index": 3},
+                    {"type": "file_citation", "file_id": "f-2", "filename": "doc2.pdf", "index": 9},
+                ]}]}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        # url_citation still renders
+        sources = [e for e in emitted if e.get("type") == "source"]
+        assert any(s["data"]["source"]["url"] == "https://a.com" for s in sources)
+        # exactly one throttled warning toast naming the unhandled type
+        notifs = [e for e in emitted if e.get("type") == "notification" and e.get("data", {}).get("type") == "warning"]
+        assert len(notifs) == 1, "expected exactly one throttled warning toast"
+        assert "file_citation" in notifs[0]["data"]["content"]
+        # the loop processed the message (url_citation rendered) and returned without raising
+        # — i.e. the unhandled type did not break the response.
+
+    @pytest.mark.asyncio
+    async def test_streaming_survives_emitter_failure_midstream(self, pipe_instance_async):
+        """Browser/transport crash mid-output: the emitter raises on EVERY event, yet the
+        streaming loop must run to completion (answer generated server-side) and never
+        propagate the failure. Faithfully mirrors production, which wraps the OWUI emitter
+        via _wrap_safe_event_emitter before it reaches the loop."""
+        pipe = pipe_instance_async
+
+        async def failing_emitter(event):
+            raise RuntimeError("browser gone")
+
+        wrapped = pipe._event_emitter_handler._wrap_safe_event_emitter(failing_emitter)
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        events = [
+            {"type": "response.output_text.delta", "delta": "Hello "},
+            {"type": "response.output_text.delta", "delta": "world"},
+            {"type": "response.output_item.done", "item": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello world", "annotations": [
+                    {"type": "url_citation", "url_citation": {"url": "https://a.com", "title": "A"}},
+                ]}]}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        completed = False
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, wrapped,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+        completed = True
+        monkey.undo()
+        assert completed, "streaming loop must not crash when the emitter fails mid-stream"
+
+    @pytest.mark.asyncio
     async def test_citation_excerpt_is_capped_for_display(self, pipe_instance_async):
         """The url_citation excerpt is capped before entering the citation body (which is
         persisted to the chat DB); a multi-KB Exa highlight must not bloat the record."""

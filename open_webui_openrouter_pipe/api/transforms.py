@@ -1720,3 +1720,22 @@ def _parse_url_citation_annotations(raw_annotations: list[Any]) -> Iterator[tupl
             title = url
         content = content.strip() if isinstance(content, str) else ""
         yield url, title, content
+
+
+def _unhandled_citation_types(raw_annotations: Any) -> set[str]:
+    """Return citation annotation types the pipe cannot render (e.g. ``file_citation``).
+
+    Any annotation whose ``type`` ends in ``_citation`` but is not ``url_citation``
+    (the only type we surface today) is reported so callers can notify the user
+    instead of silently dropping it.
+    """
+    types: set[str] = set()
+    if not isinstance(raw_annotations, list):
+        return types
+    for raw_ann in raw_annotations:
+        if not isinstance(raw_ann, dict):
+            continue
+        ann_type = raw_ann.get("type")
+        if isinstance(ann_type, str) and ann_type.endswith("_citation") and ann_type != "url_citation":
+            types.add(ann_type)
+    return types
