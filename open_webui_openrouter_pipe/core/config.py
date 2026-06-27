@@ -79,6 +79,9 @@ _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     {
         "image_generation_call",
         "openrouter:image_generation",
+        "openrouter:web_search",
+        "openrouter:web_fetch",
+        "openrouter:datetime",
         "web_search_call",
         "file_search_call",
         "local_shell_call",
@@ -1557,6 +1560,18 @@ class Valves(BaseModel):
     ENABLE_DATETIME: bool = Field(
         default=True,
         description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users.",
+    )
+    ENABLE_ADVISOR: bool = Field(
+        default=True,
+        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users.",
+    )
+    ENABLE_SUBAGENT: bool = Field(
+        default=True,
+        description="Enable the OpenRouter Subagent server tool (delegate tasks to a cheaper worker model). When disabled, subagent toggles are hidden from users.",
+    )
+    ENABLE_SEARCH_MODELS: bool = Field(
+        default=True,
+        description="Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users.",
     )
     ENABLE_IMAGE_GENERATION: bool = Field(
         default=True,

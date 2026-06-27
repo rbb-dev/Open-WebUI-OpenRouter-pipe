@@ -87,6 +87,7 @@ class ResponsesBody(BaseModel):
     text: Optional[Dict[str, Any]] = None
     parallel_tool_calls: Optional[bool] = None
     transforms: Optional[List[str]] = None
+    stop_server_tools_when: Optional[List[Dict[str, Any]]] = None
     user: Optional[str] = None
     session_id: Optional[str] = None
 
@@ -418,6 +419,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "user",
     "session_id",
     "transforms",
+    "stop_server_tools_when",
     # OpenRouter observability (Broadcast)
     "trace",
     # OpenRouter Responses-specific extensions
@@ -489,6 +491,7 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "modalities",
     # Keep transforms for compatibility; OpenRouter may ignore if unsupported.
     "transforms",
+    "stop_server_tools_when",
     "thinking_config",
 }
 
@@ -1078,7 +1081,7 @@ def _responses_payload_to_chat_completions_payload(
     chat_payload: dict[str, Any] = {}
 
     # Core routing and identifiers
-    for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms", "trace"):
+    for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms", "stop_server_tools_when", "trace"):
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 

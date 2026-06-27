@@ -87,6 +87,68 @@ def test_no_server_tools_written_when_all_toggles_off():
     assert not meta.get("openrouter_pipe", {}).get("server_tools")
 
 
+def test_advisor_toggle_emits_advisor_server_tool():
+    module = _embedded_module()
+    f = module.Filter()
+    f.valves.ADVISOR_MODEL = "~anthropic/claude-opus-latest"
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, ADVISOR=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    st = meta["openrouter_pipe"]["server_tools"]
+    assert st["advisor"] == {"model": "~anthropic/claude-opus-latest"}
+
+
+def test_advisor_without_model_emits_empty_params():
+    """No advisor model set => empty params (OpenRouter falls back to outer model)."""
+    module = _embedded_module()
+    f = module.Filter()
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, ADVISOR=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    assert meta["openrouter_pipe"]["server_tools"]["advisor"] == {}
+
+
+def test_subagent_toggle_emits_subagent_server_tool():
+    module = _embedded_module()
+    f = module.Filter()
+    f.valves.SUBAGENT_MODEL = "~anthropic/claude-haiku-latest"
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, SUBAGENT=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    st = meta["openrouter_pipe"]["server_tools"]
+    assert st["subagent"] == {"model": "~anthropic/claude-haiku-latest"}
+
+
+def test_search_models_toggle_emits_chat_search_models():
+    module = _embedded_module()
+    f = module.Filter()
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, SEARCH_MODELS=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    assert meta["openrouter_pipe"]["server_tools"]["chat_search_models"] == {}
+
+
+def test_cost_guard_writes_stop_server_tools_when():
+    module = _embedded_module()
+    f = module.Filter()
+    f.valves.SERVER_TOOLS_MAX_COST_USD = 0.5
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, ADVISOR=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    assert meta["openrouter_pipe"]["stop_server_tools_when"] == [
+        {"type": "max_cost", "max_cost_in_dollars": 0.5}
+    ]
+
+
+def test_cost_guard_absent_when_unset():
+    module = _embedded_module()
+    f = module.Filter()
+    user_valves = module.Filter.UserValves(WEB_SEARCH=False, DATETIME=False, ADVISOR=True)
+    meta: dict = {}
+    f.inlet({}, __metadata__=meta, __user__={"valves": user_valves})
+    assert "stop_server_tools_when" not in meta.get("openrouter_pipe", {})
+
+
 def test_standalone_and_embedded_web_tools_filter_are_identical():
     """The standalone reference filter must equal the generated embedded source.
 

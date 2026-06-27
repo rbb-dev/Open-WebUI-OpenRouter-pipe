@@ -162,6 +162,9 @@ Behavior note (no valve):
 | `ENABLE_WEB_SEARCH` | `bool` | `True` | Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users. |
 | `ENABLE_WEB_FETCH` | `bool` | `True` | Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users. |
 | `ENABLE_DATETIME` | `bool` | `True` | Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users. |
+| `ENABLE_ADVISOR` | `bool` | `True` | Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation; extra paid call, default-off per chat). When disabled, advisor toggles are hidden from users. |
+| `ENABLE_SUBAGENT` | `bool` | `True` | Enable the OpenRouter Subagent server tool (delegate tasks to a cheaper worker model; extra paid call, default-off per chat). When disabled, subagent toggles are hidden from users. |
+| `ENABLE_SEARCH_MODELS` | `bool` | `True` | Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users. |
 | `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users. |
 | `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. |
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |

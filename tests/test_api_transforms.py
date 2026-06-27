@@ -306,6 +306,17 @@ class TestResponsesPayloadToChatCompletionsPayload:
         assert result["messages"][0]["role"] == "system"
         assert "helpful assistant" in str(result["messages"][0]["content"])
 
+    def test_preserves_stop_server_tools_when(self):
+        """The stop_server_tools_when cost guard must survive Responses->Chat conversion,
+        or the server-tool cost cap is silently dropped on the chat-completions endpoint."""
+        payload = {
+            "model": "anthropic/claude-opus-4.8",
+            "input": [],
+            "stop_server_tools_when": [{"type": "max_cost", "max_cost_in_dollars": 0.5}],
+        }
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert result.get("stop_server_tools_when") == [{"type": "max_cost", "max_cost_in_dollars": 0.5}]
+
     def test_phase_metadata_is_stripped_on_chat_completions_boundary(self):
         """Unsupported assistant phase metadata is dropped in degraded chat mode."""
         payload = {
@@ -1984,6 +1995,25 @@ class TestFilterReplayableInputItems:
         items = [{"type": "message"}, {"type": "function_call"}]
         result = _filter_replayable_input_items(items)
         assert result is items  # Same object
+
+    def test_openrouter_web_tool_artifacts_stripped_but_advisor_kept(self):
+        """openrouter:datetime/web_search/web_fetch are not valid input items and must be
+        stripped on replay. openrouter:advisor MUST be kept — its cross-request memory
+        depends on replaying the advisor items unchanged."""
+        items = [
+            {"type": "openrouter:datetime", "id": "dt", "datetime": "2026-06-27", "timezone": "UTC"},
+            {"type": "openrouter:web_search", "id": "ws", "status": "completed"},
+            {"type": "openrouter:web_fetch", "id": "wf", "url": "https://x"},
+            {"type": "openrouter:advisor", "id": "adv", "advice": "remember this"},
+            {"type": "message", "role": "assistant", "content": []},
+        ]
+        result = _filter_replayable_input_items(items)
+        types = [i.get("type") for i in result]
+        assert "openrouter:datetime" not in types
+        assert "openrouter:web_search" not in types
+        assert "openrouter:web_fetch" not in types
+        assert "openrouter:advisor" in types
+        assert "message" in types
 
 
 # ============================================================================

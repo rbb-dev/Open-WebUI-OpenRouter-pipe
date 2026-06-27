@@ -1,6 +1,6 @@
 # OpenRouter Server Tools
 
-**Scope:** How OpenRouter server tools (Web Search, Web Fetch, Datetime, Image Generation) are configured, surfaced to users, and injected into API requests.
+**Scope:** How OpenRouter server tools (Web Search, Web Fetch, Datetime, Advisor, Subagent, Model Search, Image Generation) are configured, surfaced to users, and injected into API requests.
 
 > **Quick navigation:** [Docs Home](README.md) · [Valves Atlas](valves_and_configuration_atlas.md) · [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) · [Tooling & Integrations](tooling_and_integrations.md)
 
@@ -18,6 +18,11 @@ Available server tools:
 | `web_fetch` | Fetch and read the content of a URL | Per-fetch pricing (varies by engine) |
 | `datetime` | Return the current date and time | Free |
 | `image_generation` | Generate images from text prompts | Per-image pricing (varies by model) |
+| `advisor` | Consult a higher-intelligence model mid-generation | Extra model call (advisor model pricing) |
+| `subagent` | Delegate a self-contained task to a cheaper worker model | Extra model call (worker model pricing) |
+| `chat_search_models` | Let the model search the OpenRouter model catalog | Free |
+
+> Advisor and subagent spawn **additional paid model calls**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`).
 
 The model decides **when** to call these tools based on the conversation context. The pipe does not invoke them directly; it includes the tool definitions in the outgoing request and OpenRouter handles execution.
 
@@ -29,10 +34,13 @@ Server tools are configured through **companion filter functions** that the pipe
 
 ### OpenRouter Web Tools filter
 
-Bundles three tools into a single toggleable filter:
+Bundles six tools into a single toggleable filter:
 - **Web Search** (user valve, default: on)
 - **Web Fetch** (user valve, default: off)
 - **Datetime** (user valve, default: on)
+- **Advisor** (user valve, default: off)
+- **Subagent** (user valve, default: off)
+- **Model Search** (user valve, default: off)
 
 Users see a single "OpenRouter Web Tools" switch in the Integrations menu. Individual tools are toggled via the filter's user valves (the knobs/settings UI for the filter).
 
@@ -58,6 +66,9 @@ Each tool has an enable gate. When a gate is disabled, the corresponding tool's 
 | `ENABLE_WEB_SEARCH` | `bool` | `True` | Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users. |
 | `ENABLE_WEB_FETCH` | `bool` | `True` | Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users. |
 | `ENABLE_DATETIME` | `bool` | `True` | Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users. |
+| `ENABLE_ADVISOR` | `bool` | `True` | Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users. |
+| `ENABLE_SUBAGENT` | `bool` | `True` | Enable the OpenRouter Subagent server tool (delegate tasks to a cheaper worker model). When disabled, subagent toggles are hidden from users. |
+| `ENABLE_SEARCH_MODELS` | `bool` | `True` | Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users. |
 | `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users. |
 
 ### Filter lifecycle valves
@@ -94,6 +105,9 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | `WEB_FETCH_MAX_CONTENT_TOKENS` | `int` | `0` | Maximum tokens of fetched content to return per URL. 0 means no limit. |
 | `WEB_FETCH_ALLOWED_DOMAINS` | `str` | `""` | Comma-separated list of domains allowed for fetching. Empty means allow all. |
 | `WEB_FETCH_BLOCKED_DOMAINS` | `str` | `""` | Comma-separated list of domains blocked from fetching. |
+| `ADVISOR_MODEL` | `str` | `""` | Advisor model to consult (any OpenRouter model). Empty uses the chat's own model. |
+| `SUBAGENT_MODEL` | `str` | `""` | Worker model for delegated subagent tasks. Empty uses the chat's own model. |
+| `SERVER_TOOLS_MAX_COST_USD` | `float` | `0.0` | Cap cumulative server-tool loop cost per request in USD (sets OpenRouter `stop_server_tools_when`). 0 means no cap. |
 
 ### OpenRouter Image Generation filter valves (admin)
 
@@ -122,6 +136,9 @@ These appear in the filter's user-facing knobs UI and control per-user, per-chat
 | `WEB_FETCH` | `bool` | `False` | Enable OpenRouter web fetch (URL reading) for this chat. |
 | `DATETIME` | `bool` | `True` | Enable OpenRouter datetime tool for this chat (free, no extra cost). |
 | `DATETIME_TIMEZONE` | `str` | `""` | Timezone for the datetime tool (e.g. Australia/Sydney). Empty uses UTC. |
+| `ADVISOR` | `bool` | `False` | Enable the OpenRouter advisor tool (consult a higher-intelligence model mid-generation). Incurs an extra model call. |
+| `SUBAGENT` | `bool` | `False` | Enable the OpenRouter subagent tool (delegate tasks to a cheaper worker model). Incurs an extra model call. |
+| `SEARCH_MODELS` | `bool` | `False` | Enable the OpenRouter model-search tool (let the model search the OpenRouter catalog). |
 
 ### OpenRouter Image Generation filter user valves
 

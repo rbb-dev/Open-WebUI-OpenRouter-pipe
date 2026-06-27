@@ -1580,6 +1580,9 @@ class StreamingHandler:
                                 "openrouter:web_fetch": "Fetching web page…",
                                 "openrouter:datetime": "Getting current time…",
                                 "openrouter:image_generation": "Generating image…",
+                                "openrouter:advisor": "Consulting advisor…",
+                                "openrouter:subagent": "Delegating to worker…",
+                                "openrouter:experimental__search_models": "Searching models…",
                             }.get(item_type, f"Running {item_type}…")
                             await self._pipe._event_emitter_handler._emit_status(
                                 event_emitter, tool_label, done=False
@@ -1913,6 +1916,38 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="web_fetch",
                                     arguments=args_text,
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif item_type == "openrouter:advisor":
+                            title = None
+                            if valves.SHOW_TOOL_CARDS:
+                                advisor_error = item.get("error")
+                                if advisor_error:
+                                    result_text = str(advisor_error)
+                                else:
+                                    result_text = str(item.get("advice") or "")
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name="advisor",
+                                    arguments="{}",
+                                    status="completed",
+                                )
+                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
+                        elif item_type == "openrouter:subagent":
+                            title = None
+                            if valves.SHOW_TOOL_CARDS:
+                                subagent_error = item.get("error")
+                                if subagent_error:
+                                    result_text = str(subagent_error)
+                                else:
+                                    result_text = str(item.get("outcome") or "")
+                                effective_id = await _emit_tool_start(
+                                    call_id=item.get("id", ""),
+                                    name="subagent",
+                                    arguments="{}",
                                     status="completed",
                                 )
                                 await _emit_tool_result(call_id=effective_id, result_text=result_text)

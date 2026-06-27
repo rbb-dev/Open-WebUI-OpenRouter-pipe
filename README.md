@@ -22,7 +22,7 @@ GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Ri
 * **Responses-first endpoint routing** — builds canonical requests and routes between `/responses` and `/chat/completions` based on model rules, fallbacks, or attachments.
 * **Native image and video generation** — exposed as regular chat models with per-model knobs.
 * **OpenRouter Fusion** — multi-model deliberation (a panel of models + a judge) rendered as a live, theme-aware in-chat panel.
-* **OpenRouter server tools** — `web_search`, `web_fetch`, and `datetime` behind one OWUI filter.
+* **OpenRouter server tools** — `web_search`, `web_fetch`, `datetime`, `advisor`, `subagent`, and `model search` behind one OWUI filter, with a per-request cost cap.
 * **Operator controls via valves** — routing, limits, storage, security, telemetry, and templates.
 
 ---
@@ -45,7 +45,7 @@ Ask once; OpenRouter Fusion runs a *panel* of up to 8 models in parallel, a *jud
 Drop in images, PDFs, audio, video. The pipe figures out what each model supports — `/responses` vs `/chat/completions`, file vs RAG, streaming vs not.
 
 🔧 **OpenRouter Server Tools**
-Web Search, Web Fetch, and Datetime — OpenRouter's server-side tools (run on their infrastructure, not yours, no client-side code). Any model can call them. Bundled into one toggleable filter; calls render as styled cards with citations.
+Web Search, Web Fetch, Datetime, **Advisor** (let a model consult a higher-intelligence model mid-answer), **Subagent** (delegate self-contained sub-tasks to a cheaper, faster worker model), and **Model Search** (let the model browse OpenRouter's catalog) — OpenRouter's server-side tools (run on their infrastructure, not yours, no client-side code). Any model can call them. Bundled into one toggleable filter; calls render as styled cards with citations, with a per-request cost cap to bound the agent loop.
 
 🛡️ **Zero Data Retention (ZDR) Controls**
 Filter to ZDR-only models. Enforce ZDR routing when privacy demands it. Video models always treated as not-ZDR.
@@ -60,7 +60,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 - **OpenRouter Fusion** — multi-model deliberation (a panel of up to 8 models + a judge) rendered as a **live, theme-aware HTML panel** that streams the intent, per-model answers, judge analysis, and final answer in-chat. Preset / panel / judge / max-tool-calls knobs via the filter.
 - **Native image generation** — 37 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, xAI Grok Imagine, Microsoft MAI) with 7 per-family filters (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras, Grok Imagine Options).
 - **Video generation** — 16 OpenRouter video models with per-model filters and inline `<video>` rendering.
-- **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime as one toggleable filter; tool execution cards with citations.
+- **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop.
 - **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
 - **Direct Uploads filter** — bypass OWUI RAG; forward chat attachments as `input_file` to OpenRouter.
@@ -164,7 +164,7 @@ Every document in [`docs/`](docs/README.md):
 - [Image Generation](docs/openrouter_image_generation.md) — models, filters, per-model knobs
 - [Video Generation](docs/openrouter_video_generation.md) — models, async lifecycle, resume behaviour
 - [OpenRouter Fusion](docs/openrouter_fusion.md) — multi-model deliberation + the live panel
-- [Server Tools](docs/openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, legacy Image Gen
+- [Server Tools](docs/openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, Advisor, Subagent, Model Search, legacy Image Gen
 - [Direct Uploads](docs/openrouter_direct_uploads.md) — bypass OWUI RAG, forward as `input_file`
 - [Provider Routing](docs/openrouter_provider_routing.md) — admin + user routing filters
 - [Variants & Presets](docs/model_variants_and_presets.md) — `:nitro`, `:exacto`, `@preset/...`

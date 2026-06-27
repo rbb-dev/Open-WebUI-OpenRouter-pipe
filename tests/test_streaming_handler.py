@@ -11260,6 +11260,126 @@ class TestOpenRouterServerToolCards:
         output_text = function_outputs[0]["item"]["output"][0]["text"]
         assert "42" in output_text
 
+    async def _run_card_events(self, pipe, events):
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+        emitted: list[dict] = []
+        async def emitter(event):
+            emitted.append(event)
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter,
+            metadata={"model": {"id": "test"}}, tools={},
+            session=cast(Any, object()), user_id="user-123",
+        )
+        monkey.undo()
+        return emitted
+
+    @pytest.mark.asyncio
+    async def test_openrouter_advisor_renders_advice_text(self, pipe_instance_async):
+        """advisor done item surfaces the clean `advice` text (not a raw JSON dump)."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:advisor", "id": "adv-1", "status": "completed",
+                "model": "anthropic/claude-opus-4.8", "advice": "Use a channel-based coordination pattern."}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        outs = [e["item"] for e in emitted
+                if e.get("type") == "response.output_item.added"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "adv-1"]
+        calls = [e["item"] for e in emitted
+                 if e.get("type") == "response.output_item.added"
+                 and e.get("item", {}).get("type") == "function_call"
+                 and e.get("item", {}).get("call_id") == "adv-1"]
+        assert len(outs) == 1 and len(calls) == 1
+        assert calls[0]["name"] == "advisor"
+        assert outs[0]["output"][0]["text"] == "Use a channel-based coordination pattern."
+
+    @pytest.mark.asyncio
+    async def test_openrouter_advisor_error_renders_error(self, pipe_instance_async):
+        """A failed advisor surfaces its `error` field. Per the Responses output-item schema,
+        `status` is a ToolCallStatus enum (in_progress/completed/incomplete) with no "error"
+        member — failure is signalled by a populated `error` field, not status=="error"."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:advisor", "id": "adv-2", "status": "incomplete",
+                "error": "Advisor call failed: timeout"}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        outs = [e["item"] for e in emitted
+                if e.get("type") == "response.output_item.added"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "adv-2"]
+        assert len(outs) == 1
+        assert outs[0]["output"][0]["text"] == "Advisor call failed: timeout"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_subagent_renders_outcome(self, pipe_instance_async):
+        """subagent done item surfaces the clean `outcome` text."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:subagent", "id": "sub-1", "status": "completed",
+                "model": "anthropic/claude-haiku-4.5", "task_name": "summarize",
+                "outcome": "Release 2.4 highlights: new streaming API."}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        outs = [e["item"] for e in emitted
+                if e.get("type") == "response.output_item.added"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "sub-1"]
+        calls = [e["item"] for e in emitted
+                 if e.get("type") == "response.output_item.added"
+                 and e.get("item", {}).get("type") == "function_call"
+                 and e.get("item", {}).get("call_id") == "sub-1"]
+        assert len(outs) == 1 and len(calls) == 1
+        assert calls[0]["name"] == "subagent"
+        assert outs[0]["output"][0]["text"] == "Release 2.4 highlights: new streaming API."
+
+    @pytest.mark.asyncio
+    async def test_openrouter_unknown_tool_harvests_keys_when_no_result(self, pipe_instance_async):
+        """Generic fallback with no `result` harvests the item's payload keys into the card."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = True
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:future_tool", "id": "ft-2", "status": "completed", "answer": "abc123"}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        outs = [e["item"] for e in emitted
+                if e.get("type") == "response.output_item.added"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "ft-2"]
+        assert len(outs) == 1
+        assert "abc123" in outs[0]["output"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_openrouter_unknown_tool_no_card_when_show_tool_cards_off(self, pipe_instance_async):
+        """Generic fallback emits no card when SHOW_TOOL_CARDS is off."""
+        pipe = pipe_instance_async
+        pipe.valves.SHOW_TOOL_CARDS = False
+        events = [
+            {"type": "response.output_item.done", "item": {
+                "type": "openrouter:future_tool", "id": "ft-3", "status": "completed", "result": {"x": 1}}},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        emitted = await self._run_card_events(pipe, events)
+        cards = [e for e in emitted
+                 if e.get("type") == "response.output_item.added"
+                 and e.get("item", {}).get("type") in ("function_call", "function_call_output")
+                 and e.get("item", {}).get("call_id") == "ft-3"]
+        assert len(cards) == 0
+
     @pytest.mark.asyncio
     async def test_openrouter_datetime_card_suppressed_when_show_tool_cards_off(self, monkeypatch, pipe_instance_async):
         """When SHOW_TOOL_CARDS is False (default), no card events are emitted."""

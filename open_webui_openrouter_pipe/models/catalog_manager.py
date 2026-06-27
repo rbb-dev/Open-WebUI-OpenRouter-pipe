@@ -909,6 +909,9 @@ class ModelCatalogManager:
                         enable_web_search=valves.ENABLE_WEB_SEARCH,
                         enable_web_fetch=valves.ENABLE_WEB_FETCH,
                         enable_datetime=valves.ENABLE_DATETIME,
+                        enable_advisor=valves.ENABLE_ADVISOR,
+                        enable_subagent=valves.ENABLE_SUBAGENT,
+                        enable_search_models=valves.ENABLE_SEARCH_MODELS,
                     )
                 except Exception as exc:
                     self.logger.debug("OpenRouter Web Tools filter ensure failed: %s", exc)

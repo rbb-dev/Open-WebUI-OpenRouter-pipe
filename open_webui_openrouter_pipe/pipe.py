@@ -841,13 +841,23 @@ class Pipe:
         except Exception:
             pass
 
-        all_web_tools_disabled = not (self.valves.ENABLE_WEB_SEARCH or self.valves.ENABLE_WEB_FETCH or self.valves.ENABLE_DATETIME)
+        all_web_tools_disabled = not (
+            self.valves.ENABLE_WEB_SEARCH
+            or self.valves.ENABLE_WEB_FETCH
+            or self.valves.ENABLE_DATETIME
+            or self.valves.ENABLE_ADVISOR
+            or self.valves.ENABLE_SUBAGENT
+            or self.valves.ENABLE_SEARCH_MODELS
+        )
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not all_web_tools_disabled:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
                     enable_web_search=self.valves.ENABLE_WEB_SEARCH,
                     enable_web_fetch=self.valves.ENABLE_WEB_FETCH,
                     enable_datetime=self.valves.ENABLE_DATETIME,
+                    enable_advisor=self.valves.ENABLE_ADVISOR,
+                    enable_subagent=self.valves.ENABLE_SUBAGENT,
+                    enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
                 )
             except Exception as exc:
                 self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc)

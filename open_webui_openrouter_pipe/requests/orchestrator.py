@@ -71,18 +71,52 @@ def _inject_image_modalities(
         )
 
 
+_SERVER_TOOL_TYPE_OVERRIDES = {
+    "chat_search_models": "openrouter:experimental__search_models",
+}
+
+
 def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for tool_key, tool_params in server_tools.items():
+    for tool_key, tool_value in server_tools.items():
         if not isinstance(tool_key, str) or not tool_key.strip():
             continue
-        entry: dict[str, Any] = {"type": f"openrouter:{tool_key}"}
-        if isinstance(tool_params, dict) and tool_params:
-            cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
-            if cleaned_params:
-                entry["parameters"] = cleaned_params
-        entries.append(entry)
+        tool_type = _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"openrouter:{tool_key}")
+        param_dicts = tool_value if isinstance(tool_value, list) else [tool_value]
+        for tool_params in param_dicts:
+            entry: dict[str, Any] = {"type": tool_type}
+            if isinstance(tool_params, dict) and tool_params:
+                cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
+                if cleaned_params:
+                    entry["parameters"] = cleaned_params
+            entries.append(entry)
     return entries
+
+
+def _apply_server_tools_metadata(
+    responses_body: "ResponsesBody",
+    metadata: Any,
+    *,
+    logger: logging.Logger | None = None,
+) -> None:
+    pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
+    if not isinstance(pipe_meta, dict):
+        return
+    server_tools = pipe_meta.get("server_tools", {})
+    if isinstance(server_tools, dict) and server_tools:
+        tools_list = list(responses_body.tools or [])
+        tools_list.extend(_build_server_tool_entries(server_tools))
+        if tools_list:
+            responses_body.tools = tools_list
+            if logger is not None:
+                logger.debug(
+                    "Injected %d OpenRouter server tool(s): %s",
+                    len(server_tools),
+                    ", ".join(server_tools.keys()),
+                )
+    stop_when = pipe_meta.get("stop_server_tools_when")
+    if isinstance(stop_when, list) and stop_when:
+        responses_body.stop_server_tools_when = stop_when
 
 
 class RequestOrchestrator:
@@ -841,17 +875,7 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
-        server_tools = (__metadata__ or {}).get(_PIPE_METADATA_KEY, {}).get("server_tools", {})
-        if isinstance(server_tools, dict) and server_tools:
-            tools_list = list(responses_body.tools or [])
-            tools_list.extend(_build_server_tool_entries(server_tools))
-            if tools_list:
-                responses_body.tools = tools_list
-                self.logger.debug(
-                    "Injected %d OpenRouter server tool(s): %s",
-                    len(server_tools),
-                    ", ".join(server_tools.keys()),
-                )
+        _apply_server_tools_metadata(responses_body, __metadata__, logger=self.logger)
 
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.

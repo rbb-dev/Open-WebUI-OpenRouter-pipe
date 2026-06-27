@@ -385,6 +385,9 @@ class FilterManager:
         enable_web_search: bool = True,
         enable_web_fetch: bool = True,
         enable_datetime: bool = True,
+        enable_advisor: bool = True,
+        enable_subagent: bool = True,
+        enable_search_models: bool = True,
     ) -> str:
         """Return the canonical OWUI filter source for the OpenRouter Web Tools filter.
 
@@ -456,6 +459,27 @@ class FilterManager:
                 '            description="Comma-separated list of domains blocked from fetching.",\n'
                 '        )',
             ])
+        if enable_advisor:
+            valves_fields.append(
+                '        ADVISOR_MODEL: str = Field(\n'
+                '            default="",\n'
+                '            description="Advisor model to consult (any OpenRouter model). Empty uses the chat\'s own model.",\n'
+                '        )'
+            )
+        if enable_subagent:
+            valves_fields.append(
+                '        SUBAGENT_MODEL: str = Field(\n'
+                '            default="",\n'
+                '            description="Worker model for delegated subagent tasks. Empty uses the chat\'s own model.",\n'
+                '        )'
+            )
+        valves_fields.append(
+            '        SERVER_TOOLS_MAX_COST_USD: float = Field(\n'
+            '            default=0.0,\n'
+            '            ge=0,\n'
+            '            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap.",\n'
+            '        )'
+        )
 
         # -- UserValves fields ------------------------------------------------
         user_valves_fields: list[str] = []
@@ -504,6 +528,27 @@ class FilterManager:
                 '            description="Timezone for the datetime tool (e.g. Australia/Sydney). Empty uses UTC.",\n'
                 '        )',
             ])
+        if enable_advisor:
+            user_valves_fields.append(
+                '        ADVISOR: bool = Field(\n'
+                '            default=False,\n'
+                '            description="Enable the OpenRouter advisor tool (consult a higher-intelligence model mid-generation).",\n'
+                '        )'
+            )
+        if enable_subagent:
+            user_valves_fields.append(
+                '        SUBAGENT: bool = Field(\n'
+                '            default=False,\n'
+                '            description="Enable the OpenRouter subagent tool (delegate tasks to a cheaper worker model).",\n'
+                '        )'
+            )
+        if enable_search_models:
+            user_valves_fields.append(
+                '        SEARCH_MODELS: bool = Field(\n'
+                '            default=False,\n'
+                '            description="Enable the OpenRouter model-search tool (let the model search the OpenRouter catalog).",\n'
+                '        )'
+            )
 
         # -- inlet logic (conditional per tool) -------------------------------
         inlet_tool_blocks: list[str] = []
@@ -562,6 +607,27 @@ class FilterManager:
                 '            if user_valves.DATETIME_TIMEZONE:\n'
                 '                dt_params["timezone"] = user_valves.DATETIME_TIMEZONE\n'
                 '            server_tools["datetime"] = dt_params'
+            )
+        if enable_advisor:
+            inlet_tool_blocks.append(
+                '        if user_valves.ADVISOR:\n'
+                '            adv_params: dict[str, Any] = {}\n'
+                '            if self.valves.ADVISOR_MODEL:\n'
+                '                adv_params["model"] = self.valves.ADVISOR_MODEL\n'
+                '            server_tools["advisor"] = adv_params'
+            )
+        if enable_subagent:
+            inlet_tool_blocks.append(
+                '        if user_valves.SUBAGENT:\n'
+                '            sub_params: dict[str, Any] = {}\n'
+                '            if self.valves.SUBAGENT_MODEL:\n'
+                '                sub_params["model"] = self.valves.SUBAGENT_MODEL\n'
+                '            server_tools["subagent"] = sub_params'
+            )
+        if enable_search_models:
+            inlet_tool_blocks.append(
+                '        if user_valves.SEARCH_MODELS:\n'
+                '            server_tools["chat_search_models"] = {}'
             )
 
         inlet_tools_code = "\n\n".join(inlet_tool_blocks)
@@ -668,6 +734,10 @@ class FilterManager:
         template += '            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}\n'
         template += '            __metadata__["__PIPE_META_KEY__"] = pipe_meta\n'
         template += '            pipe_meta["server_tools"] = server_tools\n'
+        template += '            if self.valves.SERVER_TOOLS_MAX_COST_USD > 0:\n'
+        template += '                pipe_meta["stop_server_tools_when"] = [\n'
+        template += '                    {"type": "max_cost", "max_cost_in_dollars": self.valves.SERVER_TOOLS_MAX_COST_USD}\n'
+        template += '                ]\n'
 
         # OWUI web search suppression
         template += suppress_block
@@ -688,6 +758,9 @@ class FilterManager:
         enable_web_search: bool = True,
         enable_web_fetch: bool = True,
         enable_datetime: bool = True,
+        enable_advisor: bool = True,
+        enable_subagent: bool = True,
+        enable_search_models: bool = True,
     ) -> str | None:
         """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
 
@@ -701,6 +774,9 @@ class FilterManager:
                 enable_web_search=enable_web_search,
                 enable_web_fetch=enable_web_fetch,
                 enable_datetime=enable_datetime,
+                enable_advisor=enable_advisor,
+                enable_subagent=enable_subagent,
+                enable_search_models=enable_search_models,
             ).strip() + "\n",
             desired_name="OR Web Tools",
             desired_meta={

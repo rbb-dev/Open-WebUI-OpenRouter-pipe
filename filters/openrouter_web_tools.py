@@ -79,6 +79,19 @@ class Filter:
             default="",
             description="Comma-separated list of domains blocked from fetching.",
         )
+        ADVISOR_MODEL: str = Field(
+            default="",
+            description="Advisor model to consult (any OpenRouter model). Empty uses the chat's own model.",
+        )
+        SUBAGENT_MODEL: str = Field(
+            default="",
+            description="Worker model for delegated subagent tasks. Empty uses the chat's own model.",
+        )
+        SERVER_TOOLS_MAX_COST_USD: float = Field(
+            default=0.0,
+            ge=0,
+            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap.",
+        )
 
     class UserValves(BaseModel):
         WEB_SEARCH: bool = Field(
@@ -116,6 +129,18 @@ class Filter:
         DATETIME_TIMEZONE: str = Field(
             default="",
             description="Timezone for the datetime tool (e.g. Australia/Sydney). Empty uses UTC.",
+        )
+        ADVISOR: bool = Field(
+            default=False,
+            description="Enable the OpenRouter advisor tool (consult a higher-intelligence model mid-generation).",
+        )
+        SUBAGENT: bool = Field(
+            default=False,
+            description="Enable the OpenRouter subagent tool (delegate tasks to a cheaper worker model).",
+        )
+        SEARCH_MODELS: bool = Field(
+            default=False,
+            description="Enable the OpenRouter model-search tool (let the model search the OpenRouter catalog).",
         )
 
     def __init__(self) -> None:
@@ -202,11 +227,30 @@ class Filter:
                 dt_params["timezone"] = user_valves.DATETIME_TIMEZONE
             server_tools["datetime"] = dt_params
 
+        if user_valves.ADVISOR:
+            adv_params: dict[str, Any] = {}
+            if self.valves.ADVISOR_MODEL:
+                adv_params["model"] = self.valves.ADVISOR_MODEL
+            server_tools["advisor"] = adv_params
+
+        if user_valves.SUBAGENT:
+            sub_params: dict[str, Any] = {}
+            if self.valves.SUBAGENT_MODEL:
+                sub_params["model"] = self.valves.SUBAGENT_MODEL
+            server_tools["subagent"] = sub_params
+
+        if user_valves.SEARCH_MODELS:
+            server_tools["chat_search_models"] = {}
+
         if server_tools and isinstance(__metadata__, dict):
             prev_pipe_meta = __metadata__.get("openrouter_pipe")
             pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
             __metadata__["openrouter_pipe"] = pipe_meta
             pipe_meta["server_tools"] = server_tools
+            if self.valves.SERVER_TOOLS_MAX_COST_USD > 0:
+                pipe_meta["stop_server_tools_when"] = [
+                    {"type": "max_cost", "max_cost_in_dollars": self.valves.SERVER_TOOLS_MAX_COST_USD}
+                ]
 
         if suppress_owui_web_search:
             features = body.get("features")
