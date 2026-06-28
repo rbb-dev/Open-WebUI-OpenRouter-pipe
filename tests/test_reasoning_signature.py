@@ -516,6 +516,107 @@ def test_strip_reasoning_details_kept_when_all_replayable():
     assert out[0]["reasoning_details"] == details, "an all-replayable sequence must be preserved"
 
 
+# --------------------------------------------------------------------------- #
+# A4 -- signature / encrypted_content "present" means a non-blank STRING. A
+# whitespace-only or non-string value is corrupt and unreplayable, so it counts
+# as absent: the reasoning is stripped rather than replayed into a 400. Plain
+# truthiness wrongly read such garbage as a valid signature and kept it.
+# --------------------------------------------------------------------------- #
+def test_strip_item_whitespace_signature_treated_as_unsigned():
+    """A reasoning item whose signature is whitespace-only is unsigned, not signed:
+    its turn is dropped. Truthiness would read '   ' as valid and replay into a 400."""
+    items = [
+        {"type": "message", "role": "user", "content": []},
+        {"type": "reasoning", "id": "ws", "summary": [],
+         "content": [{"type": "reasoning_text", "text": "x"}], "signature": "   "},
+    ]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    kept = [it.get("id") for it in out if it.get("type") == "reasoning"]
+    assert kept == [], f"whitespace signature must read as unsigned: {kept}"
+
+
+def test_strip_item_whitespace_encrypted_content_treated_as_absent():
+    """encrypted_content of whitespace is not a real payload: the item reads as
+    unreplayable and is dropped (truthiness would wrongly keep it)."""
+    items = [
+        {"type": "message", "role": "user", "content": []},
+        {"type": "reasoning", "id": "we", "summary": [],
+         "content": [{"type": "reasoning_text", "text": "x"}], "encrypted_content": "  "},
+    ]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    kept = [it.get("id") for it in out if it.get("type") == "reasoning"]
+    assert kept == [], f"whitespace encrypted_content must read as absent: {kept}"
+
+
+def test_strip_content_part_whitespace_signature_treated_as_unsigned():
+    """The per-content-part check is string-strict too: a reasoning_text part whose
+    signature is whitespace reads as unsigned, so the item is dropped. Isolates the
+    part-level site, which truthiness left keeping a corrupt block."""
+    items = [
+        {"type": "message", "role": "user", "content": []},
+        {"type": "reasoning", "id": "wp", "summary": [],
+         "content": [{"type": "reasoning_text", "text": "thinking", "signature": "  "}]},
+    ]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    kept = [it.get("id") for it in out if it.get("type") == "reasoning"]
+    assert kept == [], f"whitespace part signature must read as unsigned: {kept}"
+
+
+def test_strip_content_part_whitespace_encrypted_content_treated_as_absent():
+    """The per-content-part encrypted_content check is string-strict too: a part whose
+    encrypted_content is whitespace reads as absent, so the item is dropped. Isolates the
+    part-level encrypted_content operand, which truthiness left keeping a corrupt block."""
+    items = [
+        {"type": "message", "role": "user", "content": []},
+        {"type": "reasoning", "id": "wpe", "summary": [],
+         "content": [{"type": "reasoning_text", "text": "thinking", "encrypted_content": "  "}]},
+    ]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    kept = [it.get("id") for it in out if it.get("type") == "reasoning"]
+    assert kept == [], f"whitespace part encrypted_content must read as absent: {kept}"
+
+
+def test_strip_content_part_real_signature_kept():
+    """Regression: a real (non-blank) signature on a content part keeps the item -- the
+    tightening must not strip genuinely-signed reasoning."""
+    items = [
+        {"type": "message", "role": "user", "content": []},
+        {"type": "reasoning", "id": "sp", "summary": [],
+         "content": [{"type": "reasoning_text", "text": "thinking", "signature": "REALSIG"}]},
+    ]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    kept = [it.get("id") for it in out if it.get("type") == "reasoning"]
+    assert kept == ["sp"], f"a real part signature must be kept: {kept}"
+
+
+def test_strip_detail_whitespace_signature_treated_as_unsigned():
+    """reasoning_details: a reasoning.text whose signature is whitespace reads as unsigned,
+    so the whole array is dropped all-or-nothing."""
+    items = [{"type": "message", "role": "assistant", "content": "hi", "reasoning_details": [
+        {"type": "reasoning.text", "text": "t", "signature": "   "}]}]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    assert "reasoning_details" not in out[0], "whitespace detail signature must read as unsigned"
+    assert out[0]["content"] == "hi", "the assistant message itself must survive"
+
+
+def test_strip_detail_nonstring_signature_treated_as_unsigned():
+    """reasoning_details: a non-string signature (an int) is not a real signature; the
+    detail reads as unsigned and the array is dropped."""
+    items = [{"type": "message", "role": "assistant", "content": "hi", "reasoning_details": [
+        {"type": "reasoning.text", "text": "t", "signature": 123}]}]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    assert "reasoning_details" not in out[0], "non-string detail signature must read as unsigned"
+
+
+def test_strip_detail_empty_signature_still_unsigned_characterization():
+    """Characterization (unchanged by A4): an empty-string signature was already falsy and
+    stays unsigned, so the array is dropped. A4 only adds the whitespace/non-string cases."""
+    items = [{"type": "message", "role": "assistant", "content": "hi", "reasoning_details": [
+        {"type": "reasoning.text", "text": "t", "signature": ""}]}]
+    out = _strip_unreplayable_anthropic_reasoning(items)
+    assert "reasoning_details" not in out[0], "empty-string detail signature is unsigned (unchanged)"
+
+
 def test_sanitize_does_not_strip_reasoning_for_non_anthropic(pipe_instance):
     body = ResponsesBody(model="google/gemini-2.5-pro", api_model="google/gemini-2.5-pro", input=[
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q"}]},

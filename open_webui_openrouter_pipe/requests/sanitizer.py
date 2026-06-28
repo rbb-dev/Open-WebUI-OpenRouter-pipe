@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 
 from ..api.transforms import _filter_replayable_input_items
 from ..core.context_budget import apply_replay_tool_output_budget
+from ..core.utils import _clean_str
 from ..integrations.anthropic import _is_anthropic_model_id
 
 _ORPHAN_STUB_OUTPUT = (
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
     """True for a /responses reasoning item that is plaintext thinking with no
     signature and no encrypted payload -- unreplayable to Anthropic."""
-    if item.get("signature") or item.get("encrypted_content"):
+    if _clean_str(item.get("signature")) or _clean_str(item.get("encrypted_content")):
         return False
     content = item.get("content")
     if not isinstance(content, list):
@@ -34,7 +35,7 @@ def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
     for part in content:
         if not isinstance(part, dict):
             continue
-        if part.get("signature") or part.get("encrypted_content"):
+        if _clean_str(part.get("signature")) or _clean_str(part.get("encrypted_content")):
             return False
         if part.get("type") == "reasoning_text" and isinstance(part.get("text"), str) and part["text"].strip():
             has_text = True
@@ -45,7 +46,7 @@ def _detail_unsigned_text(detail: Any) -> bool:
     """True for a reasoning.text detail that has text but no signature."""
     if not isinstance(detail, dict) or detail.get("type") != "reasoning.text":
         return False
-    if detail.get("signature"):
+    if _clean_str(detail.get("signature")):
         return False
     text = detail.get("text")
     return isinstance(text, str) and bool(text.strip())
