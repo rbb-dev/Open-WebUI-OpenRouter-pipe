@@ -28,7 +28,6 @@ from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_resp
 from ..core.timing_logger import timed
 from .task_model_adapter import TaskModelAdapter
 from .sanitizer import _sanitize_request_input
-from ..integrations.anthropic import _is_anthropic_model_id
 from ..storage.users import get_user_by_id
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
 from ..filters.fusion_filter_renderer import is_fusion_model
@@ -883,7 +882,6 @@ class RequestOrchestrator:
 
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
-        anthropic_prompt_cache_retry_attempted = False
         signature_retry_attempted = False
         self.logger.debug(
             "Orchestrator: __request__ type=%s, is_none=%s",
@@ -924,28 +922,6 @@ class RequestOrchestrator:
                     fusion_live_enabled=fusion_live_enabled,
                 )
             except OpenRouterAPIError as exc:
-                api_model_label = getattr(responses_body, "api_model", None) or responses_body.model
-                if (
-                    not anthropic_prompt_cache_retry_attempted
-                    and valves.ENABLE_ANTHROPIC_PROMPT_CACHING
-                    and isinstance(api_model_label, str)
-                    and _is_anthropic_model_id(api_model_label)
-                    and exc.status == 400
-                    and (
-                        self._pipe._input_contains_cache_control(getattr(responses_body, "input", None))
-                        or self._pipe._input_contains_cache_control(getattr(responses_body, "tools", None))
-                    )
-                ):
-                    self.logger.warning(
-                        "Prompt caching payload rejected by provider; retrying without cache_control (model=%s).",
-                        api_model_label,
-                    )
-                    self._pipe._strip_cache_control_from_input(responses_body.input)
-                    if isinstance(responses_body.tools, list):
-                        self._pipe._strip_cache_control_from_input(responses_body.tools)
-                    anthropic_prompt_cache_retry_attempted = True
-                    continue
-
                 if not reasoning_effort_retry_attempted:
                     error_details = {"provider_raw": exc.provider_raw}
                     if _is_reasoning_effort_error(error_details):

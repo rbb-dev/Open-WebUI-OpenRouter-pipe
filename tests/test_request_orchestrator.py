@@ -22,7 +22,6 @@ Coverage areas:
 - Direct tool server registry exception
 - OWUI tool registry normalization (dict/list forms)
 - Tool assignment with passthrough vs capability
-- Anthropic prompt cache retry
 - Reasoning retry without reasoning
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
@@ -4100,109 +4099,6 @@ async def test_tool_assignment_with_owui_passthrough():
 
 
 # -----------------------------------------------------------------------------
-# Additional Coverage Tests: Anthropic Prompt Cache Retry (lines 692-708)
-# -----------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_anthropic_prompt_cache_retry():
-    """Test retry without cache_control for Anthropic models on 400 error.
-
-    Covers lines 692-708: anthropic prompt cache retry logic.
-    """
-    pipe = Pipe()
-
-    try:
-        pipe.valves.API_KEY = EncryptedStr("test-api-key")
-        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-        pipe.valves.ENABLE_ANTHROPIC_PROMPT_CACHING = True
-
-        call_count = [0]
-        captured_payloads: list[dict] = []
-
-        def callback_with_cache_error_then_success(url, **kwargs):
-            payload = kwargs.get("json", {})
-            captured_payloads.append(payload)
-            call_count[0] += 1
-
-            if call_count[0] == 1:
-                # First call fails with cache control error
-                error_body = {
-                    "error": {
-                        "message": "cache_control is not supported",
-                        "code": "invalid_request",
-                    }
-                }
-                return CallbackResult(
-                    body=json.dumps(error_body).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    status=400,
-                )
-            else:
-                # Second call succeeds
-                is_streaming = payload.get("stream", False)
-                if is_streaming:
-                    return CallbackResult(
-                        body=_make_responses_sse("Success").encode("utf-8"),
-                        headers={"Content-Type": "text/event-stream"},
-                        status=200,
-                    )
-                else:
-                    return CallbackResult(
-                        body=json.dumps(_make_json_response("Success")).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
-                        status=200,
-                    )
-
-        async def event_emitter(event):
-            pass
-
-        # Mock both _input_contains_cache_control and _is_anthropic_model_id
-        # Using openai/gpt-4o-mini which is in catalog, but mocking it as Anthropic
-        import open_webui_openrouter_pipe.requests.orchestrator as orchestrator_module
-        with patch.object(Pipe, "_input_contains_cache_control", return_value=True):
-            with patch.object(orchestrator_module, "_is_anthropic_model_id", return_value=True):
-                with aioresponses() as mock_http:
-                    mock_http.post(
-                        "https://openrouter.ai/api/v1/responses",
-                        callback=callback_with_cache_error_then_success,
-                        repeat=True,
-                    )
-                    mock_http.get(
-                        "https://openrouter.ai/api/v1/models",
-                        payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
-                        repeat=True,
-                    )
-
-                    body = {
-                        "model": "openai/gpt-4o-mini",
-                        "messages": [{"role": "user", "content": "test"}],
-                        "stream": True,
-                    }
-
-                    result = await pipe.pipe(
-                        body=body,
-                        __user__={"id": "user_123"},
-                        __request__=None,
-                        __event_emitter__=event_emitter,
-                        __event_call__=None,
-                        __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
-                        __tools__=None,
-                        __task__=None,
-                        __task_body__=None,
-                    )
-
-                    await _consume_stream(result)
-
-        # The pre-emission 400 re-raises into the orchestrator, so the retry fires
-        # on the streaming path: exactly two HTTP calls.
-        assert call_count[0] == 2
-
-    finally:
-        await pipe.close()
-
-
-# -----------------------------------------------------------------------------
 # Additional Coverage Tests: Reasoning Retry Without Reasoning (lines 757-762)
 # -----------------------------------------------------------------------------
 
@@ -4321,9 +4217,6 @@ async def test_signature_retry_strips_replayed_reasoning_end_to_end():
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
         pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
-        # Isolate the signature backstop: with caching on, the prompt-cache retry (which
-        # sits before S1) would consume the 400 first.
-        pipe.valves.ENABLE_ANTHROPIC_PROMPT_CACHING = False
 
         call_count = [0]
         captured_payloads: list[dict] = []

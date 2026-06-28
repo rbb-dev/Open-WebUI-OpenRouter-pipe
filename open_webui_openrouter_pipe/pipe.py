@@ -3288,49 +3288,6 @@ class Pipe:
 
         return decrypted, None
 
-    @staticmethod
-    @timed
-    def _input_contains_cache_control(value: Any) -> bool:
-        """Recursively check if value contains cache_control markers.
-
-        Used by Anthropic prompt caching to detect if cache breakpoints
-        have already been inserted into the input.
-
-        Args:
-            value: Input value to check (dict, list, or other).
-
-        Returns:
-            bool: True if any cache_control markers are found.
-        """
-        if isinstance(value, dict):
-            if "cache_control" in value:
-                return True
-            return any(Pipe._input_contains_cache_control(v) for v in value.values())
-        if isinstance(value, list):
-            return any(Pipe._input_contains_cache_control(v) for v in value)
-        return False
-
-    @staticmethod
-    @timed
-    def _strip_cache_control_from_input(value: Any) -> None:
-        """Recursively remove cache_control markers from value.
-
-        Used when retrying Anthropic requests that failed due to
-        unsupported cache_control parameters.
-
-        Args:
-            value: Input value to strip markers from (modified in place).
-        """
-        if isinstance(value, dict):
-            value.pop("cache_control", None)
-            for v in value.values():
-                Pipe._strip_cache_control_from_input(v)
-            return
-        if isinstance(value, list):
-            for item in value:
-                Pipe._strip_cache_control_from_input(item)
-
-
     @timed
     def _build_chat_completion_payload(self, *, model: str, content: str) -> dict[str, Any]:
         """Return a minimal OpenAI chat.completions-style payload."""

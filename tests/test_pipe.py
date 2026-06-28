@@ -1334,53 +1334,6 @@ class TestEventEmitter:
             await pipe.close()
 
 
-
-# =============================================================================
-# CACHE CONTROL TESTS
-# =============================================================================
-
-
-class TestCacheControl:
-    """Tests for cache control handling."""
-
-    def test_input_contains_cache_control_detects_nested(self):
-        """Test that _input_contains_cache_control detects nested cache_control."""
-        pipe = Pipe()
-        try:
-            # Dict with cache_control
-            assert pipe._input_contains_cache_control({"cache_control": {"type": "ephemeral"}})
-
-            # Nested in list
-            assert pipe._input_contains_cache_control([{"cache_control": {"type": "ephemeral"}}])
-
-            # Deeply nested
-            assert pipe._input_contains_cache_control({"content": [{"cache_control": {"type": "ephemeral"}}]})
-
-            # Without cache_control
-            assert not pipe._input_contains_cache_control({"text": "hello"})
-
-            # None value
-            assert not pipe._input_contains_cache_control(None)
-        finally:
-            pipe.shutdown()
-
-    def test_strip_cache_control_from_input_removes_nested(self):
-        """Test that _strip_cache_control_from_input removes nested cache_control."""
-        pipe = Pipe()
-        try:
-            input_data = {
-                "content": [
-                    {"type": "text", "text": "hello", "cache_control": {"type": "ephemeral"}},
-                ]
-            }
-
-            pipe._strip_cache_control_from_input(input_data)
-
-            assert "cache_control" not in input_data["content"][0]
-        finally:
-            pipe.shutdown()
-
-
 # =============================================================================
 # TASK FALLBACK TESTS
 # =============================================================================
@@ -5586,17 +5539,6 @@ def test_resolve_openrouter_api_key_plain(pipe_instance) -> None:
 
     assert api_key == "sk-valid"
     assert error is None
-
-
-def test_cache_control_helpers() -> None:
-    data = {"messages": [{"cache_control": {"type": "ephemeral"}}]}
-    assert Pipe._input_contains_cache_control(data) is True
-
-    value = {"cache_control": {"type": "ephemeral"}, "nested": [{"cache_control": {"type": "x"}}]}
-    Pipe._strip_cache_control_from_input(value)
-
-    assert "cache_control" not in value
-    assert "cache_control" not in value["nested"][0]
 
 
 def test_build_task_fallback_content(pipe_instance) -> None:

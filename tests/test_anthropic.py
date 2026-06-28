@@ -19,6 +19,8 @@ _maybe_apply_anthropic_prompt_caching function.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
@@ -28,6 +30,11 @@ from open_webui_openrouter_pipe.integrations.anthropic import (
     _maybe_apply_responses_toplevel_cache_control,
     _is_anthropic_model_id,
 )
+
+
+def _has_cache_control(value) -> bool:
+    """Test probe: True if a cache_control key appears anywhere in the structure."""
+    return '"cache_control":' in json.dumps(value, default=str)
 
 
 def _get_cache_control_from_block(block: dict) -> dict | None:
@@ -85,7 +92,7 @@ def test_prompt_caching_disabled_returns_early(pipe_instance):
     )
 
     # Verify no cache_control was added
-    assert not Pipe._input_contains_cache_control(input_items)
+    assert not _has_cache_control(input_items)
 
 
 # ============================================================================
@@ -616,7 +623,7 @@ def test_non_anthropic_model_skipped(pipe_instance):
     )
 
     # No cache_control should be added for non-Anthropic models
-    assert not Pipe._input_contains_cache_control(input_items)
+    assert not _has_cache_control(input_items)
 
 
 # ============================================================================
@@ -795,7 +802,7 @@ def test_anthropic_model_with_dot_prefix(pipe_instance):
     )
 
     # Should be recognized as Anthropic model
-    assert Pipe._input_contains_cache_control(input_items)
+    assert _has_cache_control(input_items)
 
 
 def test_is_anthropic_model_id_with_non_string(pipe_instance):
@@ -890,7 +897,7 @@ async def test_prompt_caching_via_transform_messages(pipe_instance_async):
     )
 
     # Should have cache_control on appropriate messages
-    assert Pipe._input_contains_cache_control(input_items)
+    assert _has_cache_control(input_items)
 
     # Count cached messages
     cached_count = 0
@@ -988,27 +995,7 @@ async def test_non_anthropic_models_do_not_insert_cache_control(pipe_instance_as
         model_id="openai/gpt-5.1",
     )
 
-    assert not Pipe._input_contains_cache_control(input_items)
-
-
-def test_strip_cache_control_from_input_removes_markers():
-    payload = [
-        {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": "hello",
-                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
-                }
-            ],
-        }
-    ]
-
-    assert Pipe._input_contains_cache_control(payload)
-    Pipe._strip_cache_control_from_input(payload)
-    assert not Pipe._input_contains_cache_control(payload)
+    assert not _has_cache_control(input_items)
 
 
 @pytest.mark.asyncio
@@ -1067,7 +1054,7 @@ async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch, p
 
     assert result == "ok"
     request_body = captured.get("request_body") or {}
-    assert Pipe._input_contains_cache_control(request_body.get("input"))
+    assert _has_cache_control(request_body.get("input"))
 
 
 # ============================================================================
@@ -1237,18 +1224,6 @@ def test_tool_cache_control_ttl_merged(pipe_instance):
         items, model_id="anthropic/claude-sonnet-4.5", valves=valves, tools=tools,
     )
     assert tools[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-
-
-def test_strip_cache_control_from_tools():
-    """Pipe._strip_cache_control_from_input removes cache_control from tools."""
-    tools = [
-        {"type": "function", "name": "tool_a", "cache_control": {"type": "ephemeral"}},
-        {"type": "function", "name": "tool_b"},
-    ]
-    assert Pipe._input_contains_cache_control(tools)
-    Pipe._strip_cache_control_from_input(tools)
-    assert not Pipe._input_contains_cache_control(tools)
-    assert "cache_control" not in tools[0]
 
 
 # ============================================================================
