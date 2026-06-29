@@ -174,6 +174,8 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
     pairs_changed = validated is not normalized
 
     if removed or stripped_any or omitted_call_ids or pairs_changed or (items is not original_items) or (sanitized is not items):
+        if items is not original_items:
+            pipe.logger.debug("Sanitized provider input: stripped unreplayable reasoning (Anthropic).")
         if removed:
             pipe.logger.debug(
                 "Sanitized provider input: removed %d non-replayable artifact(s).",
