@@ -181,7 +181,9 @@ def test_synthesize_missing_analysis_inserts_empty_completed_before_response_com
     assert s.seen_analysis_started is True
     assert s.seen_analysis_done is False
 
-    assert s.synthesize_missing_analysis() is True
+    synthetic = s.synthesize_missing_analysis()
+    assert isinstance(synthetic, dict)
+    assert synthetic["type"] == "response.fusion_call.analysis.completed"
     assert s.seen_analysis_done is True
 
     types = [e.get("type") for e in s.events]
@@ -207,7 +209,7 @@ def test_synthesize_missing_analysis_noop_when_analysis_already_done():
     ]:
         s.record(event)
     before = len(s.events)
-    assert s.synthesize_missing_analysis() is False
+    assert s.synthesize_missing_analysis() is None
     assert len(s.events) == before
 
 
@@ -215,7 +217,7 @@ def test_synthesize_missing_analysis_noop_when_not_started():
     s = FusionDeliberationState()
     s.record({"type": "response.completed", "response": {}})
     before = len(s.events)
-    assert s.synthesize_missing_analysis() is False
+    assert s.synthesize_missing_analysis() is None
     assert len(s.events) == before
 
 

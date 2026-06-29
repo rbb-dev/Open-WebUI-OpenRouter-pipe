@@ -595,6 +595,33 @@ class StreamingHandler:
             except Exception:
                 self.logger.debug("Failed to emit fusion event", exc_info=True)
 
+        async def _emit_fusion_sources(raw_sources: Any) -> None:
+            """Emit openrouter:fusion item-level sources as citations (per-URL dedup)."""
+            if not isinstance(raw_sources, list):
+                return
+            for src in raw_sources:
+                if not isinstance(src, dict):
+                    continue
+                url = (src.get("url") or "").strip()
+                if not url or url in ordinal_by_url:
+                    continue
+                ordinal_by_url[url] = len(ordinal_by_url) + 1
+                title = (src.get("title") or "").strip()
+                host = _citation_host(url)
+                citation = {
+                    "source": {"name": host or "source", "url": url},
+                    "document": [title or url],
+                    "metadata": [{
+                        "source": url,
+                        "date_accessed": datetime.date.today().isoformat(),
+                    }],
+                }
+                try:
+                    await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
+                except Exception as exc:
+                    self.logger.debug("Failed to emit fusion source citation: %s", exc)
+                emitted_citations.append(citation)
+
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
             """Emit readable status updates for reasoning text without flooding."""
             if not thinking_status_enabled or not event_emitter:
@@ -1303,6 +1330,15 @@ class StreamingHandler:
                                 )
                         if _fusion_ms:
                             await _emit_fusion_event(event)
+                        if (
+                            etype == "response.output_item.done"
+                            and isinstance(event.get("item"), dict)
+                            and event["item"].get("type") == "openrouter:fusion"
+                        ):
+                            _synth = fusion_state.synthesize_missing_analysis()
+                            if _synth is not None:
+                                await _emit_fusion_event(_synth)
+                            await _emit_fusion_sources(event["item"].get("sources"))
                         continue
 
                     if fusion_armed and fusion_state is not None and etype in ("response.created", "response.in_progress"):
@@ -2997,6 +3033,14 @@ class StreamingHandler:
                 fusion_embed_task.cancel()
 
             if (
+                fusion_armed and fusion_state is not None
+                and fusion_state.fusion_index is not None and not was_cancelled
+            ):
+                _terminal_synth = fusion_state.synthesize_missing_analysis()
+                if _terminal_synth is not None:
+                    await _emit_fusion_event(_terminal_synth)
+
+            if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
                 and assistant_message and not error_occurred and not was_cancelled
             ):
@@ -3013,8 +3057,6 @@ class StreamingHandler:
             ):
                 try:
                     if resolved_chat_id and resolved_message_id:
-                        if assistant_message:
-                            fusion_state.synthesize_missing_analysis()
                         _fusion_html = build_fusion_embed_html(
                             fusion_state, _fusion_model_names(), final=True
                         )

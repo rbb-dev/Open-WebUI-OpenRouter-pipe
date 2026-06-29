@@ -1225,9 +1225,9 @@ class FusionDeliberationState:
         self.events.append(event)
         return None
 
-    def synthesize_missing_analysis(self) -> bool:
+    def synthesize_missing_analysis(self) -> dict | None:
         if not self.seen_analysis_started or self.seen_analysis_done:
-            return False
+            return None
         synthetic = {
             "type": "response.fusion_call.analysis.completed",
             "output_index": self.fusion_index,
@@ -1250,7 +1250,7 @@ class FusionDeliberationState:
         )
         self.events.insert(pos, synthetic)
         self.seen_analysis_done = True
-        return True
+        return synthetic
 
 
 def build_fusion_embed_html(
