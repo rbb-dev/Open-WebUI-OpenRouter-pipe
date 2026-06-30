@@ -1,7 +1,7 @@
 # Open WebUI → OpenRouter Pipe
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-2.6.8-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
+[![Version](https://img.shields.io/badge/version-2.6.9-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.9.1%2B-green.svg)](https://openwebui.com/)
 
 **360+ AI models. Chat, image, video, and live multi-model Fusion — all from your Open WebUI.**
