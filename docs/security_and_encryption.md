@@ -161,7 +161,7 @@ See: [Session Log Storage](session_log_storage.md).
 
 The pipe uses request-scoped `contextvars` to keep per-request state isolated across concurrent requests.
 
-If you run a shared deployment, you may enable OpenRouter attribution identifiers (for example `user` and `session_id`) and/or attach Open WebUI identifiers into OpenRouter `metadata` via valves. This helps incident response and abuse attribution but can increase privacy risk if you forward unnecessary identifiers.
+If you run a shared deployment, you may enable the OpenRouter `user` attribution identifier and/or attach Open WebUI identifiers into OpenRouter `metadata` via valves. This helps incident response and abuse attribution but can increase privacy risk if you forward unnecessary identifiers.
 
 See: [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md).
 

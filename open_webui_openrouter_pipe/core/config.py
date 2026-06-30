@@ -916,6 +916,16 @@ class Valves(BaseModel):
             "Note: Longer TTLs can increase cache write costs."
         ),
     )
+    SEND_CACHE_SESSION_ID: bool = Field(
+        default=True,
+        title="Prompt-cache session affinity",
+        description=(
+            "When True (default), send a stable per-conversation `session_id` = "
+            "HMAC-SHA256(WEBUI_SECRET_KEY, chat_id) so OpenRouter keeps each conversation on one "
+            "provider and maximizes prompt-cache hits across turns. Opaque; no raw identifiers. "
+            "Skipped if WEBUI_SECRET_KEY is unset."
+        ),
+    )
     AUTO_CONTEXT_TRIMMING: bool = Field(
         default=True,
         title="Auto context trimming",
@@ -1506,7 +1516,7 @@ class Valves(BaseModel):
     )
     SEND_SESSION_ID: bool = Field(
         default=False,
-        description="When True, send OpenRouter `session_id` using OWUI metadata and also include `metadata.session_id`.",
+        description="When True, include OWUI session_id as `metadata.session_id` (metadata only).",
     )
     SEND_CHAT_ID: bool = Field(
         default=False,

@@ -5298,6 +5298,12 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
     Uses HTTP boundary mocking with callback to capture request params.
     """
     from aioresponses import aioresponses
+    import hashlib
+    import hmac
+
+    secret = "task-model-cache-secret"
+    monkeypatch.setenv("WEBUI_SECRET_KEY", secret)
+    expected_pin = hmac.new(secret.encode("utf-8"), b"c1", hashlib.sha256).hexdigest()
 
     pipe = Pipe()
     pipe.valves = pipe.Valves(
@@ -5358,7 +5364,7 @@ async def test_task_models_apply_identifier_valves_to_payload(monkeypatch):
 
             request_params = captured["request_params"]
             assert request_params.get("user") == "u123"
-            assert request_params.get("session_id") == "s1"
+            assert request_params.get("session_id") == expected_pin
 
             metadata = request_params.get("metadata")
             assert isinstance(metadata, dict)

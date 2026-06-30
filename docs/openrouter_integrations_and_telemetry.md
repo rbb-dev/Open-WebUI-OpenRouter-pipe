@@ -268,7 +268,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.
 
-### 2.6 Provider routing custom parameters → OpenRouter `provider` dict
+### 2.13 Provider routing custom parameters → OpenRouter `provider` dict
 
 OpenRouter routes models through multiple infrastructure providers (e.g. OpenAI direct, Azure, Together). Some providers have different content filtering, latency, or pricing. These custom parameters let you control provider selection per-model without needing the full filter-based provider routing system.
 
@@ -329,6 +329,12 @@ Result:
 - `only` and `ignore` are independent fields in the OpenRouter API. Setting both is technically valid but uncommon — `only` restricts the allowlist, `ignore` removes from it.
 - These params are simple CSV strings that survive OWUI's Advanced Parameters editor re-serialization (unlike nested JSON objects which can be mangled).
 - For more advanced per-model provider routing with UI dropdowns, see the [Provider Routing Filters](openrouter_provider_routing.md) system.
+
+### 2.14 Prompt-cache session affinity (`session_id`)
+
+To maximize prompt-cache hits, the pipe sends OpenRouter a stable per-conversation `session_id` so every turn of a conversation routes to the same provider, keeping that provider's prompt cache warm. The value is an opaque `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` digest — never the raw chat id — and costs zero tokens. Any client-supplied `session_id` is dropped.
+
+Controlled by `SEND_CACHE_SESSION_ID` (default **on**); skipped when `WEBUI_SECRET_KEY` is unset. A manually pinned `provider.order` overrides it.
 
 ---
 

@@ -420,7 +420,8 @@ Notes:
 - `FINAL_USAGE_STATUS_STYLE="text"` uses labels like “Time”, “Cost”, and “Total tokens”.
 - `FINAL_USAGE_STATUS_STYLE="icons"` swaps those labels for the icon set. You can also pass **words** as the CSV entries if you want custom labels (e.g., `Time,Cost,Total,Input,Output,Cached,Reasoning`).
 | `SEND_END_USER_ID` | `bool` | `False` | When enabled, sends the OpenRouter top-level `user` field using the Open WebUI user ID, and also adds `metadata.user_id`. See [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md). |
-| `SEND_SESSION_ID` | `bool` | `False` | When enabled, sends OpenRouter `session_id` using Open WebUI `__metadata__[\"session_id\"]` (if present) and adds `metadata.session_id`. |
+| `SEND_SESSION_ID` | `bool` | `False` | When enabled, adds `metadata.session_id` using Open WebUI `__metadata__[\"session_id\"]` (metadata only). |
+| `SEND_CACHE_SESSION_ID` | `bool` | `True` | Sends `session_id` = `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` to pin each conversation to one provider for prompt-cache warmth. Skipped if `WEBUI_SECRET_KEY` is unset. See [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#214-prompt-cache-session-affinity-session_id). |
 | `SEND_CHAT_ID` | `bool` | `False` | When enabled, adds `metadata.chat_id` using Open WebUI `__metadata__[\"chat_id\"]`. |
 | `SEND_MESSAGE_ID` | `bool` | `False` | When enabled, adds `metadata.message_id` using Open WebUI `__metadata__[\"message_id\"]`. |
 

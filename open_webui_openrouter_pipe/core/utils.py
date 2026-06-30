@@ -18,6 +18,8 @@ import inspect
 import json
 import re
 import hashlib
+import hmac
+import os
 from typing import Any, Awaitable, Optional, TypeVar, cast
 
 # Import constants needed for template rendering and ULID generation
@@ -86,6 +88,14 @@ def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
         idx = (value >> ((length_int - 1 - i) * 5)) & 0x1F
         out.append(CROCKFORD_ALPHABET[idx])
     return "".join(out)
+
+
+def _sticky_session_key(chat_id: str) -> str | None:
+    """Opaque keyed-HMAC routing key for sticky provider routing; None if WEBUI_SECRET_KEY is unset."""
+    secret = os.getenv("WEBUI_SECRET_KEY")
+    if not secret:
+        return None
+    return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
 # -----------------------------------------------------------------------------
 # Template Rendering

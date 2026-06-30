@@ -37,7 +37,7 @@ from ..core.timing_logger import timed
 from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
 from ..core.config import LOGGER
-from ..core.utils import _coerce_bool, _parse_model_fallback_csv, strip_hidden_marker_lines
+from ..core.utils import _coerce_bool, _parse_model_fallback_csv, _sticky_session_key, strip_hidden_marker_lines
 from ..requests.transformer import transform_messages_to_input
 
 # -----------------------------------------------------------------------------
@@ -1536,8 +1536,9 @@ def _apply_identifier_valves_to_payload(
     Rules (per operator requirements):
     - Only emit `metadata` when at least one identifier valve contributes a value.
     - When `SEND_END_USER_ID` is enabled, emit both top-level `user` and `metadata.user_id`.
-    - When `SEND_SESSION_ID` is enabled, emit both top-level `session_id` and `metadata.session_id`.
-    - `chat_id` and `message_id` have no OpenRouter top-level fields; they go into `metadata` only.
+    - Top-level `session_id` is the prompt-cache session pin: an opaque HMAC of chat_id
+      (gated by `SEND_CACHE_SESSION_ID`); any client-supplied `session_id` is dropped.
+    - `SEND_SESSION_ID`, `SEND_CHAT_ID`, `SEND_MESSAGE_ID` emit `metadata.<id>` only.
     """
     if not isinstance(payload, dict):
         return
@@ -1557,20 +1558,20 @@ def _apply_identifier_valves_to_payload(
     else:
         payload.pop("user", None)
 
+    payload.pop("session_id", None)
+    if valves.SEND_CACHE_SESSION_ID:
+        sticky_chat_id = owui_metadata.get("chat_id")
+        if isinstance(sticky_chat_id, str) and sticky_chat_id.strip():
+            sticky = _sticky_session_key(sticky_chat_id.strip())
+            if sticky:
+                payload["session_id"] = sticky
+
     if valves.SEND_SESSION_ID:
         session_id = owui_metadata.get("session_id")
         if isinstance(session_id, str):
             candidate = session_id.strip()
-            if candidate and len(candidate) <= _MAX_OPENROUTER_ID_CHARS:
-                payload["session_id"] = candidate
-                metadata_out["session_id"] = candidate
-            else:
-                payload.pop("session_id", None)
-                logger.debug("SEND_SESSION_ID enabled but OWUI session_id missing/invalid; omitting `session_id`.")
-        else:
-            payload.pop("session_id", None)
-    else:
-        payload.pop("session_id", None)
+            if candidate:
+                metadata_out["session_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
 
     if valves.SEND_CHAT_ID:
         chat_id = owui_metadata.get("chat_id")

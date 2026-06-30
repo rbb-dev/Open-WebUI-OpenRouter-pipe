@@ -829,3 +829,12 @@ def _reset_model_registry():
     reg._last_error_time = 0.0
     ModelFamily.set_dynamic_specs(None)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_webui_secret_key(monkeypatch):
+    """Keep WEBUI_SECRET_KEY unset by default so the SEND_CACHE_SESSION_ID cache pin is
+    deterministic regardless of ambient env or test order; tests that exercise the pin set
+    it explicitly via monkeypatch.setenv.
+    """
+    monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)

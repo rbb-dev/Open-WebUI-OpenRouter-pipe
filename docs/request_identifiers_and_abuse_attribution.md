@@ -1,6 +1,6 @@
 # Request identifiers and abuse attribution
 
-**Scope:** How the pipe emits OpenRouter request identifiers (`user`, `session_id`, `metadata`) to support abuse attribution and operations in multi-user deployments.
+**Scope:** How the pipe emits OpenRouter abuse-attribution identifiers (`user`, `metadata`) in multi-user deployments.
 
 > **Quick Navigation**: [📘 Docs Home](README.md) | [⚙️ Configuration](valves_and_configuration_atlas.md) | [🔒 Security](security_and_encryption.md)
 
@@ -40,11 +40,10 @@ Note: While these are not “direct identifiers” (like email), they may still 
 
 Depending on valves, the pipe can include:
 
-* `user` (top-level): the OWUI user GUID (`__user__["id"]`)
-* `session_id` (top-level): the OWUI session id (`__metadata__["session_id"]`)
+* `user` (top-level): the OWUI user GUID (`__user__["id"]`) — OpenRouter's end-user identifier for abuse detection
 * `metadata` (top-level): a `Dict[str, str]` built by the pipe (not OWUI’s full `__metadata__` blob)
 
-`metadata` is only sent when at least one metadata entry is being populated.
+`metadata` is only sent when at least one metadata entry is being populated. The pipe also sends a top-level `session_id`, but that is a prompt-cache pin (not an attribution field) — see [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#214-prompt-cache-session-affinity-session_id).
 
 Important: the pipe **removes** any user-supplied `user`, `session_id`, or `metadata` fields and replaces them with valve-gated values. This prevents clients/users from spoofing attribution identifiers.
 
@@ -55,7 +54,7 @@ Each identifier is gated by a valve. When enabled, the pipe sources IDs from Ope
 | Valve | OpenRouter top-level | OpenRouter metadata key | Source in Open WebUI context |
 |---|---|---|---|
 | `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]` |
-| `SEND_SESSION_ID` | `session_id` | `session_id` | `__metadata__["session_id"]` |
+| `SEND_SESSION_ID` | *(none)* | `session_id` | `__metadata__["session_id"]` |
 | `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` |
 | `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` |
 
@@ -67,7 +66,7 @@ The pipe enforces OpenRouter’s documented `metadata` constraints:
 * Keys must be **≤ 64 chars** and must not contain `[` or `]`.
 * Values must be **≤ 512 chars**.
 
-Additionally, for top-level `user` and `session_id`, the pipe enforces a maximum length of **128 characters**. If the source value is missing or invalid, the corresponding field is omitted even when the valve is enabled.
+Additionally, the top-level `user` field is capped at **128 characters**. If a source value is missing or invalid, the corresponding field is omitted even when its valve is enabled.
 
 ---
 
@@ -77,7 +76,7 @@ If you’re enabling request identifiers specifically for abuse attribution / in
 
 Why:
 
-* OpenRouter/provider support can reference `user`, `session_id`, and/or `metadata.*` when reporting abuse or asking you to investigate.
+* OpenRouter/provider support can reference `user` and/or `metadata.*` when reporting abuse or asking you to investigate.
 * Encrypted on-disk session log archives give operators a durable record of what happened for a specific request, without needing to run the whole system at `LOG_LEVEL=DEBUG`.
 * Archives are stored using the same IDs (`<user_id>/<chat_id>/<message_id>.zip`) so they’re directly searchable from the identifiers you already see in Open WebUI / provider reports.
 
@@ -104,14 +103,13 @@ These examples show only the relevant identifier fields; request bodies vary dep
 }
 ```
 
-### Full attribution (`user` + `session_id` + `metadata`)
+### Full attribution
 
 ```json
 {
   "model": "openrouter/...",
   "input": [...],
   "user": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1",
-  "session_id": "0f6b31b0-8c9f-4c3b-a1e7-0d7d2c6b5a33",
   "metadata": {
     "user_id": "a3d0d2c1-7f49-4b6b-9a3b-9d3b2a54c2d1",
     "session_id": "0f6b31b0-8c9f-4c3b-a1e7-0d7d2c6b5a33",
@@ -127,16 +125,15 @@ These examples show only the relevant identifier fields; request bodies vary dep
 
 See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the canonical list and defaults. The relevant valves are:
 
-* `SEND_END_USER_ID` (default: false)
-* `SEND_SESSION_ID` (default: false)
-* `SEND_CHAT_ID` (default: false)
-* `SEND_MESSAGE_ID` (default: false)
+* `SEND_END_USER_ID` (default: false) — top-level `user` (abuse attribution)
+* `SEND_SESSION_ID` (default: false) — `metadata.session_id` only
+* `SEND_CHAT_ID` (default: false) — `metadata.chat_id` only
+* `SEND_MESSAGE_ID` (default: false) — `metadata.message_id` only
 
 ---
 
 ## Operational guidance
 
-* Enable `SEND_END_USER_ID` in multi-user deployments unless you have a strict policy against sharing identifiers.
-* Enable `SEND_SESSION_ID` when you want provider-side grouping for multi-step agent flows / long sessions.
-* Enable `SEND_CHAT_ID`/`SEND_MESSAGE_ID` if you want a direct pointer back to a specific OWUI thread/turn during incident response.
-* Treat the emitted IDs as **non-secret** (they may appear in logs), but still handle them as sensitive operational data (they can enable correlation across events).
+* `SEND_END_USER_ID` — sends the `user` field, OpenRouter's end-user abuse identifier. Enable in multi-user deployments.
+* `SEND_SESSION_ID` / `SEND_CHAT_ID` / `SEND_MESSAGE_ID` — add the raw id to `metadata` for incident-response traceability.
+* Treat the emitted IDs as **non-secret** but sensitive operational data; they can correlate events.

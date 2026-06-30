@@ -2088,13 +2088,13 @@ class TestApplyIdentifierValvesToPayload:
             owui_metadata={"session_id": "session123"},
             owui_user_id="",
         )
-        assert payload["session_id"] == "session123"
+        assert "session_id" not in payload
         assert payload["metadata"]["session_id"] == "session123"
 
     def test_session_id_removed_when_valve_disabled(self, pipe_instance):
         """Test session_id is removed when SEND_SESSION_ID is disabled."""
         pipe = pipe_instance
-        valves = pipe.valves.model_copy(update={"SEND_SESSION_ID": False})
+        valves = pipe.valves.model_copy(update={"SEND_SESSION_ID": False, "SEND_CACHE_SESSION_ID": False})
         payload = {"session_id": "existing"}
         _apply_identifier_valves_to_payload(
             payload,
@@ -2176,7 +2176,7 @@ class TestApplyIdentifierValvesToPayload:
                 owui_metadata={"session_id": "  "},  # Whitespace only
                 owui_user_id="",
             )
-        assert "session_id" not in payload
+        assert "session_id" not in payload.get("metadata", {})
 
 
 # ============================================================================

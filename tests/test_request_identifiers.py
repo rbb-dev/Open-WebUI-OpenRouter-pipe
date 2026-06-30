@@ -1,6 +1,8 @@
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Any
 
 import pytest
@@ -17,7 +19,7 @@ def _base_payload() -> dict[str, Any]:
 
 
 def test_identifier_valves_default_omit_everything():
-    valves = Pipe.Valves()
+    valves = Pipe.Valves(SEND_CACHE_SESSION_ID=False)
     payload = _base_payload()
     payload.update(
         {
@@ -47,7 +49,7 @@ def test_identifier_valves_default_omit_everything():
         ),
         (
             {"SEND_SESSION_ID": True},
-            {"session_id": "s1", "metadata": {"session_id": "s1"}},
+            {"metadata": {"session_id": "s1"}},
         ),
         (
             {"SEND_CHAT_ID": True},
@@ -61,7 +63,6 @@ def test_identifier_valves_default_omit_everything():
             {"SEND_END_USER_ID": True, "SEND_SESSION_ID": True, "SEND_CHAT_ID": True, "SEND_MESSAGE_ID": True},
             {
                 "user": "u1",
-                "session_id": "s1",
                 "metadata": {
                     "user_id": "u1",
                     "session_id": "s1",
@@ -110,4 +111,137 @@ def test_filter_openrouter_request_sanitizes_metadata_constraints():
     assert filtered["metadata"]["ok"] == "v"
     assert "bad[key]" not in filtered["metadata"]
     assert "too_long_value" not in filtered["metadata"]
+
+
+_STICKY_CHAT_ID = "chat-1234-abcd"
+_STICKY_SECRET = "unit-test-secret"
+
+
+def _expected_sticky(chat_id: str, secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _sticky_session_for(chat_id: str, **valve_kwargs: Any) -> Any:
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=Pipe.Valves(**valve_kwargs),
+        owui_metadata={"chat_id": chat_id} if chat_id else {},
+        owui_user_id="u1",
+    )
+    return payload.get("session_id"), payload
+
+
+def test_sticky_session_default_on_sets_opaque_session_id(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    sid, payload = _sticky_session_for(_STICKY_CHAT_ID)
+    assert sid == _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)
+    assert len(sid) == 64 and all(c in "0123456789abcdef" for c in sid)
+    assert sid != _STICKY_CHAT_ID and _STICKY_CHAT_ID not in sid  # opaque, no raw leak
+    assert "metadata" not in payload  # sticky adds no metadata
+
+
+def test_sticky_session_deterministic_and_unique(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    a1, _ = _sticky_session_for("chat-A")
+    assert a1 is not None and len(a1) == 64
+    a2, _ = _sticky_session_for("chat-A")
+    b1, _ = _sticky_session_for("chat-B")
+    assert a1 == a2  # stable across turns of the same conversation
+    assert a1 != b1  # unique per conversation
+
+
+def test_sticky_session_skipped_without_secret(monkeypatch):
+    monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)
+    sid, payload = _sticky_session_for(_STICKY_CHAT_ID)
+    assert sid is None  # no unkeyed fallback when the secret is unset
+    assert "session_id" not in payload
+
+
+def test_sticky_session_skipped_without_chat_id(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    sid, payload = _sticky_session_for("")
+    assert sid is None
+    assert "session_id" not in payload
+
+
+def test_sticky_session_skipped_for_whitespace_chat_id(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    sid, payload = _sticky_session_for("   ")
+    assert sid is None  # .strip() guard rejects whitespace; never HMAC("")
+    assert "session_id" not in payload
+
+
+def test_send_session_id_and_sticky_coexist(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=Pipe.Valves(SEND_SESSION_ID=True),  # sticky stays default-on; they no longer compete
+        owui_metadata={"session_id": "raw-sess", "chat_id": _STICKY_CHAT_ID},
+        owui_user_id="u1",
+    )
+    # top-level session_id is the cache pin (hashed chat_id) — never the raw session
+    assert payload.get("session_id") == _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)
+    # the raw OWUI session goes to metadata only (observability)
+    assert payload["metadata"]["session_id"] == "raw-sess"
+
+
+def test_sticky_session_disabled(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    sid, payload = _sticky_session_for(_STICKY_CHAT_ID, SEND_CACHE_SESSION_ID=False)
+    assert sid is None
+    assert "session_id" not in payload
+
+
+def test_invalid_metadata_session_dropped_but_sticky_pin_remains(monkeypatch):
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=Pipe.Valves(SEND_SESSION_ID=True),
+        owui_metadata={"session_id": "   ", "chat_id": _STICKY_CHAT_ID},
+        owui_user_id="u1",
+    )
+    # whitespace session is dropped from metadata...
+    assert "session_id" not in payload.get("metadata", {})
+    # ...while the cache pin still occupies top-level session_id
+    assert payload.get("session_id") == _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)
+
+
+def test_inbound_session_id_is_stripped(monkeypatch):
+    monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)  # no secret -> sticky no-ops
+    payload = _base_payload()
+    payload["session_id"] = "client-spoofed"
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=Pipe.Valves(),
+        owui_metadata={"chat_id": _STICKY_CHAT_ID},
+        owui_user_id="u1",
+    )
+    assert "session_id" not in payload  # client-supplied session_id is never forwarded
+
+
+def test_cache_pin_survives_openrouter_filters(monkeypatch):
+    from open_webui_openrouter_pipe.api.transforms import _filter_openrouter_chat_request
+
+    monkeypatch.setenv("WEBUI_SECRET_KEY", _STICKY_SECRET)
+    expected = _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)
+
+    responses_payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        responses_payload,
+        valves=Pipe.Valves(),
+        owui_metadata={"chat_id": _STICKY_CHAT_ID},
+        owui_user_id="u1",
+    )
+    assert responses_payload.get("session_id") == expected
+    assert _filter_openrouter_request(responses_payload).get("session_id") == expected
+
+    chat_payload = {
+        "model": "openrouter/test",
+        "messages": [{"role": "user", "content": "ping"}],
+        "session_id": expected,
+    }
+    assert _filter_openrouter_chat_request(chat_payload).get("session_id") == expected
 
