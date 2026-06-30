@@ -40,7 +40,7 @@ def _apply_anyio_1111_workaround() -> None:
 
     _log = _logging.getLogger("open_webui_openrouter_pipe.anyio_1111_workaround")
 
-    _KNOWN_BUGGY = {"4.12.1", "4.13.0"}
+    _KNOWN_BUGGY = {"4.12.1", "4.13.0", "4.14.1"}
     _MARKER = "_anyio_1111_workaround_applied"
 
     if "pytest" in _sys.modules or "_pytest" in _sys.modules:
