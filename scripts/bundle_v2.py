@@ -41,6 +41,8 @@ PACKAGE_NAME = "open_webui_openrouter_pipe"
 
 DEFAULT_OUTPUT_RAW = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled.py"
 DEFAULT_OUTPUT_COMPRESSED = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled_compressed.py"
+DEFAULT_OUTPUT_RAW_NO_PLUGINS = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled_no_plugins.py"
+DEFAULT_OUTPUT_COMPRESSED_NO_PLUGINS = PROJECT_ROOT / "open_webui_openrouter_pipe_bundled_compressed_no_plugins.py"
 ANYIO_WORKAROUND_FILE = PROJECT_ROOT / "scripts" / "anyio_1111_workaround.py"
 
 
@@ -124,8 +126,12 @@ class ModuleInfo:
 # Step 1: Discovery
 # ---------------------------------------------------------------------------
 
-def discover_modules(package_dir: Path) -> dict[str, ModuleInfo]:
-    """Walk the package directory and create ModuleInfo for each .py file."""
+def discover_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dict[str, ModuleInfo]:
+    """Walk the package directory and create ModuleInfo for each .py file.
+
+    When ``exclude_plugins`` is set, files inside a plugin sub-package
+    (``plugins/<name>/...``) are skipped; the framework (``plugins/*.py``) stays.
+    """
     modules: dict[str, ModuleInfo] = {}
 
     for py_file in sorted(package_dir.rglob("*.py")):
@@ -136,6 +142,9 @@ def discover_modules(package_dir: Path) -> dict[str, ModuleInfo]:
 
         relative = py_file.relative_to(package_dir)
         parts = list(relative.parts)
+
+        if exclude_plugins and len(parts) >= 3 and parts[0] == "plugins":
+            continue
 
         is_init = parts[-1] == "__init__.py"
         if is_init:
@@ -1033,11 +1042,12 @@ def assemble(
 # decompresses and executes modules on demand at import time.
 
 
-def _collect_all_modules(package_dir: Path) -> dict[str, str]:
+def _collect_all_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dict[str, str]:
     """Collect all Python modules under *package_dir* as ``{dotted_name: source}``.
 
-    Includes ``__init__.py`` files and does not skip any files — every module
-    is needed for the import-hook approach.
+    Includes ``__init__.py`` files. When ``exclude_plugins`` is set, files inside
+    a plugin sub-package (``plugins/<name>/...``) are skipped; the framework
+    (``plugins/*.py``) stays — so the bundle manifest simply lists no plugins.
     """
     modules: dict[str, str] = {}
     package_name = package_dir.name
@@ -1048,6 +1058,9 @@ def _collect_all_modules(package_dir: Path) -> dict[str, str]:
 
         relative = py_file.relative_to(package_dir)
         parts = list(relative.parts)
+
+        if exclude_plugins and len(parts) >= 3 and parts[0] == "plugins":
+            continue
 
         if parts[-1] == "__init__.py":
             parts = parts[:-1]
@@ -1144,6 +1157,11 @@ def _generate_compressed_runtime() -> str:
     lines.append("            is_package=_bundled_is_package(fullname),")
     lines.append("        )")
     lines.append("")
+    lines.append("    def bundled_module_names(self):")
+    lines.append("        # Generic manifest accessor: lets the plugin system discover")
+    lines.append("        # plugin packages in a compressed bundle with no hard-coded names.")
+    lines.append("        return list(_BUNDLED_SOURCES_Z)")
+    lines.append("")
     lines.append("class _BundledModuleLoader(Loader):")
     lines.append("    def __init__(self, fullname: str):")
     lines.append("        self.fullname = fullname")
@@ -1212,9 +1230,9 @@ def _generate_compressed_entry_point() -> str:
     )
 
 
-def _bundle_compressed(*, output_path: Path, version: str) -> None:
+def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = False) -> None:
     """Produce a compressed bundle using zlib+base64 string blobs with an import hook."""
-    modules = _collect_all_modules(PACKAGE_DIR)
+    modules = _collect_all_modules(PACKAGE_DIR, exclude_plugins=no_plugins)
 
     parts: list[str] = []
     parts.append(_render_header_compressed(version=version))
@@ -1301,18 +1319,18 @@ def validate_output(source: str, output_path: Path) -> bool:
 # Main bundler
 # ---------------------------------------------------------------------------
 
-def bundle(*, output_path: Path, compressed: bool) -> None:
+def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> None:
     version = _read_stub_version(STUB_FILE)
 
     # Compressed mode: completely separate code path (string blobs + import hook)
     if compressed:
-        _bundle_compressed(output_path=output_path, version=version)
+        _bundle_compressed(output_path=output_path, version=version, no_plugins=no_plugins)
         return
 
     # --- Flat monolith (default) ---
 
     # Step 1: Discover
-    all_modules = discover_modules(PACKAGE_DIR)
+    all_modules = discover_modules(PACKAGE_DIR, exclude_plugins=no_plugins)
     print(f"Discovered {len(all_modules)} modules")
 
     # Step 2: Analyze
@@ -1415,15 +1433,23 @@ def main() -> None:
         "--output", "-o",
         type=Path,
         default=None,
-        help="Output file path (defaults depend on --compress)",
+        help="Output file path (defaults depend on --compress / --no-plugins)",
+    )
+    parser.add_argument(
+        "--no-plugins",
+        action="store_true",
+        help="Exclude plugin sub-packages (plugins/<name>/...); bundle the framework only",
     )
     args = parser.parse_args()
 
     output = args.output
     if output is None:
-        output = DEFAULT_OUTPUT_COMPRESSED if args.compress else DEFAULT_OUTPUT_RAW
+        if args.no_plugins:
+            output = DEFAULT_OUTPUT_COMPRESSED_NO_PLUGINS if args.compress else DEFAULT_OUTPUT_RAW_NO_PLUGINS
+        else:
+            output = DEFAULT_OUTPUT_COMPRESSED if args.compress else DEFAULT_OUTPUT_RAW
 
-    bundle(output_path=output, compressed=bool(args.compress))
+    bundle(output_path=output, compressed=bool(args.compress), no_plugins=bool(args.no_plugins))
 
 
 if __name__ == "__main__":

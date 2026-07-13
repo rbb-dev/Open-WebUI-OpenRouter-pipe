@@ -732,7 +732,7 @@ class Valves(BaseModel):
     )
     SAVE_REMOTE_FILE_URLS: bool = Field(
         default=True,
-        description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage. When False, file_url values pass through untouched. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior. Recommended: Keep disabled to avoid unexpected storage growth.",
+        description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage (default; keeps chats replayable if the source link later dies, at the cost of storage growth). When False, file_url values pass through untouched. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior.",
     )
     SAVE_FILE_DATA_CONTENT: bool = Field(
         default=True,
@@ -754,7 +754,7 @@ class Valves(BaseModel):
         default=100,
         ge=1,
         le=1000,
-        description="Maximum size in MB for video files (remote URLs or data URLs). Videos exceeding this limit will be rejected to prevent memory and bandwidth issues.",
+        description="Maximum size in MB for inline base64 (data:) video payloads and for stored videos re-read to extract frames. Oversized videos are rejected/skipped; remote http(s) and YouTube video links are forwarded to the provider unmeasured.",
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
@@ -926,6 +926,14 @@ class Valves(BaseModel):
             "Skipped if WEBUI_SECRET_KEY is unset."
         ),
     )
+    ENABLE_PLUGIN_SYSTEM: bool = Field(
+        default=False,
+        title="Enable plugin system",
+        description=(
+            "Master switch for the plugin system. When False, all plugin hooks are skipped. "
+            "Takes effect immediately without restart."
+        ),
+    )
     AUTO_CONTEXT_TRIMMING: bool = Field(
         default=True,
         title="Auto context trimming",
@@ -968,7 +976,7 @@ class Valves(BaseModel):
         title="Task reasoning effort",
         description=(
             "Reasoning effort requested for Open WebUI task payloads (titles, tags, etc.) when they target this pipe's models. "
-            "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs (and disable auto web-search), "
+            "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs, "
             "or use medium/high for progressively deeper background reasoning at higher cost."
         ),
     )
@@ -995,7 +1003,7 @@ class Valves(BaseModel):
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Min 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
@@ -1040,7 +1048,8 @@ class Valves(BaseModel):
         default=False,
         description=(
             "When True, persist per-request SessionLogger output to encrypted zip files on disk. "
-            "Persistence is skipped when any required IDs are missing (user_id, session_id, chat_id, message_id)."
+            "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
+            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id)."
         ),
     )
     SESSION_LOG_DIR: str = Field(
@@ -1090,9 +1099,7 @@ class Valves(BaseModel):
         default="jsonl",
         description=(
             "Format written inside session log archives. "
-            "'jsonl' writes logs.jsonl (one JSON object per log record). "
-            "'text' writes logs.txt (plain text). "
-            "'both' writes both files."
+            "logs.jsonl is always written; 'jsonl' writes only it (one JSON object per record), while 'text' and 'both' additionally write a plain-text logs.txt (so 'text' and 'both' produce the same files)."
         ),
     )
     SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS: int = Field(
@@ -1178,7 +1185,7 @@ class Valves(BaseModel):
         ge=0,
         description=(
             "Nagle coalescing toggle for the streaming pipeline. "
-            "When > 0 (default 256), Nagle-style adaptive batching is active: deltas are buffered "
+            "When > 0 (default 256) Nagle-style adaptive batching is active — only whether the value exceeds 0 matters, its magnitude has no effect on batch size. Deltas are buffered "
             "and coalesced based on consumer backpressure, with STREAMING_NAGLE_MIN_FLUSH_CHARS "
             "controlling the minimum batch size. "
             "When 0 (and STREAMING_IDLE_FLUSH_MS is also 0), passthrough mode: deltas emit 1:1."
@@ -1215,7 +1222,7 @@ class Valves(BaseModel):
         default=1.0,
         ge=0,
         description=(
-            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while enqueueing a stream item before aborting the request. "
+            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while enqueueing a stream item before dropping that single item and continuing the stream. "
             "0 disables the timeout (not recommended; a stalled client can hang producers)."
         ),
     )
@@ -1238,7 +1245,7 @@ class Valves(BaseModel):
         default=DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
         description=(
             "Markdown template used when a request requires /chat/completions (e.g. direct video uploads) but the model is "
-            "explicitly forced to /responses by endpoint override valves (or vice versa)."
+            "explicitly forced to /responses by endpoint override valves."
         ),
     )
     DIRECT_UPLOAD_FAILURE_TEMPLATE: str = Field(
@@ -1253,7 +1260,7 @@ class Valves(BaseModel):
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         description=(
             "Markdown template for HTTP 401 errors. Available placeholders include {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, "
-            "{session_id}, {user_id}, {support_email}, {support_url}, and any metadata extracted from the OpenRouter payload."
+            "{session_id}, {user_id}, {support_email}, {support_url}, plus the shared OpenRouter error-context fields such as {metadata_json}, {provider}, and {request_id}. Arbitrary payload keys are not placeholders."
         ),
     )
 
@@ -1397,7 +1404,7 @@ class Valves(BaseModel):
         ge=1,
         le=200,
         description=(
-            "Maximum failures remembered per user/tool breaker. Increase when using very high BREAKER_MAX_FAILURES so history is not truncated."
+            "Maximum failures the per-user database circuit breaker remembers. Keep at or above BREAKER_MAX_FAILURES so history is not truncated below the trip count (the request and per-tool breakers size their own history automatically)."
         ),
     )
     TOOL_BATCH_CAP: int = Field(
@@ -1460,7 +1467,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=50,
-        description="Disable Redis caching after this many consecutive flush failures (falls back to direct DB writes).",
+        description="Log a critical alert after this many consecutive Redis flush failures. Write-behind is not disabled: the flusher backs off and keeps retrying, resuming when writes succeed (new writes fall back to direct DB meanwhile).",
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,
@@ -1476,7 +1483,7 @@ class Valves(BaseModel):
         default=90,
         ge=1,
         le=365,
-        description="Retention window (days) for artifact cleanup scheduler.",
+        description="Days an artifact is kept before cleanup. Its created_at is refreshed on every DB read, so retention runs from last access, not creation.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,
@@ -1553,7 +1560,7 @@ class Valves(BaseModel):
     UPDATE_MODEL_DESCRIPTIONS: bool = Field(
         default=False,
         description=(
-            "When enabled, automatically sync model descriptions from OpenRouter's API catalog to Open WebUI model metadata. "
+            "When enabled, automatically sync model descriptions from OpenRouter's frontend catalog to Open WebUI model metadata. "
             "Disable to manage model descriptions manually (or set per-model disable_description_updates)."
         ),
     )
@@ -1596,7 +1603,7 @@ class Valves(BaseModel):
         ),
     )
 
-    # ── Web Tools Filter (Web Search + Web Fetch + Datetime) ──
+    # ── Web Tools Filter ──
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
         default=True,
         description="Automatically install/update the OpenRouter Web Tools filter function in Open WebUI.",
@@ -1636,16 +1643,17 @@ class Valves(BaseModel):
     AUTO_INSTALL_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
-            "Automatically install/update the three OpenRouter native image "
-            "filters in Open WebUI (generic, Gemini-extended, Sourceful-extended)."
+            "Automatically install/update the OpenRouter native image filters "
+            "in Open WebUI: a generic filter plus provider-specific ones for the "
+            "Gemini, Sourceful, Recraft, and Grok image families."
         ),
     )
     AUTO_ATTACH_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
             "Automatically attach the appropriate native image filters to "
-            "image-output models: generic to all, Gemini-extended to Gemini "
-            "Flash 3.x image, Sourceful-extended to Riverflow Pro/Fast."
+            "image-output models: a generic filter to all, plus provider-specific "
+            "filters to the Gemini, Sourceful/Riverflow, Recraft, and Grok families."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
@@ -1666,7 +1674,7 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Always keep the per-model video filter enabled by default on its video model. Re-asserted on every sync because video models require their filter to function.",
+        description="Always keep the per-model video filter enabled by default on its video model. Re-asserted on every sync. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
     )
     # ── OpenRouter Fusion filter (multi-model judge panel) ──
     ENABLE_OPENROUTER_FUSION: bool = Field(
@@ -1765,10 +1773,6 @@ class Valves(BaseModel):
         default="video/mp4,video/webm",
         description="Comma-separated MIME allowlist for generated video downloads after content sniffing.",
     )
-    VIDEO_FILTER_MARKER: str = Field(
-        default=_OPENROUTER_VIDEO_GEN_FILTER_MARKER,
-        description="Marker string used to identify the installed OpenRouter Video Generation filter function.",
-    )
     # -------------------------------------------------------------------------
     # Video intent classifier — analyses chat history and attachments to decide
     # what the next video request should reference (prior video frame, attached
@@ -1866,8 +1870,12 @@ class Valves(BaseModel):
     VIDEO_INTENT_LOG_DECISIONS: bool = Field(
         default=False,
         description=(
-            "When True, log full intent classification JSON (mode, confidence, reasoning) "
-            "at INFO. Off by default to avoid leaking prompts into shared logs."
+            "When True, log the per-turn intent classification summary (intent, "
+            "confidence, detected language, frame counts, latency, and fallback/"
+            "failure flags, with the chat id hashed) at INFO instead of DEBUG. The "
+            "record is always written; this only raises its log level. It excludes "
+            "the user's verbatim prompt and the model's free-text reason. Off by "
+            "default to keep this prompt-derived metadata out of normal INFO logs."
         ),
     )
     AUTO_ATTACH_DIRECT_UPLOADS_FILTER: bool = Field(

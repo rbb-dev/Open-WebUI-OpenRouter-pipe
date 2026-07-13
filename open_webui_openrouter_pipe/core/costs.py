@@ -29,6 +29,9 @@ async def maybe_dump_costs_snapshot(
     usage: dict[str, Any] | None,
     user_obj: Optional[Any] = None,
     pipe_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+    kind: Optional[str] = None,
 ) -> None:
     """Push usage snapshots to Redis when enabled, namespaced per pipe.
 
@@ -96,6 +99,12 @@ async def maybe_dump_costs_snapshot(
         "usage": snapshot_usage,
         "ts": ts,
     }
+    if chat_id:
+        payload["chat_id"] = str(chat_id)
+    if message_id:
+        payload["message_id"] = str(message_id)
+    if kind:
+        payload["kind"] = str(kind)
     try:
         await _await_if_needed(
             pipe._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)

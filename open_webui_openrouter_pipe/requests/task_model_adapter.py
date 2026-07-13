@@ -18,6 +18,7 @@ from ..api.transforms import _apply_identifier_valves_to_payload, _filter_openro
 from ..models.registry import OpenRouterModelRegistry, ModelFamily
 from ..core.timing_logger import timed
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.logging_system import SessionLogger
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -171,12 +172,23 @@ class TaskModelAdapter:
                                 usage=usage,
                                 user_obj=user_obj,
                                 pipe_id=pipe_id,
+                                chat_id=str((owui_metadata or {}).get("chat_id") or "") or None,
+                                message_id=str((owui_metadata or {}).get("message_id") or "") or None,
+                                kind="task",
                             )
                         except Exception as exc:  # pragma: no cover - guard against Redis-side issues
                             self.logger.debug("Task cost snapshot failed: %s", exc)
 
                 message = self._extract_task_output_text(response).strip()
                 if message:
+                    await self._pipe._dispatch_plugin_event(
+                        "dispatch_on_generation_complete",
+                        usage if isinstance(usage, dict) else None,
+                        "ok",
+                        request_id=SessionLogger.request_id.get() or "",
+                        metadata=owui_metadata or {},
+                        task=self._task_name(task_context) or "task",
+                    )
                     return message
 
                 raise ValueError(
@@ -209,4 +221,12 @@ class TaskModelAdapter:
             f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
         )
         self.logger.error(error_message, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+        await self._pipe._dispatch_plugin_event(
+            "dispatch_on_generation_complete",
+            None,
+            "failed",
+            request_id=SessionLogger.request_id.get() or "",
+            metadata=owui_metadata or {},
+            task=task_type,
+        )
         return f"[Task error] Unable to generate {task_type}. Please retry later."

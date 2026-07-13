@@ -53,7 +53,6 @@ def build_tools(
 
     - Returns [] if the target model doesn't support function calling.
     - Includes Open WebUI registry tools (strictified if enabled).
-    - Adds OpenAI web_search (if allowed + supported + not minimal effort).
     - Appends any caller-provided extra_tools (already-valid OpenAI tool specs).
     - Deduplicates by (type,name) identity; last one wins.
 

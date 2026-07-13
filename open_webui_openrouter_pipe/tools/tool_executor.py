@@ -65,6 +65,7 @@ class _ToolExecutionContext:
     request: "Request | None" = None
     user: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    request_id: str = ""
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None

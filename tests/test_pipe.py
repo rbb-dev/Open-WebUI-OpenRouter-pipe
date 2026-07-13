@@ -5226,7 +5226,7 @@ async def test_task_models_dump_costs_when_usage_available(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    async def fake_dump(pipe, valves, *, user_id, model_id, usage, user_obj, pipe_id):
+    async def fake_dump(pipe, valves, *, user_id, model_id, usage, user_obj, pipe_id, **kwargs):
         captured["user_id"] = user_id
         captured["model_id"] = model_id
         captured["usage"] = usage
@@ -6309,6 +6309,40 @@ async def test_init_redis_client_success(monkeypatch, pipe_instance_async) -> No
     assert pipe._redis_client is fake_client  # Pipe's own state
 
     await pipe._stop_redis()
+
+
+@pytest.mark.asyncio
+async def test_init_redis_client_hands_off_to_store(monkeypatch, pipe_instance_async) -> None:
+    """_init_redis_client must enable redis on the ArtifactStore (which owns the
+    write-behind/cache methods), and _stop_redis must clear it again."""
+    pipe = pipe_instance_async
+    pipe._redis_candidate = True
+    pipe._redis_enabled = False
+    pipe._artifact_store._redis_enabled = False
+    pipe._artifact_store._redis_client = None
+    pipe._redis_url = "redis://localhost"
+
+    fake_client = _FakeRedis()
+    monkeypatch.setattr(pipe_mod, "aioredis", _FakeRedisModule(fake_client))
+
+    async def _noop_listener():
+        return None
+
+    async def _noop_flusher():
+        return None
+
+    monkeypatch.setattr(pipe._artifact_store, "_redis_pubsub_listener", _noop_listener)
+    monkeypatch.setattr(pipe._artifact_store, "_redis_periodic_flusher", _noop_flusher)
+
+    await pipe._init_redis_client()
+
+    assert pipe._artifact_store._redis_enabled is True
+    assert pipe._artifact_store._redis_client is fake_client
+
+    await pipe._stop_redis()
+
+    assert pipe._artifact_store._redis_enabled is False
+    assert pipe._artifact_store._redis_client is None
 
 
 @pytest.mark.asyncio

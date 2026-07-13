@@ -1142,6 +1142,7 @@ class StreamingHandler:
         was_cancelled = False
         loop_limit_reached = False
         retry_barrier_crossed = False
+        handed_back_for_retry = False
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
                 # The +1 iteration is reserved exclusively for the synthesis
@@ -2206,6 +2207,9 @@ class StreamingHandler:
                     usage=usage if usage else {},
                     user_obj=user_obj,
                     pipe_id=pipe_identifier,
+                    chat_id=str(metadata.get("chat_id") or "") or None,
+                    message_id=str(metadata.get("message_id") or "") or None,
+                    kind="generation",
                 )
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
@@ -2866,6 +2870,7 @@ class StreamingHandler:
             session_log_reason = str(exc)
             cancel_thinking()
             if not retry_barrier_crossed:
+                handed_back_for_retry = True
                 raise
             assistant_message = ""
             await self._pipe._ensure_error_formatter()._report_openrouter_error(
@@ -2948,6 +2953,22 @@ class StreamingHandler:
                 or (not owui_tool_passthrough)
                 or (owui_tool_passthrough and (not has_function_calls))
             )
+
+            generation_status = "cancelled" if was_cancelled else ("failed" if error_occurred else "ok")
+            if not handed_back_for_retry:
+                try:
+                    await asyncio.shield(
+                        self._pipe._dispatch_plugin_event(
+                            "dispatch_on_generation_complete",
+                            total_usage if isinstance(total_usage, dict) else None,
+                            generation_status,
+                            request_id=SessionLogger.request_id.get() or "",
+                            metadata=metadata,
+                            task=None,
+                        )
+                    )
+                except Exception:
+                    self.logger.debug("generation-complete dispatch failed", exc_info=True)
 
             if (not error_occurred) and (not was_cancelled):
                 await self._cleanup_replayed_reasoning(body, valves)

@@ -51,11 +51,13 @@ jobs:
           source .venv/bin/activate
           python scripts/bundle_v2.py
           python scripts/bundle_v2.py --compress
+          python scripts/bundle_v2.py --no-plugins
+          python scripts/bundle_v2.py --compress --no-plugins
 
       - name: Lint bundles
         run: |
           source .venv/bin/activate
-          ruff check --per-file-ignores 'open_webui_openrouter_pipe_bundled*.py:E402' open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py
+          ruff check --per-file-ignores 'open_webui_openrouter_pipe_bundled*.py:E402' open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py open_webui_openrouter_pipe_bundled_no_plugins.py open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
       - name: Type-check source and bundles
         run: |
@@ -63,19 +65,27 @@ jobs:
           pyright
           pyright open_webui_openrouter_pipe_bundled.py
           pyright open_webui_openrouter_pipe_bundled_compressed.py
+          pyright open_webui_openrouter_pipe_bundled_no_plugins.py
+          pyright open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m compileall open_webui_openrouter_pipe tests filters open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py
+          python -m compileall open_webui_openrouter_pipe tests filters open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py open_webui_openrouter_pipe_bundled_no_plugins.py open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
-          # Run the test suite in 3 modes:
+          # Run the test suite in 5 modes:
           # 1) Normal package imports (on-disk modules)
           # 2) Bundled flat monolith
           # 3) Bundled compressed monolith
+          # 4) Bundled flat, no plugins (plugin tests self-skip via importorskip)
+          # 5) Bundled compressed, no plugins
           echo "==> pytest (package imports)"
           PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
           echo "==> pytest (bundled flat: open_webui_openrouter_pipe_bundled.py)"
           OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
           echo "==> pytest (bundled compressed: open_webui_openrouter_pipe_bundled_compressed.py)"
           OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
+          echo "==> pytest (bundled flat, no plugins: open_webui_openrouter_pipe_bundled_no_plugins.py)"
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_no_plugins.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
+          echo "==> pytest (bundled compressed, no plugins: open_webui_openrouter_pipe_bundled_compressed_no_plugins.py)"
+          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed_no_plugins.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread

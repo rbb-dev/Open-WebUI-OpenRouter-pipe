@@ -28,7 +28,6 @@ import threading
 import time
 import uuid
 import weakref
-from collections import defaultdict, deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Optional, TYPE_CHECKING, cast, no_type_check
@@ -127,6 +126,7 @@ if TYPE_CHECKING:
     from .requests.orchestrator import RequestOrchestrator
     from .filters import FilterManager
     from .integrations.video import VideoGenerationAdapter
+    from .plugins.registry import PluginRegistry
 
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
@@ -352,6 +352,7 @@ class Pipe:
         self._request_orchestrator: Optional["RequestOrchestrator"] = None
         self._filter_manager: Optional["FilterManager"] = None
         self._video_generation_adapter: Optional["VideoGenerationAdapter"] = None
+        self._plugin_registry: Optional["PluginRegistry"] = None
         self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._video_active_tasks_dict_lock: asyncio.Lock = asyncio.Lock()
         self._video_message_locks_dict_lock: asyncio.Lock = asyncio.Lock()
@@ -371,11 +372,6 @@ class Pipe:
         self._artifact_store.configure_breaker(
             threshold=self.valves.BREAKER_MAX_FAILURES,
             window_seconds=self.valves.BREAKER_WINDOW_SECONDS,
-        )
-        # DB breakers (separate from general circuit breaker)
-        breaker_history_size = self.valves.BREAKER_HISTORY_SIZE
-        self._db_breakers: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=breaker_history_size)
         )
 
         # One-time stale filter ID pruning (runs on first pipes() call)
@@ -632,11 +628,19 @@ class Pipe:
                     await client.aclose()
             self._redis_enabled = False
             self._redis_client = None
+            store = getattr(self, "_artifact_store", None)
+            if store is not None:
+                store._redis_enabled = False
+                store._redis_client = None
             self.logger.warning("Redis cache disabled (%s)", exc)
             return
 
         self._redis_client = client
         self._redis_enabled = True
+        store = getattr(self, "_artifact_store", None)
+        if store is not None:
+            store._redis_client = client
+            store._redis_enabled = True
         self.logger.info("Redis cache enabled for namespace '%s'", self._redis_namespace)
         loop = asyncio.get_running_loop()
         self._redis_listener_task = loop.create_task(self._artifact_store._redis_pubsub_listener(), name="openrouter-redis-listener")
@@ -768,6 +772,29 @@ class Pipe:
                 logger=self.logger,
             )
         return self._video_generation_adapter
+
+    async def _dispatch_plugin_event(self, method: str, *args: Any, **kwargs: Any) -> None:
+        """Guarded plugin-event dispatch; never raises into the request path.
+
+        No-op when the plugin system is disabled or the registry was never
+        created — deliberately does NOT force lazy registry creation.
+        """
+        try:
+            if not getattr(self.valves, "ENABLE_PLUGIN_SYSTEM", False):
+                return
+            registry = self._plugin_registry
+            if registry is None:
+                return
+            await getattr(registry, method)(*args, **kwargs)
+        except Exception:
+            self.logger.debug("Plugin event %s dispatch failed", method, exc_info=True)
+
+    def _ensure_plugin_registry(self) -> "PluginRegistry":
+        if self._plugin_registry is None:
+            from .plugins.registry import PluginRegistry
+            self._plugin_registry = PluginRegistry()
+            self._plugin_registry.init_plugins(self)
+        return self._plugin_registry
 
     # =============================================================================
     # ENTRY POINTS
@@ -970,8 +997,18 @@ class Pipe:
             pipe_identifier=self.id,
         )
 
+        # Plugins see full model data (pricing, capabilities) — trusted code
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                await self._ensure_plugin_registry().dispatch_on_models(selected_models)
+            except Exception:
+                self.logger.debug("Plugin on_models dispatch failed", exc_info=True)
         # Return simple id/name list - OWUI's get_function_models() only reads these fields
-        return [{"id": m["id"], "name": m["name"]} for m in selected_models]
+        return [
+            {"id": m["id"], "name": m.get("name", m["id"])}
+            for m in selected_models
+            if isinstance(m, dict) and "id" in m
+        ]
 
     @timed
     async def pipe(
@@ -1259,18 +1296,28 @@ class Pipe:
         Cancels all Redis background tasks and closes the Redis client connection.
         Any errors during client close are logged but not propagated.
         """
-        # Cancel background tasks first
-        if self._redis_listener_task and not self._redis_listener_task.done():
-            self._redis_listener_task.cancel()
-        self._redis_listener_task = None
+        # Cancel background tasks first, then await same-loop ones so their
+        # cleanup (finally blocks) completes before the client closes
+        cancelled_tasks: list[asyncio.Task] = []
+        for attr in ("_redis_listener_task", "_redis_flush_task", "_redis_ready_task"):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                cancelled_tasks.append(task)
+            setattr(self, attr, None)
 
-        if self._redis_flush_task and not self._redis_flush_task.done():
-            self._redis_flush_task.cancel()
-        self._redis_flush_task = None
-
-        if self._redis_ready_task and not self._redis_ready_task.done():
-            self._redis_ready_task.cancel()
-        self._redis_ready_task = None
+        if cancelled_tasks:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            same_loop = [t for t in cancelled_tasks if running_loop is not None and t.get_loop() is running_loop]
+            if same_loop:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.gather(*same_loop, return_exceptions=True),
+                        timeout=2.0,
+                    )
 
         # Close Redis client and handle errors gracefully
         if self._redis_client:
@@ -1283,6 +1330,10 @@ class Pipe:
 
         # Update state
         self._redis_enabled = False
+        store = getattr(self, "_artifact_store", None)
+        if store is not None:
+            store._redis_enabled = False
+            store._redis_client = None
 
     def _init_minimal_for_tests(self) -> None:
         self.type = "manifold"
@@ -1386,13 +1437,21 @@ class Pipe:
             return
         self._schedule_close()
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> list[Any]:
+        pending: list[Any] = []
+        plugin_registry = getattr(self, "_plugin_registry", None)
+        if plugin_registry is not None:
+            pending = plugin_registry.dispatch_on_shutdown()
+        cleanup_task = getattr(self, "_cleanup_task", None)
+        if cleanup_task is not None and not cleanup_task.done():
+            cleanup_task.cancel()
         artifact_store = getattr(self, "_artifact_store", None)
         if artifact_store:
             artifact_store.close()
         session_log_manager = getattr(self, "_session_log_manager", None)
         if session_log_manager:
             session_log_manager.stop_workers()
+        return pending
 
     @timed
     async def _stop_request_worker(self) -> None:
@@ -1527,8 +1586,15 @@ class Pipe:
             with contextlib.suppress(Exception):
                 await asyncio.gather(*extra_tasks, return_exceptions=True)
 
-        if getattr(self, "_session_log_manager", None) or getattr(self, "_artifact_store", None):
-            self.shutdown()
+        pending_shutdown: list[Any] = []
+        with contextlib.suppress(Exception):
+            pending_shutdown = self.shutdown() or []
+        if pending_shutdown:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    asyncio.gather(*pending_shutdown, return_exceptions=True),
+                    timeout=5.0,
+                )
         await self._stop_video_tasks()
         await self._stop_request_worker()
         await self._stop_log_worker()
@@ -1783,6 +1849,29 @@ class Pipe:
             else None
         )
         try:
+            # Plugin on_emitter_wrap hook — wrap emitter before tool_context so tool workers use it.
+            if (
+                self.valves.ENABLE_PLUGIN_SYSTEM
+                and stream_emitter is not None
+                and not job.task
+            ):
+                try:
+                    wrapped = await self._ensure_plugin_registry().dispatch_on_emitter_wrap(
+                        stream_emitter,
+                        raw_emitter=job.event_emitter,
+                        job_metadata={
+                            "user_id": job.user_id,
+                            "chat_id": job.metadata.get("chat_id", ""),
+                            "message_id": job.metadata.get("message_id", ""),
+                            "request_id": job.request_id,
+                        },
+                        valves=job.valves,
+                    )
+                    if wrapped is not None and wrapped is not stream_emitter:
+                        stream_emitter = wrapped
+                except Exception:
+                    self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
+
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
                 tokens = self._apply_logging_context(job)
@@ -1812,6 +1901,7 @@ class Pipe:
                     request=job.request,
                     user=job.user,
                     metadata=job.metadata,
+                    request_id=job.request_id,
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
                 tool_executor = self._ensure_tool_executor()
@@ -1929,6 +2019,26 @@ class Pipe:
                     with SessionLogger._state_lock:
                         SessionLogger.logs.pop(rid, None)
 
+            # Terminal-hook backstop for early-return/exception paths; observers
+            # must dedupe by request_id (a real terminal may have already fired).
+            backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
+            if backstop_rid:
+                if job.future.cancelled():
+                    backstop_status = "cancelled"
+                else:
+                    backstop_status = "ok"
+                    with contextlib.suppress(Exception):
+                        if job.future.exception() is not None:
+                            backstop_status = "failed"
+                await self._dispatch_plugin_event(
+                    "dispatch_on_generation_complete",
+                    None,
+                    backstop_status,
+                    request_id=backstop_rid,
+                    metadata=job.metadata,
+                    task=job.task,
+                )
+
             if tool_token is not None:
                 # ValueError if GeneratorExit delivered the token into a
                 # different contextvars.Context (e.g. GC-driven coroutine
@@ -2034,6 +2144,37 @@ class Pipe:
         openwebui_model_id = model_block.get("id", "") if isinstance(model_block, dict) else ""
         pipe_identifier = self.id
         self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
+
+        # Plugin on_request hook — intercept before API key check
+        plugin_result = None
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                plugin_result = await self._ensure_plugin_registry().dispatch_on_request(
+                    body, __user__, __metadata__, __event_emitter__, __task__,
+                    valves=valves,
+                    request_id=SessionLogger.request_id.get() or "",
+                )
+            except Exception:
+                self.logger.debug("Plugin on_request dispatch failed", exc_info=True)
+        if plugin_result is not None:
+            if bool(body.get("stream")) and __event_emitter__:
+                _pcontent: str | None = None
+                if isinstance(plugin_result, dict):
+                    _pchoices = plugin_result.get("choices")
+                    if isinstance(_pchoices, list) and _pchoices:
+                        _pmsg = _pchoices[0].get("message")
+                        if isinstance(_pmsg, dict):
+                            _pcontent = _pmsg.get("content")
+                elif isinstance(plugin_result, str):
+                    _pcontent = plugin_result
+                if isinstance(_pcontent, str) and _pcontent:
+                    await __event_emitter__(
+                        {"type": "chat:message:delta", "data": {"content": _pcontent}}
+                    )
+                await __event_emitter__(
+                    {"type": "chat:completion", "data": {"done": True}}
+                )
+            return plugin_result
 
         task_name = TaskModelAdapter._task_name(__task__)
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
@@ -2161,6 +2302,16 @@ class Pipe:
         features = _extract_feature_flags(__metadata__)
         # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
+
+        # Plugin on_request_transform hook — modify body before sending to OpenRouter
+        if self.valves.ENABLE_PLUGIN_SYSTEM:
+            try:
+                await self._ensure_plugin_registry().dispatch_on_request_transform(
+                    body, str(body.get("model", "")), valves,
+                    user=__user__, metadata=__metadata__,
+                )
+            except Exception:
+                self.logger.debug("Plugin on_request_transform dispatch failed", exc_info=True)
 
         try:
             result = await self._process_transformed_request(
@@ -2552,6 +2703,13 @@ class Pipe:
                             status="failed",
                         )
                     )
+                    await self._dispatch_plugin_event(
+                        "dispatch_on_tool_result",
+                        str(item.call.get("name") or "?"),
+                        "failed",
+                        request_id=context.request_id,
+                        metadata=context.metadata or {},
+                    )
             return
         for item, result in zip(batch, results):
             if item.future.done():
@@ -2571,12 +2729,21 @@ class Pipe:
                     f"Tool error: {result}",
                     status="failed",
                 )
+                resolved_status = "failed"
             else:
                 status, text, files, embeds = result
                 payload = self._ensure_tool_executor()._build_tool_output(item.call, text, status=status, files=files, embeds=embeds)
                 tool_type = (item.tool_cfg.get("type") or "function").lower()
                 self._circuit_breaker.reset_tool(context.user_id, tool_type)
+                resolved_status = str(status or "completed")
             item.future.set_result(payload)
+            await self._dispatch_plugin_event(
+                "dispatch_on_tool_result",
+                str(item.call.get("name") or "?"),
+                resolved_status,
+                request_id=context.request_id,
+                metadata=context.metadata or {},
+            )
 
     @timed
     async def _invoke_tool_call(
@@ -3369,3 +3536,18 @@ class Pipe:
         mapped.pop("LOG_LEVEL", None)
 
         return global_valves.model_copy(update=mapped)
+
+
+# Merge plugin-declared valve fields into Pipe.Valves / Pipe.UserValves at import time.
+try:
+    from .plugins.registry import PluginRegistry as _PluginRegistryForValves
+
+    _ExtendedValves = _PluginRegistryForValves.build_extended_valves(Valves)
+    if _ExtendedValves is not Valves:
+        Pipe.Valves = _ExtendedValves  # type: ignore[misc]
+
+    _ExtendedUserValves = _PluginRegistryForValves.build_extended_user_valves(UserValves)
+    if _ExtendedUserValves is not UserValves:
+        Pipe.UserValves = _ExtendedUserValves  # type: ignore[misc]
+except Exception:
+    pass

@@ -26,6 +26,7 @@ from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_responses_tools, apply_context_transforms
 from ..core.timing_logger import timed
+from ..core.logging_system import SessionLogger
 from .task_model_adapter import TaskModelAdapter
 from .sanitizer import _sanitize_request_input
 from ..storage.users import get_user_by_id
@@ -966,6 +967,11 @@ class RequestOrchestrator:
                                     responses_body.reasoning = {}
                                 responses_body.reasoning["effort"] = fallback_effort
                                 reasoning_effort_retry_attempted = True
+                                await self._pipe._dispatch_plugin_event(
+                                    "dispatch_on_request_retry",
+                                    "reasoning_effort",
+                                    request_id=SessionLogger.request_id.get() or "",
+                                )
                                 self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
                                 self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
                                 continue
@@ -975,6 +981,11 @@ class RequestOrchestrator:
                     and self._pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning(exc, responses_body)
                 ):
                     signature_retry_attempted = True
+                    await self._pipe._dispatch_plugin_event(
+                        "dispatch_on_request_retry",
+                        "signature",
+                        request_id=SessionLogger.request_id.get() or "",
+                    )
                     continue
 
                 if (
@@ -982,6 +993,11 @@ class RequestOrchestrator:
                     and self._pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(exc, responses_body)
                 ):
                     reasoning_retry_attempted = True
+                    await self._pipe._dispatch_plugin_event(
+                        "dispatch_on_request_retry",
+                        "reasoning",
+                        request_id=SessionLogger.request_id.get() or "",
+                    )
                     continue
 
                 await self._pipe._ensure_error_formatter()._report_openrouter_error(
@@ -990,5 +1006,11 @@ class RequestOrchestrator:
                     normalized_model_id=responses_body.model,
                     api_model_id=getattr(responses_body, "api_model", None),
                     template=valves.OPENROUTER_ERROR_TEMPLATE,
+                )
+                await self._pipe._dispatch_plugin_event(
+                    "dispatch_on_generation_complete",
+                    None,
+                    "failed",
+                    request_id=SessionLogger.request_id.get() or "",
                 )
                 return ""

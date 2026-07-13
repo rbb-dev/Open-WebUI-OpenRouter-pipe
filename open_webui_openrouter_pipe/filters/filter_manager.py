@@ -651,7 +651,7 @@ class FilterManager:
         template += 'author: Open-WebUI-OpenRouter-pipe\n'
         template += 'author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe\n'
         template += 'id: __FILTER_ID__\n'
-        template += 'description: Configures OpenRouter server tools (web search, web fetch, datetime) for the OpenRouter pipe.\n'
+        template += 'description: Configures OpenRouter server tools (web search, web fetch, datetime, advisor, subagent, model search) for the OpenRouter pipe.\n'
         template += 'version: 0.1.0\n'
         template += 'license: MIT\n'
         template += '"""\n'
@@ -2150,7 +2150,7 @@ class Filter:
         if visibility in ("admin", "both"):
             valves_class = f'''
     class Valves(BaseModel):
-        """Admin-level provider routing preferences (cannot be disabled by users)."""
+        """Admin-level provider routing preferences."""
         ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")
         ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")
         REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")

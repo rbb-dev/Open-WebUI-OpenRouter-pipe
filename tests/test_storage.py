@@ -2647,7 +2647,9 @@ async def test_delete_artifacts_deletes_redis_cache(pipe_instance) -> None:
 
 
 @pytest.mark.asyncio
-async def test_redis_periodic_flusher_disables_after_failures(monkeypatch, pipe_instance) -> None:
+async def test_redis_periodic_flusher_keeps_retrying_after_failures(monkeypatch, pipe_instance) -> None:
+    """The flusher must NOT permanently disable on flush failures. It backs off and
+    keeps looping so write-behind recovers when the DB/Redis returns."""
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
     store._redis_enabled = True
@@ -2663,9 +2665,141 @@ async def test_redis_periodic_flusher_disables_after_failures(monkeypatch, pipe_
 
     store._redis_client = _FailingRedis()
 
+    async def _fake_sleep(_seconds: float):
+        if store._redis_client.calls >= 3:
+            store._redis_enabled = False
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+
     await store._redis_periodic_flusher()
 
-    assert store._redis_enabled is False
+    assert store._redis_client.calls >= 3
+
+
+@pytest.mark.asyncio
+async def test_redis_fetch_rows_tolerates_redis_error(pipe_instance) -> None:
+    """A Redis read error degrades to a cache miss ({}) instead of propagating, so
+    _db_fetch falls through to the database when Redis is flaky."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+
+    class _BoomRedis:
+        def mget(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+    store._redis_client = _BoomRedis()
+
+    result = await store._redis_fetch_rows("chat", ["id1", "id2"])
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_redis_cache_rows_tolerates_redis_error(pipe_instance) -> None:
+    """_redis_cache_rows is best-effort: a Redis error must not propagate, so a
+    read/write caller never loses DB rows or trips the DB breaker on a Redis blip."""
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+
+    class _BoomPipe:
+        def setex(self, *_args, **_kwargs):
+            return None
+
+        def execute(self):
+            raise RuntimeError("redis down")
+
+    class _BoomRedis:
+        def pipeline(self):
+            return _BoomPipe()
+
+    store._redis_client = _BoomRedis()
+
+    await store._redis_cache_rows([{"id": "id1", "chat_id": "chat", "payload": {"x": 1}}])
+
+
+@pytest.mark.asyncio
+async def test_delete_artifacts_tolerates_redis_error(pipe_instance) -> None:
+    """A Redis error during cache invalidation must not propagate — the DB delete
+    already committed; invalidation is best-effort."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+
+    class _BoomRedis:
+        def delete(self, *_keys):
+            raise RuntimeError("redis down")
+
+    store._redis_client = _BoomRedis()
+    store._delete_artifacts_sync = lambda _ids: None  # type: ignore[assignment]
+
+    await store._delete_artifacts([("chat", "id-1")])
+
+
+@pytest.mark.asyncio
+async def test_redis_periodic_flusher_recovers_after_success(monkeypatch, pipe_instance) -> None:
+    """After failures, a successful flush resets the backoff to the normal 10s cadence."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+
+    class _Redis:
+        def llen(self, _key):
+            return 0
+
+    store._redis_client = _Redis()
+
+    outcomes = iter([False, False, True])
+
+    async def _flush():
+        if not next(outcomes):
+            raise RuntimeError("db down")
+
+    store._flush_redis_queue = _flush  # type: ignore[assignment]
+
+    delays: list[float] = []
+
+    async def _fake_sleep(seconds: float):
+        delays.append(seconds)
+        if len(delays) >= 3:
+            store._redis_enabled = False
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+
+    await store._redis_periodic_flusher()
+
+    assert delays == [10, 20, 10]
+
+
+@pytest.mark.asyncio
+async def test_redis_periodic_flusher_critical_fires_once(monkeypatch, pipe_instance, caplog) -> None:
+    """The critical alert fires exactly once, at the failure-limit threshold, not on
+    every subsequent failure (the ``==`` guard)."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    store.valves.REDIS_FLUSH_FAILURE_LIMIT = 2
+
+    class _FailingRedis:
+        def __init__(self):
+            self.calls = 0
+
+        def llen(self, _key):
+            self.calls += 1
+            raise RuntimeError("boom")
+
+    store._redis_client = _FailingRedis()
+
+    async def _fake_sleep(_seconds: float):
+        if store._redis_client.calls >= 5:
+            store._redis_enabled = False
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+
+    with caplog.at_level(logging.CRITICAL):
+        await store._redis_periodic_flusher()
+
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert len(critical) == 1
 
 
 @pytest.mark.asyncio

@@ -462,12 +462,10 @@ class ArtifactStore:
         pipe_identifier = pipe_identifier or self.id
         if not pipe_identifier:
             raise RuntimeError("Pipe identifier is required to initialize the artifact store.")
-        encryption_key = self._encryption_key
-        hash_source = f"{encryption_key}{pipe_identifier}".encode("utf-8", "ignore")
-        key_hash = hashlib.sha256(hash_source).hexdigest()
         table_fragment = table_fragment or _sanitize_table_fragment(pipe_identifier)
-        table_name = f"response_items_{table_fragment}_{key_hash[:8]}"
-        class_name = f"ResponseItem_{table_fragment}_{key_hash[:4]}"
+        suffix = self.table_suffix(pipe_identifier, table_fragment=table_fragment)
+        table_name = f"response_items_{suffix}"
+        class_name = f"ResponseItem_{table_fragment}_{suffix.rsplit('_', 1)[-1][:4]}"
 
         existing_table = base.metadata.tables.get(table_name)
         if existing_table is not None:
@@ -514,28 +512,13 @@ class ArtifactStore:
         except Exception:  # pragma: no cover - defensive; inspector uses plugins
             table_exists = True
 
-        try:
-            item_model.__table__.create(bind=engine, checkfirst=True)
-        except Exception as exc:  # pragma: no cover - database-specific errors
-            if self._maybe_heal_index_conflict(engine, item_model.__table__, exc):
-                try:
-                    item_model.__table__.create(bind=engine, checkfirst=True)
-                except Exception as retry_exc:
-                    self.logger.warning("Artifact persistence disabled (table init failed after index cleanup): %s", retry_exc)
-                    self._engine = None
-                    self._session_factory = None
-                    self._item_model = None
-                    self._artifact_table_name = None
-                    self._artifact_store_signature = None
-                    return
-            else:
-                self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
-                self._engine = None
-                self._session_factory = None
-                self._item_model = None
-                self._artifact_table_name = None
-                self._artifact_store_signature = None
-                return
+        if not self._create_table_with_race_guard(item_model.__table__, engine, table_name):
+            self._engine = None
+            self._session_factory = None
+            self._item_model = None
+            self._artifact_table_name = None
+            self._artifact_store_signature = None
+            return
 
         self._engine = engine
         self._session_factory = session_factory
@@ -543,7 +526,7 @@ class ArtifactStore:
         self._artifact_table_name = table_name
         self._artifact_store_signature = (table_fragment, self._encryption_key)
         if not table_exists:
-            self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, key_hash[:8])
+            self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, suffix.rsplit("_", 1)[-1])
         if self._db_executor is None:
             pool_workers: int = 5
             try:
@@ -571,6 +554,57 @@ class ArtifactStore:
         """Return a double-quoted identifier safe for direct SQL execution."""
         value = (identifier or "").replace('"', '""')
         return f'"{value}"'
+
+    def table_suffix(self, pipe_identifier: str | None = None, *, table_fragment: str | None = None) -> str:
+        """Stable per-pipe+key table suffix shared by all pipe-owned tables.
+
+        The single source of the ``{fragment}_{keyhash8}`` construction; the
+        artifact table name is built from this so sibling tables (e.g. usage
+        stats) can never diverge from it.
+        """
+        identifier = pipe_identifier or self.id
+        if not identifier:
+            raise RuntimeError("Pipe identifier is required to derive the table suffix.")
+        fragment = table_fragment or _sanitize_table_fragment(identifier)
+        hash_source = f"{self._encryption_key}{identifier}".encode("utf-8", "ignore")
+        key_hash = hashlib.sha256(hash_source).hexdigest()
+        return f"{fragment}_{key_hash[:8]}"
+
+    @staticmethod
+    def _is_table_exists_error(exc: Exception) -> bool:
+        """True when a DDL failure means another worker created the table first."""
+        return "already exists" in str(exc).lower()
+
+    def _create_table_with_race_guard(self, table: Any, engine: Any, table_name: str) -> bool:
+        """Create the table idempotently; concurrent creation counts as success.
+
+        checkfirst=True races between its existence probe and the CREATE, so a
+        losing worker sees "already exists" — the goal state, not a failure.
+        """
+        try:
+            table.create(bind=engine, checkfirst=True)
+            return True
+        except Exception as exc:  # pragma: no cover - database-specific errors
+            # Orphaned-index duplicates ("index ix_... already exists") also
+            # contain "already exists", so the heal attempt (self-gated on
+            # "ix_") must run BEFORE the generic table-exists short-circuit or
+            # the heal path becomes unreachable and a rolled-back CREATE
+            # (Postgres transactional DDL) would be declared success.
+            if self._maybe_heal_index_conflict(engine, table, exc):
+                try:
+                    table.create(bind=engine, checkfirst=True)
+                    return True
+                except Exception as retry_exc:
+                    if self._is_table_exists_error(retry_exc):
+                        self.logger.debug("Table %s already exists (concurrent create)", table_name)
+                        return True
+                    self.logger.warning("Artifact persistence disabled (table init failed after index cleanup): %s", retry_exc)
+                    return False
+            if self._is_table_exists_error(exc):
+                self.logger.debug("Table %s already exists (concurrent create)", table_name)
+                return True
+            self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
+            return False
 
     @timed
     def _maybe_heal_index_conflict(
@@ -1247,7 +1281,10 @@ class ArtifactStore:
             keys = [self._redis_cache_key(chat_id, artifact_id) for chat_id, artifact_id in refs]
             keys = [key for key in keys if key]
             if keys:
-                await _await_if_needed(self._redis_client.delete(*keys))
+                try:
+                    await _await_if_needed(self._redis_client.delete(*keys))
+                except Exception as exc:
+                    self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
 
     # -----------------------------------------------------------------------------
     # 4. REDIS CACHE (8 methods)
@@ -1295,13 +1332,15 @@ class ArtifactStore:
                 consecutive_failures = 0
             except Exception as exc:
                 consecutive_failures += 1
-                self.logger.error("Periodic flush failed (%d/%d consecutive failures): %s", consecutive_failures, failure_limit, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
-                if consecutive_failures >= failure_limit:
-                    self.logger.critical("🚨 Disabling Redis cache after %d consecutive flush failures. Falling back to direct DB writes.", failure_limit)
-                    self._redis_enabled = False
-                    break
+                self.logger.error("Periodic flush failed (%d consecutive failures): %s", consecutive_failures, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                if consecutive_failures == failure_limit:
+                    self.logger.critical("🚨 Redis flush has failed %d times consecutively; write-behind is backing off and will resume when writes succeed (new writes fall back to direct DB meanwhile).", failure_limit)
 
-            await asyncio.sleep(10)
+            if consecutive_failures:
+                delay = min(10 * (2 ** min(consecutive_failures - 1, 5)), 300)
+            else:
+                delay = 10
+            await asyncio.sleep(delay)
 
         self.logger.debug("Redis periodic flusher stopped")
 
@@ -1440,14 +1479,17 @@ class ArtifactStore:
     async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: Optional[str] = None) -> None:
         if not (self._redis_enabled and self._redis_client):
             return
-        pipe = self._redis_client.pipeline()
-        for row in rows:
-            row_payload = row if "payload" in row else {"payload": row}
-            cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
-            if not cache_key:
-                continue
-            pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
-        await _await_if_needed(pipe.execute())
+        try:
+            pipe = self._redis_client.pipeline()
+            for row in rows:
+                row_payload = row if "payload" in row else {"payload": row}
+                cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
+                if not cache_key:
+                    continue
+                pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
+            await _await_if_needed(pipe.execute())
+        except Exception as exc:
+            self.logger.warning("Redis cache write failed (best-effort): %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
 
     @timed
     async def _redis_requeue_entries(self, entries: list[str]) -> None:
@@ -1477,7 +1519,11 @@ class ArtifactStore:
                 id_lookup.append(item_id)
         if not keys:
             return {}
-        values = await _await_if_needed(self._redis_client.mget(keys))
+        try:
+            values = await _await_if_needed(self._redis_client.mget(keys))
+        except Exception as exc:
+            self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            return {}
         cached: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
             if not raw:
