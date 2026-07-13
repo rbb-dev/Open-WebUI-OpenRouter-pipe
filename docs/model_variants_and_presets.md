@@ -212,17 +212,13 @@ When you select a variant model:
 
 Variant models work seamlessly with existing model selection:
 
-**Auto selection (`MODEL_ID = "*"`):**
+**Auto selection (`MODEL_ID = "auto"`):**
 - Base models AND their variants both appear in catalog
 - Example: Both "GPT-4o" and "GPT-4o Exacto" are available
 
 **Specific selection (`MODEL_ID = "openai/gpt-4o,anthropic/claude-opus"`):**
 - If base model is selected, its configured variants are added automatically
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
-
-**Pattern matching (`MODEL_ID = "gpt*"`):**
-- Variants inherit pattern matching from base models
-- Example: `gpt*` matches both "GPT-4o" and "GPT-4o Exacto"
 
 ### Model Filters
 
@@ -290,11 +286,11 @@ Variant models inherit tool-calling capabilities:
 
 3. **Base model filtered out:**
    ```
-   MODEL_ID = "claude*"
+   MODEL_ID = "anthropic/claude-sonnet-4.5"
    VARIANT_MODELS = "openai/gpt-4o:exacto"
    ```
-   **Issue:** Base GPT-4o is filtered out by MODEL_ID pattern
-   **Solution:** Include base model in MODEL_ID selection
+   **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — MODEL_ID matches exact IDs, not wildcards
+   **Solution:** Add the base model's exact ID to MODEL_ID (e.g. `anthropic/claude-sonnet-4.5, openai/gpt-4o`)
 
 ### Variant Tag Capitalization
 
@@ -393,12 +389,12 @@ VARIANT_MODELS = "openai/gpt-4o:exacto"
 **Scenario:** Offer free variants for all Llama models
 
 ```
-MODEL_ID = "meta-llama/*"
+MODEL_ID = "auto"
 VARIANT_MODELS = "meta-llama/llama-3.2-3b-instruct:free,meta-llama/llama-3.2-1b-instruct:free"
 ```
 
 **Result:**
-- All Llama models appear in catalog
+- All models appear in catalog — `auto` imports everything; MODEL_ID matches exact IDs, not wildcards
 - Free variants appear for configured models
 - Users can choose between paid and free versions
 

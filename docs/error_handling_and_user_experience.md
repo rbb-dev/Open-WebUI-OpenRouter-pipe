@@ -44,7 +44,9 @@ The pipe selects an OpenRouter template based on the HTTP status:
 | `401` | `AUTHENTICATION_ERROR_TEMPLATE` |
 | `402` | `INSUFFICIENT_CREDITS_TEMPLATE` |
 | `408` | `SERVER_TIMEOUT_TEMPLATE` |
+| `413` | `PAYLOAD_TOO_LARGE_TEMPLATE` |
 | `429` | `RATE_LIMIT_TEMPLATE` |
+| `>= 500` | `SERVICE_ERROR_TEMPLATE` |
 | other / default | `OPENROUTER_ERROR_TEMPLATE` |
 
 These templates are used for the `OpenRouterAPIError` path (and for certain HTTP status errors that are converted into an OpenRouter error object by reading the response body best-effort).
@@ -131,10 +133,15 @@ This behavior is intended to convert certain provider-side “configuration mism
 - `INSUFFICIENT_CREDITS_TEMPLATE`
 - `RATE_LIMIT_TEMPLATE`
 - `SERVER_TIMEOUT_TEMPLATE`
+- `PAYLOAD_TOO_LARGE_TEMPLATE`
 - `NETWORK_TIMEOUT_TEMPLATE`
 - `CONNECTION_ERROR_TEMPLATE`
 - `SERVICE_ERROR_TEMPLATE`
 - `INTERNAL_ERROR_TEMPLATE`
+- `ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE`
+- `DIRECT_UPLOAD_FAILURE_TEMPLATE`
+- `MODEL_RESTRICTED_TEMPLATE`
+- `STREAM_INTERRUPTED_TEMPLATE`
 
 See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for defaults and descriptions.
 

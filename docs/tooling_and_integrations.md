@@ -8,7 +8,7 @@ This pipe supports OpenRouter tool calling either via an internal execution pipe
 
 - Open WebUI tool registry tools (server-side Python tools).
 - Open WebUI **Direct Tool Servers** (client-side OpenAPI tools executed in the browser via Socket.IO).
-- OpenRouter web-search (as a `plugins` entry, not a function tool).
+- OpenRouter web-search (attached as an `openrouter:web_search` server tool in the `tools` array — not a `plugins` entry or a function tool).
 
 ---
 
@@ -74,7 +74,7 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
    - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
    - Open WebUI includes the selected servers in the request body as `tool_servers`; for pipes this arrives under `__metadata__["tool_servers"]`.
    - This pipe:
-     - advertises the tools to the model using OpenAPI `operationId` values as tool names (**no namespacing**, collisions overwrite; OWUI-compatible), and
+     - advertises the tools to the model using OpenAPI `operationId` values as tool names; when names collide across sources they are disambiguated with a source prefix (e.g. `direct__`), not overwritten, and
      - executes tool calls via the Socket.IO bridge (`__event_call__`) by emitting `execute:tool` so the browser performs the request.
    - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
 
@@ -205,9 +205,8 @@ When a tool breaker is open, tool calls are skipped and a status message is emit
 
 The web-search integration is attached as a server tool (not as a `tools` function or legacy `plugins` entry):
 
-- If the selected model supports `web_search_tool` and the **OpenRouter Web Tools** toggle is enabled for the request (per chat, or enabled by default via the model’s Default Filters), the pipe appends `{"type": "openrouter:web_search", ...}` to `tools`.
+- When the **OpenRouter Web Tools** toggle (the filter's `WEB_SEARCH` user valve) is enabled for the request (per chat, or enabled by default via the model’s Default Filters), the pipe appends `{"type": "openrouter:web_search", ...}` to `tools`. Image-output and video-generation models are excluded because they do not receive the Web Tools filter.
 - Search parameters (max results, engine, allowed/excluded domains, etc.) are controlled by the OpenRouter Web Tools filter’s admin valves.
-- If reasoning effort is `minimal`, the pipe skips adding the web search server tool.
 
 Important: Open WebUI also has a separate built-in **Web Search** toggle (Open WebUI-native). OpenRouter Web Tools and Open WebUI Web Search are different systems.
 See: [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md).

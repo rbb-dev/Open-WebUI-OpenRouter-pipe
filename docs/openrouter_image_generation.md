@@ -1024,14 +1024,14 @@ Each filter:
 
 ### Filter attachment (admin)
 
-The catalog metadata sync at [`models/catalog_manager.py::_apply_image_filter_ids`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+The catalog metadata sync at [`models/catalog_manager.py::_apply_list_filter_ids`](../open_webui_openrouter_pipe/models/catalog_manager.py)
 writes the per-model `filterIds` list into each model's metadata, with
 removal-set logic that drops previously-attached ids no longer in the
 current set. This handles renamed filter functions and capability
 flips (e.g. if a model loses its `image_output` capability, its image
 filters get cleaned up automatically).
 
-`_apply_image_default_filter_ids` mirrors this for the
+`_apply_list_default_filter_ids` mirrors this for the
 `defaultFilterIds` list (the "default-on" semantics).
 
 ---
@@ -1151,7 +1151,7 @@ Related (existing) valves:
 
 | Valve | Default | Purpose |
 |-------|---------|---------|
-| `MODEL_CATALOG_REFRESH_SECONDS` | varies | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. |
+| `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. |
 | `REMOTE_IMAGE_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
 
 Tuning hints:
@@ -1309,8 +1309,8 @@ pipes()
   └─ catalog_manager._update_or_insert_model_with_metadata()
         ├─ pipe_capabilities.image_output gate
         ├─ web_tools_supported = ... and not image_output
-        ├─ _apply_image_filter_ids(meta_dict)       — writes filterIds
-        └─ _apply_image_default_filter_ids(meta_dict) — writes defaultFilterIds
+        ├─ _apply_list_filter_ids(meta_dict)       — writes filterIds
+        └─ _apply_list_default_filter_ids(meta_dict) — writes defaultFilterIds
 
 pipe(body, ...)
   └─ orchestrator._inject_image_modalities(body)
@@ -1354,7 +1354,7 @@ Key files:
   — installs filter rows in OWUI Functions table; returns
   per-model filter id mapping.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-  — `_apply_image_filter_ids`, `_apply_image_default_filter_ids`,
+  — `_apply_list_filter_ids`, `_apply_list_default_filter_ids`,
   `pipe_capabilities.image_output` gate, capability-gated
   `web_tools_supported` exclusion.
 - [`models/registry.py::register_image_models`](../open_webui_openrouter_pipe/models/registry.py)

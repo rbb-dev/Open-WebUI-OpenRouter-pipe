@@ -87,7 +87,7 @@ These are used for:
 |--------|-------|
 | Models tested | 287 |
 | Successful file processing | 239 (83.3%) |
-| Models needing blocklist | 24 |
+| Models needing blocklist | 29 |
 
 Rather than gating on incomplete upstream metadata, **`file_input` is now enabled by default** for all models except those in a known-incompatible blocklist.
 
@@ -173,7 +173,7 @@ OpenRouter exposes multiple OpenAI-compatible endpoints. For direct uploads, the
 - **Direct video** → requires **`/chat/completions`** (current implementation)
 
 - **Direct audio**
-  - Eligible for **`/responses`** when the (sniffed) audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `mp3,wav`)
+  - Eligible for **`/responses`** when the (sniffed) audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `wav,mp3`)
   - Otherwise routes to **`/chat/completions`**
 
 The pipe does not trust upstream file metadata: it re-sniffs audio containers (for example `.m4a`) and then applies `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` for routing.
@@ -232,7 +232,7 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 | `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). |
 | `DIRECT_AUDIO_MIME_ALLOWLIST` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
 | `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. |
-| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME and/or sniffed container). |
+| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). |
 | `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
 
 ### Companion filter user valves (per-user)

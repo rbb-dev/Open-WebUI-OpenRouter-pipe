@@ -76,28 +76,12 @@ The classifier's `modify_prior_video` intent (triggered by prompts like "change 
 
 Most current OpenRouter video models (Seedance, Veo, Kling, Wan, …) only support `first_frame` and `last_frame` — hard anchors that lock the output to the exact input pixels. None of them currently advertise `input_reference` support in the catalog.
 
-When the selected model's `supported_frame_images` is non-empty AND does not include `input_reference`, the pipe **blocks the paid `/videos` call** and asks the user instead:
+When the selected model cannot honor `input_reference`, the pipe **does not** stop to ask the user — it degrades open, and the paid `/videos` call still proceeds:
 
-```
-⚠️ This video model can't visually modify a previous video — it would just produce the same video, ignoring your change request.
+- The validator drops the `input_reference` frame entry (recorded as the `dropped_input_reference_no_frame_support_for_model` downgrade). If that leaves a `modify_prior_video` intent with no usable frames, the intent is downgraded to `text_to_video` (`modify_prior_video_dropped_to_text_no_frame_support`) and the request runs as a plain text-to-video generation from the classifier's rewritten prompt.
+- If the model *does* advertise `input_reference`, the reference frame is passed through and the model transforms it as requested.
 
-Want me to generate as text-only using a rewritten prompt that describes the change?
-
-**Please type a single digit:**
-**1** — Yes, generate as text-only
-**2** — Cancel
-```
-
-The user replies `1` (also accepted silently: `yes`, `y`, `ok`, `okay`, `proceed`, `go`, `do it`) or `2` (also: `no`, `n`, `cancel`, `skip`, `stop`, `abort`). Anything else loops with `❌ "<input>" isn't 1 or 2. Try again.` There is no retry cap.
-
-**On proceed**: the pipe replays the classifier's rewritten prompt (e.g. "a black cat sitting on green grass") as a plain text-to-video request — no frame wiring. The classifier does NOT re-run on the user's `1`; the saved prompt is recovered from hidden markers embedded in the question turn.
-
-**On cancel**: the pipe emits `Cancelled. Type a new request when ready.` No `/videos` call.
-
-**When this gate does NOT fire**:
-- Model's `supported_frame_images` includes `input_reference` (model can honor the request) → straight through, no question.
-- Model's `supported_frame_images` is empty / unknown → optimistic pass-through, no question (we only block on models we KNOW won't honor it).
-- Intent is `continue_prior_video` (uses `last_frame` anchoring, which actually works on these models) → no question.
+Either way there is no confirmation prompt and no `1`/`2` question; the downgrade is surfaced only in the disclosure block and the telemetry `downgrades` list.
 
 ## Frame extraction at arbitrary timestamps
 
@@ -124,10 +108,10 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `0`–`3` | `1` | Per-session cap on consecutive clarifying questions. `0` disables the clarification loop entirely. |
 | `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Default frame to extract from a prior video when the requested frame is unavailable. |
 | `VIDEO_INTENT_TIMEOUT_S` | `int` | `8` | Hard timeout (seconds) on the classifier call. On breach, the pipe falls back to sending only the latest user message — the paid video request still proceeds. |
-| `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to surface the confirmation footer. `on_reference` confirms only when reusing a prior video frame or attached image. |
+| `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to surface the confirmation footer. `on_reference` confirms only when a prior video's frame is reused or more than one frame is combined; a lone attached image does not trigger it. |
 | `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-chat ceiling. |
 | `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-user-per-day ceiling. |
-| `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | Log full intent classification JSON at INFO level. Off by default to avoid leaking prompts into shared logs. |
+| `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | Log the per-turn classification summary (intent, confidence, language, frame counts, latency, fallback/failure flags, hashed chat id) at INFO instead of DEBUG; always written, level-only. Excludes the verbatim prompt and the model's free-text reason. |
 
 ## User-tunable settings (per-model filter UserValves)
 
@@ -154,11 +138,11 @@ The classifier obeys explicit wiring instructions ("use the previous video as fi
 
 ## Telemetry
 
-When `VIDEO_INTENT_LOG_DECISIONS=True`, every classifier turn emits a structured INFO log line. Keys:
+When `VIDEO_INTENT_LOG_DECISIONS=True`, every turn on which the classifier runs emits a structured INFO log line (bypassed turns emit nothing). Keys:
 
 | Key | Meaning |
 |---|---|
-| `intent_mode` | `text2video` / `image2video_attached` / `image2video_priorframe` / `clarify` / `bypass_skipped` / `bypass_disabled` |
+| `intent_mode` | `text2video` / `image2video_attached` / `image2video_priorframe` / `clarify` (or the raw `intent` value when a frame plan has neither prior-video nor uploaded-attachment sources) |
 | `intent` | `text_to_video` / `image_to_video` / `modify_prior_video` / `continue_prior_video` / `ambiguous` |
 | `confidence` | `high` / `medium` / `low` |
 | `language` | classifier-detected language tag (`en`, `it`, …) |
@@ -184,7 +168,7 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 - **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only.
 - **Thumbnail upload fails** → disclosure block omits that thumbnail; the `frame_images` entry still ships.
 - **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted.
-- **Model can't honor `input_reference` for modify intent** → the pipe blocks the paid call and asks the user "1 = text-only, 2 = cancel" instead of silently producing an unchanged video. See "When a model can't visually modify a previous video" above.
+- **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
 
 The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at WARNING).
 

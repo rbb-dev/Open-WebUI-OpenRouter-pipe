@@ -43,7 +43,7 @@ Depending on valves, the pipe can include:
 * `user` (top-level): the OWUI user GUID (`__user__["id"]`) — OpenRouter's end-user identifier for abuse detection
 * `metadata` (top-level): a `Dict[str, str]` built by the pipe (not OWUI’s full `__metadata__` blob)
 
-`metadata` is only sent when at least one metadata entry is being populated. The pipe also sends a top-level `session_id`, but that is a prompt-cache pin (not an attribution field) — see [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#214-prompt-cache-session-affinity-session_id).
+`metadata` is only sent when at least one metadata entry is being populated. The pipe also sends a top-level `session_id`, but that is a prompt-cache pin (not an attribution field) — see [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#216-prompt-cache-session-affinity-session_id).
 
 Important: the pipe **removes** any user-supplied `user`, `session_id`, or `metadata` fields and replaces them with valve-gated values. This prevents clients/users from spoofing attribution identifiers.
 

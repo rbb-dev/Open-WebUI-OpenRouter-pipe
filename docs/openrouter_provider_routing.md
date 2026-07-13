@@ -71,7 +71,7 @@ When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVI
 
 ## Generated filter options
 
-Each generated filter exposes OpenRouter's provider routing fields as user-friendly options:
+Each generated filter exposes OpenRouter's provider routing fields as user-friendly options. Every filter carries the full set below (16 fields) at each visibility level:
 
 ### ORDER dropdown
 
@@ -89,6 +89,15 @@ Together > Azure > OpenAI
 
 The dropdown labels use provider display names (from OpenRouter's catalog), while the underlying API call uses provider slugs.
 
+### Provider selection
+
+- **ONLY** — restrict routing to a single provider (maps to `provider.only`).
+- **IGNORE** — exclude a single provider from routing (maps to `provider.ignore`).
+
+### SORT
+
+Sort candidate providers by `price`, `throughput`, or `latency` — or leave `(no preference)`. Maps to `provider.sort`.
+
 ### Boolean toggles
 
 | Field | Default | Purpose |
@@ -97,9 +106,28 @@ The dropdown labels use provider display names (from OpenRouter's catalog), whil
 | `REQUIRE_PARAMETERS` | `False` | Only use providers that support all request parameters |
 | `ZDR` | `False` | Zero Data Retention — only use ZDR-compliant endpoints |
 
-### Quantization (when available)
+### DATA_COLLECTION
 
-If the model has multiple quantization options (e.g., `fp16`, `bf16`, `int4`), a QUANTIZATIONS field appears allowing you to filter by quantization level.
+Allow or deny providers that may store data — `(no preference)` / `allow` / `deny`. Maps to `provider.data_collection`.
+
+### Performance floors
+
+- **MIN_THROUGHPUT** — require a minimum provider throughput in tokens/sec (`0` = no preference). Maps to `provider.preferred_min_throughput`.
+- **MAX_LATENCY** — require a maximum provider latency in seconds (`0` = no preference). Maps to `provider.preferred_max_latency`.
+
+### Price ceilings
+
+Skip any provider that would charge more than the cap (`0` = no limit on that axis). Each maps under `provider.max_price`:
+
+- **MAX_PRICE_PROMPT** — `$/M` prompt tokens
+- **MAX_PRICE_COMPLETION** — `$/M` completion tokens
+- **MAX_PRICE_IMAGE** — `$/image`
+- **MAX_PRICE_AUDIO** — `$/unit` audio
+- **MAX_PRICE_REQUEST** — `$/request`
+
+### Quantization
+
+A QUANTIZATION dropdown is always present; it lists the model's available quantization levels (e.g., `fp16`, `bf16`, `int4`), or only `(no preference)` when the model exposes none. Maps to `provider.quantizations`.
 
 ---
 
@@ -125,8 +153,19 @@ Each generated filter has its own valves based on visibility:
 | `ORDER` | `Literal[...]` | `"(no preference)"` | `provider.order` |
 | `ALLOW_FALLBACKS` | `bool` | `True` | `provider.allow_fallbacks` |
 | `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` |
+| `DATA_COLLECTION` | `Literal[...]` | `"(no preference)"` | `provider.data_collection` |
 | `ZDR` | `bool` | `False` | `provider.zdr` |
-| `QUANTIZATIONS` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` |
+| `ONLY` | `Literal[...]` | `"(no preference)"` | `provider.only` |
+| `IGNORE` | `Literal[...]` | `"(no preference)"` | `provider.ignore` |
+| `QUANTIZATION` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` |
+| `SORT` | `Literal[...]` | `"(no preference)"` | `provider.sort` |
+| `MIN_THROUGHPUT` | `float` | `0` | `provider.preferred_min_throughput` |
+| `MAX_LATENCY` | `float` | `0` | `provider.preferred_max_latency` |
+| `MAX_PRICE_PROMPT` | `float` | `0` | `provider.max_price.prompt` |
+| `MAX_PRICE_COMPLETION` | `float` | `0` | `provider.max_price.completion` |
+| `MAX_PRICE_IMAGE` | `float` | `0` | `provider.max_price.image` |
+| `MAX_PRICE_AUDIO` | `float` | `0` | `provider.max_price.audio` |
+| `MAX_PRICE_REQUEST` | `float` | `0` | `provider.max_price.request` |
 
 #### User valves (`UserValves`) — for user-configurable or "both" visibility
 
@@ -215,7 +254,7 @@ This OpenRouter error (HTTP 404) means your provider routing settings are too re
 
 - **ORDER only**: If all providers in your ORDER list are unavailable, the request fails
 - **ZDR mode**: Not all providers support Zero Data Retention
-- **QUANTIZATIONS**: Not all providers offer all quantization levels
+- **QUANTIZATION**: Not all providers offer all quantization levels
 
 **Fix**: Enable `ALLOW_FALLBACKS` or use less restrictive settings.
 
@@ -244,7 +283,7 @@ This is normal. OpenRouter uses slashes in provider slugs to indicate specific e
 
 ## OpenRouter Provider API reference
 
-The generated filters expose a subset of OpenRouter's provider routing options. For full documentation, see [OpenRouter Provider Routing](https://openrouter.ai/docs/provider-routing).
+The generated filters surface OpenRouter's provider routing options directly as filter fields (see [Generated filter options](#generated-filter-options) above). The table below maps each to the underlying OpenRouter API. For full documentation, see [OpenRouter Provider Routing](https://openrouter.ai/docs/provider-routing).
 
 | API Field | Type | Description |
 |-----------|------|-------------|

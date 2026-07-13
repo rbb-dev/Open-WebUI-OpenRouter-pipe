@@ -79,7 +79,7 @@ These control auto-installation, auto-attachment, and default-on behavior for th
 | --- | --- | --- | --- |
 | `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. |
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |
-| `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically mark the OpenRouter Web Tools filter as a Default Filter on models (enabled by default, users can turn off per chat). |
+| `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OpenRouter Web Tools filter as a Default Filter on models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
 | `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to all pipe models. |
 
@@ -114,7 +114,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-image-1` | OpenRouter model ID for image generation. Controls pricing and capabilities. |
+| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | OpenRouter model ID for image generation. Controls pricing and capabilities. |
 | `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | Content moderation level. `auto` = standard. `low` = reduced filtering. |
 
 ---
@@ -212,8 +212,8 @@ Two per-model custom parameters control Web Tools filter attachment on a per-mod
 
 | Parameter | Effect |
 | --- | --- |
-| `disable_openrouter_search_auto_attach` | Prevents auto-attaching the Web Tools filter to this model (the toggle will not appear in Integrations). |
-| `disable_openrouter_search_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off). |
+| `disable_web_tools_auto_attach` | Prevents auto-attaching the Web Tools filter to this model (the toggle will not appear in Integrations). |
+| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off). |
 
 These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` valves are enabled.
 
@@ -225,7 +225,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 
 ### All server tools available (current defaults)
 
-All `ENABLE_*` gates are `True`, all `AUTO_INSTALL_*` and `AUTO_ATTACH_*` valves are `True`, `AUTO_DEFAULT_WEB_TOOLS_FILTER` is `True`. Users see Web Search and Datetime enabled by default, with Web Fetch and Image Generation available as opt-in.
+All `ENABLE_*` gates are `True` and all `AUTO_INSTALL_*` and `AUTO_ATTACH_*` valves are `True`, while `AUTO_DEFAULT_WEB_TOOLS_FILTER` is `False`. The OpenRouter Web Tools toggle appears on every tool-capable model but starts off; users enable it per chat, and within it Web Search and Datetime are on by default while Web Fetch, Advisor, Subagent, and Model Search are opt-in.
 
 ### Disable image generation
 

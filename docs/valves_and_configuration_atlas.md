@@ -28,6 +28,10 @@ Defaults and valve names are verified against the source code and are intended t
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `BASE_URL` | `str` | `env OPENROUTER_API_BASE_URL, else https://openrouter.ai/api/v1` | OpenRouter API base URL. Override this if you are using a gateway or proxy. |
+| `DEFAULT_LLM_ENDPOINT` | `Literal["responses", "chat_completions"]` | `responses` | Which OpenRouter endpoint to use by default. `responses` applies prompt caching via a top-level `cache_control`; `chat_completions` uses per-block breakpoints, needed for Bedrock/Vertex-routed Claude caching and some provider features. Per-model force lists override it. |
+| `FORCE_CHAT_COMPLETIONS_MODELS` | `str` | `""` | Comma-separated glob patterns of model ids forced to `/chat/completions`. Matches both slash and dotted ids; case-sensitive. |
+| `FORCE_RESPONSES_MODELS` | `str` | `""` | Comma-separated glob patterns of model ids forced to `/responses`. Overrides `FORCE_CHAT_COMPLETIONS_MODELS` when both match. |
+| `AUTO_FALLBACK_CHAT_COMPLETIONS` | `bool` | `True` | Retry once against `/chat/completions` if `/responses` fails with an endpoint/model-support error before any visible output has streamed. |
 | `API_KEY` | `EncryptedStr` | `env OPENROUTER_API_KEY (empty if unset)` | Your OpenRouter API key. Defaults to the `OPENROUTER_API_KEY` environment variable. |
 | `HTTP_REFERER_OVERRIDE` | `str` | `""` | Override `HTTP-Referer` for OpenRouter app attribution. Must be a full URL including scheme (e.g. `https://example.com`), not just a hostname. When empty, the pipe uses its default project URL. |
 | `HTTP_CONNECT_TIMEOUT_SECONDS` | `int` | `10` | Seconds to wait for the TCP/TLS connection to OpenRouter before failing. |
@@ -42,11 +46,11 @@ Defaults and valve names are verified against the source code and are intended t
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `int` | `5` | Initial delay in seconds before the first retry attempt. Subsequent retries use exponential backoff (delay * 2^attempt). |
 | `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `int` | `45` | Maximum total time in seconds to spend on retry attempts. Retries stop if this time limit is exceeded. |
 | `REMOTE_FILE_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for downloading remote files/images. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI’s `FILE_MAX_SIZE` (if set). |
-| `SAVE_REMOTE_FILE_URLS` | `bool` | `True` | When True, remote URLs and data URLs in the `file_url` field are downloaded/parsed and re-hosted in Open WebUI storage. When False, `file_url` values pass through untouched. Recommended in code: disable to avoid unexpected storage growth. |
+| `SAVE_REMOTE_FILE_URLS` | `bool` | `True` | When True, remote URLs and data URLs in the `file_url` field are downloaded/parsed and re-hosted in Open WebUI storage (default; keeps chats replayable if the source link dies, at the cost of storage growth). When False, `file_url` values pass through untouched. |
 | `SAVE_FILE_DATA_CONTENT` | `bool` | `True` | When True, base64 content and URLs in the `file_data` field are parsed/downloaded and re-hosted in Open WebUI storage to prevent chat history bloat. When False, `file_data` values pass through untouched. |
 | `BASE64_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for base64-encoded files/images before decoding. Larger payloads are rejected. |
 | `IMAGE_UPLOAD_CHUNK_BYTES` | `int` | `1048576 (1 MiB)` | Max bytes buffered when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage. |
-| `VIDEO_MAX_SIZE_MB` | `int` | `100` | Maximum size in MB for video files (remote URLs or data URLs). Videos exceeding this limit are rejected. |
+| `VIDEO_MAX_SIZE_MB` | `int` | `100` | Max MB for inline base64 (`data:`) videos and for stored videos re-read to extract frames; oversized are rejected/skipped. Remote `http(s)`/YouTube video links are forwarded to the provider unmeasured. |
 | `FALLBACK_STORAGE_EMAIL` | `str` | `env OPENROUTER_STORAGE_USER_EMAIL, else openrouter-pipe@system.local` | Owner email used when multimodal uploads occur without a chat user (for example, API automations). |
 | `FALLBACK_STORAGE_NAME` | `str` | `env OPENROUTER_STORAGE_USER_NAME, else OpenRouter Pipe Storage` | Display name for the fallback storage owner. |
 | `FALLBACK_STORAGE_ROLE` | `str` | `env OPENROUTER_STORAGE_USER_ROLE, else pending` | Role assigned to the fallback storage account when auto-created. Defaults to a low-privilege role; override only if your deployment needs a dedicated service role. |
@@ -71,7 +75,7 @@ Defaults and valve names are verified against the source code and are intended t
 | `ALLOW_USER_ZDR_OVERRIDE` | `bool` | `True` | Allow users to request ZDR per chat via `REQUEST_ZDR` (ignored when `ZDR_ENFORCE` is enabled). |
 | `UPDATE_MODEL_IMAGES` | `bool` | `True` | When enabled, sync OpenRouter model icons into Open WebUI model metadata (`meta.profile_image_url`) as PNG data URLs. Disabling avoids extra outbound fetches and model-metadata writes. |
 | `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Disabling avoids model-metadata writes. |
-| `UPDATE_MODEL_DESCRIPTIONS` | `bool` | `True` | When enabled, sync Open WebUI model descriptions (`meta.description`) from the OpenRouter `/models` catalog. Disabling avoids model-metadata writes and preserves operator-managed descriptions. |
+| `UPDATE_MODEL_DESCRIPTIONS` | `bool` | `False` | When enabled, sync Open WebUI model descriptions (`meta.description`) from the OpenRouter frontend catalog. Disabling avoids model-metadata writes and preserves operator-managed descriptions. |
 | `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Controls where in-progress thinking is surfaced while a response is being generated. |
 | `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `bool` | `True` | When enabled and the selected model is `anthropic/...`, sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude interleaved thinking streams. |
@@ -91,14 +95,14 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `TOOL_EXECUTION_MODE` | `Literal["Pipeline","Open-WebUI"]` | `Pipeline` | Select the tool execution backend. `Pipeline` executes tool calls inside the pipe (batching/breakers/special backends). `Open-WebUI` bypasses the internal executor and returns tool calls to Open WebUI to execute; tool result persistence in the pipe is disabled in this mode. |
-| `SHOW_TOOL_CARDS` | `bool` | `False` | Show collapsible cards in chat with tool name, arguments, and results. When disabled (default), tools run silently without visual status indicators. Only applies when `TOOL_EXECUTION_MODE="Pipeline"`. |
+| `SHOW_TOOL_CARDS` | `bool` | `False` | Show collapsible cards in chat with tool name, arguments, and results. When disabled (default), tools run silently without visual status indicators. Pipe-executed tool cards apply only when `TOOL_EXECUTION_MODE="Pipeline"`; OpenRouter server-tool cards (web search, fetch, datetime, advisor, subagent) render in either mode. |
 | `ENABLE_STRICT_TOOL_CALLING` | `bool` | `True` | When True, converts Open WebUI registry tools to strict JSON Schema for more predictable function calling. Applies only when `TOOL_EXECUTION_MODE="Pipeline"` (pass-through forwards schemas as-is). |
 | `MAX_FUNCTION_CALL_LOOPS` | `int` | `25` | Maximum number of full “model → tools → model” execution cycles allowed per request. Applies only when `TOOL_EXECUTION_MODE=”Pipeline”`. When the limit is reached, pending tool calls receive stub responses so the model can synthesize a final answer. |
 | `MAX_PARALLEL_TOOLS_GLOBAL` | `int` | `200` | Maximum number of tool executions allowed concurrently per process. |
 | `MAX_PARALLEL_TOOLS_PER_REQUEST` | `int` | `5` | Maximum number of tool executions allowed concurrently per request. |
 | `BREAKER_MAX_FAILURES` | `int` | `5` | Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. Set higher to reduce trip frequency in noisy environments. |
 | `BREAKER_WINDOW_SECONDS` | `int` | `60` | Sliding window length (seconds) used when counting breaker failures. |
-| `BREAKER_HISTORY_SIZE` | `int` | `5` | Maximum failures remembered per user/tool breaker. Increase when using very high `BREAKER_MAX_FAILURES` so history is not truncated. |
+| `BREAKER_HISTORY_SIZE` | `int` | `5` | Maximum failures the per-user database circuit breaker remembers. Keep at or above `BREAKER_MAX_FAILURES` so history is not truncated below the trip count (request and per-tool breakers size their own history automatically). |
 | `TOOL_BATCH_CAP` | `int` | `4` | Maximum number of tool calls executed in one batch (per loop) when batching is possible. |
 | `TOOL_TIMEOUT_SECONDS` | `int` | `60` | Per-tool timeout (seconds). |
 | `TOOL_BATCH_TIMEOUT_SECONDS` | `int` | `120` | Timeout (seconds) for completing an entire tool batch. |
@@ -128,13 +132,14 @@ Behavior note (no valve):
 | `MAX_CONCURRENT_REQUESTS` | `int` | `200` | Maximum number of in-flight OpenRouter requests allowed per process. |
 | `SSE_WORKERS_PER_REQUEST` | `int` | `4` | Number of stream processing workers spawned per request (fan-out for parsing/emitting). |
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
+| `STREAMING_CHUNK_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for the buffered raw-chunk queue; logs a rate-limited backend warning when the backlog is high (monitoring only). |
 | `STREAMING_EVENT_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of parsed stream events buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for buffered stream events. |
 | `STREAMING_DELTA_CHAR_LIMIT` | `int` | `256` | Nagle coalescing toggle. `> 0` enables adaptive backpressure-driven batching for both text and reasoning deltas. `0` (with `IDLE_FLUSH_MS=0`) = passthrough mode (1:1 emission). See [Streaming Pipeline § 6](streaming_pipeline_and_emitters.md#6-nagle-inspired-adaptive-delta-coalescing). |
 | `STREAMING_IDLE_FLUSH_MS` | `int` | `30` | Idle flush timeout (ms) for the Nagle coalescer. Ensures buffered deltas are delivered when the upstream producer pauses. `0` disables time-based flushing. |
 | `STREAMING_NAGLE_MIN_FLUSH_CHARS` | `int` | `3` | Minimum buffered chars before the Nagle coalescer yields a batch at end-of-cycle. `3` smooths single-char jitter (default). `1` = pure Nagle. `5–10` = aggressive reduction. Idle timeout still guarantees delivery. |
 | `MIDDLEWARE_STREAM_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of per-request items buffered for the middleware streaming bridge (`pipe(stream=True)` generator). `0` means unbounded. |
-| `MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS` | `float` | `1.0` | When `MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0`, maximum seconds to wait while enqueueing an item before aborting the request. Set to `0` to disable the timeout (not recommended). |
+| `MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS` | `float` | `1.0` | When `MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0`, maximum seconds to wait while enqueueing an item before dropping that item and continuing the stream. Set to `0` to disable the timeout (not recommended). |
 
 ### Redis cache and cost snapshots
 
@@ -143,7 +148,7 @@ Behavior note (no valve):
 | `ENABLE_REDIS_CACHE` | `bool` | `True` | Enable Redis write-behind cache when `REDIS_URL` and multi-worker mode are detected. |
 | `REDIS_CACHE_TTL_SECONDS` | `int` | `600` | TTL (seconds) for cached artifacts/state stored in Redis. |
 | `REDIS_PENDING_WARN_THRESHOLD` | `int` | `100` | Warn when Redis write-behind backlog exceeds this many pending items. |
-| `REDIS_FLUSH_FAILURE_LIMIT` | `int` | `5` | Fail-open threshold: when flush failures reach this count, the pipe degrades and stops attempting flushes until conditions improve. |
+| `REDIS_FLUSH_FAILURE_LIMIT` | `int` | `5` | Alert threshold: after this many consecutive flush failures the pipe logs a critical alert; write-behind is not disabled — the flusher backs off and keeps retrying, resuming when flushes succeed. |
 | `COSTS_REDIS_DUMP` | `bool` | `False` | When True, push per-request usage snapshots into Redis for downstream cost analytics. |
 | `COSTS_REDIS_TTL_SECONDS` | `int` | `900` | TTL (seconds) for cost snapshots stored in Redis. |
 
@@ -186,7 +191,7 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get the generic image filter attached for `image_config` knobs. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Automatically install/update the OpenRouter native image filters in Open WebUI: `OR Image Filter` (generic, all image models), `Gemini Options` (Gemini Flash 3.x image only), `Sourceful Options` (Riverflow V2 Pro/Fast only), `Sourceful V2.5 Options` (Riverflow 2.5 Pro/Fast only — the single Sourceful filter for 2.5), `Recraft Options` (all Recraft models), `Recraft V3 Extras` (Recraft V3 only), `Grok Imagine Options` (Grok Imagine image models only). |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Automatically attach the appropriate native image filters to image-output models: generic to all, Gemini-extended to `^google/gemini-3.*flash-image.*$`, Sourceful to `^sourceful/riverflow-v2-(pro\|fast)$`, Sourceful V2.5 to `^sourceful/riverflow-v2\.5-(pro\|fast)$` (one Sourceful filter per Riverflow version), Recraft to `^recraft/recraft-`, Recraft V3 Extras to `recraft/recraft-v3` exactly, Grok Imagine to `^x-ai/grok-imagine-image-`. |
-| `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_image_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_list_default_filter_ids` in `models/catalog_manager.py`. |
 
 Notes:
 - The image catalog uses the **shared** `MODEL_CATALOG_REFRESH_SECONDS` TTL (no separate cache valve).
@@ -256,11 +261,11 @@ Three filter functions are installed:
 | `ENABLE_VIDEO_GENERATION` | `bool` | `True` | Expose OpenRouter async video-generation models as chat models. Video models are always treated as not ZDR-capable. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `bool` | `True` | Automatically install/update model-specific OpenRouter Video Generation companion filters in Open WebUI. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `bool` | `True` | Automatically attach each model-specific video filter to its matching OpenRouter video model. |
-| `AUTO_DEFAULT_VIDEO_FILTERS` | `bool` | `True` | Always keep the per-model video filter enabled by default on its video model. Re-asserted on every catalog metadata sync because video models require their filter to function (the filter exposes mandatory per-model params like `personGeneration` for Veo, `quality` for Sora, etc.). Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_video_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_VIDEO_FILTERS` | `bool` | `True` | Always keep the per-model video filter enabled by default on its video model. Re-asserted on every catalog metadata sync. Models that mandate a per-model parameter (`personGeneration` for Veo, `quality` for Sora) cannot be driven without the filter; parameter-free models still generate. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_video_default_filter_ids` in `models/catalog_manager.py`. |
 | `ENABLE_OPENROUTER_FUSION` | `bool` | `True` | Master switch for OpenRouter Fusion (multi-model judge panel) support. When enabled the pipe installs the **OpenRouter Fusion** filter and auto-wires it to the `openrouter/fusion` model only. Setting to `False` deactivates the installed filter on the next `pipes()` call. See [openrouter_fusion.md](openrouter_fusion.md). |
 | `AUTO_INSTALL_FUSION_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Fusion filter function in Open WebUI. |
 | `AUTO_ATTACH_FUSION_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Fusion filter to the `openrouter/fusion` model **only** (never to other models). Other models can use Fusion only if an admin manually attaches the filter and turns on its `ALLOW_ON_NON_FUSION_MODELS` **filter** valve (default `False`; while off the filter no-ops on any non-fusion model — injecting no plugin and no forcing). The filter's own admin valves (`ALLOW_ON_NON_FUSION_MODELS`, `priority`) are filter `Valves`, not pipe valves — documented in [openrouter_fusion.md](openrouter_fusion.md#filter-admin-valves-on-the-filter-itself). |
-| `AUTO_DEFAULT_FUSION_FILTER` | `bool` | `True` | Mark the OpenRouter Fusion filter as a Default Filter on the `openrouter/fusion` model (pre-enabled per chat). Does **not** force Fusion to run — the per-user *Always run Fusion* toggle defaults off. Re-asserted on every catalog metadata sync; see `_apply_fusion_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_FUSION_FILTER` | `bool` | `True` | Mark the OpenRouter Fusion filter as a Default Filter on the `openrouter/fusion` model (pre-enabled per chat). Does **not** force Fusion to run — the per-user *Always run Fusion* toggle defaults off. Re-asserted on every catalog metadata sync; see `_apply_list_default_filter_ids` in `models/catalog_manager.py`. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `float` | `5.0` | Initial delay before polling a newly submitted OpenRouter video generation job. |
 | `VIDEO_POLL_INTERVAL_SECONDS` | `float` | `5.0` | Base polling interval for video jobs. |
 | `VIDEO_POLL_BACKOFF_FACTOR` | `float` | `1.2` | Backoff multiplier after each non-terminal poll. |
@@ -275,8 +280,6 @@ Three filter functions are installed:
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `int` | `52428800` | Maximum combined decoded size for all image frames in one video request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `str` | `image/jpeg,image/png,image/webp` | Comma-separated MIME allowlist for video frame images. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `str` | `video/mp4,video/webm` | Comma-separated MIME allowlist for generated video downloads after content sniffing. |
-| `VIDEO_FILTER_MARKER` | `str` | `openrouter_pipe:video_filter:v1` | Marker used to identify generated OpenRouter Video Generation filter functions. |
-
 Notes:
 - Generated videos are not buffered as full Python `bytes`; they go through the canonical helpers (`MultimodalHandler._download_remote_url_streaming` → `OwuiFileGateway.upload_to_owui_storage_from_path` → `OwuiFileGateway.try_link_file_to_chat`), which apply the SSRF gate, exponential-backoff retry, size cap, MIME sniff, OWUI `upload_file_handler` insert, and chat-file link in one shot. The same helpers are reused by image generation.
 - The adapter persists a hidden `videojob` marker into the assistant message immediately after `submit()` returns a job_id, by emitting an OWUI socket `'message'` event (which routes through `Chats.upsert_message_to_chat_by_id_and_message_id`). A later request for the same message resumes polling that job instead of submitting a second job.
@@ -332,6 +335,24 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 **Skip-when-default sentinel**: a valve set to its default value (`""`, `0`, `0.0`, or `"model_default"`) is **NOT** included in the request body. The upstream provider's own default applies. 3-state Literals translate `"on"` → `True`, `"off"` → `False`, `"model_default"` → omitted.
 
 **Routing**: top-level fields (`duration`, `aspect_ratio`, `resolution`, `size`, `seed`, `generate_audio`, `negative_prompt`, `frame_images`) land at the request body root. Other passthrough fields land at the body root too — OpenRouter "passes them through to the provider". `VIDEO_PROVIDER_OPTIONS_JSON` is the only valve that writes to `provider.options.<slug>.parameters.<field>` (Phase-0-probe-confirmed nesting).
+
+### OpenRouter video intent classifier
+
+A task-model classifier that reads recent chat turns and attachments before an OpenRouter video request to decide what the new video should reference (reuse a prior frame, adopt an attached image, or start fresh), optionally asking one clarifying question. Every failure degrades open — the paid video still generates from the latest message. See [openrouter_video_intent_classifier.md](openrouter_video_intent_classifier.md).
+
+| Valve | Type | Default (verified) | Purpose / notes |
+| --- | --- | --- | --- |
+| `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When off, video requests bypass the classifier — only the latest user message is sent (no cross-turn context, clarifying questions, or frame reuse). |
+| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI global Task Model runs the classifier: `external`=`TASK_MODEL_EXTERNAL`, `internal`=`TASK_MODEL`. |
+| `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Second-attempt strategy when the chosen Task Model fails: `none`=stop; `other_task_model`=try the other global Task Model (deduped if identical/unset). |
+| `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier on a chat's first turn with no attachments (nothing to reference), saving a wasted Task Model call. |
+| `VIDEO_INTENT_MAX_CLARIFICATIONS` | `int` | `1` | Per-chat cap on consecutive clarifying questions before the classifier proceeds on its best guess. `0` disables the loop. User-overridable per video model. |
+| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Overshoot fallback only: which frame to reuse when a requested timestamp runs past a prior clip's end. User-overridable per video model. |
+| `VIDEO_INTENT_TIMEOUT_S` | `int` | `8` | Per-attempt timeout (seconds) for the classifier's Task Model call; on timeout/failure the pipe degrades open (latest message only) and never blocks the paid render. |
+| `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to show the disclosure footer. `on_reference` = a prior video's frame is reused OR multiple frames combined (a lone attachment does not trigger it). User-overridable per video model. |
+| `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` | Cost guard: max classifier calls per chat (`0`=unlimited). Per-worker in-memory counter; over the cap, classification is skipped and the render still proceeds. |
+| `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` | Cost guard: max classifier calls per user per UTC day (`0`=unlimited). Per-worker in-memory counter, resets at UTC midnight/restart. |
+| `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | When True, log the per-turn classification summary (intent, confidence, language, frame counts, latency, fallback/failure flags, hashed chat id) at INFO instead of DEBUG. Always written; excludes the verbatim prompt and the model's free-text reason. |
 
 ### Direct uploads (bypass OWUI RAG)
 
@@ -402,7 +423,7 @@ Each generated provider routing filter has these valves (admin and/or user depen
 | `ALLOW_FALLBACKS` | `bool` | `True` | `provider.allow_fallbacks` — Use backup providers if preferred unavailable |
 | `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` — Only use providers supporting all request params |
 | `ZDR` | `bool` | `False` | `provider.zdr` — Zero Data Retention enforcement |
-| `QUANTIZATIONS` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` — Filter by quantization level (when available) |
+| `QUANTIZATION` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` — Filter by quantization level (when available) |
 | `MAX_PRICE_IMAGE` | `float` | `0` | `provider.max_price.image` — Max price per image ($/image), 0=no limit |
 | `MAX_PRICE_AUDIO` | `float` | `0` | `provider.max_price.audio` — Max price for audio ($/unit), 0=no limit |
 | `MAX_PRICE_REQUEST` | `float` | `0` | `provider.max_price.request` — Max price per request ($/request), 0=no limit |
@@ -421,9 +442,10 @@ Notes:
 - `FINAL_USAGE_STATUS_STYLE="icons"` swaps those labels for the icon set. You can also pass **words** as the CSV entries if you want custom labels (e.g., `Time,Cost,Total,Input,Output,Cached,Reasoning`).
 | `SEND_END_USER_ID` | `bool` | `False` | When enabled, sends the OpenRouter top-level `user` field using the Open WebUI user ID, and also adds `metadata.user_id`. See [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md). |
 | `SEND_SESSION_ID` | `bool` | `False` | When enabled, adds `metadata.session_id` using Open WebUI `__metadata__[\"session_id\"]` (metadata only). |
-| `SEND_CACHE_SESSION_ID` | `bool` | `True` | Sends `session_id` = `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` to pin each conversation to one provider for prompt-cache warmth. Skipped if `WEBUI_SECRET_KEY` is unset. See [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#214-prompt-cache-session-affinity-session_id). |
+| `SEND_CACHE_SESSION_ID` | `bool` | `True` | Sends `session_id` = `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` to pin each conversation to one provider for prompt-cache warmth. Skipped if `WEBUI_SECRET_KEY` is unset. See [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#216-prompt-cache-session-affinity-session_id). |
 | `SEND_CHAT_ID` | `bool` | `False` | When enabled, adds `metadata.chat_id` using Open WebUI `__metadata__[\"chat_id\"]`. |
 | `SEND_MESSAGE_ID` | `bool` | `False` | When enabled, adds `metadata.message_id` using Open WebUI `__metadata__[\"message_id\"]`. |
+| `ENABLE_PLUGIN_SYSTEM` | `bool` | `False` | Master switch for the plugin system. When `False`, all plugin hooks are skipped (zero overhead); when `True`, registered plugins load and their hooks dispatch. Takes effect immediately without restart. See [Plugin System](plugin_system.md). |
 
 ### Session log storage
 
@@ -437,11 +459,11 @@ Notes:
 | `SESSION_LOG_ZIP_COMPRESSION` | `Literal[\"stored\", \"deflated\", \"bzip2\", \"lzma\"]` | `lzma` | Zip compression algorithm for session log archives. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. |
 | `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger records retained per request (older entries are dropped). |
-| `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
-| `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | `int` | `15` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
+| `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format. `logs.jsonl` is always written; `jsonl` writes only it, while `text` and `both` additionally write `logs.txt` (so `text` and `both` yield the same file set). |
+| `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | `int` | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | `int` | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
 | `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | `int` | `25` | Max turns processed per assembler tick. |
-| `SESSION_LOG_STALE_FINALIZE_SECONDS` | `int` | `21600` | If no terminal segment arrives for a turn, assemble an incomplete archive after this timeout. |
+| `SESSION_LOG_STALE_FINALIZE_SECONDS` | `int` | `43200` | If no terminal segment arrives for a turn, assemble an incomplete archive after this timeout. |
 | `SESSION_LOG_LOCK_STALE_SECONDS` | `int` | `1800` | DB lock row stale timeout (multi-worker safety). |
 | `ENABLE_TIMING_LOG` | `bool` | `False` | When True, capture function entrance/exit timing data. Writes to `TIMING_LOG_FILE` directly (not session archives). See [Session Log Storage](session_log_storage.md#timing-instrumentation). |
 | `TIMING_LOG_FILE` | `str` | `logs/timing.jsonl` | File path for timing log output when `ENABLE_TIMING_LOG` is True. Parent directories are created automatically. |
@@ -464,6 +486,7 @@ Notes:
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
 | `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
 | `MODEL_RESTRICTED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the requested model is blocked by `MODEL_ID` and/or model filter valves. |
+| `STREAM_INTERRUPTED_TEMPLATE` | `str` | `built-in default` | Markdown appended when a streamed reply ends without a completion event; partial content is preserved. |
 
 **Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).
 
@@ -490,3 +513,13 @@ User valves provide per-user behavior overrides for a subset of settings.
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `next_reply` | User-level reasoning retention preference. |
 | `PERSIST_TOOL_RESULTS` | `bool` | `True` | Let the AI reuse outputs from tools later in the conversation. |
 | `REQUEST_ZDR` | `bool` | `False` | Request ZDR routing for this chat. |
+
+## Plugin-exported valves (pipe_dashboard)
+
+These appear in the merged Valves UI when `ENABLE_PLUGIN_SYSTEM` is on; full context in `docs/plugins_pipe_dashboard.md`.
+
+| Valve | Type | Default | Description |
+|-------|------|---------|-------------|
+| `PIPE_DASHBOARD_ENABLE` | `bool` | `False` | Show/hide the Pipe Dashboard virtual model in the model selector. |
+| `PIPE_DASHBOARD_USAGE_COLLECT` | `bool` | `False` | Persist one usage record per completed request (user, model, tokens, tools, cost) to a dedicated `dashboard_` table powering the dashboard's Usage tab. Read live at record time. |
+| `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | `int` (1–365) | `30` | Retention for collected usage records; a jittered, lock-guarded purge task deletes older rows. Read live inside the purge loop. |

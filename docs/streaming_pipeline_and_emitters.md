@@ -57,6 +57,7 @@ Defaults are `0` (unbounded) for both queues.
 **Warning:** Very small bounded sizes can create deadlock-style stalls in tool-heavy or persistence-heavy workloads (slow drain → event queue fills → workers block → chunk queue fills → producer blocks). The valve descriptions explicitly warn that bounded values under a few hundred can hang under load.
 
 Monitoring:
+- `STREAMING_CHUNK_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the raw-chunk queue backlog is high.
 - `STREAMING_EVENT_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the event queue backlog is high.
 
 ### Middleware streaming bridge queue (Open WebUI generator)
@@ -82,7 +83,7 @@ Common event types:
 | `chat:message` | Updates the visible assistant message content (streaming text snapshots). |
 | `chat:completion` | Final frame that ends the request; may include `usage` and must include `content` (even when empty). |
 | `status` | Progress and warning messages displayed as status updates. |
-| `citation` | Normalized citation payloads (documents/metadata/source). |
+| `source` | Normalized citation payloads (documents/metadata/source). |
 | `notification` | Toast-style notifications (info/success/warning/error). |
 
 Notes:

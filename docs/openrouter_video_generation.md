@@ -1115,8 +1115,6 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (sniffed from prefix). |
-| `VIDEO_FILTER_MARKER` | `openrouter_pipe:video_filter:v1` | string | Internal marker for filter identification. Don't change unless you know why. |
-
 Tuning hints:
 
 - **High-volume deployments** with many users: bump

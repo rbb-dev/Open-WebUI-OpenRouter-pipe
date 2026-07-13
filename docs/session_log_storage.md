@@ -151,11 +151,11 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_ZIP_COMPRESSION` | enum | `lzma` | Zip compression algorithm. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
 | `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory log records retained per request before older entries are dropped. |
-| `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format: `jsonl` writes `logs.jsonl`, `text` writes `logs.txt`, `both` writes both files. |
+| `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format. `logs.jsonl` is always written as the canonical record; `jsonl` writes only `logs.jsonl`, while `text` and `both` additionally write `logs.txt` (so `text` and `both` produce an identical file set). |
 | `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | int | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | int | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
 | `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | int | `25` | Max turns processed per assembler tick. |
-| `SESSION_LOG_STALE_FINALIZE_SECONDS` | int | `7200` | If no terminal segment arrives for a turn, assemble an **incomplete** archive after this timeout. |
+| `SESSION_LOG_STALE_FINALIZE_SECONDS` | int | `43200` | If no terminal segment arrives for a turn, assemble an **incomplete** archive after this timeout. |
 | `SESSION_LOG_LOCK_STALE_SECONDS` | int | `1800` | DB lock row stale timeout (multi-worker safety). |
 | `ENABLE_TIMING_LOG` | bool | `false` | Capture function entrance/exit timing data. |
 | `TIMING_LOG_FILE` | str | `logs/timing.jsonl` | File path for timing log output. |
@@ -174,15 +174,16 @@ Each line is a single JSON object:
 - `perf_ts` (float): High-resolution monotonic counter (`time.perf_counter()`) for precise elapsed-time calculations.
 - `event` (string): One of `enter`, `exit`, or `mark`.
 - `label` (string): Function or scope name (for example `streaming.streaming_core.StreamingHandler._run_streaming_loop`).
+- `request_id` (string): The pipe's per-request correlation id; present on every event.
 - `elapsed_ms` (float, optional): Elapsed time in milliseconds (only present on `exit` events).
 
 Example output:
 
 ```jsonl
-{"ts":"2026-01-18T12:34:56.001Z","perf_ts":0.001234,"event":"enter","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop"}
-{"ts":"2026-01-18T12:34:56.002Z","perf_ts":0.002345,"event":"mark","label":"event_iteration_start"}
-{"ts":"2026-01-18T12:34:56.050Z","perf_ts":0.050678,"event":"mark","label":"first_event_received"}
-{"ts":"2026-01-18T12:34:58.123Z","perf_ts":2.123456,"event":"exit","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop","elapsed_ms":2122.22}
+{"ts":"2026-01-18T12:34:56.001Z","perf_ts":0.001234,"event":"enter","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop","request_id":"a1b2c3d4e5f6a7b8"}
+{"ts":"2026-01-18T12:34:56.002Z","perf_ts":0.002345,"event":"mark","label":"event_iteration_start","request_id":"a1b2c3d4e5f6a7b8"}
+{"ts":"2026-01-18T12:34:56.050Z","perf_ts":0.050678,"event":"mark","label":"first_event_received","request_id":"a1b2c3d4e5f6a7b8"}
+{"ts":"2026-01-18T12:34:58.123Z","perf_ts":2.123456,"event":"exit","label":"streaming.streaming_core.StreamingHandler._run_streaming_loop","request_id":"a1b2c3d4e5f6a7b8","elapsed_ms":2122.22}
 ```
 
 ### When to use timing

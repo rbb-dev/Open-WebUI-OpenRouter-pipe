@@ -251,14 +251,14 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Pipe behavior (when truthy):
   - Leaves `meta.description` as-is for that model, even when `UPDATE_MODEL_DESCRIPTIONS=True`.
 
-### 2.10 `disable_openrouter_search_auto_attach` → preserve the OpenRouter Web Tools toggle wiring
-- Custom param: `disable_openrouter_search_auto_attach` (bool-ish)
+### 2.10 `disable_web_tools_auto_attach` → preserve the OpenRouter Web Tools toggle wiring
+- Custom param: `disable_web_tools_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the OpenRouter Web Tools filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_WEB_TOOLS_FILTER=True`.
   - As a consequence, default-on seeding is also avoided (the pipe will not mark a filter as default unless it is attached).
 
-### 2.11 `disable_openrouter_search_default_on` → preserve default-on behavior
-- Custom param: `disable_openrouter_search_default_on` (bool-ish)
+### 2.11 `disable_web_tools_default_on` → preserve default-on behavior
+- Custom param: `disable_web_tools_default_on` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
   - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it.
@@ -268,7 +268,17 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.
 
-### 2.13 Provider routing custom parameters → OpenRouter `provider` dict
+### 2.13 `disable_image_filter_auto_attach` → preserve the native image filter wiring
+- Custom param: `disable_image_filter_auto_attach` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not attach the native image filters to that image-output model in `meta.filterIds`, even when `AUTO_ATTACH_IMAGE_FILTERS=True`.
+
+### 2.14 `disable_video_gen_auto_attach` → preserve the Video Generation filter wiring
+- Custom param: `disable_video_gen_auto_attach` (bool-ish)
+- Pipe behavior (when truthy):
+  - The pipe will not attach the per-model video generation filter to that video model in `meta.filterIds`, even when `AUTO_ATTACH_VIDEO_FILTERS=True`.
+
+### 2.15 Provider routing custom parameters → OpenRouter `provider` dict
 
 OpenRouter routes models through multiple infrastructure providers (e.g. OpenAI direct, Azure, Together). Some providers have different content filtering, latency, or pricing. These custom parameters let you control provider selection per-model without needing the full filter-based provider routing system.
 
@@ -330,7 +340,7 @@ Result:
 - These params are simple CSV strings that survive OWUI's Advanced Parameters editor re-serialization (unlike nested JSON objects which can be mangled).
 - For more advanced per-model provider routing with UI dropdowns, see the [Provider Routing Filters](openrouter_provider_routing.md) system.
 
-### 2.14 Prompt-cache session affinity (`session_id`)
+### 2.16 Prompt-cache session affinity (`session_id`)
 
 To maximize prompt-cache hits, the pipe sends OpenRouter a stable per-conversation `session_id` so every turn of a conversation routes to the same provider, keeping that provider's prompt cache warm. The value is an opaque `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` digest — never the raw chat id — and costs zero tokens. Any client-supplied `session_id` is dropped.
 
@@ -365,7 +375,7 @@ Data sources / egress:
 
 Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
-- `UPDATE_MODEL_DESCRIPTIONS` (default `True`): enable/disable model description sync.
+- `UPDATE_MODEL_DESCRIPTIONS` (default `False`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
 - `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 Per-model opt-outs:

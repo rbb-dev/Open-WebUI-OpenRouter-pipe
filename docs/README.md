@@ -90,7 +90,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [Valves & Configuration Atlas](valves_and_configuration_atlas.md) — authoritative configuration reference (defaults verified against code/tests).
 - [Error Handling & User Experience](error_handling_and_user_experience.md) — what users see, how errors are structured, and how to troubleshoot.
 - [OpenRouter Direct Uploads (bypass OWUI RAG)](openrouter_direct_uploads.md) — forward chat uploads to OpenRouter as direct files/audio/video with per-chat toggles and safety gates.
-- [OpenRouter Image Generation](openrouter_image_generation.md) — native image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image), three filters (generic, Gemini Options, Sourceful Options), per-model knobs, and the inline rendering pipeline.
+- [OpenRouter Image Generation](openrouter_image_generation.md) — native image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image), seven filters (generic plus the Gemini, Sourceful/Riverflow, Recraft, and Grok families), per-model knobs, and the inline rendering pipeline.
 - [OpenRouter Video Generation](openrouter_video_generation.md) — async video models, per-model filters, streaming storage, and resume behavior.
 - [Video Intent Classifier](openrouter_video_intent_classifier.md) — task-model-driven cross-turn context for video generation. A small classifier runs before each video request, reads the chat history, and decides what visual reference to wire into the request. Covers the `frame_plan` schema, intent disclosure block, frame extraction at arbitrary timestamps, the modify-fallback flow (when a model can't honor `input_reference`), 11 admin valves, and 4 per-model filter UserValves.
 - [OpenRouter Provider Routing](openrouter_provider_routing.md) — control which infrastructure providers serve your requests with per-model filters, ORDER dropdowns, and compliance options (ZDR, fallbacks).
@@ -98,6 +98,10 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - [OpenRouter Server Tools](openrouter_server_tools.md) — Web Search, Web Fetch, Datetime, and Image Generation server tools: configuration, companion filters, and data flow.
 - [Web Search: OWUI vs OpenRouter](web_search_owui_vs_openrouter_search.md) — the distinction between Open WebUI native web search and OpenRouter web search, suppression behavior, and when to use which.
 - [Model Variants & Presets](model_variants_and_presets.md) — create virtual model entries for OpenRouter variants (`:nitro`, `:exacto`, etc.) and user-defined presets (`@preset/your-preset`) to expose specialized routing options in the model selector.
+
+### Extending the pipe (developers)
+- [Plugin System (developer guide)](plugin_system.md) — hook-based framework for extending the pipe; covers the plugin lifecycle, hooks, valve contributions, and the `ENABLE_PLUGIN_SYSTEM` master switch.
+- [Pipe Dashboard plugin](plugins_pipe_dashboard.md) — built-in showcase plugin: live dashboard over OWUI's Socket.IO channel, plus chat commands.
 
 ### Security and compliance guidance (admins)
 - [Security & Encryption](security_and_encryption.md) — key handling, SSRF controls (HTTPS-only by default), and hardening guidance.

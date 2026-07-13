@@ -9,9 +9,14 @@
 GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Riverflow — text, images, and video generation through OpenRouter's unified API, plus OpenRouter Fusion's live multi-model deliberation. One key, one bill, every model that matters.
 
 <p align="center">
-  <img width="49%" alt="chat" src="https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97" />
-  <img width="49%" alt="generation" src="https://github.com/user-attachments/assets/27681655-c494-408d-bc1a-b09e3d09f4c7" />
+  <img align="top" width="49%" alt="chat" src="https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97" />
+  <img align="top" width="49%" alt="generation" src="https://github.com/user-attachments/assets/27681655-c494-408d-bc1a-b09e3d09f4c7" />
 </p>
+<p align="center">
+  <img align="top" width="49%" alt="generation1" src="docs/images/dashboard_usage.jpeg" />
+  <img align="top" width="49%" alt="chat1" src="docs/images/dashboard_config.jpeg" />
+</p>
+
 
 ---
 

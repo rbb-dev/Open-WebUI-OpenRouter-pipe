@@ -14,10 +14,10 @@ This repository ships an Open WebUI pipe as a modular Python package implementin
 open_webui_openrouter_pipe/
 ├── __init__.py          # Package entry point with lazy loading
 ├── pipe.py              # Main Pipe class and request handling
-├── api/                 # Gateway adapters, transforms, filters
-│   ├── filters.py       # Direct uploads filter
+├── api/                 # Gateway adapters and transforms
 │   ├── transforms.py    # Request/response transforms
 │   └── gateway/         # OpenRouter API adapters
+├── filters/             # Filter generation (web tools, fusion, image, video, direct uploads)
 ├── core/                # Config, logging, circuit breaker, timing
 │   ├── config.py        # Valve definitions
 │   ├── logging_system.py # Session logging
@@ -89,7 +89,7 @@ The pipe starts helper workers lazily:
 ## Contribution workflow (practical)
 
 - Keep changes scoped: update one subsystem at a time and add/extend tests in the corresponding `tests/test_*.py`.
-- Update docs alongside behavior changes (prefer the subsystem doc under `docs_codex/` rather than embedding long comments in code).
+- Update docs alongside behavior changes (prefer the subsystem doc under `docs/` rather than embedding long comments in code).
 - Run the relevant unit tests and then the full suite (see [Testing, bootstrap, and operational playbook](testing_bootstrap_and_operations.md)).
 
 ---

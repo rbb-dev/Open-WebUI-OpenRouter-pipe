@@ -10,7 +10,7 @@ This document describes the pipe’s admission control, concurrency limits, brea
 
 The pipe applies multiple layers of admission control per process:
 
-- **Request queue:** requests are wrapped into jobs and enqueued into an in-process asyncio queue (`maxsize=500`). If the queue is full, the request is rejected with a user-facing “Server busy (503)” message.
+- **Request queue:** requests are wrapped into jobs and enqueued into an in-process asyncio queue (`maxsize=1000`). If the queue is full, the request is rejected with a user-facing “Server busy (503)” message.
 - **Global request semaphore:** `MAX_CONCURRENT_REQUESTS` limits in-flight requests per process. Increasing the valve can take effect immediately; decreasing it requires a restart to fully reduce concurrency.
 - **Startup warmup gate:** the pipe runs background warmup checks once an API key is configured. If warmup has failed, requests are rejected with “Service unavailable due to startup issues” until a subsequent warmup succeeds.
 

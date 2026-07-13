@@ -46,7 +46,7 @@ The pipe implements OpenRouter Web Search as part of the **OpenRouter Web Tools*
 - The pipe can **auto-attach** it to pipe models when `AUTO_ATTACH_WEB_TOOLS_FILTER` is enabled.
 - The pipe can **enable it by default** on models when `AUTO_DEFAULT_WEB_TOOLS_FILTER` is enabled.
 
-Users see an "OpenRouter Web Tools" switch in the Integrations menu. Individual tools (Web Search, Web Fetch, Datetime) are toggled via the filter's user valves.
+Users see an "OpenRouter Web Tools" switch in the Integrations menu. Individual tools (Web Search, Web Fetch, Datetime, Advisor, Subagent, Search Models) are toggled via the filter's user valves.
 
 ---
 
@@ -56,8 +56,8 @@ Two per-model custom parameters (set in Open WebUI model Advanced Parameters) co
 
 | Parameter | Effect |
 | --- | --- |
-| `disable_openrouter_search_auto_attach` | Prevents auto-attaching the Web Tools filter to this model. The toggle will not appear in the Integrations menu for this model. As a consequence, default-on seeding is also skipped. |
-| `disable_openrouter_search_default_on` | Prevents auto-enabling the Web Tools filter by default for this model. The toggle appears but starts off; users can still enable it per chat. |
+| `disable_web_tools_auto_attach` | Prevents auto-attaching the Web Tools filter to this model. The toggle will not appear in the Integrations menu for this model. As a consequence, default-on seeding is also skipped. |
+| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model. The toggle appears but starts off; users can still enable it per chat. |
 
 These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` pipe valves are enabled.
 
@@ -81,7 +81,7 @@ These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTE
 
 ### Use both (advanced):
 
-Not recommended. When both are enabled on the same request, the Web Tools filter suppresses OWUI Web Search to avoid double-searching. If you need OWUI Web Search for specific models, use `disable_openrouter_search_auto_attach` on those models to prevent the Web Tools filter from being attached.
+Not recommended. When both are enabled on the same request, the Web Tools filter suppresses OWUI Web Search to avoid double-searching. If you need OWUI Web Search for specific models, use `disable_web_tools_auto_attach` on those models to prevent the Web Tools filter from being attached.
 
 ---
 
@@ -102,7 +102,7 @@ Result: Users see **OpenRouter Web Tools** on all pipe models but must enable it
 
 ### Prefer OWUI Web Search for specific models
 
-- Set `disable_openrouter_search_auto_attach` in the model's Advanced Parameters.
+- Set `disable_web_tools_auto_attach` in the model's Advanced Parameters.
 - The Web Tools toggle will not appear for that model, and OWUI Web Search will work normally.
 
 ---
@@ -113,7 +113,7 @@ Result: Users see **OpenRouter Web Tools** on all pipe models but must enable it
 
 - Confirm `AUTO_INSTALL_WEB_TOOLS_FILTER=True` and `AUTO_ATTACH_WEB_TOOLS_FILTER=True` on the pipe valves.
 - Trigger a model catalog refresh (the filter is installed/attached during refresh).
-- Check that the model does not have `disable_openrouter_search_auto_attach` set in its Advanced Parameters.
+- Check that the model does not have `disable_web_tools_auto_attach` set in its Advanced Parameters.
 
 ### "OWUI Web Search doesn't work when OpenRouter Web Tools is enabled"
 

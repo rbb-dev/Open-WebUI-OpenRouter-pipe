@@ -10,7 +10,7 @@ This document describes how the pipe builds that `input` array, how it replays p
 
 ## 1. Entry point: `transform_messages_to_input`
 
-The core history conversion is implemented by `Pipe.transform_messages_to_input(...)`.
+The core history conversion is implemented by `transform_messages_to_input(...)`.
 
 Inputs (high level):
 - `messages`: Open WebUI-style messages (each with `role` and `content`).
@@ -104,7 +104,7 @@ Marker detection and splitting is performed by helper functions (for example `co
 
 For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available),
-- normalizes it to the schema expected by upstream (`_normalize_persisted_item`),
+- normalizes it to the schema expected by upstream (`normalize_persisted_item`),
 - and appends it directly into the `input` array as a structured item.
 
 **Artifact loader preconditions (important):**

@@ -56,7 +56,7 @@ export WEBUI_SECRET_KEY="$(openssl rand -base64 32)"
 
 **Important:** `WEBUI_SECRET_KEY` protects *secret valve storage*. It does not, by itself, enable or disable artifact encryption. Artifact encryption is controlled by `ARTIFACT_ENCRYPTION_KEY` and related valves (next section).
 
-**Warning:** If a secret valve value is stored with the `encrypted:` prefix but `WEBUI_SECRET_KEY` is missing or does not match the key used when the value was stored, `EncryptedStr.decrypt()` returns the original `encrypted:...` prefixed string unchanged (the ciphertext is not decrypted). Operationally, this can cause:
+**Warning:** If a secret valve value is stored with the `encrypted:` prefix but `WEBUI_SECRET_KEY` is missing, `EncryptedStr.decrypt()` strips the `encrypted:` prefix and returns the raw (still-encrypted) ciphertext; if `WEBUI_SECRET_KEY` is set but does not match the key used when the value was stored, `decrypt()` returns the original `encrypted:...` string unchanged. In either case the plaintext is not recovered, which can cause:
 
 - Provider authentication failures (if `API_KEY` cannot be recovered).
 - A different artifact storage table namespace (if `ARTIFACT_ENCRYPTION_KEY` cannot be recovered), making previously persisted artifacts appear “missing” until the correct `WEBUI_SECRET_KEY` is restored.

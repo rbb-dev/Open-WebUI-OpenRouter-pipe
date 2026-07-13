@@ -158,7 +158,7 @@ Remote downloads are used for images and for files when re-hosting is enabled. T
 | `IMAGE_UPLOAD_CHUNK_BYTES` | `1048576 (1 MiB)` | Chunk size used when inlining Open WebUI-hosted images as `data:` URLs. |
 | `MAX_INPUT_IMAGES_PER_REQUEST` | `5` | Maximum images forwarded per request. |
 | `IMAGE_INPUT_SELECTION` | `user_then_assistant` | Image selection policy when the user attaches no images. |
-| `VIDEO_MAX_SIZE_MB` | `100` | Size guard for base64 video data URLs. |
+| `VIDEO_MAX_SIZE_MB` | `100` | Size guard for base64 (`data:`) videos and for stored videos re-read to extract frames. |
 
 For the complete list, see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
 
