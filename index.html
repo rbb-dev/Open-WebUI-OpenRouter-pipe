@@ -390,6 +390,49 @@
     color: var(--text-muted);
     margin-top: 0.05rem;
   }
+  .format-option input[type="checkbox"] {
+    appearance: none;
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg-input);
+    flex-shrink: 0;
+    margin-top: 1px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .format-option input[type="checkbox"]:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .format-option input[type="checkbox"]:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 0;
+    width: 5px; height: 10px;
+    border: solid var(--bg-primary);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .patch-notice {
+    margin: 0.6rem 0 0;
+    padding: 0.7rem 0.9rem;
+    border-radius: 10px;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    line-height: 1.55;
+  }
+  .patch-notice strong { color: #f59e0b; }
+  .patch-notice code {
+    background: rgba(0,0,0,0.3);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+  }
 
   /* --- Build button --- */
   .build-section {
@@ -671,6 +714,24 @@
     </div>
   </div>
 
+  <!-- Runtime patches -->
+  <div class="section">
+    <div class="section-label">Runtime Patches</div>
+    <label class="format-option">
+      <input type="checkbox" id="asyncio-patch">
+      <div>
+        <div class="format-label">Include asyncio hang patch (anyio #1111 workaround)</div>
+        <div class="format-desc">Backports the fix for anyio issue #1111. Left out of the bundle unless enabled.</div>
+      </div>
+    </label>
+    <div class="patch-notice">
+      <strong>&#9888; Check your asyncio status first.</strong> This patch is only needed if your Open WebUI runs
+      <strong>anyio 4.12.1, 4.13.0 or 4.14.1</strong> &mdash; a bug in those versions can pin the event loop at
+      100% CPU on cancellation. Check your installed version with <code>pip show anyio</code>. The patch is
+      version-gated and safely no-ops on any other version, so it is off by default.
+    </div>
+  </div>
+
   <!-- Build -->
   <div class="build-section">
     <div class="build-actions">
@@ -712,6 +773,7 @@ let state = {
   commitSha: '',       // empty = latest (branch HEAD)
   commits: [],         // cached commit objects from GitHub API
   bundleType: 'raw',
+  includeAsyncioPatch: false,
   selectedPlugins: new Set(),
   plugins: [],
   version: '',
@@ -973,6 +1035,10 @@ async function fetchSourceFiles(ref, tree, selectedPluginDirs) {
     }
     if (entry.path === 'scripts/bundle_v2.py') {
       pathsToFetch.push(entry.path);
+      continue;
+    }
+    if (entry.path === 'scripts/anyio_1111_workaround.py') {
+      if (state.includeAsyncioPatch) pathsToFetch.push(entry.path);
       continue;
     }
     if (!entry.path.startsWith(packagePrefix)) continue;
@@ -1546,6 +1612,10 @@ $('#format-options').addEventListener('change', (e) => {
     state.bundleType = e.target.value;
     updateDownloadName();
   }
+});
+
+$('#asyncio-patch').addEventListener('change', (e) => {
+  state.includeAsyncioPatch = e.target.checked;
 });
 
 $('#build-btn').addEventListener('click', () => doBuild('download'));
