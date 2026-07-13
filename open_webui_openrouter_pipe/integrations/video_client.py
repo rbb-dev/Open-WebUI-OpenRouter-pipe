@@ -4,7 +4,7 @@ from typing import Any
 
 import aiohttp
 
-from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUTER_TITLE
+from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUTER_TITLE, _apply_owui_forward_user_headers
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -31,12 +31,16 @@ class OpenRouterVideoClient:
         api_key: str,
         logger: Any,
         http_referer: str | None = None,
+        user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> None:
         self._session = session
         self._base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
         self._api_key = api_key
         self._logger = logger
         self._http_referer = http_referer or _OPENROUTER_REFERER
+        self._user = user
+        self._owui_chat_id = owui_chat_id
 
     def content_url(self, job_id: str) -> str:
         return f"{self._base_url}/videos/{job_id}/content"
@@ -44,18 +48,20 @@ class OpenRouterVideoClient:
     def bearer_header(self) -> dict[str, str]:
         if not self._api_key:
             raise VideoGenerationError("OpenRouter API key is required for video generation.")
-        return {"Authorization": f"Bearer {self._api_key}"}
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        return _apply_owui_forward_user_headers(headers, self._user, self._owui_chat_id)
 
     def _headers(self) -> dict[str, str]:
         if not self._api_key:
             raise VideoGenerationError("OpenRouter API key is required for video generation.")
-        return {
+        headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "X-OpenRouter-Title": _OPENROUTER_TITLE,
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": self._http_referer,
         }
+        return _apply_owui_forward_user_headers(headers, self._user, self._owui_chat_id)
 
     async def list_models(self) -> list[dict[str, Any]]:
         url = f"{self._base_url}/videos/models"

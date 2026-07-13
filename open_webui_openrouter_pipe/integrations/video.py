@@ -399,6 +399,8 @@ class VideoGenerationAdapter:
                 api_key=self._resolve_api_key(valves),
                 logger=self.logger,
                 http_referer=_select_openrouter_http_referer(valves),
+                user=user_obj,
+                owui_chat_id=chat_id,
             )
             accepted = await client.submit(payload)
             job_id = self._extract_job_id(accepted)
@@ -549,6 +551,8 @@ class VideoGenerationAdapter:
                     api_key=self._resolve_api_key(valves),
                     logger=self.logger,
                     http_referer=_select_openrouter_http_referer(valves),
+                    user=user_obj,
+                    owui_chat_id=chat_id,
                 )
                 status_payload = await self._poll_until_terminal(client, job_id, valves, event_emitter)
                 usage = self._coerce_video_usage(status_payload.get("usage"))

@@ -22,6 +22,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 
+try:
+    from open_webui import env as _owui_env
+    from open_webui.utils.headers import (
+        include_user_info_headers as _owui_include_user_info_headers,
+    )
+except Exception:
+    _owui_env = None
+    _owui_include_user_info_headers = None
+
 LOGGER = logging.getLogger("open_webui_openrouter_pipe")
 
 # -----------------------------------------------------------------------------
@@ -2014,3 +2023,38 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
         if override.startswith(("http://", "https://")):
             return override
     return _OPENROUTER_REFERER
+
+
+def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:
+    """Stamp Open WebUI user-identity headers (and Chat-Id) on an outbound request, matching a native OWUI connection; no-op unless Open WebUI is present with ENABLE_FORWARD_USER_INFO_HEADERS set."""
+    if _owui_env is None or _owui_include_user_info_headers is None:
+        return headers
+    if not getattr(_owui_env, "ENABLE_FORWARD_USER_INFO_HEADERS", False):
+        return headers
+    if user is None or isinstance(user, dict):
+        return headers
+    try:
+        headers = _owui_include_user_info_headers(headers, user)
+        if chat_id:
+            name = getattr(_owui_env, "FORWARD_SESSION_INFO_HEADER_CHAT_ID", "X-OpenWebUI-Chat-Id")
+            headers[name] = str(chat_id)
+    except Exception:
+        return headers
+    return headers
+
+
+def _owui_forwarded_header_names() -> set[str]:
+    """Lowercased names of the headers OWUI forwarding may emit, read from OWUI's own env config (its FORWARD_*_HEADER_* constants); used to redact them from debug logs."""
+    names: set[str] = set()
+    env = _owui_env
+    if env is None:
+        return names
+    for attr in dir(env):
+        if not attr.startswith("FORWARD_") or "_HEADER_" not in attr:
+            continue
+        if attr.endswith("_SECRET") or attr.endswith("_EXPIRES_SECONDS"):
+            continue
+        val = getattr(env, attr, None)
+        if isinstance(val, str) and val.strip():
+            names.add(val.strip().lower())
+    return names

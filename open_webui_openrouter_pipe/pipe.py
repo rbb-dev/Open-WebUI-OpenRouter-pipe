@@ -2527,6 +2527,7 @@ class Pipe:
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
             session, request_body, api_key, base_url, valves=valves, workers=workers,
@@ -2535,6 +2536,7 @@ class Pipe:
             chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
             user=user,
+            owui_chat_id=owui_chat_id,
         ):
             yield event
 
@@ -2548,10 +2550,12 @@ class Pipe:
         valves: "Pipe.Valves | None" = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_chat_completions_adapter().send_openai_chat_completions_streaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
+            owui_chat_id=owui_chat_id,
         ):
             yield event
 
@@ -2565,10 +2569,12 @@ class Pipe:
         valves: "Pipe.Valves | None" = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
         return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
+            owui_chat_id=owui_chat_id,
         )
 
     async def send_openrouter_nonstreaming_request_as_events(
@@ -2582,6 +2588,7 @@ class Pipe:
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
             session,
@@ -2592,6 +2599,7 @@ class Pipe:
             endpoint_override=endpoint_override,
             breaker_key=breaker_key,
             user=user,
+            owui_chat_id=owui_chat_id,
         ):
             yield event
 
@@ -2614,6 +2622,7 @@ class Pipe:
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_chat_completions_adapter().send_openrouter_streaming_request(
             session, responses_request_body, api_key, base_url, valves=valves,
@@ -2623,6 +2632,7 @@ class Pipe:
             chunk_queue_maxsize=chunk_queue_maxsize, chunk_queue_warn_size=chunk_queue_warn_size,
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
             user=user,
+            owui_chat_id=owui_chat_id,
         ):
             yield event
 
@@ -2929,10 +2939,12 @@ class Pipe:
         valves: "Pipe.Valves | None" = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
         return await self._ensure_responses_adapter().send_openai_responses_nonstreaming_request(
             session, request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
+            owui_chat_id=owui_chat_id,
         )
 
     # ADDITIONAL HELPER METHODS (called by orchestration methods)

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
 import aiohttp
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
+from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer, _apply_owui_forward_user_headers
 from ...core.errors import OpenRouterAPIError, _build_openrouter_api_error
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
@@ -79,6 +79,7 @@ class ResponsesAdapter:
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
@@ -104,6 +105,7 @@ class ResponsesAdapter:
             request_body.get("model"),
             valves=effective_valves,
         )
+        headers = _apply_owui_forward_user_headers(headers, user, owui_chat_id)
         _maybe_apply_responses_toplevel_cache_control(request_body, valves=effective_valves)
         _debug_print_request(headers, request_body, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
@@ -457,6 +459,7 @@ class ResponsesAdapter:
         valves: Pipe.Valves | None = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> Dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -480,6 +483,7 @@ class ResponsesAdapter:
             request_params.get("model"),
             valves=effective_valves,
         )
+        headers = _apply_owui_forward_user_headers(headers, user, owui_chat_id)
         _maybe_apply_responses_toplevel_cache_control(request_params, valves=effective_valves)
         _debug_print_request(headers, request_params, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"

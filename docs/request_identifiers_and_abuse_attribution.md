@@ -70,6 +70,38 @@ Additionally, the top-level `user` field is capped at **128 characters**. If a s
 
 ---
 
+## Forwarding Open WebUI user headers to a proxy or gateway
+
+When `BASE_URL` points at a proxy or gateway — for example a **LiteLLM** instance or a PII-masking proxy — instead of OpenRouter directly, the pipe forwards Open WebUI's user-identity **HTTP headers** on every per-user request, matching what a native Open WebUI connection sends. This lets the gateway attribute traffic per user (for example LiteLLM's `user_header_mappings`, which reads request headers, not body fields).
+
+This is a **separate mechanism** from the request-body identifiers above: `SEND_END_USER_ID` writes the OpenRouter body `user` field, while header forwarding stamps HTTP headers a proxy reads. The two are independent and can be combined.
+
+### How to enable
+
+There is **no pipe valve** for this — it is governed entirely by Open WebUI's own setting. Set `ENABLE_FORWARD_USER_INFO_HEADERS=True` in the Open WebUI environment (the same flag that drives header forwarding for native connections). When set, the pipe forwards the headers; when unset (the default), it forwards nothing.
+
+The pipe inherits Open WebUI's header configuration verbatim, including custom header names (such as an `X-Amzn-Bedrock-AgentCore-Runtime-Custom-` prefix) and JWT mode. When `FORWARD_USER_INFO_HEADER_JWT_SECRET` is set, the four `X-OpenWebUI-User-*` headers collapse into one signed `X-OpenWebUI-User-Jwt`.
+
+### Headers sent
+
+| Header (default name) | Value |
+|---|---|
+| `X-OpenWebUI-User-Name` | display name (URL-encoded) |
+| `X-OpenWebUI-User-Id` | user GUID |
+| `X-OpenWebUI-User-Email` | email |
+| `X-OpenWebUI-User-Role` | role |
+| `X-OpenWebUI-Chat-Id` | current chat id |
+
+### Privacy and scope
+
+Unlike the body identifiers above (opaque GUIDs only), these headers can include the user's **name and email**, so forwarding is off by default and happens only when the operator opts in via the Open WebUI setting. When enabled, the headers reach whatever `BASE_URL` points at — including OpenRouter directly if no proxy is in use.
+
+As with any native Open WebUI connection, enabling forwarding means trusting the `BASE_URL` endpoint: like OWUI's own connections, the pipe follows HTTP redirects, so a `BASE_URL` that issues a cross-origin redirect could pass the identity headers onward. Point `BASE_URL` only at an endpoint you trust.
+
+Header forwarding applies to every per-user OpenRouter call: chat, responses, task-model requests (such as title and tag generation), image generation, and video generation (including the video content download from OpenRouter's own endpoint). It is **not** applied to infrastructure calls (model-catalog fetches, warmup pings) or to fetches of third-party media (such as remote image URLs), which must never receive user identity.
+
+---
+
 ## Pairing with encrypted session log archives (recommended)
 
 If you’re enabling request identifiers specifically for abuse attribution / incident response, consider also enabling **encrypted session log storage**.

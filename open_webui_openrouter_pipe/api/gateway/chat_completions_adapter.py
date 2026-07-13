@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
 import aiohttp
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer
+from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer, _apply_owui_forward_user_headers
 from ...core.timing_logger import timed, timing_mark
 from ...streaming.nagle_coalescer import nagle_coalesce_stream
 from ...requests.debug import (
@@ -120,6 +120,7 @@ class ChatCompletionsAdapter:
         valves: "Pipe.Valves | None" = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
@@ -148,6 +149,7 @@ class ChatCompletionsAdapter:
             chat_payload.get("model"),
             valves=effective_valves,
         )
+        headers = _apply_owui_forward_user_headers(headers, user, owui_chat_id)
         _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
@@ -645,6 +647,7 @@ class ChatCompletionsAdapter:
         valves: "Pipe.Valves | None" = None,
         breaker_key: Optional[str] = None,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -673,6 +676,7 @@ class ChatCompletionsAdapter:
             chat_payload.get("model"),
             valves=effective_valves,
         )
+        headers = _apply_owui_forward_user_headers(headers, user, owui_chat_id)
         _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
@@ -750,6 +754,7 @@ class ChatCompletionsAdapter:
         event_queue_maxsize: int = 100,
         event_queue_warn_size: int = 1000,
         user: Any = None,
+        owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Unified streaming request entrypoint with endpoint routing + fallback."""
         effective_valves = valves or self._pipe.valves
@@ -796,6 +801,7 @@ class ChatCompletionsAdapter:
                 event_queue_maxsize=event_queue_maxsize,
                 event_queue_warn_size=event_queue_warn_size,
                 user=user,
+                owui_chat_id=owui_chat_id,
             ):
                 if not responses_emitted_user_visible and not _responses_event_is_user_visible(event):
                     responses_buffer.append(event)
@@ -817,6 +823,7 @@ class ChatCompletionsAdapter:
                 valves=effective_valves,
                 breaker_key=breaker_key,
                 user=user,
+                owui_chat_id=owui_chat_id,
             ):
                 yield event
 

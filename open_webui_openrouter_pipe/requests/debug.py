@@ -23,6 +23,7 @@ def _debug_print_request(
     """Log sanitized request metadata when DEBUG logging is enabled."""
     # Late import for test compatibility (allows monkeypatching)
     from ..core.utils import _redact_payload_blobs
+    from ..core.config import _owui_forwarded_header_names
 
     if not logger.isEnabledFor(logging.DEBUG):
         return
@@ -32,6 +33,10 @@ def _debug_print_request(
         if "Authorization" in redacted_headers:
             token = redacted_headers["Authorization"]
             redacted_headers["Authorization"] = f"{token[:10]}..." if len(token) > 10 else "***"
+        forwarded = _owui_forwarded_header_names()
+        for key in list(redacted_headers):
+            if key.lower() in forwarded:
+                redacted_headers[key] = "***"
         logger.debug("OpenRouter request headers: %s", json.dumps(redacted_headers, indent=2))
         if payload is not None:
             redacted_payload = _redact_payload_blobs(payload)

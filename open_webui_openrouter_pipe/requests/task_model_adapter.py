@@ -154,6 +154,7 @@ class TaskModelAdapter:
                     base_url=valves.BASE_URL,
                     valves=valves,
                     user=user_obj,
+                    owui_chat_id=str((owui_metadata or {}).get("chat_id") or "") or None,
                 )
 
                 usage = response.get("usage") if isinstance(response, dict) else None

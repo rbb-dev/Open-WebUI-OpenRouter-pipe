@@ -1203,6 +1203,7 @@ class StreamingHandler:
                         event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
                         event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
                         user=user_obj,
+                        owui_chat_id=chat_id if isinstance(chat_id, str) else None,
                     )
                 else:
                     event_iter = self._pipe.send_openrouter_nonstreaming_request_as_events(
@@ -1214,6 +1215,7 @@ class StreamingHandler:
                         endpoint_override=endpoint_override,
                         breaker_key=user_id or None,
                         user=user_obj,
+                        owui_chat_id=chat_id if isinstance(chat_id, str) else None,
                     )
                 timing_mark("event_iteration_start")
                 first_event_logged = False

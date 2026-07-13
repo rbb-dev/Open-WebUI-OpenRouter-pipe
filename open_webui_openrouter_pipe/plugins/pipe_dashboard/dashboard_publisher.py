@@ -543,7 +543,7 @@ async def run_dashboard_publisher(
             redis_ok = bool(enabled) and client is not None
             pipe = get_pipe()
 
-            if redis_ok and pubsub is None:
+            if redis_ok and client is not None and pubsub is None:
                 try:
                     pubsub = client.pubsub()
                     await pubsub.subscribe(wake_channel)
@@ -588,7 +588,7 @@ async def run_dashboard_publisher(
 
             emitting = False
 
-            if not redis_ok:
+            if not redis_ok or client is None:
                 await asyncio.sleep(_PD_POLL_INTERVAL)
                 continue
 
