@@ -627,7 +627,7 @@ class TestPublisherLoop:
         pubsub.unsubscribe = AsyncMock()
         pubsub.close = AsyncMock()
         client = Mock()
-        client.exists = AsyncMock(return_value=0)
+        client.exists = AsyncMock(side_effect=[0, 0, asyncio.CancelledError()])
         client.pubsub = Mock(return_value=pubsub)
         client.delete = AsyncMock()
         await self._run_briefly(_make_mock_pipe, lambda: (client, True))
