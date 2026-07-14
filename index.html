@@ -433,6 +433,7 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.9em;
   }
+  .patch-notice a { color: var(--accent-hover); text-decoration: underline; }
 
   /* --- Build button --- */
   .build-section {
@@ -721,14 +722,17 @@
       <input type="checkbox" id="asyncio-patch">
       <div>
         <div class="format-label">Include asyncio hang patch (anyio #1111 workaround)</div>
-        <div class="format-desc">Backports the fix for anyio issue #1111. Left out of the bundle unless enabled.</div>
+        <div class="format-desc">Backports the anyio 4.14.2 fix. Self-activates only on anyio older than 4.14.2; left out of the bundle unless enabled.</div>
       </div>
     </label>
     <div class="patch-notice">
-      <strong>&#9888; Check your asyncio status first.</strong> This patch is only needed if your Open WebUI runs
-      <strong>anyio 4.12.1, 4.13.0 or 4.14.1</strong> &mdash; a bug in those versions can pin the event loop at
-      100% CPU on cancellation. Check your installed version with <code>pip show anyio</code>. The patch is
-      version-gated and safely no-ops on any other version, so it is off by default.
+      <strong>&#9888; This bug is fixed in anyio 4.14.2</strong> (released 2026-07-12 &mdash;
+      <a href="https://github.com/agronholm/anyio/issues/1111" target="_blank" rel="noopener">issue #1111</a>,
+      <a href="https://github.com/agronholm/anyio/pull/1217" target="_blank" rel="noopener">PR #1217</a>).
+      <strong>Upgrading anyio to &ge;&nbsp;4.14.2 is the proper fix.</strong> Only enable this patch if you are
+      stuck on an older anyio (anything below 4.14.2, e.g. 4.12.1 / 4.13.0 / 4.14.1) whose event loop can pin at
+      100% CPU on cancellation. Check your version with <code>pip show anyio</code>. The patch self-activates
+      only on anyio below 4.14.2 and no-ops on 4.14.2+, so it is off by default.
     </div>
   </div>
 
