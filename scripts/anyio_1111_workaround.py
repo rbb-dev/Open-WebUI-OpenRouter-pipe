@@ -8,12 +8,10 @@
 # suppresses the cross-task RuntimeError from anyio - the scope is left half-
 # exited with one done task lingering in _tasks, which feeds the spin.
 #
-# Upstream fix (not yet merged): anyio PRs #1138 and #1142, both proposing
-#   if task.done(): continue
-# early in CancelScope._deliver_cancellation. Issue and tracking PRs:
+# Upstream fix: anyio PR #1217 ("Fixed 100% CPU spin on cancel scope misuse",
+# Fixes #1111), released in anyio 4.14.2 on 2026-07-12.
 #   https://github.com/agronholm/anyio/issues/1111
-#   https://github.com/agronholm/anyio/pull/1138
-#   https://github.com/agronholm/anyio/pull/1142
+#   https://github.com/agronholm/anyio/pull/1217
 #
 # How this block works: at bundle exec time, before any of our pipe code runs,
 # we install a wrapper around CancelScope._deliver_cancellation. The wrapper
@@ -26,12 +24,11 @@
 # CancelScope picks up the patched method on its next invocation, so
 # already-spinning scopes recover within one tick.
 #
-# Version gating: only activates on known-buggy anyio versions. Any other
-# version stands down with a WARNING reminding you to remove this block.
+# Version gating: applies on any anyio older than the fixed release (< 4.14.2)
+# and stands down on 4.14.2 and later, which already contain the fix.
 #
-# Removal: delete this entire BEGIN..END block once anyio releases a version
-# with PR #1138 (or #1142) merged. The version gate will quietly stand down
-# before then, but the dead code should be cleaned up.
+# Removal: delete this entire BEGIN..END block once the deployment can require
+# anyio >= 4.14.2.
 # =============================================================================
 def _apply_anyio_1111_workaround() -> None:
     import logging as _logging
@@ -40,7 +37,7 @@ def _apply_anyio_1111_workaround() -> None:
 
     _log = _logging.getLogger("open_webui_openrouter_pipe.anyio_1111_workaround")
 
-    _KNOWN_BUGGY = {"4.12.1", "4.13.0", "4.14.1"}
+    _FIXED_IN = "4.14.2"
     _MARKER = "_anyio_1111_workaround_applied"
 
     if "pytest" in _sys.modules or "_pytest" in _sys.modules:
@@ -51,6 +48,34 @@ def _apply_anyio_1111_workaround() -> None:
         ver = _pkg_version("anyio")
     except PackageNotFoundError:
         _log.warning("anyio #1111 workaround not applied: anyio not installed")
+        return
+
+    def _before_fix(installed: str, fixed: str) -> bool:
+        def _nums(v: str) -> list[int]:
+            out: list[int] = []
+            for part in v.split("."):
+                digits = ""
+                for ch in part:
+                    if ch.isdigit():
+                        digits += ch
+                    else:
+                        break
+                out.append(int(digits) if digits else 0)
+            return out
+
+        a, b = _nums(installed), _nums(fixed)
+        width = max(len(a), len(b))
+        a += [0] * (width - len(a))
+        b += [0] * (width - len(b))
+        return a < b
+
+    if not _before_fix(ver, _FIXED_IN):
+        _log.debug(
+            "anyio #1111 workaround not applied: anyio %s already includes the "
+            "fix (>= %s, PR #1217)",
+            ver,
+            _FIXED_IN,
+        )
         return
 
     try:
@@ -70,17 +95,6 @@ def _apply_anyio_1111_workaround() -> None:
         _log.debug("anyio #1111 workaround already applied in this process")
         return
 
-    if ver not in _KNOWN_BUGGY:
-        _log.warning(
-            "anyio #1111 workaround not applied: installed anyio %s not in "
-            "known-buggy set %s. If anyio has shipped a fix for issue #1111 "
-            "(PR #1138 / #1142), delete the anyio #1111 workaround block in "
-            "scripts/anyio_1111_workaround.py.",
-            ver,
-            sorted(_KNOWN_BUGGY),
-        )
-        return
-
     def _patched_deliver_cancellation(self, origin):
         result = original(self, origin)
         try:
@@ -98,10 +112,12 @@ def _apply_anyio_1111_workaround() -> None:
     CancelScope._deliver_cancellation = _patched_deliver_cancellation  # type: ignore[method-assign]
 
     _log.warning(
-        "anyio #1111 workaround APPLIED for anyio %s (backport of upstream "
-        "PR #1138 / #1142). Remove the workaround block in "
-        "scripts/anyio_1111_workaround.py once anyio releases a fixed version.",
+        "anyio #1111 workaround APPLIED for anyio %s. Fixed upstream in anyio "
+        "%s (PR #1217) - upgrade anyio to >= %s and delete the workaround block "
+        "in scripts/anyio_1111_workaround.py.",
         ver,
+        _FIXED_IN,
+        _FIXED_IN,
     )
 
 
