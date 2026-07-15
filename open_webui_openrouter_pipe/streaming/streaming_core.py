@@ -464,6 +464,7 @@ class StreamingHandler:
         streamed_tool_call_ids: set[str] = set()
         streamed_tool_call_indices: dict[str, int] = {}
         tool_call_names: dict[str, str] = {}
+        tool_call_item_ids: dict[str, str] = {}
         streamed_tool_call_args: dict[str, str] = {}
         streamed_tool_call_name_sent: set[str] = set()
         emitted_tool_call_items: set[str] = set()
@@ -1413,7 +1414,9 @@ class StreamingHandler:
                         "response.function_call_arguments.done",
                     }:
                         try:
-                            raw_call_id = event.get("item_id") or event.get("call_id") or event.get("id")
+                            raw_item_id = event.get("item_id")
+                            item_id = raw_item_id.strip() if isinstance(raw_item_id, str) else ""
+                            raw_call_id = tool_call_item_ids.get(item_id) or event.get("call_id") or item_id or event.get("id")
                             call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
                             if not call_id:
                                 continue
@@ -1627,9 +1630,13 @@ class StreamingHandler:
                         if owui_tool_passthrough and item_type == "function_call":
                             raw_call_id = item.get("call_id") or item.get("id")
                             call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
+                            raw_item_id = item.get("id")
+                            item_id = raw_item_id.strip() if isinstance(raw_item_id, str) else ""
                             raw_name = item.get("name")
                             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
                             if call_id:
+                                if item_id:
+                                    tool_call_item_ids[item_id] = call_id
                                 streamed_tool_call_indices.setdefault(
                                     call_id, len(streamed_tool_call_indices)
                                 )
