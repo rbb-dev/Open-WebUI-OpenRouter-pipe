@@ -66,6 +66,31 @@ def _collect_events_of_type(emitted: list[dict], event_type: str) -> list[dict]:
     return [e for e in emitted if e.get("type") == event_type]
 
 
+def _native_reasoning_items(emitted: list[dict]) -> list[dict]:
+    """Collect native reasoning output items from emitted events.
+
+    Under the native-emission contract, each reasoning block surfaces as exactly
+    one ``response.output_item.added`` event whose ``item.type == "reasoning"``.
+    """
+    items: list[dict] = []
+    for e in emitted:
+        if e.get("type") == "response.output_item.added":
+            item = e.get("item") or {}
+            if item.get("type") == "reasoning":
+                items.append(item)
+    return items
+
+
+def _native_reasoning_text(emitted: list[dict]) -> str:
+    """Concatenate the summary text of all native reasoning items."""
+    texts: list[str] = []
+    for item in _native_reasoning_items(emitted):
+        for part in item.get("summary") or []:
+            if isinstance(part, dict):
+                texts.append(str(part.get("text", "")))
+    return "".join(texts)
+
+
 # =============================================================================
 # StreamingHandler Initialization Tests
 # =============================================================================
@@ -1850,10 +1875,11 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
+        items = _native_reasoning_items(emitted)
         status_events = _collect_events_of_type(emitted, "status")
 
-        assert reasoning_deltas, "Expected reasoning:delta in 'both' mode"
+        assert items, "Expected a native reasoning box in 'both' mode"
+        assert "Analyzing" in _native_reasoning_text(emitted), "Expected reasoning text in the native box"
         status_texts = [e.get("data", {}).get("description", "") for e in status_events]
         assert any("Analyzing" in t for t in status_texts), "Expected reasoning in status"
 
@@ -1893,8 +1919,9 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert reasoning_deltas, "Expected reasoning:delta from content_part.done"
+        items = _native_reasoning_items(emitted)
+        assert items, "Expected a native reasoning box from content_part.done"
+        assert "Deep thoughts" in _native_reasoning_text(emitted)
 
     @pytest.mark.asyncio
     async def test_streaming_loop_reasoning_output_item_done_with_summary(self, monkeypatch, pipe_instance_async):
@@ -1934,8 +1961,10 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_completed = _collect_events_of_type(emitted, "reasoning:completed")
-        assert reasoning_completed, "Expected reasoning:completed"
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1, "Expected exactly one completed native reasoning item"
+        assert items[0].get("status") == "completed"
+        assert "Summary of thoughts" in _native_reasoning_text(emitted)
 
     @pytest.mark.asyncio
     async def test_streaming_loop_thinking_status_only_mode(self, monkeypatch, pipe_instance_async):
@@ -2130,8 +2159,9 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1, "Cumulative snapshots must dedup into one box"
+        assert _native_reasoning_text(emitted) == "First second third"
 
     @pytest.mark.asyncio
     async def test_reasoning_buffer_misaligned_text(self, monkeypatch, pipe_instance_async):
@@ -2163,8 +2193,9 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1, "Misaligned deltas concatenate into one box"
+        assert _native_reasoning_text(emitted) == "HelloWorld"
 
     @pytest.mark.asyncio
     async def test_reasoning_summary_text_done_with_title(self, monkeypatch, pipe_instance_async):
@@ -2265,8 +2296,9 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert any("Actual thought" in e.get("data", {}).get("content", "") for e in reasoning_deltas)
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1, "Empty delta must not create a separate box"
+        assert _native_reasoning_text(emitted) == "Actual thought"
 
     @pytest.mark.asyncio
     async def test_extract_reasoning_from_part_content_list(self, monkeypatch, pipe_instance_async):
@@ -2308,8 +2340,9 @@ class TestReasoningThinking:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1
+        assert _native_reasoning_text(emitted) == "First part second partthird part"
 
     @pytest.mark.asyncio
     async def test_thinking_tasks_delayed_status(self, monkeypatch, pipe_instance_async):
@@ -4397,8 +4430,12 @@ class TestAdaptiveToolBudgeting:
 
     @pytest.mark.asyncio
     async def test_pipeline_tool_reasoning_timing_boundary_emitted(self, monkeypatch, pipe_instance_async):
-        """Pipeline tool mode emits an OWUI timing boundary after tool execution when reasoning was streamed."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
+        """Pipeline tool mode never emits the retired timing-boundary space marker,
+        even when reasoning streamed before the tool call."""
+        from open_webui_openrouter_pipe.streaming import streaming_core as streaming_core_module
+
+        # The reasoning timing-boundary marker constant is retired entirely.
+        assert not hasattr(streaming_core_module, "OWUI_REASONING_TIMING_BOUNDARY_MARKER")
 
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
@@ -4462,9 +4499,6 @@ class TestAdaptiveToolBudgeting:
 
         async def emitter(event):
             emitted.append(event)
-            if event.get("type") == "chat:message:delta":
-                if event.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER:
-                    order.append("timing_boundary")
             if event.get("type") == "response.output_item.added":
                 order.append("output_item_added")
 
@@ -4478,26 +4512,23 @@ class TestAdaptiveToolBudgeting:
             user_id="user-123",
         )
 
-        boundary_deltas = [
-            e
+        # The retired timing-marker space delta must never be emitted.
+        assert not any(
+            e.get("type") == "chat:message:delta"
+            and e.get("data", {}).get("content") == " "
             for e in emitted
-            if e.get("type") == "chat:message:delta"
-            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
-        ]
-        assert len(boundary_deltas) == 1
+        )
+        # The reasoning streamed before the tool call still surfaces as a native
+        # reasoning box, and tool execution still happened.
+        assert _native_reasoning_text(emitted) == "Thinking about the right tool."
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         assert output_items
         assert "tool_execute_done" in order
-        assert "timing_boundary" in order
         assert "output_item_added" in order
-        assert order.index("timing_boundary") < order.index("output_item_added")
-        assert order.index("timing_boundary") < order.index("tool_execute_done")
 
     @pytest.mark.asyncio
     async def test_pipeline_tool_reasoning_timing_boundary_not_emitted_without_reasoning(self, monkeypatch, pipe_instance_async):
-        """No OWUI timing boundary is emitted when the tool loop has no reasoning text."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
-
+        """No timing-boundary space marker is emitted when the tool loop has no reasoning text."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(
@@ -4563,15 +4594,13 @@ class TestAdaptiveToolBudgeting:
 
         assert not any(
             e.get("type") == "chat:message:delta"
-            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
+            and e.get("data", {}).get("content") == " "
             for e in emitted
         )
 
     @pytest.mark.asyncio
     async def test_open_webui_mode_no_pipeline_timing_boundary(self, monkeypatch, pipe_instance_async):
-        """Open-WebUI tool mode must never emit the pipeline timing boundary marker."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import OWUI_REASONING_TIMING_BOUNDARY_MARKER
-
+        """Open-WebUI tool mode must never emit the retired timing-boundary space marker."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(
@@ -4619,7 +4648,7 @@ class TestAdaptiveToolBudgeting:
 
         assert not any(
             e.get("type") == "chat:message:delta"
-            and e.get("data", {}).get("content") == OWUI_REASONING_TIMING_BOUNDARY_MARKER
+            and e.get("data", {}).get("content") == " "
             for e in emitted
         )
 
@@ -5297,11 +5326,12 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
 
 @pytest.mark.asyncio
 async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pipe_instance_async):
-    """Test that reasoning events are emitted in open_webui mode.
+    """Test that reasoning surfaces as a native output item in open_webui mode.
 
-    When THINKING_OUTPUT_MODE is "open_webui" (default), reasoning events
-    are emitted as reasoning:delta and reasoning:completed events for the
-    Open WebUI thinking box feature.
+    When THINKING_OUTPUT_MODE is "open_webui" (default), each reasoning block is
+    emitted as exactly one native ``response.output_item.added`` reasoning item
+    (the seam forwards it verbatim to the outward stream) rather than as legacy
+    reasoning:delta / reasoning:completed events.
     """
     pipe = pipe_instance_async
     body = ResponsesBody(
@@ -5346,21 +5376,29 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
 
     assert output == "Hello"
 
-    # In open_webui mode, reasoning events should be emitted as reasoning:delta
-    reasoning_deltas = [
-        item
-        for item in emitted
-        if isinstance(item, dict) and item.get("type") == "reasoning:delta"
-    ]
-    assert reasoning_deltas, "Expected reasoning:delta events in open_webui mode"
+    # In open_webui mode, reasoning surfaces as a native reasoning output item
+    # (the seam forwards it verbatim to the outward stream).
+    items = _native_reasoning_items(emitted)
+    assert items, "Expected a native reasoning output item in open_webui mode"
+    assert all(item.get("status") == "completed" for item in items)
 
-    # Verify reasoning content contains expected text
-    reasoning_text = "".join(
-        item.get("data", {}).get("delta", "")
-        for item in reasoning_deltas
+    # The reasoning streamed before the answer is captured in the box. The box
+    # closes at the first answer delta, so the post-answer "Late reasoning."
+    # delta is not surfaced under the append-only native contract.
+    assert _native_reasoning_text(emitted) == "Analysing..."
+
+    # The reasoning box is emitted before the "Hello" answer delta.
+    native_idx = next(
+        i for i, e in enumerate(emitted)
+        if e.get("type") == "response.output_item.added"
+        and (e.get("item") or {}).get("type") == "reasoning"
     )
-    assert "Analysing" in reasoning_text, f"Expected 'Analysing' in reasoning deltas, got: {reasoning_text}"
-    assert "Late reasoning" in reasoning_text, f"Expected 'Late reasoning' in reasoning deltas, got: {reasoning_text}"
+    answer_idx = next(
+        i for i, e in enumerate(emitted)
+        if e.get("type") == "chat:message:delta"
+        and (e.get("data") or {}).get("content") == "Hello"
+    )
+    assert native_idx < answer_idx, "reasoning box must precede the answer delta"
 
     # Verify regular content message exists (using chat:message:delta for streaming)
     chat_deltas = [
@@ -5373,11 +5411,9 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
         for item in chat_deltas
     ), "Expected chat:message with 'Hello'"
 
-    # Verify reasoning:completed event is emitted at the end
-    assert any(
-        isinstance(item, dict) and item.get("type") == "reasoning:completed"
-        for item in emitted
-    ), "Expected reasoning:completed event"
+    # Legacy reasoning:delta / reasoning:completed events are retired.
+    assert not any(item.get("type") == "reasoning:delta" for item in emitted)
+    assert not any(item.get("type") == "reasoning:completed" for item in emitted)
 
     # Verify reasoning is NOT in status messages (that's "status" mode behavior)
     status_msgs = [
@@ -5428,7 +5464,8 @@ async def test_thinking_output_mode_open_webui_suppresses_thinking_status(monkey
         user_id="user-123",
     )
 
-    assert any(event.get("type") == "reasoning:delta" for event in emitted)
+    assert _native_reasoning_items(emitted), "reasoning must surface as a native box in open_webui mode"
+    assert "Building a plan" in _native_reasoning_text(emitted)
     status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
     assert any("Thinking" in text for text in status_texts)
     assert not any("Building a plan" in text for text in status_texts)
@@ -5512,8 +5549,10 @@ async def test_reasoning_summary_only_streams_to_reasoning_box_in_open_webui_mod
         user_id="user-123",
     )
 
-    assert any(event.get("type") == "reasoning:delta" for event in emitted)
-    assert any(event.get("type") == "reasoning:completed" for event in emitted)
+    items = _native_reasoning_items(emitted)
+    assert len(items) == 1, "summary-only reasoning surfaces as exactly one native box"
+    assert items[0].get("status") == "completed"
+    assert "Summary only" in _native_reasoning_text(emitted)
     status_texts = [event.get("data", {}).get("description", "") for event in emitted if event.get("type") == "status"]
     assert any("Thinking" in text for text in status_texts)
     assert not any("Summary only" in text for text in status_texts)
@@ -5581,8 +5620,9 @@ async def test_reasoning_summary_part_done_does_not_replay_after_incremental(mon
         user_id="user-123",
     )
 
-    deltas = [event for event in emitted if event.get("type") == "reasoning:delta"]
-    assert [event.get("data", {}).get("delta") for event in deltas] == ["Hello"]
+    items = _native_reasoning_items(emitted)
+    assert len(items) == 1, "same-id delta-then-done must yield exactly one native box"
+    assert _native_reasoning_text(emitted) == "Hello"
 
 
 @pytest.mark.asyncio
@@ -5651,8 +5691,9 @@ async def test_reasoning_done_snapshots_do_not_replay_after_delta(monkeypatch, p
         user_id="user-123",
     )
 
-    deltas = [event for event in emitted if event.get("type") == "reasoning:delta"]
-    assert [event.get("data", {}).get("delta") for event in deltas] == ["Step 1."]
+    items = _native_reasoning_items(emitted)
+    assert len(items) == 1, "same-id delta-then-done must yield exactly one native box"
+    assert _native_reasoning_text(emitted) == "Step 1."
 
 
 @pytest.mark.asyncio
@@ -6492,8 +6533,9 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert result == "Done."
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1
+        assert _native_reasoning_text(emitted) == "Valid thought"
 
     @pytest.mark.asyncio
     async def test_extract_reasoning_from_item_non_dict(self, monkeypatch, pipe_instance_async):
@@ -6558,8 +6600,9 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        reasoning_deltas = _collect_events_of_type(emitted, "reasoning:delta")
-        assert any("Real thought" in str(e) for e in reasoning_deltas)
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1, "empty candidate must not create a separate box"
+        assert _native_reasoning_text(emitted) == "Real thought"
 
     @pytest.mark.asyncio
     async def test_append_reasoning_current_starts_with_candidate(self, monkeypatch, pipe_instance_async):
@@ -8479,8 +8522,9 @@ class TestExtractReasoningTextNonDict:
         )
 
         assert result == "Done."
-        reasoning_deltas = [e for e in emitted if e.get("type") == "reasoning:delta"]
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1
+        assert _native_reasoning_text(emitted) == "Thinking..."
 
 
 class TestExtractReasoningTextFromItemNonDict:
@@ -8559,8 +8603,9 @@ class TestAppendReasoningTextEmpty:
         )
 
         assert result == "Done."
-        reasoning_deltas = [e for e in emitted if e.get("type") == "reasoning:delta"]
-        assert reasoning_deltas
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1
+        assert _native_reasoning_text(emitted) == "Thinking..."
 
 
 class TestThinkingTasksDelayedStatus:
@@ -9351,6 +9396,7 @@ class TestPhaseMarkerPersistence:
         assert [event.get("item", {}).get("type") for event in added_events] == [
             "function_call",
             "function_call_output",
+            "reasoning",
         ]
         assert chat_deltas[-2:] == ["Done.", "\n\n[P:final_answer]: #\n"]
         assert result.endswith("\n\n[P:final_answer]: #\n")
@@ -11046,9 +11092,10 @@ class TestExtractReasoningFromNonDictEvent:
         )
 
         assert result == "Answer"
-        # Should have reasoning deltas
-        reasoning_events = [e for e in emitted if e.get("type") == "reasoning:delta"]
-        assert reasoning_events
+        # Should have a native reasoning box
+        items = _native_reasoning_items(emitted)
+        assert len(items) == 1
+        assert _native_reasoning_text(emitted) == "Thinking..."
 
 
 class TestEmptyReasoningDelta:

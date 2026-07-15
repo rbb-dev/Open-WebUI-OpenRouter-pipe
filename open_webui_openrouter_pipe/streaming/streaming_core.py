@@ -129,9 +129,7 @@ except (TypeError, ValueError):
 # Import our transform function for Responses API → Chat Completions conversion
 from ..api.transforms import _responses_input_to_chat_messages
 
-# Single-space sentinel: truthy/non-empty (closes OWUI reasoning timing), but stripped
-# by OWUI content serialization so it does not create persistent visible artifacts.
-OWUI_REASONING_TIMING_BOUNDARY_MARKER = " "
+_monotonic = time.monotonic
 
 
 def _citation_host(url: str) -> str:
@@ -508,14 +506,11 @@ class StreamingHandler:
             "awaiting": [],
         }
         total_usage: dict[str, Any] = {}
-        reasoning_buffer = ""
-        reasoning_completed_emitted = False
         reasoning_stream_active = False
-        reasoning_since_timing_boundary = False
         active_reasoning_item_id: str | None = None
         reasoning_stream_buffers: dict[str, str] = {}
-        reasoning_stream_has_incremental: set[str] = set()
         reasoning_stream_completed: set[str] = set()
+        reasoning_display: dict[str, dict[str, Any]] = {}
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
         citation_excerpt_max = 1000
@@ -946,7 +941,6 @@ class StreamingHandler:
 
         def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
             """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
-            nonlocal reasoning_buffer
             candidate = (incoming or "")
             if not candidate:
                 return ""
@@ -964,8 +958,58 @@ class StreamingHandler:
                 append = candidate if allow_misaligned else ""
             if append:
                 reasoning_stream_buffers[key] = f"{current}{append}"
-                reasoning_buffer += append
             return append
+
+        def _reasoning_display_state(key: str) -> dict[str, Any]:
+            state = reasoning_display.get(key)
+            if state is None:
+                state = {
+                    "wall_open": time.time(),
+                    "mono_open": _monotonic(),
+                    "mono_close": None,
+                    "emitted": False,
+                }
+                reasoning_display[key] = state
+            return state
+
+        def _close_open_reasoning_windows() -> None:
+            now = _monotonic()
+            for state in reasoning_display.values():
+                if not state["emitted"] and state["mono_close"] is None:
+                    state["mono_close"] = now
+
+        async def _emit_reasoning_item(key: str) -> None:
+            nonlocal emitted_response_output_items
+            if event_emitter is None or not thinking_box_enabled:
+                return
+            if key in reasoning_stream_completed:
+                return
+            text = reasoning_stream_buffers.get(key, "")
+            if not text.strip():
+                return
+            state = _reasoning_display_state(key)
+            if state["emitted"]:
+                return
+            mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
+            duration = max(0.1, round(mono_end - state["mono_open"], 1))
+            item_id = key if key != "__reasoning__" else f"rs-{uuid.uuid4().hex}"
+            state["emitted"] = True
+            reasoning_stream_completed.add(key)
+            emitted_response_output_items = True
+            await event_emitter(
+                {
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "reasoning",
+                        "id": item_id,
+                        "summary": [{"type": "summary_text", "text": text}],
+                        "status": "completed",
+                        "started_at": state["wall_open"],
+                        "ended_at": time.time(),
+                        "duration": duration,
+                    },
+                }
+            )
 
         @timed
         async def _flush_pending(reason: str) -> None:
@@ -1053,29 +1097,6 @@ class StreamingHandler:
             if marker_delta and body.stream and event_emitter:
                 await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
 
-        async def _emit_reasoning_timing_boundary(loop_index: int) -> None:
-            """Emit an OWUI-compatible text boundary so reasoning duration closes after tool latency."""
-            nonlocal reasoning_since_timing_boundary
-            if (
-                not body.stream
-                or (event_emitter is None)
-                or (not thinking_box_enabled)
-                or owui_tool_passthrough
-                or (not reasoning_since_timing_boundary)
-            ):
-                return
-            await event_emitter(
-                {
-                    "type": "chat:message:delta",
-                    "data": {"content": OWUI_REASONING_TIMING_BOUNDARY_MARKER},
-                }
-            )
-            reasoning_since_timing_boundary = False
-            self.logger.debug(
-                "Emitted OWUI reasoning timing boundary (loop_index=%d)",
-                loop_index,
-            )
-
         def _extract_call_id(item: Any) -> str:
             """Best-effort call_id extraction for tool call/output items."""
             if not isinstance(item, dict):
@@ -1153,6 +1174,13 @@ class StreamingHandler:
 
                 if loop_index > 0:
                     retry_barrier_crossed = True
+                    _close_open_reasoning_windows()
+                    for reasoning_key in list(reasoning_display):
+                        await _emit_reasoning_item(reasoning_key)
+                    active_reasoning_item_id = None
+                    reasoning_stream_buffers.pop("__reasoning__", None)
+                    reasoning_stream_completed.discard("__reasoning__")
+                    reasoning_display.pop("__reasoning__", None)
                 final_response: dict[str, Any] | None = None
                 _sanitize_request_input(self._pipe, body)
                 api_model_override = getattr(body, "api_model", None)
@@ -1245,8 +1273,10 @@ class StreamingHandler:
                             item = item_raw if isinstance(item_raw, dict) else {}
                             if item.get("type") == "reasoning":
                                 iid = item.get("id")
-                                if isinstance(iid, str) and iid:
-                                    active_reasoning_item_id = iid
+                                if not (isinstance(iid, str) and iid):
+                                    iid = f"rs-{uuid.uuid4().hex}"
+                                active_reasoning_item_id = iid
+                                _reasoning_display_state(iid)
 
                         is_reasoning_event = (
                             etype.startswith("response.reasoning")
@@ -1270,8 +1300,6 @@ class StreamingHandler:
 
                             delta_text = _extract_reasoning_text(event)
                             normalized_delta = _normalize_surrogate_chunk(delta_text, "reasoning") if delta_text else ""
-                            if normalized_delta and is_incremental:
-                                reasoning_stream_has_incremental.add(key)
 
                             append = ""
                             if normalized_delta:
@@ -1281,39 +1309,12 @@ class StreamingHandler:
                                     allow_misaligned=is_incremental,
                                 )
                             if append:
-                                reasoning_since_timing_boundary = True
                                 note_generation_activity()
-
-                                if event_emitter and thinking_box_enabled:
-                                    await event_emitter(
-                                        {
-                                            "type": "reasoning:delta",
-                                            "data": {
-                                                "content": reasoning_buffer,
-                                                "delta": append,
-                                                "event": etype,
-                                            },
-                                        }
-                                    )
-
+                                display_state = _reasoning_display_state(key)
+                                display_state["mono_close"] = None
                                 await _maybe_emit_reasoning_status(append)
-                            if is_final:
-                                if event_emitter:
-                                    await _maybe_emit_reasoning_status("", force=True)
-
-                                    if (
-                                        thinking_box_enabled
-                                        and reasoning_stream_buffers.get(key)
-                                        and key not in reasoning_stream_completed
-                                    ):
-                                        await event_emitter(
-                                            {
-                                                "type": "reasoning:completed",
-                                                "data": {"content": reasoning_buffer},
-                                            }
-                                        )
-                                        reasoning_stream_completed.add(key)
-                                        reasoning_completed_emitted = True
+                            if is_final and event_emitter:
+                                await _maybe_emit_reasoning_status("", force=True)
                             continue
 
                     if fusion_armed and fusion_state is not None and etype and (
@@ -1373,6 +1374,10 @@ class StreamingHandler:
                     # --- Emit partial delta assistant message
                     if etype == "response.output_text.delta":
                         note_model_activity()  # Cancel thinking tasks when actual output starts
+                        if reasoning_display:
+                            _close_open_reasoning_windows()
+                            for reasoning_key in list(reasoning_display):
+                                await _emit_reasoning_item(reasoning_key)
                         delta = event.get("delta") or ""
                         normalized_delta = _normalize_surrogate_chunk(delta, "assistant") if delta else ""
                         if normalized_delta:
@@ -1518,7 +1523,7 @@ class StreamingHandler:
                             if event_emitter:
                                 note_model_activity()
                                 key = _reasoning_stream_key(event, etype)
-                                if thinking_box_enabled and not reasoning_stream_buffers.get(key):
+                                if thinking_box_enabled:
                                     normalized_summary = (
                                         _normalize_surrogate_chunk(summary, "reasoning") if summary else ""
                                     )
@@ -1530,32 +1535,10 @@ class StreamingHandler:
                                             allow_misaligned=False,
                                         )
                                     if append:
-                                        reasoning_since_timing_boundary = True
                                         note_generation_activity()
                                         reasoning_stream_active = True
-                                        await event_emitter(
-                                            {
-                                                "type": "reasoning:delta",
-                                                "data": {
-                                                    "content": reasoning_buffer,
-                                                    "delta": append,
-                                                    "event": etype,
-                                                },
-                                            }
-                                        )
-                                    if (
-                                        key not in reasoning_stream_completed
-                                        and thinking_box_enabled
-                                        and reasoning_stream_buffers.get(key)
-                                    ):
-                                        await event_emitter(
-                                            {
-                                                "type": "reasoning:completed",
-                                                "data": {"content": reasoning_buffer},
-                                            }
-                                        )
-                                        reasoning_stream_completed.add(key)
-                                        reasoning_completed_emitted = True
+                                        display_state = _reasoning_display_state(key)
+                                        display_state["mono_close"] = None
                                 if thinking_status_enabled:
                                     cancel_thinking()
                                     await event_emitter(
@@ -1608,6 +1591,9 @@ class StreamingHandler:
                         item = item_raw if isinstance(item_raw, dict) else {}
                         item_type = item.get("type", "")
                         item_status = item.get("status", "")
+
+                        if item_type and item_type != "reasoning" and reasoning_display:
+                            _close_open_reasoning_windows()
 
                         if item_type == "reasoning":
                             iid = item.get("id")
@@ -2049,35 +2035,12 @@ class StreamingHandler:
                                     allow_misaligned=False,
                                 )
                             if append:
-                                reasoning_since_timing_boundary = True
-                            if append and event_emitter and thinking_box_enabled:
                                 reasoning_stream_active = True
                                 note_model_activity()
                                 note_generation_activity()
-                                await event_emitter(
-                                    {
-                                        "type": "reasoning:delta",
-                                        "data": {
-                                            "content": reasoning_buffer,
-                                            "delta": append,
-                                            "event": etype,
-                                        },
-                                    }
-                                )
-                            if (
-                                event_emitter
-                                and thinking_box_enabled
-                                and reasoning_stream_buffers.get(key)
-                                and key not in reasoning_stream_completed
-                            ):
-                                await event_emitter(
-                                    {
-                                        "type": "reasoning:completed",
-                                        "data": {"content": reasoning_buffer},
-                                    }
-                                )
-                                reasoning_stream_completed.add(key)
-                                reasoning_completed_emitted = True
+                                await _maybe_emit_reasoning_status(append)
+                                await _maybe_emit_reasoning_status("", force=True)
+                            await _emit_reasoning_item(key)
 
                         # Log the status with prepared title and detailed content instead of emitting it
                         if title:
@@ -2101,6 +2064,8 @@ class StreamingHandler:
 
                     # --- Capture final response payload for this loop
                     if etype in ("response.completed", "response.done"):
+                        if reasoning_display:
+                            _close_open_reasoning_windows()
                         if fusion_armed and fusion_state is not None:
                             _fusion_resp = event.get("response")
                             if isinstance(_fusion_resp, dict) and "elapsed_seconds" not in _fusion_resp:
@@ -2543,7 +2508,6 @@ class StreamingHandler:
                                 )
                         else:
                             if show_tool_cards and event_emitter and body.stream:
-                                await _emit_reasoning_timing_boundary(loop_index)
                                 try:
                                     for call in call_items:
                                         call_id = _extract_call_id(call)
@@ -2609,9 +2573,6 @@ class StreamingHandler:
                             finally:
                                 if _tool_ctx and _tool_ctx.on_complete is not None:
                                     _tool_ctx.on_complete = None
-
-                        if loop_limit_reached or not show_tool_cards or not event_emitter or not body.stream:
-                            await _emit_reasoning_timing_boundary(loop_index)
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
                         omitted_call_ids = apply_live_tool_output_budget(
@@ -2919,23 +2880,12 @@ class StreamingHandler:
             for t in thinking_tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
-            if (
-                reasoning_buffer
-                and reasoning_stream_active
-                and not reasoning_completed_emitted
-                and event_emitter
-                and thinking_box_enabled
-            ):
-                try:
-                    await event_emitter(
-                        {
-                            "type": "reasoning:completed",
-                            "data": {"content": reasoning_buffer},
-                        }
-                    )
-                except Exception as exc:
-                    self.logger.error("Failed to emit reasoning:completed in finally: %s", exc)
-                reasoning_completed_emitted = True
+            if event_emitter and thinking_box_enabled:
+                for reasoning_key in list(reasoning_display):
+                    try:
+                        await _emit_reasoning_item(reasoning_key)
+                    except Exception as exc:
+                        self.logger.error("Failed to emit trailing reasoning item: %s", exc)
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 

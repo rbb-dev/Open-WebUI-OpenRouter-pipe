@@ -254,20 +254,21 @@ def _install_open_webui_stubs() -> None:
     def _openai_chat_chunk_message_template(
         model: str,
         content: str | None = None,
-        reasoning_content: str | None = None,
+        _reasoning_unused: str | None = None,
         tool_calls: list[dict] | None = None,
         usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Mirrors the pipe's ignore-3rd contract: the former reasoning slot is
+        # accepted positionally for OWUI signature parity but never placed in the
+        # chunk delta (reasoning flows via native output items, not chunk deltas).
         template = _openai_chat_message_template(model)
         template["object"] = "chat.completion.chunk"
         template["choices"][0]["delta"] = {}
         if content:
             template["choices"][0]["delta"]["content"] = content
-        if reasoning_content:
-            template["choices"][0]["delta"]["reasoning_content"] = reasoning_content
         if tool_calls:
             template["choices"][0]["delta"]["tool_calls"] = tool_calls
-        if not content and not reasoning_content and not tool_calls:
+        if not content and not tool_calls:
             template["choices"][0]["finish_reason"] = "stop"
         if usage:
             template["usage"] = usage

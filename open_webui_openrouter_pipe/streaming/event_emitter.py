@@ -12,7 +12,6 @@ import json
 import secrets
 import time
 from typing import Any, Optional, Awaitable, Callable, Dict, Literal, Protocol, TYPE_CHECKING
-from .constants import ReasoningStatusThrottle
 from ..core.utils import _render_error_template
 from ..core.logging_system import SessionLogger
 
@@ -29,7 +28,7 @@ _owui_template_cached: Optional[Callable[..., dict[str, Any]]] = None
 def _stub_chat_chunk_template(
     model: str,
     content: Optional[str] = None,
-    reasoning_content: Optional[str] = None,
+    _reasoning_unused: Optional[str] = None,
     tool_calls: Optional[list[dict[str, Any]]] = None,
     usage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -48,8 +47,6 @@ def _stub_chat_chunk_template(
 
     if content:
         chunk["choices"][0]["delta"]["content"] = content
-    if reasoning_content:
-        chunk["choices"][0]["delta"]["reasoning_content"] = reasoning_content
     if tool_calls:
         chunk["choices"][0]["delta"]["tool_calls"] = tool_calls
     if usage:
@@ -63,7 +60,7 @@ class _OpenAIChatChunkTemplate(Protocol):
         self,
         model: str,
         content: Optional[str] = None,
-        reasoning_content: Optional[str] = None,
+        _reasoning_unused: Optional[str] = None,
         tool_calls: Optional[list[dict[str, Any]]] = None,
         usage: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
@@ -73,7 +70,7 @@ class _OpenAIChatChunkTemplate(Protocol):
 def openai_chat_chunk_message_template(
     model: str,
     content: Optional[str] = None,
-    reasoning_content: Optional[str] = None,
+    _reasoning_unused: Optional[str] = None,
     tool_calls: Optional[list[dict[str, Any]]] = None,
     usage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -85,7 +82,7 @@ def openai_chat_chunk_message_template(
             _owui_template_cached = _real_template
         except ImportError:
             _owui_template_cached = _stub_chat_chunk_template
-    return _owui_template_cached(model, content, reasoning_content, tool_calls, usage)
+    return _owui_template_cached(model, content, None, tool_calls, usage)
 
 
 
@@ -564,7 +561,8 @@ class EventEmitterHandler:
         via a top-level ``event`` key. This adapter ensures:
 
         - assistant deltas become ``delta.content`` chunks
-        - reasoning traces become ``delta.reasoning_content`` chunks
+        - ``response.*`` events (native output items, incl. reasoning) pass
+          through as raw SSE payloads for OWUI's serialize_output
         - status/citation/notification/etc are forwarded via ``{"event": ...}``
         """
 
@@ -577,25 +575,6 @@ class EventEmitterHandler:
 
         assistant_sent = ""
         answer_started = False
-
-        thinking_mode = job.valves.THINKING_OUTPUT_MODE
-        thinking_box_enabled = thinking_mode in {"open_webui", "both"}
-        thinking_status_enabled = thinking_mode in {"status", "both"}
-        reasoning_throttle = ReasoningStatusThrottle()
-
-        async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
-            """Emit status updates for late-arriving reasoning without spamming the UI."""
-            text = reasoning_throttle.feed(delta_text, force=force)
-            if text:
-                await self._put_middleware_stream_item(
-                    job, stream_queue,
-                    {"event": {"type": "status", "data": {"description": text, "done": False}}}
-                )
-
-        async def _flush_reasoning_status() -> None:
-            """Flush any buffered reasoning status before stream completion."""
-            if thinking_status_enabled and reasoning_throttle.pending:
-                await _maybe_emit_reasoning_status("", force=True)
 
         async def _emit(event: dict[str, Any]) -> None:
             nonlocal assistant_sent, answer_started
@@ -633,8 +612,6 @@ class EventEmitterHandler:
                     # handler syncs assistant_sent without emitting to the stream.
                 if isinstance(delta_text, str) and delta_text:
                     answer_started = True
-                    if thinking_status_enabled and reasoning_throttle.pending:
-                        await _maybe_emit_reasoning_status("", force=True)
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,
@@ -648,8 +625,6 @@ class EventEmitterHandler:
                 if isinstance(delta_text, str) and delta_text:
                     assistant_sent = assistant_sent + delta_text
                     answer_started = True
-                    if thinking_status_enabled and reasoning_throttle.pending:
-                        await _maybe_emit_reasoning_status("", force=True)
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,
@@ -695,31 +670,7 @@ class EventEmitterHandler:
                     )
                 return
 
-            if etype == "reasoning:delta":
-                delta = data.get("delta")
-                if isinstance(delta, str) and delta:
-                    if thinking_box_enabled:
-                        await self._put_middleware_stream_item(
-                            job,
-                            stream_queue,
-                            openai_chat_chunk_message_template(
-                                model_id,
-                                reasoning_content=delta,
-                            ),
-                        )
-                    if thinking_status_enabled:
-                        await _maybe_emit_reasoning_status(delta)
-                return
-
-            if etype == "reasoning:completed":
-                if thinking_status_enabled and reasoning_throttle.pending:
-                    await _maybe_emit_reasoning_status("", force=True)
-                return
-
             if etype == "chat:completion":
-                if thinking_status_enabled and reasoning_throttle.pending:
-                    await _maybe_emit_reasoning_status("", force=True)
-
                 # Sync assistant_sent when chat:completion has content (OWUI replacement)
                 # This ensures subsequent text deltas compute correctly.
                 # chat:completion with content is used for tool cards (OWUI parity).
@@ -741,5 +692,4 @@ class EventEmitterHandler:
 
             await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 
-        setattr(_emit, "flush_reasoning_status", _flush_reasoning_status)
         return _emit

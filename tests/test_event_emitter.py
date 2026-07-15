@@ -79,13 +79,24 @@ def test_stub_chat_chunk_template_with_content():
     assert chunk["choices"][0]["delta"]["content"] == "Hello world"
 
 
-def test_stub_chat_chunk_template_with_reasoning_content():
-    """Test stub template with reasoning content."""
+def test_stub_chat_chunk_template_ignores_reasoning_slot():
+    """The former reasoning slot (3rd positional arg) is accepted but ignored.
+
+    Under the native-emission contract the chunk delta never carries a
+    ``reasoning_content`` key; reasoning surfaces via native output items.
+    """
     from open_webui_openrouter_pipe.streaming.event_emitter import _stub_chat_chunk_template
 
-    chunk = _stub_chat_chunk_template("test-model", reasoning_content="Thinking...")
+    # 3rd positional arg is the retired reasoning slot; it must be dropped.
+    chunk = _stub_chat_chunk_template("test-model", None, "Thinking...")
 
-    assert chunk["choices"][0]["delta"]["reasoning_content"] == "Thinking..."
+    assert "reasoning_content" not in chunk["choices"][0]["delta"]
+    assert chunk["choices"][0]["delta"] == {}
+
+    # It is also ignored when content is present alongside it.
+    chunk2 = _stub_chat_chunk_template("test-model", "Answer", "Thinking...")
+    assert chunk2["choices"][0]["delta"] == {"content": "Answer"}
+    assert "reasoning_content" not in chunk2["choices"][0]["delta"]
 
 
 def test_stub_chat_chunk_template_with_tool_calls():
@@ -1249,15 +1260,18 @@ async def test_make_middleware_stream_emitter_flush_reasoning_status(pipe_instan
 
     emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Emitter should have flush_reasoning_status attribute
-    assert hasattr(emitter, "flush_reasoning_status")
+    # The seam no longer owns reasoning buffering: there is no
+    # flush_reasoning_status hook on the emitter.
+    assert not hasattr(emitter, "flush_reasoning_status")
 
-    # Build up some buffer
+    # A now-unknown reasoning:delta event falls through as a raw {"event": ...}
+    # passthrough and never becomes a delta.reasoning_content chunk.
     await emitter({"type": "reasoning:delta", "data": {"delta": "Some reasoning text."}})
-
-    # Call flush
-    flush_fn = getattr(emitter, "flush_reasoning_status")
-    await flush_fn()
+    items = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert {"event": {"type": "reasoning:delta", "data": {"delta": "Some reasoning text."}}} in items
+    for it in items:
+        if isinstance(it, dict) and "choices" in it:
+            assert "reasoning_content" not in it["choices"][0].get("delta", {})
 
 
 @pytest.mark.asyncio
@@ -1413,11 +1427,15 @@ async def test_make_middleware_stream_emitter_reasoning_non_string_delta(pipe_in
 
     emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Emit non-string delta
+    # A now-unknown reasoning:delta event (even with a non-string delta) falls
+    # through as a raw {"event": ...} passthrough and never becomes a
+    # delta.reasoning_content chunk.
     await emitter({"type": "reasoning:delta", "data": {"delta": 12345}})
-
-    # Should not emit anything
-    assert queue.qsize() == 0
+    items = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert items == [{"event": {"type": "reasoning:delta", "data": {"delta": 12345}}}]
+    for it in items:
+        if isinstance(it, dict) and "choices" in it:
+            assert "reasoning_content" not in it["choices"][0].get("delta", {})
 
 
 @pytest.mark.asyncio
@@ -1884,9 +1902,17 @@ async def test_make_middleware_stream_emitter_flush_when_disabled(pipe_instance_
 
     emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Call flush when status is disabled - should be no-op
-    flush_fn = getattr(emitter, "flush_reasoning_status")
-    await flush_fn()
+    # With reasoning removed from the seam there is no flush hook to call, even
+    # in a box-only ("open_webui") mode. A reasoning:delta event is unknown and
+    # falls through as a raw {"event": ...} passthrough, never a
+    # delta.reasoning_content chunk.
+    assert not hasattr(emitter, "flush_reasoning_status")
+    await emitter({"type": "reasoning:delta", "data": {"delta": "Some reasoning text"}})
+    items = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert items == [{"event": {"type": "reasoning:delta", "data": {"delta": "Some reasoning text"}}}]
+    for it in items:
+        if isinstance(it, dict) and "choices" in it:
+            assert "reasoning_content" not in it["choices"][0].get("delta", {})
 
 
 @pytest.mark.asyncio
