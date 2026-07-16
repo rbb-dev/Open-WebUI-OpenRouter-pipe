@@ -854,22 +854,22 @@ class TestToolPassthrough:
         events = [
             {
                 "type": "response.output_item.added",
-                "item": {"type": "function_call", "call_id": "call-1", "id": "call-1", "name": "get_weather"},
+                "item": {"type": "function_call", "call_id": "call-1", "id": "fc_tmp_1", "name": "get_weather"},
             },
             {
                 "type": "response.function_call_arguments.delta",
-                "item_id": "call-1",
+                "item_id": "fc_tmp_1",
                 "name": "get_weather",
                 "delta": '{"city":',
             },
             {
                 "type": "response.function_call_arguments.delta",
-                "item_id": "call-1",
+                "item_id": "fc_tmp_1",
                 "delta": '"NYC"}',
             },
             {
                 "type": "response.function_call_arguments.done",
-                "item_id": "call-1",
+                "item_id": "fc_tmp_1",
                 "name": "get_weather",
                 "arguments": '{"city":"NYC"}',
             },
@@ -906,7 +906,11 @@ class TestToolPassthrough:
         )
 
         tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        assert tool_calls, "Expected tool call events in passthrough mode"
+        assert len(tool_calls) == 2, "The completed response must not duplicate streamed calls"
+        assert all(
+            event["data"]["tool_calls"][0]["id"] == "call-1"
+            for event in tool_calls
+        )
         assert tool_calls[0]["data"]["tool_calls"][0]["function"]["name"] == "get_weather"
 
     @pytest.mark.asyncio
