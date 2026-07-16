@@ -108,7 +108,7 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 | `TOOL_BATCH_TIMEOUT_SECONDS` | `int` | `120` | Timeout (seconds) for completing an entire tool batch. |
 | `TOOL_IDLE_TIMEOUT_SECONDS` | `Optional[int]` | `null` | Idle timeout (seconds) for tool execution when no progress is observed. |
 | `TOOL_SHUTDOWN_TIMEOUT_SECONDS` | `float` | `10.0` | Maximum seconds to wait for per-request tool workers to drain/stop during request cleanup. `0` cancels immediately. |
-| `PERSIST_TOOL_RESULTS` | `bool` | `True` | Persist tool call results across conversation turns. When disabled, tool results stay ephemeral. |
+| `PERSIST_TOOL_RESULTS` | `bool` | `False` | Persist tool call results across conversation turns. Disabled by default: later turns rely on the assistant's summaries and can re-run tools; enable to replay raw tool outputs. |
 | `TOOL_OUTPUT_RETENTION_TURNS` | `int` | `10` | How many turns tool outputs remain replayable/available before being eligible for pruning. |
 
 Behavior note (no valve):
@@ -511,7 +511,7 @@ User valves provide per-user behavior overrides for a subset of settings.
 | `REASONING_EFFORT` | `Literal[\"none\", \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\"]` | `medium` | Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). |
 | `REASONING_SUMMARY_MODE` | `Literal[\"auto\", \"concise\", \"detailed\", \"disabled\"]` | `auto` | Choose how detailed the reasoning summary should be. |
 | `PERSIST_REASONING_TOKENS` | `Literal[\"disabled\", \"next_reply\", \"conversation\"]` | `next_reply` | User-level reasoning retention preference. |
-| `PERSIST_TOOL_RESULTS` | `bool` | `True` | Let the AI reuse outputs from tools later in the conversation. |
+| `PERSIST_TOOL_RESULTS` | `bool` | `False` | Let the AI reuse outputs from tools later in the conversation. |
 | `REQUEST_ZDR` | `bool` | `False` | Request ZDR routing for this chat. |
 
 ## Plugin-exported valves (pipe_dashboard)

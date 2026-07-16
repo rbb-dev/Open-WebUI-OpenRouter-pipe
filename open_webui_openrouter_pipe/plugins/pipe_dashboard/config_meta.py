@@ -495,7 +495,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "PERSIST_TOOL_RESULTS": {
         "title": "Keep tool results across turns",
         "group": "Tools/Execution",
-        "detail": "When enabled, results returned by tool calls are retained across turns of the same conversation instead of being discarded after the current reply.\n\nBy default the model can reuse earlier tool outputs on later turns; disabled, they stay ephemeral, used only within the current reply. This is a site-wide default each user can override in their own Open WebUI settings, and their choice wins for their chats. It has no effect while `Tool execution location` is `Open-WebUI`, where tool results are always ephemeral."
+        "detail": "When enabled, results returned by tool calls are retained across turns of the same conversation instead of being discarded after the current reply.\n\nOff by default: later turns see the assistant's own summaries of what tools found, and the model can re-run a tool when it needs the source again — keeping long conversations lean, since retained raw outputs ride every subsequent request as input tokens. Enable it when chats need to quote exact earlier tool outputs without re-fetching. This is a site-wide default each user can override in their own Open WebUI settings, and their choice wins for their chats. It has no effect while `Tool execution location` is `Open-WebUI`, where tool results are always ephemeral."
     },
     "RATE_LIMIT_TEMPLATE": {
         "title": "Rate limit message",

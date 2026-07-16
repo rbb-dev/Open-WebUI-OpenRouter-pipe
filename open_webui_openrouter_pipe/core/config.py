@@ -1006,9 +1006,9 @@ class Valves(BaseModel):
         description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently without visual status indicators.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
-        default=True,
+        default=False,
         title="Keep tool results",
-        description="Persist tool call results across conversation turns. When disabled, tool results stay ephemeral.",
+        description="Persist tool call results across conversation turns. When disabled, tool results stay ephemeral and the model relies on its own summaries or re-runs tools.",
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
@@ -1992,9 +1992,9 @@ class UserValves(BaseModel):
         description="Choose whether reasoning is kept just for the next reply or the entire conversation.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
-        default=True,
+        default=False,
         title="Remember tool and search results",
-        description="Let the AI reuse outputs from tools (for example web searches or other apps) later in the conversation.",
+        description="Let the AI reuse outputs from tools (for example web searches or other apps) later in the conversation. Uses more tokens on long chats; when off, the AI relies on its own summaries and can re-run tools as needed.",
     )
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",

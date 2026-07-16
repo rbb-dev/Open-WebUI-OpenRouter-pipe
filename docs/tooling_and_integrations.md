@@ -140,7 +140,7 @@ To reduce omissions and improve reliability:
 - Prefer tools that support tight server-side limits (`limit`, `top_k`, date ranges, filters).
 - Have tools return concise summaries plus references/IDs instead of full raw blobs.
 - For bulky outputs (search results, logs, traces), expose pagination/continuation parameters so the model can request smaller chunks.
-- Keep `PERSIST_TOOL_RESULTS` enabled where possible; replay + adaptive omission is safer than repeatedly re-fetching large payloads.
+- `PERSIST_TOOL_RESULTS` is off by default to keep long conversations lean; enable it (site-wide or per user) when chats need to reuse exact raw tool outputs on later turns instead of re-fetching.
 
 ---
 
