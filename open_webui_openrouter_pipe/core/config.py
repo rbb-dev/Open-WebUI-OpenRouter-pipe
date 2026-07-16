@@ -668,7 +668,8 @@ class Valves(BaseModel):
         default="",
         description=(
             "Comma-separated glob patterns of model ids that must use /chat/completions "
-            "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids."
+            "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids. "
+            "Globs are literal about the `~` prefix; add '~anthropic/*' to cover router aliases."
         ),
     )
     FORCE_RESPONSES_MODELS: str = Field(
@@ -904,14 +905,16 @@ class Valves(BaseModel):
         title="Anthropic interleaved thinking",
         description=(
             "When True, enables Claude's interleaved thinking mode by sending "
-            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models."
+            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models "
+            "(including `~anthropic/...` router aliases)."
         ),
     )
     ENABLE_ANTHROPIC_PROMPT_CACHING: bool = Field(
         default=True,
         title="Anthropic prompt caching",
         description=(
-            "When True and the selected model is `anthropic/...`, enable Claude prompt caching to reduce "
+            "When True and the selected model is `anthropic/...` (including `~anthropic/...` router aliases), "
+            "enable Claude prompt caching to reduce "
             "per-turn costs for large stable prefixes (system prompts, tools, RAG context). On /responses a "
             "top-level cache_control is sent (routes Anthropic-direct, excluding Bedrock/Vertex); on "
             "/chat/completions per-block cache_control breakpoints are used (works across all providers)."
@@ -1973,7 +1976,8 @@ class UserValves(BaseModel):
         title="Interleaved thinking (Claude)",
         description=(
             "When enabled, request Claude's interleaved thinking stream by sending "
-            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models."
+            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models "
+            "(including `~anthropic/...` router aliases)."
         ),
     )
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(

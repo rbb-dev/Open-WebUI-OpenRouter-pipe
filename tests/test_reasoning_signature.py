@@ -354,6 +354,34 @@ def test_signature_error_non_anthropic_model_does_not_strip(pipe_instance):
     assert any(it.get("type") == "reasoning" for it in body.input), "non-Anthropic input must be untouched"
 
 
+def test_signature_error_tilde_anthropic_alias_strips_and_retries(pipe_instance):
+    """~anthropic router aliases take the S1 reactive strip path like plain slugs (issue #53)."""
+    mgr = pipe_instance._ensure_reasoning_config_manager()
+    body = ResponsesBody(model="~anthropic/claude-fable-latest", input=[
+        {"type": "reasoning", "id": "r1",
+         "content": [{"type": "reasoning_text", "text": "x"}], "signature": "S"},
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text", "text": "next"}]},
+    ])
+    assert mgr._should_retry_dropping_signed_reasoning(_signature_error(), body) is True
+    assert all(it.get("type") != "reasoning" for it in body.input), "reasoning must be stripped for the retry"
+
+
+def test_proactive_strip_applies_to_tilde_anthropic_alias(pipe_instance):
+    """The pre-send sanitizer treats ~anthropic aliases as Anthropic: unsigned
+    replayed reasoning is stripped before it can 400 upstream (issue #53)."""
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    body = ResponsesBody(model="~anthropic/claude-fable-latest", input=[
+        {"type": "reasoning", "id": "r1",
+         "content": [{"type": "reasoning_text", "text": "x"}]},
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text", "text": "hi"}]},
+    ])
+    _sanitize_request_input(pipe_instance, body)
+    assert all(it.get("type") != "reasoning" for it in body.input), "unsigned reasoning must be stripped for ~anthropic"
+
+
 # --------------------------------------------------------------------------- #
 # Proactive strip (the streaming heal). The sanitizer removes unreplayable
 # thinking BEFORE every send, so a legacy conversation never 400s. S1's reactive

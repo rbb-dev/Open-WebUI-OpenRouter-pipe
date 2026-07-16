@@ -6,18 +6,20 @@ and other Anthropic-specific features when routing through OpenRouter.
 
 from __future__ import annotations
 
+import re
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
+_ANTHROPIC_ID_RE = re.compile(r"~?anthropic[./]")
+
 
 def _is_anthropic_model_id(model_id: Any) -> bool:
-    """Check if a model ID belongs to Anthropic."""
+    """Check if a model ID belongs to Anthropic (including ~ router aliases)."""
     if not isinstance(model_id, str):
         return False
-    normalized = model_id.strip()
-    return normalized.startswith("anthropic/") or normalized.startswith("anthropic.")
+    return bool(_ANTHROPIC_ID_RE.match(model_id.strip()))
 
 
 def _maybe_apply_anthropic_prompt_caching(
@@ -127,7 +129,8 @@ def _maybe_apply_responses_toplevel_cache_control(
     """Enable Claude prompt caching on /responses via a single top-level cache_control.
 
     The Responses API ignores per-block cache_control breakpoints; only this top-level
-    field is honored. Applied for `anthropic/...` models when caching is enabled.
+    field is honored. Applied for Anthropic models (`anthropic/...` slugs and
+    `~anthropic/...` router aliases) when caching is enabled.
     """
     if not valves.ENABLE_ANTHROPIC_PROMPT_CACHING:
         return

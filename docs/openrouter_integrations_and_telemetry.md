@@ -14,7 +14,7 @@ This document covers behaviors that are specific to the OpenRouter Responses API
   - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme)
   - `X-OpenRouter-Categories` (pipe category identifier for analytics attribution)
 - Optional provider beta headers:
-  - For `anthropic/...` models, when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
+  - For Anthropic models (`anthropic/...` slugs and `~anthropic/...` router aliases), when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
 
 ---
 

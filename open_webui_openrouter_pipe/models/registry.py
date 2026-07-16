@@ -175,7 +175,8 @@ def supports_phase_model(model_id: str) -> bool:
     normalized = ModelFamily.base_model(candidate)
     if ":" in normalized:
         normalized, _ = normalized.rsplit(":", 1)
-    return bool(normalized) and normalized in _PHASE_SUPPORTED_MODELS_BASE
+    key = normalized.removeprefix("~")
+    return bool(key) and key in _PHASE_SUPPORTED_MODELS_BASE
 
 # -----------------------------------------------------------------------------
 # OpenRouterModelRegistry Class
@@ -1033,23 +1034,24 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
 # Anthropic Reasoning Helpers
 # -----------------------------------------------------------------------------
 
+_CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")
+
+
 def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
     """Return True for Claude Opus/Sonnet models that support verbosity mapping."""
-    lowered = (normalized_model_id or "").lower()
-    return (
-        lowered.startswith("anthropic.claude-opus-")
-        or lowered.startswith("anthropic.claude-sonnet-")
-    )
+    return bool(_CLAUDE_REASONING_RE.match((normalized_model_id or "").lower()))
 
 
 # -----------------------------------------------------------------------------
 # Gemini Reasoning Helpers
 # -----------------------------------------------------------------------------
 
+_GEMINI_25_RE = re.compile(r"~?google[./]gemini-2\.5(-|\Z)")
+
+
 def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
     """Return the Gemini thinking family for the provided normalized model id."""
-    lowered = (normalized_model_id or "").lower()
-    if lowered.startswith("google.gemini-2.5-") or lowered == "google.gemini-2.5":
+    if _GEMINI_25_RE.match((normalized_model_id or "").lower()):
         return "gemini-2.5"
     return None
 

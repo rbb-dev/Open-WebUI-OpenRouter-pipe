@@ -732,42 +732,43 @@ _IMAGE_KNOB_GATE: dict[str, str | None] = {
 def _is_gemini_extended_ratio_model(model_id: str) -> bool:
     """Match models eligible for Gemini-extended knobs (Flash 3.x — not Pro or 2.5)."""
     import re
-    return bool(re.match(r"^google/gemini-3.*flash-image.*$", model_id or ""))
+    return bool(re.match(r"^~?google/gemini-3.*flash-image.*$", model_id or ""))
 
 
 def _is_sourceful_pro_or_fast(model_id: str) -> bool:
     """Match models eligible for Sourceful-extended knobs (font_inputs — V2 and newer)."""
     import re
-    return bool(re.match(r"^sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$", model_id or ""))
+    return bool(re.match(r"^~?sourceful/riverflow-v\d+(\.\d+)?-(pro|fast)$", model_id or ""))
 
 
 def _is_sourceful_v2_superres(model_id: str) -> bool:
     """Match models eligible for super_resolution_references (V2 Pro/Fast ONLY — dropped in 2.5)."""
     import re
-    return bool(re.match(r"^sourceful/riverflow-v2-(pro|fast)$", model_id or ""))
+    return bool(re.match(r"^~?sourceful/riverflow-v2-(pro|fast)$", model_id or ""))
 
 
 def _is_sourceful_v25(model_id: str) -> bool:
     """Match models eligible for Riverflow 2.5 extras (scoring + background controls)."""
     import re
-    return bool(re.match(r"^sourceful/riverflow-v2\.5-(pro|fast)$", model_id or ""))
+    return bool(re.match(r"^~?sourceful/riverflow-v2\.5-(pro|fast)$", model_id or ""))
 
 
 def _is_recraft(model_id: str) -> bool:
     """Match models eligible for Recraft common knobs (strength, rgb_colors, background_rgb_color)."""
     import re
-    return bool(re.match(r"^recraft/recraft-", model_id or ""))
+    return bool(re.match(r"^~?recraft/recraft-", model_id or ""))
 
 
 def _is_recraft_v3(model_id: str) -> bool:
     """Match models eligible for Recraft V3-only knobs (style, text_layout)."""
-    return (model_id or "") == "recraft/recraft-v3"
+    import re
+    return bool(isinstance(model_id, str) and re.match(r"^~?recraft/recraft-v3\Z", model_id))
 
 
 def _is_grok_imagine_image(model_id: str) -> bool:
     """Match models eligible for Grok Imagine-specific knobs (14 aspect ratios, n)."""
     import re
-    return bool(re.match(r"^x-ai/grok-imagine-image-", model_id or ""))
+    return bool(re.match(r"^~?x-ai/grok-imagine-image-", model_id or ""))
 
 
 def _image_knob_is_active(knob: str, model_id: str) -> bool:

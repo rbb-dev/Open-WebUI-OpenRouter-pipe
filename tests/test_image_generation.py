@@ -333,7 +333,7 @@ def test_sourceful_filter_source_includes_font_inputs_and_super_res():
     assert "_MAX_SUPER_RESOLUTION_REFERENCES = 4" in source
     # The Sourceful Options filter is V2 Pro/Fast ONLY — Riverflow 2.5 gets its
     # own dedicated filter instead (one Sourceful filter per version, never two)
-    assert r"^sourceful/riverflow-v2-(pro|fast)$" in source
+    assert r"^~?sourceful/riverflow-v2-(pro|fast)$" in source
 
 
 def test_sourceful_v25_filter_source_is_the_single_25_filter():
@@ -348,7 +348,7 @@ def test_sourceful_v25_filter_source_is_the_single_25_filter():
     assert "IMAGE_BACKGROUND_HEX_COLOR" in source
     assert "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON" not in source
     # Model gate is v2.5-exact; hex validation pattern survives f-string escaping
-    assert r"^sourceful/riverflow-v2\.5-(pro|fast)$" in source
+    assert r"^~?sourceful/riverflow-v2\.5-(pro|fast)$" in source
     assert "[0-9a-fA-F]{3}" in source and "[0-9a-fA-F]{6}" in source
     for mode in ["original", "transparent", "solid"]:
         assert f'"{mode}"' in source
@@ -361,7 +361,7 @@ def test_grok_filter_source_includes_grok_ratios_and_count():
     # Grok-only tall/auto ratios beyond the generic 10
     for aspect in ["9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto"]:
         assert f'"{aspect}"' in source
-    assert r"^x-ai/grok-imagine-image-" in source
+    assert r"^~?x-ai/grok-imagine-image-" in source
 
 
 # =============================================================================
@@ -594,10 +594,48 @@ def test_image_help_gemini_extended_gate_excludes_pro_and_2_5():
 
     assert _is_gemini_extended_ratio_model("google/gemini-3.1-flash-image")
     assert _is_gemini_extended_ratio_model("google/gemini-3.1-flash-image-preview")
+    assert _is_gemini_extended_ratio_model("~google/gemini-3.1-flash-image")
     assert not _is_gemini_extended_ratio_model("google/gemini-3-pro-image")
     assert not _is_gemini_extended_ratio_model("google/gemini-3-pro-image-preview")
     assert not _is_gemini_extended_ratio_model("google/gemini-2.5-flash-image")
     assert not _is_gemini_extended_ratio_model("openai/gpt-image-2")
+
+
+def test_image_gate_helpers_and_attach_patterns_accept_tilde_aliases():
+    """All image model gates tolerate a leading ~ (router aliases) without
+    loosening anything else; the equality-turned-regex helper keeps non-str safety."""
+    from open_webui_openrouter_pipe.integrations.image_help import (
+        _is_gemini_extended_ratio_model,
+        _is_grok_imagine_image,
+        _is_recraft,
+        _is_recraft_v3,
+        _is_sourceful_pro_or_fast,
+        _is_sourceful_v2_superres,
+        _is_sourceful_v25,
+    )
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    assert _is_gemini_extended_ratio_model("~google/gemini-3.1-flash-image")
+    assert _is_sourceful_pro_or_fast("~sourceful/riverflow-v2-pro")
+    assert _is_sourceful_v2_superres("~sourceful/riverflow-v2-fast")
+    assert _is_sourceful_v25("~sourceful/riverflow-v2.5-pro")
+    assert _is_recraft("~recraft/recraft-v4")
+    assert _is_recraft_v3("~recraft/recraft-v3")
+    assert not _is_recraft_v3("~recraft/recraft-v4")
+    assert _is_grok_imagine_image("~x-ai/grok-imagine-image-1")
+
+    assert FilterManager._GEMINI_IMAGE_PATTERN.match("~google/gemini-3.1-flash-image")
+    assert FilterManager._SOURCEFUL_IMAGE_PATTERN.match("~sourceful/riverflow-v2-pro")
+    assert FilterManager._SOURCEFUL_V25_IMAGE_PATTERN.match("~sourceful/riverflow-v2.5-fast")
+    assert FilterManager._RECRAFT_COMMON_IMAGE_PATTERN.match("~recraft/recraft-v4")
+    assert FilterManager._RECRAFT_V3_IMAGE_PATTERN.match("~recraft/recraft-v3")
+    assert not FilterManager._RECRAFT_V3_IMAGE_PATTERN.match("~recraft/recraft-v4")
+    assert FilterManager._GROK_IMAGINE_IMAGE_PATTERN.match("~x-ai/grok-imagine-image-1")
+
+    from typing import cast
+
+    assert _is_recraft_v3(cast(str, None)) is False
+    assert _is_recraft_v3(cast(str, 42)) is False
 
 
 def test_render_image_help_sourceful_knobs_only_for_pro_and_fast():

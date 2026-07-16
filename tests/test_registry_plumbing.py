@@ -269,3 +269,75 @@ def test_registry_list_models_and_mapping():
     models = reg.list_models()
     assert models[0]["capabilities"]["vision"] is True
     assert reg.api_model_id("demo") == "provider/demo"
+
+
+@pytest.mark.asyncio
+async def test_registry_tilde_alias_catalog_hit_resolves_verbatim():
+    """~ router aliases are real catalog entries: the norm keeps the tilde, the
+    api id round-trips verbatim, and capabilities resolve from the alias's own spec."""
+    payload = {
+        "data": [
+            {
+                "id": "~anthropic/claude-fable-latest",
+                "name": "Anthropic: Claude Fable (latest)",
+                "supported_parameters": ["tools", "reasoning", "include_reasoning"],
+                "architecture": {
+                    "input_modalities": ["image", "file"],
+                    "output_modalities": ["text"],
+                },
+                "pricing": {"prompt": "0.000003"},
+                "top_provider": {"max_completion_tokens": 64000},
+                "context_length": 200000,
+            }
+        ]
+    }
+    session = cast(Any, DummySession(DummyResponse(payload)))
+    await ow.OpenRouterModelRegistry.ensure_loaded(
+        session,
+        base_url="https://api",
+        api_key="secret",
+        cache_seconds=60,
+        logger=logging.getLogger("test"),
+    )
+    assert (
+        ow.OpenRouterModelRegistry.api_model_id("~anthropic.claude-fable-latest")
+        == "~anthropic/claude-fable-latest"
+    )
+    assert "~anthropic.claude-fable-latest" in ow.OpenRouterModelRegistry._id_map
+    assert ow.ModelFamily.features("~anthropic.claude-fable-latest"), (
+        "alias catalog spec must resolve (capabilities are keyed by the tilde norm)"
+    )
+
+
+def test_registry_tilde_alias_non_catalog_fallback_preserves_tilde():
+    """Stale-catalog window: an uncataloged ~ id still reconstructs with its tilde."""
+    assert "~anthropic.claude-fable-latest" not in ow.OpenRouterModelRegistry._id_map, (
+        "precondition: this test must exercise the non-catalog fallback branch"
+    )
+    assert (
+        ow.OpenRouterModelRegistry.api_model_id("~anthropic.claude-fable-latest")
+        == "~anthropic/claude-fable-latest"
+    )
+
+
+def test_is_claude_reasoning_model_accepts_tilde_aliases():
+    from open_webui_openrouter_pipe.models.registry import _is_claude_reasoning_model
+
+    assert _is_claude_reasoning_model("anthropic.claude-sonnet-4.5") is True
+    assert _is_claude_reasoning_model("anthropic.claude-opus-4.6") is True
+    assert _is_claude_reasoning_model("~anthropic.claude-sonnet-latest") is True
+    assert _is_claude_reasoning_model("~anthropic.claude-opus-latest") is True
+    assert _is_claude_reasoning_model("~anthropic.claude-fable-latest") is False
+    assert _is_claude_reasoning_model("anthropic.claude") is False
+    assert _is_claude_reasoning_model("") is False
+
+
+def test_classify_gemini_thinking_family_accepts_tilde_aliases():
+    from open_webui_openrouter_pipe.models.registry import _classify_gemini_thinking_family
+
+    assert _classify_gemini_thinking_family("google.gemini-2.5-pro") == "gemini-2.5"
+    assert _classify_gemini_thinking_family("google.gemini-2.5") == "gemini-2.5"
+    assert _classify_gemini_thinking_family("~google.gemini-2.5-flash") == "gemini-2.5"
+    assert _classify_gemini_thinking_family("google.gemini-2.55") is None
+    assert _classify_gemini_thinking_family("~google.gemini-pro-latest") is None
+    assert _classify_gemini_thinking_family("google.gemini-2.5:free") is None

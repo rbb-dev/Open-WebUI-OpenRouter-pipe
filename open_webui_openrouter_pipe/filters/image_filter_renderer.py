@@ -10,17 +10,17 @@ runtime registry access.
 
 Filter assignment rules (driven by `filter_manager.ensure_openrouter_image_filter_function_ids`):
 - **All** models with `image` in `output_modalities` get the **generic** filter
-- Models matching `^google/gemini-3.*flash-image.*$` ALSO get **gemini** filter (extended aspect ratios + 0.5K — Flash 3.x only)
-- Models matching `^sourceful/riverflow-v2-(pro|fast)$` ALSO get **sourceful** filter
+- Models matching `^~?google/gemini-3.*flash-image.*$` ALSO get **gemini** filter (extended aspect ratios + 0.5K — Flash 3.x only)
+- Models matching `^~?sourceful/riverflow-v2-(pro|fast)$` ALSO get **sourceful** filter
   (font_inputs + super_resolution_references — Riverflow V2 only)
-- Models matching `^sourceful/riverflow-v2\\.5-(pro|fast)$` ALSO get **sourceful_v25** filter
+- Models matching `^~?sourceful/riverflow-v2\\.5-(pro|fast)$` ALSO get **sourceful_v25** filter
   (font_inputs + scoring_prompt + scoring_rubric + background_mode + background_hex_color).
   Riverflow versions get ONE dedicated Sourceful filter each, never two — 2.5 dropped
   super_resolution_references and added the scoring/background params, so stacking a
   shared filter would expose dead knobs.
-- Models matching `^recraft/recraft-` ALSO get **recraft** filter (strength + rgb_colors + background_rgb_color)
-- Models matching `^recraft/recraft-v3$` ALSO get **recraft_v3** filter (style + text_layout — V3 only per OpenRouter docs)
-- Models matching `^x-ai/grok-imagine-image-` ALSO get **grok** filter (Grok-specific 14-value aspect_ratio set + `n` count)
+- Models matching `^~?recraft/recraft-` ALSO get **recraft** filter (strength + rgb_colors + background_rgb_color)
+- Models matching `^~?recraft/recraft-v3$` ALSO get **recraft_v3** filter (style + text_layout — V3 only per OpenRouter docs)
+- Models matching `^~?x-ai/grok-imagine-image-` ALSO get **grok** filter (Grok-specific 14-value aspect_ratio set + `n` count)
 """
 
 from __future__ import annotations
@@ -222,7 +222,7 @@ class Filter:
 def render_gemini_image_filter_source() -> str:
     """Render the Gemini-specific image filter — extended aspect ratios + 0.5K size.
 
-    Attached only to models matching `^google/gemini-3.*flash-image.*$` (Flash 3.x).
+    Attached only to models matching `^~?google/gemini-3.*flash-image.*$` (Flash 3.x).
     Shallow-merges into body.image_config alongside the generic filter (per-key
     overwrite; if both filters write the same key, the second one wins).
     """
@@ -246,7 +246,7 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_GEMINI_MODEL_PATTERN = re.compile(r"^google/gemini-3.*flash-image.*$")
+_GEMINI_MODEL_PATTERN = re.compile(r"^~?google/gemini-3.*flash-image.*$")
 
 
 def _canonical_model_slug(raw: str) -> str:
@@ -332,7 +332,7 @@ class Filter:
 def render_sourceful_image_filter_source() -> str:
     """Render the Sourceful V2 image filter — font_inputs + super_resolution_references.
 
-    Attached only to models matching `^sourceful/riverflow-v2-(pro|fast)$`.
+    Attached only to models matching `^~?sourceful/riverflow-v2-(pro|fast)$`.
     Riverflow 2.5 has its own dedicated filter (`sourceful_v25`) because 2.5
     dropped super_resolution_references — each Riverflow version gets exactly
     one Sourceful filter, never a stacked pair.
@@ -363,7 +363,7 @@ IMAGE_FILTER_VARIANT = "{spec.variant}"
 
 # V2 Pro/Fast ONLY — Riverflow 2.5 gets its own dedicated filter (sourceful_v25)
 # because 2.5 dropped super_resolution_references.
-_SOURCEFUL_MODEL_PATTERN = re.compile(r"^sourceful/riverflow-v2-(pro|fast)$")
+_SOURCEFUL_MODEL_PATTERN = re.compile(r"^~?sourceful/riverflow-v2-(pro|fast)$")
 
 
 def _canonical_model_slug(raw: str) -> str:
@@ -516,7 +516,7 @@ class Filter:
 def render_sourceful_v25_image_filter_source() -> str:
     """Render the dedicated Riverflow 2.5 filter — fonts + scoring + background.
 
-    Attached only to models matching `^sourceful/riverflow-v2\\.5-(pro|fast)$`.
+    Attached only to models matching `^~?sourceful/riverflow-v2\\.5-(pro|fast)$`.
     This is the SINGLE Sourceful filter for 2.5 models (the V2 `sourceful`
     filter does not attach to them): it carries `font_inputs` over from V2
     (same max-2 validation) plus everything 2.5 added — `scoring_prompt`,
@@ -546,7 +546,7 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_SOURCEFUL_V25_MODEL_PATTERN = re.compile(r"^sourceful/riverflow-v2\\.5-(pro|fast)$")
+_SOURCEFUL_V25_MODEL_PATTERN = re.compile(r"^~?sourceful/riverflow-v2\\.5-(pro|fast)$")
 
 
 def _canonical_model_slug(raw: str) -> str:
@@ -733,7 +733,7 @@ class Filter:
 def render_recraft_common_image_filter_source() -> str:
     """Render the Recraft common image filter — strength + rgb_colors + background_rgb_color.
 
-    Attached to all models matching `^recraft/recraft-` (V3, V4, V4 Pro). Validates
+    Attached to all models matching `^~?recraft/recraft-` (V3, V4, V4 Pro). Validates
     JSON shapes and RGB component ranges (0-255 ints) BEFORE submission so users
     get clear errors instead of cryptic provider 400s.
     """
@@ -757,7 +757,7 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_RECRAFT_MODEL_PATTERN = re.compile(r"^recraft/recraft-")
+_RECRAFT_MODEL_PATTERN = re.compile(r"^~?recraft/recraft-")
 
 
 def _canonical_model_slug(raw: str) -> str:
@@ -912,7 +912,7 @@ class Filter:
 def render_recraft_v3_image_filter_source() -> str:
     """Render the Recraft V3-only extras filter — style + text_layout.
 
-    Attached only to `recraft/recraft-v3` exactly. V4 and V4 Pro do NOT support
+    Attached only to `recraft/recraft-v3` (or its `~` alias) exactly. V4 and V4 Pro do NOT support
     these parameters per OpenRouter docs; the filter no-ops on those models even
     if manually attached (defensive).
     """
@@ -936,7 +936,7 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_RECRAFT_V3_MODEL_PATTERN = re.compile(r"^recraft/recraft-v3$")
+_RECRAFT_V3_MODEL_PATTERN = re.compile(r"^~?recraft/recraft-v3$")
 
 
 def _canonical_model_slug(raw: str) -> str:
@@ -1093,7 +1093,7 @@ class Filter:
 def render_grok_image_filter_source() -> str:
     """Render the Grok Imagine image filter — Grok-specific aspect_ratio set + `n` count.
 
-    Attached only to models matching `^x-ai/grok-imagine-image-`. Provides:
+    Attached only to models matching `^~?x-ai/grok-imagine-image-`. Provides:
     - `aspect_ratio`: 14-value enum (Grok-supported ratios including tall phone
       formats `9:19.5`/`19.5:9`/`9:20`/`20:9`/`1:2`/`2:1` and `auto`)
     - `n`: int 1-10, number of images per request (0 = skip / use model default)
@@ -1121,7 +1121,7 @@ except Exception:  # pragma: no cover
 OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
 IMAGE_FILTER_VARIANT = "{spec.variant}"
 
-_GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^x-ai/grok-imagine-image-")
+_GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^~?x-ai/grok-imagine-image-")
 
 
 def _canonical_model_slug(raw: str) -> str:

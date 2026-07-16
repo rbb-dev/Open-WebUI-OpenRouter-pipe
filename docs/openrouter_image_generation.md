@@ -802,7 +802,7 @@ This section enumerates exactly which filter knobs each model exposes.
 ### Gemini Flash 3.x image only (Gemini Options filter)
 
 Adds 4 extra aspect ratios + a 0.5K size tier. Only attached to models
-matching `^google/gemini-3.*flash-image.*$`.
+matching `^~?google/gemini-3.*flash-image.*$`.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
@@ -812,7 +812,7 @@ matching `^google/gemini-3.*flash-image.*$`.
 ### Riverflow V2 Pro/Fast only (Sourceful Options filter)
 
 Adds custom font rendering + image-to-image super-resolution. Only
-attached to models matching `^sourceful/riverflow-v2-(pro|fast)$`
+attached to models matching `^~?sourceful/riverflow-v2-(pro|fast)$`
 (Riverflow 2.5 has its own dedicated filter below).
 
 | Knob | Type | Values | Notes |
@@ -828,7 +828,7 @@ instead of an opaque 400 from the provider.
 
 The single Sourceful filter for 2.5 models — fonts carried over from
 V2 plus the params 2.5 introduced. Only attached to models matching
-`^sourceful/riverflow-v2\.5-(pro|fast)$`.
+`^~?sourceful/riverflow-v2\.5-(pro|fast)$`.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
@@ -841,7 +841,7 @@ V2 plus the params 2.5 introduced. Only attached to models matching
 ### Grok Imagine image models only (Grok Imagine Options filter)
 
 Adds the Grok-specific 14-value aspect-ratio set and multi-image
-count. Only attached to models matching `^x-ai/grok-imagine-image-`.
+count. Only attached to models matching `^~?x-ai/grok-imagine-image-`.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
@@ -851,7 +851,7 @@ count. Only attached to models matching `^x-ai/grok-imagine-image-`.
 ### Recraft (all variants — Recraft Options filter)
 
 Adds image-to-image deviation control + color palette steering. Only
-attached to models matching `^recraft/recraft-`.
+attached to models matching `^~?recraft/recraft-`.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
@@ -974,7 +974,7 @@ attached to a non-matching model, the inlet returns the body unchanged
 (defensive — protects against operator misconfiguration).
 
 **One Sourceful filter per Riverflow version:** the Sourceful Options
-filter attaches to V2 Pro/Fast only (`^sourceful/riverflow-v2-(pro|fast)$`)
+filter attaches to V2 Pro/Fast only (`^~?sourceful/riverflow-v2-(pro|fast)$`)
 and the Sourceful V2.5 Options filter to 2.5 Pro/Fast only — never
 both on one model. 2.5 dropped `super_resolution_references` and added
 the scoring/background params, so a shared filter would expose dead
@@ -1223,14 +1223,14 @@ completed since install. Check:
 
 The Sourceful filters have model gates — `Sourceful Options` only
 fires when the body's `model` matches
-`^sourceful/riverflow-v2-(pro|fast)$`, and `Sourceful V2.5 Options`
-only when it matches `^sourceful/riverflow-v2\.5-(pro|fast)$`; the
+`^~?sourceful/riverflow-v2-(pro|fast)$`, and `Sourceful V2.5 Options`
+only when it matches `^~?sourceful/riverflow-v2\.5-(pro|fast)$`; the
 inlet otherwise returns the body unchanged. This is defensive behavior
 protecting against operator misconfiguration. To use the knobs, you
 must be on the matching Riverflow version (Pro or Fast).
 
 Same applies to `Gemini Options` — only fires for
-`^google/gemini-3.*flash-image.*$`.
+`^~?google/gemini-3.*flash-image.*$`.
 
 ### `font_inputs has 3 entries; max is 2.`
 

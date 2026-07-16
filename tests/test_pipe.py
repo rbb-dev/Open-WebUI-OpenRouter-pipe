@@ -3448,6 +3448,25 @@ class TestAnthropicBetaHeaders:
         finally:
             pipe.shutdown()
 
+    def test_maybe_apply_anthropic_beta_headers_tilde_alias(self):
+        """~anthropic router aliases get the interleaved-thinking beta header (issue #53)."""
+        pipe = Pipe()
+        pipe.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = True
+
+        headers = {}
+
+        try:
+            pipe._maybe_apply_anthropic_beta_headers(
+                headers,
+                "~anthropic/claude-fable-latest",
+                valves=pipe.valves,
+            )
+
+            assert "x-anthropic-beta" in headers
+            assert "interleaved-thinking" in headers["x-anthropic-beta"]
+        finally:
+            pipe.shutdown()
+
     def test_maybe_apply_anthropic_beta_headers_appends_to_existing(self):
         """Test that _maybe_apply_anthropic_beta_headers appends to existing header."""
         pipe = Pipe()

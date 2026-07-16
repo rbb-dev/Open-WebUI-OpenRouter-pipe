@@ -819,6 +819,69 @@ def test_is_anthropic_model_id_with_whitespace(pipe_instance):
     assert _is_anthropic_model_id("  anthropic.claude-3  ") is True
 
 
+def test_is_anthropic_model_id_tilde_router_aliases(pipe_instance):
+    """~ router aliases (issue #53) are Anthropic models in every id form."""
+    assert _is_anthropic_model_id("~anthropic/claude-fable-latest") is True
+    assert _is_anthropic_model_id("~anthropic.claude-fable-latest") is True
+    assert _is_anthropic_model_id("~anthropic/claude") is True
+    assert _is_anthropic_model_id("  ~anthropic/claude-opus-latest  ") is True
+
+
+def test_is_anthropic_model_id_tilde_does_not_overmatch(pipe_instance):
+    """Tilde tolerance must stay anchored and case/separator-strict."""
+    assert _is_anthropic_model_id("x-ai/~anthropic-clone") is False
+    assert _is_anthropic_model_id("anthropicfoo/model") is False
+    assert _is_anthropic_model_id("anthropic") is False
+    assert _is_anthropic_model_id("~Anthropic/claude") is False
+    assert _is_anthropic_model_id("~openai/gpt-latest") is False
+
+
+def test_prompt_caching_applies_to_tilde_alias(pipe_instance):
+    """Breakpoint caching fires for ~anthropic router aliases (issue #53)."""
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+        }
+    )
+
+    input_items = [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}],
+        },
+    ]
+
+    _maybe_apply_anthropic_prompt_caching(
+        input_items,
+        model_id="~anthropic/claude-fable-latest",
+        valves=valves,
+    )
+
+    assert _has_cache_control(input_items)
+
+
+def test_responses_toplevel_cache_control_applies_to_tilde_alias(pipe_instance):
+    """/responses top-level cache_control fires for ~anthropic router aliases."""
+    from open_webui_openrouter_pipe.integrations.anthropic import (
+        _maybe_apply_responses_toplevel_cache_control,
+    )
+
+    pipe = pipe_instance
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+        }
+    )
+
+    request_body = {"model": "~anthropic/claude-fable-latest", "input": []}
+    _maybe_apply_responses_toplevel_cache_control(request_body, valves=valves)
+    assert request_body.get("cache_control") == {"type": "ephemeral"}
+
+
 # ============================================================================
 # Test: Message with missing or None role
 # ============================================================================
@@ -1054,6 +1117,156 @@ async def test_anthropic_prompt_caching_applied_to_existing_input(monkeypatch, p
 
     assert result == "ok"
     request_body = captured.get("request_body") or {}
+    assert _has_cache_control(request_body.get("input"))
+
+
+@pytest.mark.asyncio
+async def test_tilde_alias_pipeline_caches_and_preserves_outbound_model(monkeypatch, pipe_instance_async):
+    """A selected ~anthropic alias must BOTH get cache_control AND go out with its ~ intact.
+
+    Locks the issue-#53 fix invariant: the matcher decision never mutates the wire id.
+    """
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+        }
+    )
+
+    body = ResponsesBody(
+        model="~anthropic/claude-fable-latest",
+        input=[
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "SYSTEM"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        ],
+        stream=True,
+    )
+    # Mirror the orchestrator: api_model carries the slash-form id the wire must see
+    # (ResponsesBody normalizes .model to dotted form; the loop overrides from api_model).
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    setattr(
+        body,
+        "api_model",
+        OpenRouterModelRegistry.api_model_id(body.model) or body.model,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_stream(self, session, request_body, **_kwargs):
+        captured["request_body"] = request_body
+        yield {"type": "response.output_text.delta", "delta": "ok"}
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"input_tokens": 1, "output_tokens": 1}},
+        }
+
+    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", fake_stream)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe._streaming_handler._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert result == "ok"
+    request_body = captured.get("request_body") or {}
+    assert request_body.get("model") == "~anthropic/claude-fable-latest", (
+        "outbound model id must keep its ~ prefix untouched"
+    )
+    assert _has_cache_control(request_body.get("input"))
+
+
+@pytest.mark.asyncio
+async def test_tilde_alias_chat_endpoint_caches_and_preserves_outbound_model(monkeypatch, pipe_instance_async):
+    """Same invariant on the /chat/completions leg: the real endpoint selector honors a
+    ~anthropic/* force-glob and the body reaching the chat gateway keeps its ~ id + caching."""
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(
+        update={
+            "ENABLE_ANTHROPIC_PROMPT_CACHING": True,
+            "ANTHROPIC_PROMPT_CACHE_TTL": "5m",
+            "FORCE_CHAT_COMPLETIONS_MODELS": "~anthropic/*",
+        }
+    )
+
+    body = ResponsesBody(
+        model="~anthropic/claude-fable-latest",
+        input=[
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "SYSTEM"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        ],
+        stream=True,
+    )
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    setattr(
+        body,
+        "api_model",
+        OpenRouterModelRegistry.api_model_id(body.model) or body.model,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_chat_stream(self, session, request_body, *args, **kwargs):
+        captured["request_body"] = request_body
+        yield {"type": "response.output_text.delta", "delta": "ok"}
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"input_tokens": 1, "output_tokens": 1}},
+        }
+
+    monkeypatch.setattr(
+        Pipe, "send_openai_chat_completions_streaming_request", fake_chat_stream
+    )
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe._streaming_handler._run_streaming_loop(
+        body,
+        valves,
+        emitter,
+        metadata={"model": {"id": "sandbox"}},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-123",
+    )
+
+    assert result == "ok"
+    assert captured, "force-glob ~anthropic/* must route the request to the chat gateway"
+    request_body = captured.get("request_body") or {}
+    assert request_body.get("model") == "~anthropic/claude-fable-latest", (
+        "outbound model id must keep its ~ prefix untouched on the chat endpoint"
+    )
     assert _has_cache_control(request_body.get("input"))
 
 

@@ -1125,15 +1125,15 @@ class Filter:
     # =========================================================================
     #
 
-    _GEMINI_IMAGE_PATTERN = re.compile(r"^google/gemini-3.*flash-image.*$")
+    _GEMINI_IMAGE_PATTERN = re.compile(r"^~?google/gemini-3.*flash-image.*$")
     # Each Riverflow version gets exactly ONE Sourceful filter (never stacked):
     # V2 Pro/Fast -> sourceful (fonts + super-res); 2.5 Pro/Fast -> sourceful_v25
     # (fonts + scoring + background — 2.5 dropped super-res).
-    _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^sourceful/riverflow-v2-(pro|fast)$")
-    _SOURCEFUL_V25_IMAGE_PATTERN = re.compile(r"^sourceful/riverflow-v2\.5-(pro|fast)$")
-    _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^recraft/recraft-")
-    _RECRAFT_V3_IMAGE_PATTERN = re.compile(r"^recraft/recraft-v3$")
-    _GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^x-ai/grok-imagine-image-")
+    _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2-(pro|fast)$")
+    _SOURCEFUL_V25_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2\.5-(pro|fast)$")
+    _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^~?recraft/recraft-")
+    _RECRAFT_V3_IMAGE_PATTERN = re.compile(r"^~?recraft/recraft-v3$")
+    _GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^~?x-ai/grok-imagine-image-")
 
     @staticmethod
     def render_openrouter_image_filter_source(variant: str) -> str:
