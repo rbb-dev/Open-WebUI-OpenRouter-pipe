@@ -238,7 +238,10 @@ def handle_responses_streaming_event(data: dict, current_output: list):
                             current_val = {} if isinstance(delta, dict) else ""
                         item[key] = deep_merge(current_val, delta)
 
-            return new_output, None
+            # Faithful to middleware.py:613 — OWUI returns new_output OUTSIDE the
+            # bounds guard, so an out-of-range delta raises UnboundLocalError there
+            # too. The port must keep that behavior.
+            return new_output, None  # pyright: ignore[reportPossiblyUnboundVariable]
 
     elif event_type.startswith("response.") and event_type.endswith(".done"):
         parts = event_type.split(".")
@@ -492,7 +495,11 @@ def owui_assemble(emitted: list[dict]) -> list[dict]:
     for event in emitted:
         etype = event.get("type", "")
         if etype.startswith("response."):
-            output, _meta = handle_responses_streaming_event(event, output)
+            result = handle_responses_streaming_event(event, output)
+            # OWUI's elif chain implicitly returns None for a malformed 2-part
+            # ".delta" event type; the pipe never emits such shapes.
+            assert result is not None, f"unhandled event shape: {etype}"
+            output, _meta = result
         elif etype == "chat:message:delta":
             value = (event.get("data") or {}).get("content") or ""
             content = _process_value_chunk(value, output, content)
