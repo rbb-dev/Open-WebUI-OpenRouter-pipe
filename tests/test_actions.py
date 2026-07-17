@@ -398,11 +398,36 @@ def update_env(monkeypatch):
 @pytest.mark.asyncio
 async def test_update_check_delegates_and_passes_force(update_env):
     status, payload = await actions.dispatch_action(
-        update_env.pipe, _user(role="user"), "update_check", {"force": True}, request=_req()
+        update_env.pipe, _user(role="admin"), "update_check", {"force": True}, request=_req()
     )
     assert status == 200
     assert payload["result"]["update_available"] is True
     assert update_env.svc.calls == [("check", {"force": True})]
+
+
+@pytest.mark.asyncio
+async def test_update_check_force_downgraded_for_non_admin(update_env):
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="user"), "update_check", {"force": True}, request=_req()
+    )
+    assert status == 200
+    assert update_env.svc.calls == [("check", {"force": False})]
+
+
+@pytest.mark.asyncio
+async def test_update_gate_uses_row_valves_over_ctx(update_env):
+    update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = True
+
+    async def _row_valves():
+        return {"PIPE_DASHBOARD_UPDATE_ENABLE": False}
+
+    update_env.svc._row_valves = _row_valves
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="admin"), "update_check", {}, request=_req()
+    )
+    assert status == 200
+    assert payload["result"] == {"enabled": False}
+    assert update_env.svc.calls == []
 
 
 @pytest.mark.asyncio

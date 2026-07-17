@@ -137,10 +137,13 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   derived; the card shows no dates — the row's timestamps are modification times, not install
   times, and a release date belongs to the release, shown on the Latest card); the latest release with date, size, "Last checked" (the last *successful* check; a
   separate line appears while checks are failing), the tracked repo (with a `fork` badge when it is
-  not the default), and the auto-update status. Opening the tab checks automatically (memoized for a
-  minute); **Check now** forces a fresh check.
-- **Changelog** — the release page's own generated notes, rendered as escaped text. A fork that
-  strips its CI ships no notes; the block then reads "changelog unavailable".
+  not the default), and the auto-update status. Every visit to the tab refreshes its data (release
+  data is memoized server-side for a minute, so tab switching never hammers GitHub). **Check now**
+  bypasses that memo for admins; for read-only viewers it refreshes the installed/snapshot state
+  but reuses the memoized release data — force-refreshing the shared GitHub budget is admin-only.
+- **Changelog** — the release page's own generated notes, rendered as escaped text; commit
+  references appear as plain code text, not clickable links (the sandboxed panel cannot open new
+  tabs). A fork that strips its CI ships no notes; the block then reads "changelog unavailable".
 - **Update / Reinstall** — opens a confirm modal showing from→to, size, and a **Compressed bundle**
   checkbox preselected to the installed variant (an unavailable variant is disabled; `no_plugins`
   bundles are never offered — they would remove this dashboard). When you are already on the latest
@@ -150,18 +153,27 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   installing one would remove the updater itself. Applying downloads the asset (8 MiB cap), verifies its
   sha256 against the release digest, checks the frontmatter (id, newer version, required Open WebUI
   version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
-  loader, and only then writes the function row. A load failure surfaces the real error in the tab
-  and the pipe keeps serving the old code. The installing worker pauses briefly (up to ~90s); other
+  loader, and only then writes the function row — and verifies the database accepted the write,
+  failing the update loudly instead of reporting a success that did not persist. A load failure
+  surfaces the real error in the tab and the pipe keeps serving the old code. The installing worker pauses briefly (up to ~90s); other
   workers pick the new version up on their next request. After a successful update, reload the
   dashboard to load the matching UI.
 - **Previous versions** — the retained snapshots (`PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP`) with
-  Restore and Delete. Snapshots are stored as a fixed set of dedicated records in Open WebUI's own
+  Restore and Delete. Both use a click-again confirmation: the first click arms the button
+  (**Confirm restore** / **Confirm delete**, shown in red) and the second click within five seconds
+  executes — native browser dialogs cannot appear inside the sandboxed panel, so the confirmation
+  lives in the button itself. The Actor column shows the account name of whoever took the snapshot
+  (`auto` for the auto-updater). Snapshots are stored as a fixed set of dedicated records in Open WebUI's own
   Files storage with their metadata (version, checksum, date, actor) on the file record itself —
   nothing about them lives in the function entry, so editing or re-pasting the function in the
   admin panel can never erase the rollback list. A restore re-validates the snapshot against its
   pinned sha256 before loading it, and snapshots the current code first, so restores are themselves
   undoable. Delete double-checks the snapshot is still the one shown in the list before removing
-  it and refuses with a refresh prompt if it changed.
+  it and refuses with a refresh prompt if it changed. Snapshot records are owned by the primary
+  admin account and are ordinary Open WebUI file records under the hood (there is no general file
+  browser in the Open WebUI UI, so they stay out of the way, but they are listable through the
+  files API) — manage them from this tab only: deleting them elsewhere, including the admin
+  "delete all files" maintenance action, destroys rollback points.
 - **Auto-update** — opt-in via `PIPE_DASHBOARD_UPDATE_AUTO`. In multi-worker deployments the
   workers elect a single update leader through Open WebUI's own Redis lock: only the leader checks
   GitHub (roughly every six hours, renewing its lease as it goes), while the other workers make no

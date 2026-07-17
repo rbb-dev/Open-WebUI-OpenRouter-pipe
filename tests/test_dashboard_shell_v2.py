@@ -170,6 +170,7 @@ def test_update_tab_markers():
     assert "Reinstall" in html
     assert "Checking" in html
     assert "Confirm restore" in html and "Confirm delete" in html
+    assert "this worker:" in html
     import re as _re
 
     native_dialogs = _re.findall(r"(?:(?<![\w$.])|window\.)(?:confirm|alert|prompt)\s*\(", html)

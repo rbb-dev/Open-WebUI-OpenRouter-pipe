@@ -61,6 +61,8 @@ class _FakeFunctions:
         self.updates: list[dict] = []
         self.meta_merges: list[dict] = []
         self.valves_row: dict | None = None
+        self.fail_content_write = False
+        self.fail_meta_merge = False
 
     async def get_function_valves_by_id(self, fid, db=None):
         return self.valves_row
@@ -69,6 +71,8 @@ class _FakeFunctions:
         return self.row if fid == PID else None
 
     async def update_function_by_id(self, fid, updated, db=None):
+        if self.fail_content_write and "content" in updated:
+            return None
         self.updates.append(dict(updated))
         for k, v in updated.items():
             setattr(self.row, k, v)
@@ -76,6 +80,8 @@ class _FakeFunctions:
         return self.row
 
     async def update_function_metadata_by_id(self, fid, metadata, db=None):
+        if self.fail_meta_merge:
+            return None
         self.meta_merges.append(dict(metadata))
         base = self.row.meta
         if hasattr(base, "model_dump"):
@@ -1519,6 +1525,11 @@ class _FakeXLock:
         self.available = available
         self.acquired = 0
         self.released = 0
+        pool = SimpleNamespace(disconnected=0)
+        pool.disconnect = lambda: setattr(pool, "disconnected", pool.disconnected + 1)
+        client = SimpleNamespace(closed=0, connection_pool=pool)
+        client.close = lambda: setattr(client, "closed", client.closed + 1)
+        self.redis = client
 
     def aquire_lock(self):
         self.acquired += 1
@@ -1607,6 +1618,109 @@ async def test_auto_never_applies_same_version(auto, fake_http):
     assert delay == us._PD_UPDATE_AUTO_INTERVAL
 
 
+# ── external-review hardening (M1/M2/M3/L2/L8) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_commit_content_write_refusal_fails_update(svc, wired):
+    wired.functions.fail_content_write = True
+    req = _request()
+    rev = wired.functions.row.updated_at
+    with pytest.raises(us.UpdateError) as exc:
+        await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=req)
+    assert exc.value.code == "validation_failed"
+    assert "database rejected" in exc.value.message
+    assert not hasattr(req.app.state, "FUNCTIONS")
+    for _ in range(50):
+        if not svc._commit_inflight:
+            break
+        await asyncio.sleep(0.01)
+    assert svc._commit_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_commit_meta_merge_refusal_is_tolerated(svc, wired):
+    wired.functions.fail_meta_merge = True
+    rev = wired.functions.row.updated_at
+    out = await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
+    assert out["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_commit_rev_guard_trips_before_loader(svc, wired, monkeypatch):
+    orig = svc.snapshot_current
+
+    async def _snap_and_bump(actor, owner):
+        wired.functions.row.updated_at += 7
+        return await orig(actor, owner)
+
+    monkeypatch.setattr(svc, "snapshot_current", _snap_and_bump)
+    rev = wired.functions.row.updated_at
+    with pytest.raises(us.UpdateError) as exc:
+        await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
+    assert exc.value.code == "stale_rev"
+    assert "loader" not in wired.events
+    assert not any("content" in u for u in wired.functions.updates)
+
+
+@pytest.mark.asyncio
+async def test_check_reads_row_valves_over_ctx(svc, fake_functions, fake_http):
+    _wire_latest(fake_http, repo="row/repo")
+    fake_functions.valves_row = {
+        "PIPE_DASHBOARD_UPDATE_ENABLE": False,
+        "PIPE_DASHBOARD_UPDATE_AUTO": True,
+        "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS": 5,
+        "PIPE_DASHBOARD_UPDATE_REPO": "row/repo",
+    }
+    out = await svc.check()
+    assert out["enabled"] is False
+    assert out["auto"]["enabled"] is True
+    assert out["auto"]["delay_hours"] == 5
+    assert out["repo"] == "row/repo"
+    assert out["latest"] is not None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reset_header_case_insensitive(svc, fake_functions, fake_http):
+    repo = "rbb-dev/Open-WebUI-OpenRouter-pipe"
+    fake_http.json_map[f"https://api.github.com/repos/{repo}/releases/latest"] = (
+        429,
+        None,
+        {"x-ratelimit-reset": "424242"},
+    )
+    out = await svc.check()
+    assert out["last_check_error"]["code"] == "rate_limited"
+    assert out["last_check_error"]["reset"] == "424242"
+
+
+@pytest.mark.asyncio
+async def test_contended_lock_client_disposed(svc, wired, monkeypatch):
+    xlock = _FakeXLock(available=False)
+    monkeypatch.setattr(us, "_distributed_lock", lambda *a, **k: xlock)
+    with pytest.raises(us.UpdateError):
+        await svc.apply(
+            {"rev": wired.functions.row.updated_at}, actor="admin", actor_id="u1", request=_request()
+        )
+    assert xlock.redis.closed == 1
+    assert xlock.redis.connection_pool.disconnected == 1
+
+
+@pytest.mark.asyncio
+async def test_released_lock_client_disposed(svc, wired, monkeypatch):
+    xlock = _FakeXLock()
+    monkeypatch.setattr(us, "_distributed_lock", lambda *a, **k: xlock)
+    out = await svc.apply(
+        {"rev": wired.functions.row.updated_at}, actor="admin", actor_id="u1", request=_request()
+    )
+    assert out["ok"] is True
+    for _ in range(50):
+        if xlock.redis.closed:
+            break
+        await asyncio.sleep(0.01)
+    assert xlock.redis.closed == 1
+    assert xlock.redis.connection_pool.disconnected == 1
+
+
 # ── leader election ──────────────────────────────────────────────────────────
 
 
@@ -1618,6 +1732,11 @@ class _FakeLease:
         self.lock_id = uuid.uuid4().hex
         self.lock_name = "lease"
         self.redis = self
+        self.closed = 0
+        self.connection_pool = None
+
+    def close(self):
+        self.closed += 1
 
     def get(self, name):
         return self.store.get(name)
@@ -1814,6 +1933,66 @@ async def test_no_redis_acts_as_solo_leader(svc, wired, monkeypatch):
     await asyncio.wait([task], timeout=5.0)
     assert ticks == [1]
     assert svc._auto_role == "solo"
+
+
+@pytest.mark.asyncio
+async def test_follower_probe_lease_disposed(svc, wired, monkeypatch):
+    store: dict = {"lease": "someone-else"}
+    leases: list = []
+
+    def _mk(*a, **k):
+        lease = _FakeLease(store)
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(us, "_distributed_lock", _mk)
+    monkeypatch.setattr(us, "_PD_UPDATE_AUTO_JITTER", (0.0, 0.0))
+    sleeps: list = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(svc, "_sleep", _sleep)
+    task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
+    await asyncio.wait([task], timeout=5.0)
+    assert leases and leases[0].closed >= 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_leader_lease_disposed(svc, wired, monkeypatch):
+    store: dict = {}
+    leases: list = []
+
+    def _mk(*a, **k):
+        lease = _FakeLease(store)
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(us, "_distributed_lock", _mk)
+    monkeypatch.setattr(us, "_PD_UPDATE_AUTO_JITTER", (0.0, 0.0))
+    ticks: list = []
+
+    async def _tick():
+        ticks.append(1)
+        return 10_000.0
+
+    monkeypatch.setattr(svc, "_auto_tick", _tick)
+
+    async def _fast(seconds):
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(svc, "_sleep", _fast)
+    task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if ticks:
+            break
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert leases and any(lease.closed for lease in leases)
 
 
 def test_pipe_init_attaches_registry_last():

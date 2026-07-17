@@ -143,6 +143,7 @@ UPDATE_TAB_JS = """
         var res = r.result || {};
         if (res.error) { if (!quiet) updFetchFailed(res); return; }
         updData = res;
+        updRetried = false;
         if (!quiet) updSetMsg('');
         updRender();
       }).catch(function (reason) {
@@ -202,8 +203,10 @@ UPDATE_TAB_JS = """
       latestHtml += updRow('Updates from', esc(String(d.repo || ''))
         + (d.repo_is_default === false ? '<span class="upd-badge">fork</span>' : ''));
       var auto = d.auto || {};
+      var autoRole = auto.role && auto.role !== 'pending'
+        ? ' (this worker: ' + esc(String(auto.role)) + ')' : '';
       if (auto.enabled) {
-        var autoTxt = 'on';
+        var autoTxt = 'on' + autoRole;
         if (auto.delay_hours === 0) { autoTxt += ' \\u2014 eligible immediately (no quarantine)'; }
         else if (d.update_available && auto.eligible_at) { autoTxt += ' \\u2014 eligible from ' + updFmtDate(auto.eligible_at); }
         if (auto.this_worker && auto.this_worker.paused_for_version) {
@@ -218,7 +221,7 @@ UPDATE_TAB_JS = """
         }
         latestHtml += updRow('Auto-update', autoTxt);
       } else {
-        latestHtml += updRow('Auto-update', 'off');
+        latestHtml += updRow('Auto-update', 'off' + autoRole);
       }
       updEl('upd-latest-body').innerHTML = latestHtml;
 
@@ -307,7 +310,10 @@ UPDATE_TAB_JS = """
       callAction(action, args).then(function (r) {
         updSetBusy(false);
         if (!r || r.ok !== true) {
-          updSetMsg(updErrText({ error: String((r && (r.error || r.detail)) || 'server_error') }), true);
+          updSetMsg(updErrText({
+            error: String((r && (r.error || r.detail)) || 'server_error'),
+            message: String((r && r.message) || '')
+          }), true);
           updFetch(true, true);
           return;
         }

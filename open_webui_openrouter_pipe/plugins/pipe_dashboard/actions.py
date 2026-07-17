@@ -256,7 +256,15 @@ def _update_service_of(pipe: Any) -> Any:
     return getattr(plugin, "update_service", None) if plugin is not None else None
 
 
-def _update_enabled(pipe: Any) -> bool:
+async def _update_enabled(pipe: Any) -> bool:
+    """Gate on the PERSISTED valve, not the in-memory copy (which lags on idle workers)."""
+    svc = _update_service_of(pipe)
+    if svc is not None:
+        try:
+            valves = await svc._row_valves()
+            return bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True))
+        except Exception:
+            pass
     return bool(getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True))
 
 
@@ -273,12 +281,13 @@ async def _run_update_call(coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
 
 @register_action("update_check", permission="read", schema={"force": optional(bool)})
 async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    if not _update_enabled(pipe):
+    if not await _update_enabled(pipe):
         return {"enabled": False}
     svc = _update_service_of(pipe)
     if svc is None:
         return {"error": "unavailable", "message": "update service not initialized"}
-    return await _run_update_call(svc.check(force=bool(args.get("force", False))))
+    force = bool(args.get("force", False)) and getattr(user, "role", None) == "admin"
+    return await _run_update_call(svc.check(force=force))
 
 
 @register_action(
@@ -288,7 +297,7 @@ async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     needs_request=True,
 )
 async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
-    if not _update_enabled(pipe):
+    if not await _update_enabled(pipe):
         return {"error": "disabled"}
     if getattr(user, "role", None) != "admin":
         return {"error": "forbidden"}
@@ -308,7 +317,7 @@ async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) ->
     needs_request=True,
 )
 async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
-    if not _update_enabled(pipe):
+    if not await _update_enabled(pipe):
         return {"error": "disabled"}
     if getattr(user, "role", None) != "admin":
         return {"error": "forbidden"}
@@ -327,7 +336,7 @@ async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) 
     schema={"file_id": str, "sha256": str},
 )
 async def _update_snapshot_delete(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    if not _update_enabled(pipe):
+    if not await _update_enabled(pipe):
         return {"error": "disabled"}
     if getattr(user, "role", None) != "admin":
         return {"error": "forbidden"}

@@ -219,10 +219,12 @@ class UpdateService:
             raise UpdateError("validation_failed", "function row not found")
         return row
 
-    def _repo(self) -> str:
+    def _repo(self, value: Any = None) -> str:
         import re
 
-        repo = str(getattr(self._valves(), "PIPE_DASHBOARD_UPDATE_REPO", "") or "")
+        if value is None:
+            value = getattr(self._valves(), "PIPE_DASHBOARD_UPDATE_REPO", "")
+        repo = str(value or "")
         if not re.match(_REPO_RE_PATTERN, repo):
             raise UpdateError("bad_repo_valve", f"invalid owner/repo value: {repo!r}")
         return repo
@@ -325,14 +327,21 @@ class UpdateService:
         if status == 404:
             raise UpdateError("repo_not_found", f"no releases found for {repo}")
         if status in (403, 429):
-            reset = headers.get("X-RateLimit-Reset") or headers.get("Retry-After") or ""
+            reset = ""
+            for wanted in ("x-ratelimit-reset", "retry-after"):
+                for key, value in headers.items():
+                    if str(key).lower() == wanted and str(value).strip():
+                        reset = str(value)
+                        break
+                if reset:
+                    break
             err = UpdateError("rate_limited", "")
             setattr(err, "reset", reset)
             raise err
         raise UpdateError("offline", f"GitHub returned HTTP {status}")
 
     async def check(self, *, force: bool = False) -> dict[str, Any]:
-        valves = self._valves()
+        valves = await self._row_valves()
         pipe = self._pipe()
         row = await self._row()
         mode = self.detect_mode(getattr(row, "content", "") or "")
@@ -343,7 +352,7 @@ class UpdateService:
         release: dict | None = None
         cached = False
         try:
-            repo = self._repo()
+            repo = self._repo(valves.get("PIPE_DASHBOARD_UPDATE_REPO"))
             memo = self._last_good
             if (
                 not force
@@ -379,7 +388,7 @@ class UpdateService:
             no_matching_asset = update_available and installed_asset is None
             published_ts = self._parse_published(latest.get("published_at"))
             if published_ts is not None:
-                delay_h = int(getattr(valves, "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS", 168) or 0)
+                delay_h = int(valves.get("PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS", 168) or 0)
                 eligible_at = published_ts + delay_h * 3600.0
 
         try:
@@ -410,9 +419,9 @@ class UpdateService:
             this_worker = dict(self._auto_last)
 
         memo = self._last_good
-        repo_shown = repo or str(getattr(valves, "PIPE_DASHBOARD_UPDATE_REPO", "") or "")
+        repo_shown = repo or str(valves.get("PIPE_DASHBOARD_UPDATE_REPO") or "")
         return {
-            "enabled": bool(getattr(valves, "PIPE_DASHBOARD_UPDATE_ENABLE", True)),
+            "enabled": bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True)),
             "repo": repo_shown,
             "repo_is_default": repo_shown == DEFAULT_REPO,
             "installed": {
@@ -428,8 +437,8 @@ class UpdateService:
             "cached": cached,
             "last_check_error": dict(self._last_error) if self._last_error else None,
             "auto": {
-                "enabled": bool(getattr(valves, "PIPE_DASHBOARD_UPDATE_AUTO", False)),
-                "delay_hours": int(getattr(valves, "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS", 168) or 0),
+                "enabled": bool(valves.get("PIPE_DASHBOARD_UPDATE_AUTO", False)),
+                "delay_hours": int(valves.get("PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS", 168) or 0),
                 "eligible_at": eligible_at,
                 "last_success": auto_success,
                 "this_worker": this_worker,
@@ -781,12 +790,29 @@ class UpdateService:
             raise UpdateError("update_in_progress", "another update is already running on this worker")
 
     @staticmethod
+    def _dispose_lock(lock: Any | None) -> None:
+        client = getattr(lock, "redis", None)
+        if client is None:
+            return
+        try:
+            client.close()
+        except Exception:
+            pass
+        pool = getattr(client, "connection_pool", None)
+        if pool is not None:
+            try:
+                pool.disconnect()
+            except Exception:
+                pass
+
+    @staticmethod
     async def _acquire_cross_worker() -> Any | None:
         lock = _distributed_lock()
         if lock is None:
             return None
         acquired = await asyncio.to_thread(lock.aquire_lock)
         if not acquired:
+            UpdateService._dispose_lock(lock)
             raise UpdateError("update_in_progress", "another worker is applying an update")
         return lock
 
@@ -798,16 +824,27 @@ class UpdateService:
             await asyncio.to_thread(lock.release_lock)
         except Exception:
             _pd_update_log.warning("update: cross-worker lock release failed", exc_info=True)
+        UpdateService._dispose_lock(lock)
 
     async def _commit(
         self, content: str, rev: int, request: Any, actor: str, from_version: str
     ) -> dict[str, Any]:
+        await self._rev_guard(rev)
         instance, frontmatter, final = await self._reload_via_loader(content)
         await self._rev_guard(rev)
         pipe_id = self._pipe().id
         functions = self._functions()
-        await functions.update_function_by_id(pipe_id, {"content": final})
-        await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
+        written = await functions.update_function_by_id(pipe_id, {"content": final})
+        if written is None:
+            raise UpdateError(
+                "validation_failed",
+                "the database rejected the function-row write; the previous version remains active",
+            )
+        merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
+        if merged is None:
+            _pd_update_log.warning(
+                "update: manifest merge was refused (cosmetic); content is persisted"
+            )
         if request is not None:
             import open_webui.utils.plugin as owp
 
@@ -1146,7 +1183,8 @@ class UpdateService:
                     continue
                 if not await asyncio.to_thread(lease.aquire_lock):
                     self._auto_role = "follower"
-                    lease = None
+                    probe, lease = lease, None
+                    self._dispose_lock(probe)
                     await self._sleep(_PD_UPDATE_FOLLOWER_POLL_S)
                     continue
                 self._auto_role = "leader"
@@ -1159,10 +1197,12 @@ class UpdateService:
                         released.release_lock()
                     except Exception:
                         pass
+                    self._dispose_lock(released)
         except asyncio.CancelledError:
             if lease is not None:
                 try:
                     lease.release_lock()
                 except Exception:
                     pass
+                self._dispose_lock(lease)
             return
