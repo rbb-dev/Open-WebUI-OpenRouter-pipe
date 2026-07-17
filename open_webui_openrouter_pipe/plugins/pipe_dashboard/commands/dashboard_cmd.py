@@ -1649,6 +1649,6 @@ async def handle_dashboard(ctx: CommandContext) -> str:
     dash_id = "dash-" + secrets.token_hex(4)
     await ctx.emit_html(_build_dashboard_shell(dash_id))
     return (
-        "Live dashboard rendered below. If no panel appears, enable iframe embeds "
+        "Live dashboard rendered above. If no panel appears, enable iframe embeds "
         "(Open WebUI Settings → Interface → iframe sandbox allow same origin)."
     )
