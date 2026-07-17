@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import threading
 import time
@@ -88,13 +89,16 @@ def _client_ip(request: Any) -> Any:
     return request.client.host if request.client else None
 
 
-async def _resolve_fresh(request: Any, fid: str) -> Any:
+async def _resolve_fresh(request: Any, fid: str) -> tuple[Any, Any] | None:
     try:
         from open_webui.functions import get_function_module_by_id
 
-        await get_function_module_by_id(request, fid)
+        fresh_pipe = await get_function_module_by_id(request, fid)
         mod = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions")
-        return getattr(mod, "dispatch_action", None)
+        dispatch = getattr(mod, "dispatch_action", None)
+        if dispatch is None:
+            return None
+        return dispatch, fresh_pipe
     except Exception:
         _pd_http_log.warning("pipe_dashboard action-route reconcile failed", exc_info=True)
         return None
@@ -118,10 +122,19 @@ async def _action_route(request: Request, body: ActionBody):
                     _reconcile_attempted = True
                     _fresh_dispatch = await _resolve_fresh(request, pipe.id)
         if _fresh_dispatch is not None:
-            dispatch = _fresh_dispatch
-    status, payload = await dispatch(
-        pipe, user, body.action, body.args, client_ip=_client_ip(request),
-    )
+            dispatch, fresh_pipe = _fresh_dispatch
+            if fresh_pipe is not None:
+                pipe = fresh_pipe
+    kwargs: dict[str, Any] = {"client_ip": _client_ip(request)}
+    try:
+        params = inspect.signature(dispatch).parameters
+        if "request" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            kwargs["request"] = request
+    except (TypeError, ValueError):
+        kwargs["request"] = request
+    status, payload = await dispatch(pipe, user, body.action, body.args, **kwargs)
     return JSONResponse(payload, status_code=status)
 
 

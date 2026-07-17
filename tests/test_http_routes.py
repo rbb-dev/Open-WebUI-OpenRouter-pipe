@@ -207,15 +207,19 @@ def test_route_self_heals_unknown_action(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    seen: dict = {}
+
     async def _fresh(pipe, user, name, args, client_ip=None):
+        seen["pipe"] = pipe
         return 200, {"ok": True, "result": {"healed": name}}
 
+    fresh_pipe = SimpleNamespace(id="openrouter", marker="fresh")
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
     monkeypatch.setattr(http_routes, "bearer_user",
                         AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
-    monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=_fresh))
+    monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, fresh_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_attempted", False)
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter"))
@@ -226,6 +230,7 @@ def test_route_self_heals_unknown_action(monkeypatch):
     http_routes._coarse_state.clear()
     r = client.post(http_routes._ACTION_PATH, json={"action": "config_get_v99", "args": {}})
     assert r.status_code == 200
+    assert getattr(seen["pipe"], "marker", "") == "fresh"
     assert r.json()["result"]["healed"] == "config_get_v99"
     http_routes._registered_paths.clear()
 

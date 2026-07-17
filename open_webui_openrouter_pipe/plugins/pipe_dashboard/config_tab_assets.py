@@ -427,7 +427,14 @@ function showConflict(){
   const c=$("#conflict"); if(!c)return;
   c.style.display="flex";
   c.innerHTML='<span>Another administrator changed the configuration while you were editing.</span><button type="button" id="cfgReload">Reload latest</button>';
-  const rb=$("#cfgReload"); if(rb)rb.onclick=()=>{ if(!Object.keys(edits).length||confirm("Reload the latest configuration and discard your unsaved changes?"))loadConfig(); };
+  const rb=$("#cfgReload"); if(rb)rb.onclick=()=>{
+    if(!Object.keys(edits).length){ loadConfig(); return; }
+    if(rb.dataset.cfgArmed==="1"){
+      delete rb.dataset.cfgArmed; rb.textContent=rb.dataset.cfgLabel||"Reload"; loadConfig(); return;
+    }
+    rb.dataset.cfgArmed="1"; rb.dataset.cfgLabel=rb.textContent; rb.textContent="Discard changes?";
+    setTimeout(()=>{ if(rb.dataset.cfgArmed==="1"){ delete rb.dataset.cfgArmed; rb.textContent=rb.dataset.cfgLabel||"Reload"; } },5000);
+  };
   reportHeight();
 }
 function hideConflict(){ const c=$("#conflict"); if(c){c.style.display="none";c.innerHTML="";} }
@@ -468,7 +475,6 @@ $("#expandAll").onclick=()=>{[...new Set(VALVES.map(v=>v.top))].forEach(t=>openG
 $("#collapseAll").onclick=()=>{[...new Set(VALVES.map(v=>v.top))].forEach(t=>openG[t]=false);buildTree();};
 $("#save").onclick=openReview;
 $("#discard").onclick=()=>{ if(!Object.keys(edits).length)return; Object.keys(edits).forEach(n=>delete edits[n]); invalid.clear(); updateBar(); if(SEL)renderDetail(byName[SEL]); buildTree(); toast("Discarded all changes"); };
-window.addEventListener("beforeunload",e=>{ if(Object.keys(edits).length){e.preventDefault();e.returnValue="";} });
 updateBar();
 cfgFetch=loadConfig;
 cfgOnEvent=function(rev){

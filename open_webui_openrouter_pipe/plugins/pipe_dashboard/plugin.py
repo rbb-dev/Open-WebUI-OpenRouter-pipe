@@ -20,6 +20,7 @@ from .http_routes import register_action_route, set_pipe_getter
 from .dashboard_socket import register_socket_handler
 from .dashboard_publisher import run_dashboard_publisher, set_snapshot_getter
 from .session_tracker import SessionTracker
+from .update_service import DEFAULT_REPO
 from .usage_store import UsageStore
 
 # Trigger command auto-imports so @register_command decorators fire
@@ -91,12 +92,63 @@ class PipeDashboardPlugin(PluginBase):
             title="Usage record retention (days)",
             description="How long collected usage records are kept before the purge task deletes them.",
         )),
+        "PIPE_DASHBOARD_UPDATE_ENABLE": (bool, Field(
+            default=True,
+            title="Enable the Update tab",
+            description=(
+                "Show the dashboard's Update tab and allow its actions (check, apply, restore, "
+                "delete snapshot). Off: the tab reports disabled and every update action fails "
+                "closed, including auto-update."
+            ),
+        )),
+        "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP": (int, Field(
+            default=3,
+            ge=1,
+            le=10,
+            title="Update snapshots to keep",
+            description=(
+                "How many previous-version snapshots the updater retains in Open WebUI Files. "
+                "Oldest snapshots are pruned (file record first, then blob) when a new one "
+                "exceeds the limit."
+            ),
+        )),
+        "PIPE_DASHBOARD_UPDATE_REPO": (str, Field(
+            default=DEFAULT_REPO,
+            title="Update source repo (owner/repo)",
+            description=(
+                "GitHub repo the updater tracks for tagged releases — point it at a fork to "
+                "self-update from your own builds. owner/repo on github.com only; the browser "
+                "never supplies it."
+            ),
+        )),
+        "PIPE_DASHBOARD_UPDATE_AUTO": (bool, Field(
+            default=False,
+            title="Auto-update",
+            description=(
+                "Apply eligible new releases automatically after the quarantine delay. Runs "
+                "headless: whenever this and the Update tab are enabled, the background task "
+                "keeps updating even while the Pipe Dashboard model itself is switched off."
+            ),
+        )),
+        "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS": (int, Field(
+            default=168,
+            ge=0,
+            le=720,
+            title="Auto-update quarantine (hours)",
+            description=(
+                "A release must be at least this old before auto-update applies it — a bad "
+                "release published and yanked within the window never reaches auto-updaters. "
+                "0 = apply immediately, no quarantine. Default 168 = 7 days."
+            ),
+        )),
     }
     plugin_user_valves = {}
 
     def __init__(self) -> None:
         super().__init__()
         self._publisher_task: asyncio.Task[None] | None = None
+        self._auto_update_task: asyncio.Task[None] | None = None
+        self.update_service: Any = None
         self._usage_store = UsageStore()
         self._tracker = SessionTracker(pricing_fn=_registry_pricing, name_fn=_registry_model_name)
         self._tracker.on_finalize = self._persist_usage_row
@@ -110,9 +162,28 @@ class PipeDashboardPlugin(PluginBase):
         set_snapshot_getter(self._live_snapshot)
         register_action_route()
 
+        from .update_service import UpdateService
+
+        self.update_service = UpdateService(self._get_pipe)
+
         # Start the per-worker stats publisher background task.
         # The publisher is idle until a dashboard joins the viewers room.
         self._maybe_start_publisher(self._get_pipe)
+        self._maybe_start_auto_update()
+
+    def _maybe_start_auto_update(self) -> None:
+        """Start the auto-update loop task if an event loop is available."""
+        if self.update_service is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logging.getLogger(__name__).debug("No event loop — auto-update task deferred")
+            return
+        if self._auto_update_task is None or self._auto_update_task.done():
+            self._auto_update_task = loop.create_task(
+                self.update_service.run_auto_loop(), name="openrouter-update-auto"
+            )
 
     def _maybe_start_publisher(self, get_pipe: Any) -> None:
         """Start the stats publisher if an event loop is available."""
@@ -162,6 +233,7 @@ class PipeDashboardPlugin(PluginBase):
             set_pipe_getter(get_pipe)
             register_action_route()
             self._maybe_start_publisher(get_pipe)
+            self._maybe_start_auto_update()
 
     async def _ensure_model_overlay(self, display_name: str, description: str) -> None:
         """Create or update the OWUI Models table entry for this virtual model."""
@@ -407,6 +479,10 @@ class PipeDashboardPlugin(PluginBase):
         if task is not None and not task.done():
             task.cancel()
             pending.append(task)
+        auto_task = self._auto_update_task
+        if auto_task is not None and not auto_task.done():
+            auto_task.cancel()
+            pending.append(auto_task)
         writer_running = getattr(self._usage_store, "writer_alive", False)
         joined_inline = False
         try:

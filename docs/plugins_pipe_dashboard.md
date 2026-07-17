@@ -127,6 +127,61 @@ The Storage tab summarizes the artifact store:
 
 The Config tab lists every admin valve for editing in place. See [Editing configuration](#editing-configuration) and [Live configuration updates](#live-configuration-updates) below.
 
+### Update
+
+The Update tab self-updates the pipe from tagged GitHub releases of the repo configured in
+`PIPE_DASHBOARD_UPDATE_REPO` (the upstream project by default; point it at a fork to ship your own
+builds — forks inherit the release workflow, so assets, digests, and the changelog keep working).
+
+- **Installed / Latest cards** — installed version with a flat/compressed variant badge (locally
+  derived; the card shows no dates — the row's timestamps are modification times, not install
+  times, and a release date belongs to the release, shown on the Latest card); the latest release with date, size, "Last checked" (the last *successful* check; a
+  separate line appears while checks are failing), the tracked repo (with a `fork` badge when it is
+  not the default), and the auto-update status. Opening the tab checks automatically (memoized for a
+  minute); **Check now** forces a fresh check.
+- **Changelog** — the release page's own generated notes, rendered as escaped text. A fork that
+  strips its CI ships no notes; the block then reads "changelog unavailable".
+- **Update / Reinstall** — opens a confirm modal showing from→to, size, and a **Compressed bundle**
+  checkbox preselected to the installed variant (an unavailable variant is disabled; `no_plugins`
+  bundles are never offered — they would remove this dashboard). When you are already on the latest
+  version the button reads **Reinstall** and re-applies the same release — that is the tab-native way
+  to switch between the flat and compressed variants. Downgrades are refused here; restore a snapshot
+  instead. Releases older than 2.7.0 — the first release carrying this tab — are refused outright:
+  installing one would remove the updater itself. Applying downloads the asset (8 MiB cap), verifies its
+  sha256 against the release digest, checks the frontmatter (id, newer version, required Open WebUI
+  version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
+  loader, and only then writes the function row. A load failure surfaces the real error in the tab
+  and the pipe keeps serving the old code. The installing worker pauses briefly (up to ~90s); other
+  workers pick the new version up on their next request. After a successful update, reload the
+  dashboard to load the matching UI.
+- **Previous versions** — the retained snapshots (`PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP`) with
+  Restore and Delete. Snapshots are stored as a fixed set of dedicated records in Open WebUI's own
+  Files storage with their metadata (version, checksum, date, actor) on the file record itself —
+  nothing about them lives in the function entry, so editing or re-pasting the function in the
+  admin panel can never erase the rollback list. A restore re-validates the snapshot against its
+  pinned sha256 before loading it, and snapshots the current code first, so restores are themselves
+  undoable. Delete double-checks the snapshot is still the one shown in the list before removing
+  it and refuses with a refresh prompt if it changed.
+- **Auto-update** — opt-in via `PIPE_DASHBOARD_UPDATE_AUTO`. In multi-worker deployments the
+  workers elect a single update leader through Open WebUI's own Redis lock: only the leader checks
+  GitHub (roughly every six hours, renewing its lease as it goes), while the other workers make no
+  GitHub calls at all — they probe the lease hourly and take over if the leader dies or restarts
+  (a gracefully stopped leader releases the lease immediately). Worker count therefore never
+  multiplies update traffic. Single-worker installs (no Redis) skip the election and check directly.
+  The leader applies a release once it is older than `PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS`
+  (default 7 days — a bad release yanked within the window never reaches auto-updaters, and a fixed
+  follow-up release supersedes it). The task runs headless (it keeps working while the dashboard
+  model is disabled, as long as `PIPE_DASHBOARD_UPDATE_ENABLE` is on), re-reads its valves from the
+  database each cycle, backs off on GitHub rate limits (honoring the reset header) and network
+  failures without ever losing an update, and pauses a release on that worker after a deterministic
+  failure until a restart, a newer release, or a successful manual apply. The tab's Auto-update line
+  shows this worker's role (leader/follower), successes, and pauses.
+
+Requirements for the checks and downloads: unauthenticated GitHub API (shared 60/hour budget per
+egress IP — checks are memoized, and only one worker per deployment polls in the background).
+Apply, restore, and snapshot-delete additionally require the acting account to hold the `admin`
+role; package/stub installs show a pin-bump note instead of an Update button.
+
 ### About
 
 The About tab lists the registered plugins by name, id, and version.
@@ -162,7 +217,13 @@ A tab reacts according to its edit state:
 
 ## Requirements
 
-**Live mode requires the iframe sandbox setting.** Open WebUI's **Settings → Interface → iframe sandbox allow same origin** must be enabled for the live feed. With that setting off, the dashboard shows a static notice and opens no live feed.
+**The interactive dashboard requires the iframe sandbox setting.** Open WebUI's **Settings →
+Interface → iframe sandbox allow same origin** must be enabled. Without it the embedded page runs
+with an opaque origin and cannot read the sign-in token, so every server-backed tab — Config,
+Usage, and Update, as well as the live feed — fails to load or act (the Update tab says so
+explicitly and points at this setting). Native browser dialogs are additionally unavailable in the
+sandbox regardless of settings, which is why every confirmation in the dashboard uses inline
+click-again-to-confirm buttons instead.
 
 **Content Security Policy.** If a restrictive `IFRAME_CSP` is configured, allow `script-src 'unsafe-inline'` and `connect-src 'self'` — the same policy the [OpenRouter Fusion panel](openrouter_fusion.md) uses.
 

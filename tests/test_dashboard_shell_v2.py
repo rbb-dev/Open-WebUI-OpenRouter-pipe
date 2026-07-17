@@ -148,4 +148,33 @@ def test_config_live_update_wiring():
     assert "inflightSave" in html and "lastSeenRev" in html
     assert "Nothing is saved until you confirm." in html
     assert "Nothing is written" not in html
-    assert "discard your unsaved changes" in html
+    assert "Discard changes?" in html and "cfgArmed" in html
+
+
+def test_update_tab_markers():
+    html = _build_dashboard_shell("dash-v2")
+    config = html.index('data-tab="config"')
+    update = html.index('data-tab="update"')
+    about = html.index('data-tab="about"')
+    assert config < update < about
+    assert 'id="dash-v2-tab-update"' in html
+    assert "updLoaded" in html and "updFetch" in html
+    for marker in ("upd-installed", "upd-latest", "upd-snapshots", "upd-modal", "upd-notes"):
+        assert marker in html
+    assert "update_check" in html and "update_apply" in html
+    assert "update_restore" in html and "update_snapshot_delete" in html
+    for fn in ("updFetch", "updRender", "updOpenModal", "updModalRows", "updRunWrite", "updSetBusy",
+               "updNotesHtml", "updFetchFailed", "updEnterTab"):
+        assert html.count(fn) >= 2, f"{fn} is defined but never called"
+    assert "upd-notes-summary" in html
+    assert "Reinstall" in html
+    assert "Checking" in html
+    assert "Confirm restore" in html and "Confirm delete" in html
+    import re as _re
+
+    native_dialogs = _re.findall(r"(?:(?<![\w$.])|window\.)(?:confirm|alert|prompt)\s*\(", html)
+    assert not native_dialogs, (
+        f"native dialog calls found in the dashboard shell: {native_dialogs} - "
+        "confirm/alert/prompt are silently blocked inside Open WebUI's sandboxed "
+        "iframe (no allow-modals); use inline arm/confirm UI instead"
+    )

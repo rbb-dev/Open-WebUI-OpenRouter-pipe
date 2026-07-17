@@ -238,6 +238,72 @@ def _install_open_webui_stubs() -> None:
 
     utils_pkg = cast(Any, _ensure_module("open_webui.utils"))
     utils_pkg.__path__ = []  # mark as package
+
+    # Loader seams used by the pipe_dashboard update service. Faithful minimal
+    # copies of OWUI 0.10.2 behavior; a real open_webui import always wins
+    # (attributes are only added when missing).
+    plugin_mod = cast(Any, _ensure_module("open_webui.utils.plugin"))
+    if not hasattr(plugin_mod, "extract_frontmatter"):
+        def _extract_frontmatter(content: str) -> dict:
+            import re as _re
+
+            frontmatter: dict[str, str] = {}
+            pattern = _re.compile(r"^\s*([a-z_]+):\s*(.*)\s*$", _re.IGNORECASE)
+            try:
+                lines = content.splitlines()
+                if len(lines) < 1 or lines[0].strip() != '"""':
+                    return {}
+                for line in lines[1:]:
+                    if '"""' in line:
+                        break
+                    match = pattern.match(line)
+                    if match:
+                        key, value = match.groups()
+                        frontmatter[key.strip()] = value.strip()
+            except Exception:
+                return {}
+            return frontmatter
+
+        plugin_mod.extract_frontmatter = _extract_frontmatter
+    if not hasattr(plugin_mod, "replace_imports"):
+        def _replace_imports(content: str) -> str:
+            for old, new in {
+                "from utils": "from open_webui.utils",
+                "from apps": "from open_webui.apps",
+                "from main": "from open_webui.main",
+                "from config": "from open_webui.config",
+            }.items():
+                content = content.replace(old, new)
+            return content
+
+        plugin_mod.replace_imports = _replace_imports
+    if not hasattr(plugin_mod, "load_function_module_by_id"):
+        async def _load_function_module_by_id(function_id: str, content: str | None = None):
+            raise NotImplementedError(
+                "patch open_webui.utils.plugin.load_function_module_by_id in tests"
+            )
+
+        plugin_mod.load_function_module_by_id = _load_function_module_by_id
+    if not hasattr(plugin_mod, "get_functions_cache"):
+        def _plugin_state_cache(request: Any, name: str) -> dict:
+            state = request.app.state
+            if not hasattr(state, name):
+                setattr(state, name, {})
+            return getattr(state, name)
+
+        plugin_mod.get_functions_cache = lambda request: _plugin_state_cache(request, "FUNCTIONS")
+        plugin_mod.get_function_contents_cache = lambda request: _plugin_state_cache(
+            request, "FUNCTION_CONTENTS"
+        )
+    utils_pkg.plugin = plugin_mod
+
+    env_mod = cast(Any, _ensure_module("open_webui.env"))
+    if not hasattr(env_mod, "VERSION"):
+        env_mod.VERSION = "0.10.2"
+    if not hasattr(env_mod, "SRC_LOG_LEVELS"):
+        env_mod.SRC_LOG_LEVELS = {}
+    open_webui.env = env_mod
+
     misc_mod = cast(Any, _ensure_module("open_webui.utils.misc"))
 
     def _openai_chat_message_template(model: str) -> dict[str, Any]:

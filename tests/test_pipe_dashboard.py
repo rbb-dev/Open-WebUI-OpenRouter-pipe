@@ -906,3 +906,28 @@ class TestDashboardShell:
         import secrets
         ids = {"dash-" + secrets.token_hex(4) for _ in range(20)}
         assert len(ids) == 20
+
+
+@pytest.mark.asyncio
+async def test_update_service_constructed_and_auto_task_started():
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateService
+
+    plugin = _make_plugin()
+    assert isinstance(plugin.update_service, UpdateService)
+    task = plugin._auto_update_task
+    assert task is not None and not task.done()
+    result = plugin.on_shutdown()
+    if result is not None:
+        import asyncio as _aio
+
+        await _aio.gather(result, return_exceptions=True)
+    assert task.cancelled() or task.done()
+
+
+def test_update_plugin_valves_declared_with_defaults():
+    pv = PipeDashboardPlugin.plugin_valves
+    assert pv["PIPE_DASHBOARD_UPDATE_ENABLE"][1].default is True
+    assert pv["PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP"][1].default == 3
+    assert pv["PIPE_DASHBOARD_UPDATE_REPO"][1].default == "rbb-dev/Open-WebUI-OpenRouter-pipe"
+    assert pv["PIPE_DASHBOARD_UPDATE_AUTO"][1].default is False
+    assert pv["PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS"][1].default == 168

@@ -302,3 +302,206 @@ async def test_config_set_no_emit_when_no_edits(monkeypatch, fake_functions):
     )
     assert result["saved"] == 0
     spy.assert_not_awaited()
+
+
+def test_validate_optional_key_absent_is_valid():
+    ok, err = actions._validate({}, {"force": actions.optional(bool)})
+    assert ok is True
+    assert err == ""
+
+
+def test_validate_optional_key_present_right_type():
+    ok, _ = actions._validate({"force": True}, {"force": actions.optional(bool)})
+    assert ok is True
+
+
+def test_validate_optional_key_present_wrong_type():
+    ok, err = actions._validate({"force": "yes"}, {"force": actions.optional(bool)})
+    assert ok is False
+    assert "force" in err
+
+
+def test_validate_required_tuple_union():
+    schema = {"rev": (int, str)}
+    assert actions._validate({"rev": 5}, schema)[0] is True
+    assert actions._validate({"rev": "5"}, schema)[0] is True
+    assert actions._validate({"rev": 5.0}, schema)[0] is False
+    assert actions._validate({}, schema)[0] is False
+
+
+def test_validate_optional_tuple_union():
+    schema = {"file_id": str, "rev": actions.optional((int, str))}
+    assert actions._validate({"file_id": "f"}, schema)[0] is True
+    assert actions._validate({"file_id": "f", "rev": "x"}, schema)[0] is True
+    assert actions._validate({"file_id": "f", "rev": 1.5}, schema)[0] is False
+
+
+def test_validate_required_plain_type_unchanged():
+    schema = {"message": str}
+    assert actions._validate({"message": "hi"}, schema)[0] is True
+    assert actions._validate({}, schema)[0] is False
+    assert actions._validate({"message": 3}, schema)[0] is False
+
+
+# ── update actions ───────────────────────────────────────────────────────────
+
+
+class _FakeUpdateService:
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.raise_error: Exception | None = None
+
+    async def check(self, *, force=False):
+        self.calls.append(("check", {"force": force}))
+        if self.raise_error:
+            raise self.raise_error
+        return {"enabled": True, "update_available": True, "rev": 7}
+
+    async def apply(self, args, *, actor, actor_id, request):
+        self.calls.append(("apply", {"args": dict(args), "actor": actor, "actor_id": actor_id, "request": request}))
+        if self.raise_error:
+            raise self.raise_error
+        return {"ok": True, "from_version": "a", "to_version": "b"}
+
+    async def restore(self, args, *, actor, actor_id, request):
+        self.calls.append(("restore", {"args": dict(args), "request": request}))
+        if self.raise_error:
+            raise self.raise_error
+        return {"ok": True, "from_version": "b", "to_version": "a"}
+
+    async def snapshot_delete(self, args):
+        self.calls.append(("snapshot_delete", {"args": dict(args)}))
+        if self.raise_error:
+            raise self.raise_error
+        return {"ok": True, "snapshots": []}
+
+
+def _update_pipe(svc, enabled=True):
+    valves = SimpleNamespace(PIPE_DASHBOARD_UPDATE_ENABLE=enabled)
+    plugin = SimpleNamespace(plugin_id="pipe-dashboard", update_service=svc)
+    registry = SimpleNamespace(_plugins=[plugin])
+    return SimpleNamespace(id="p", valves=valves, _plugin_registry=registry)
+
+
+def _req():
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+
+@pytest.fixture()
+def update_env(monkeypatch):
+    monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
+    monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=True))
+    svc = _FakeUpdateService()
+    return SimpleNamespace(svc=svc, pipe=_update_pipe(svc))
+
+
+@pytest.mark.asyncio
+async def test_update_check_delegates_and_passes_force(update_env):
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="user"), "update_check", {"force": True}, request=_req()
+    )
+    assert status == 200
+    assert payload["result"]["update_available"] is True
+    assert update_env.svc.calls == [("check", {"force": True})]
+
+
+@pytest.mark.asyncio
+async def test_update_check_disabled_short_circuits(update_env):
+    update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = False
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(), "update_check", {}, request=_req()
+    )
+    assert status == 200
+    assert payload["result"] == {"enabled": False}
+    assert update_env.svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_writes_require_admin(update_env):
+    for name, args in (
+        ("update_apply", {"rev": 1}),
+        ("update_restore", {"rev": 1, "file_id": "f"}),
+        ("update_snapshot_delete", {"file_id": "f", "sha256": "s"}),
+    ):
+        status, payload = await actions.dispatch_action(
+            update_env.pipe, _user(role="user"), name, args, request=_req()
+        )
+        assert status == 200
+        assert payload["result"]["error"] == "forbidden"
+    assert update_env.svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_writes_disabled_gate(update_env):
+    update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = False
+    for name, args in (
+        ("update_apply", {"rev": 1}),
+        ("update_restore", {"rev": 1, "file_id": "f"}),
+        ("update_snapshot_delete", {"file_id": "f", "sha256": "s"}),
+    ):
+        actions._rate_state.clear()
+        status, payload = await actions.dispatch_action(
+            update_env.pipe, _user(role="admin"), name, args, request=_req()
+        )
+        assert status == 200
+        assert payload["result"]["error"] == "disabled"
+    assert update_env.svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_apply_happy_passes_request_and_actor(update_env):
+    req = _req()
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(uid="boss", role="admin"), "update_apply",
+        {"rev": "7", "compressed": True}, request=req,
+    )
+    assert status == 200
+    assert payload["result"]["ok"] is True
+    kind, call = update_env.svc.calls[0]
+    assert kind == "apply"
+    assert call["args"] == {"rev": "7", "compressed": True}
+    assert call["actor"] == "boss"
+    assert call["actor_id"] == "boss"
+    assert call["request"] is req
+
+
+@pytest.mark.asyncio
+async def test_update_apply_maps_update_error_to_result(update_env):
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateError
+
+    update_env.svc.raise_error = UpdateError("stale_rev", "row changed")
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="admin"), "update_apply", {"rev": 1}, request=_req()
+    )
+    assert status == 200
+    assert payload["result"]["error"] == "stale_rev"
+    assert "row changed" in payload["result"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_apply_needs_request_fails_closed(update_env):
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="admin"), "update_apply", {"rev": 1}, request=None
+    )
+    assert status == 400
+    assert update_env.svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_apply_schema_rejects_bad_compressed(update_env):
+    status, _payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="admin"), "update_apply",
+        {"rev": 1, "compressed": "yes"}, request=_req(),
+    )
+    assert status == 400
+
+
+@pytest.mark.asyncio
+async def test_update_snapshot_delete_happy(update_env):
+    status, payload = await actions.dispatch_action(
+        update_env.pipe, _user(role="admin"), "update_snapshot_delete",
+        {"file_id": "f", "sha256": "s"}, request=_req(),
+    )
+    assert status == 200
+    assert payload["result"]["ok"] is True
+    assert update_env.svc.calls[0][0] == "snapshot_delete"

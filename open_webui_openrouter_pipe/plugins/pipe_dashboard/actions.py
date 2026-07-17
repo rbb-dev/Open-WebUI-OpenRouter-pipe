@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping, NamedTuple
 
 from .authz import can_act, can_view
 from .config_service import describe_valves, drift, json_safe, merge_for_save
 from .dashboard_socket import emit_config_changed
+from .update_service import UpdateError
 
 _pd_actions_log = logging.getLogger(__name__)
 
@@ -22,31 +23,55 @@ _PD_ACTION_MIN_INTERVAL = 1.0
 _rate_state: dict[tuple[str, str], float] = {}
 
 
+class _OptionalKey(NamedTuple):
+    types: type | tuple[type, ...]
+
+
+def optional(types: type | tuple[type, ...]) -> _OptionalKey:
+    return _OptionalKey(types)
+
+
+SchemaValue = type | tuple[type, ...] | _OptionalKey
+
+
 @dataclass
 class ActionEntry:
     name: str
     permission: str
-    schema: dict[str, type] | None
+    schema: Mapping[str, SchemaValue] | None
     handler: Callable[..., Awaitable[dict[str, Any]]]
+    needs_request: bool = False
 
 
 ACTIONS: dict[str, ActionEntry] = {}
 
 
-def register_action(name: str, *, permission: str = "write", schema: dict[str, type] | None = None):
+def register_action(
+    name: str,
+    *,
+    permission: str = "write",
+    schema: Mapping[str, SchemaValue] | None = None,
+    needs_request: bool = False,
+):
     def deco(fn):
-        ACTIONS[name] = ActionEntry(name=name, permission=permission, schema=schema, handler=fn)
+        ACTIONS[name] = ActionEntry(
+            name=name, permission=permission, schema=schema, handler=fn, needs_request=needs_request
+        )
         return fn
 
     return deco
 
 
-def _validate(args: Any, schema: dict[str, type] | None) -> tuple[bool, str]:
+def _validate(args: Any, schema: Mapping[str, SchemaValue] | None) -> tuple[bool, str]:
     if schema is None:
         return True, ""
     if not isinstance(args, dict):
         return False, "args must be an object"
     for key, typ in schema.items():
+        if isinstance(typ, _OptionalKey):
+            if key in args and not isinstance(args[key], typ.types):
+                return False, f"missing or invalid: {key}"
+            continue
         if key not in args or not isinstance(args[key], typ):
             return False, f"missing or invalid: {key}"
     return True, ""
@@ -76,7 +101,9 @@ def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None)
     )
 
 
-async def dispatch_action(pipe: Any, user: Any, name: str, args: Any, *, client_ip: Any = None) -> tuple[int, dict[str, Any]]:
+async def dispatch_action(
+    pipe: Any, user: Any, name: str, args: Any, *, client_ip: Any = None, request: Any = None
+) -> tuple[int, dict[str, Any]]:
     entry = ACTIONS.get(name)
     required = entry.permission if entry else "read"
     allowed = await (can_act if required == "write" else can_view)(user, pipe)
@@ -93,9 +120,15 @@ async def dispatch_action(pipe: Any, user: Any, name: str, args: Any, *, client_
     if _rate_limited(getattr(user, "id", ""), name):
         _audit(user, name, "rate_limited", client_ip)
         return 429, {"error": "rate limited"}
+    if entry.needs_request and request is None:
+        _audit(user, name, "bad_args", client_ip)
+        return 400, {"error": "request unavailable"}
     write = entry.permission == "write"
     try:
-        result = await entry.handler(pipe, user, args)
+        if entry.needs_request:
+            result = await entry.handler(pipe, user, args, request=request)
+        else:
+            result = await entry.handler(pipe, user, args)
     except Exception:
         _audit(user, name, "error", client_ip, args=args if write else None)
         return 500, {"error": "action failed"}
@@ -216,3 +249,89 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
     return {"saved": len(edits), "rev": rev}
+
+
+def _update_service_of(pipe: Any) -> Any:
+    plugin = _pipe_dashboard_plugin(pipe)
+    return getattr(plugin, "update_service", None) if plugin is not None else None
+
+
+def _update_enabled(pipe: Any) -> bool:
+    return bool(getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True))
+
+
+async def _run_update_call(coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return await coro
+    except UpdateError as exc:
+        result: dict[str, Any] = {"error": exc.code, "message": exc.message}
+        reset = str(getattr(exc, "reset", "") or "")
+        if reset:
+            result["reset"] = reset
+        return result
+
+
+@register_action("update_check", permission="read", schema={"force": optional(bool)})
+async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
+    if not _update_enabled(pipe):
+        return {"enabled": False}
+    svc = _update_service_of(pipe)
+    if svc is None:
+        return {"error": "unavailable", "message": "update service not initialized"}
+    return await _run_update_call(svc.check(force=bool(args.get("force", False))))
+
+
+@register_action(
+    "update_apply",
+    permission="write",
+    schema={"rev": (int, str), "compressed": optional(bool)},
+    needs_request=True,
+)
+async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
+    if not _update_enabled(pipe):
+        return {"error": "disabled"}
+    if getattr(user, "role", None) != "admin":
+        return {"error": "forbidden"}
+    svc = _update_service_of(pipe)
+    if svc is None:
+        return {"error": "unavailable", "message": "update service not initialized"}
+    actor = str(getattr(user, "id", "") or "admin")
+    return await _run_update_call(
+        svc.apply(dict(args), actor=actor, actor_id=actor, request=request)
+    )
+
+
+@register_action(
+    "update_restore",
+    permission="write",
+    schema={"file_id": str, "rev": (int, str)},
+    needs_request=True,
+)
+async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
+    if not _update_enabled(pipe):
+        return {"error": "disabled"}
+    if getattr(user, "role", None) != "admin":
+        return {"error": "forbidden"}
+    svc = _update_service_of(pipe)
+    if svc is None:
+        return {"error": "unavailable", "message": "update service not initialized"}
+    actor = str(getattr(user, "id", "") or "admin")
+    return await _run_update_call(
+        svc.restore(dict(args), actor=actor, actor_id=actor, request=request)
+    )
+
+
+@register_action(
+    "update_snapshot_delete",
+    permission="write",
+    schema={"file_id": str, "sha256": str},
+)
+async def _update_snapshot_delete(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
+    if not _update_enabled(pipe):
+        return {"error": "disabled"}
+    if getattr(user, "role", None) != "admin":
+        return {"error": "forbidden"}
+    svc = _update_service_of(pipe)
+    if svc is None:
+        return {"error": "unavailable", "message": "update service not initialized"}
+    return await _run_update_call(svc.snapshot_delete(dict(args)))

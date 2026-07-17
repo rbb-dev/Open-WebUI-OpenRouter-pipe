@@ -18,6 +18,7 @@ from typing import Any
 from .._socketio_client import SOCKETIO_UMD
 from ..command_registry import register_command
 from ..config_tab_assets import CONFIG_TAB_CSS, CONFIG_TAB_JS
+from ..update_tab_assets import UPDATE_TAB_CSS, UPDATE_TAB_JS
 from ..context import CommandContext
 from ..dashboard_socket import CONFIG_EVENT, DENIED_EVENT, DASHBOARD_EVENT, SUB_EVENT, register_socket_handler
 
@@ -237,7 +238,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>{SOCKETIO_UMD}</script>
-<style>{_PD_CSS}{CONFIG_TAB_CSS}</style>
+<style>{_PD_CSS}{CONFIG_TAB_CSS}{UPDATE_TAB_CSS}</style>
 </head>
 <body>
   <div class="dash">
@@ -265,6 +266,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       <button class="tab-btn" data-tab="system">System</button>
       <button class="tab-btn" data-tab="storage">Storage</button>
       <button class="tab-btn" data-tab="config">Config</button>
+      <button class="tab-btn" data-tab="update">Update</button>
       <button class="tab-btn" data-tab="about">About</button>
     </div>
 
@@ -394,6 +396,44 @@ def _build_dashboard_shell(dash_id: str) -> str:
       </div>
     </div>
 
+    <!-- ═══ Tab: Update ═══ -->
+    <div class="tab-pane" id="{sid}-tab-update">
+      <div class="upd-wrap">
+        <div id="upd-msg" class="upd-msg"></div>
+        <div class="upd-grid">
+          <div class="upd-card" id="upd-installed">
+            <h3>Installed</h3>
+            <div id="upd-installed-body">Loading...</div>
+          </div>
+          <div class="upd-card" id="upd-latest">
+            <h3>Latest release</h3>
+            <div id="upd-latest-body">Loading...</div>
+            <div class="upd-actions">
+              <button class="upd-btn" id="upd-check-now">Check now</button>
+              <button class="upd-btn primary" id="upd-apply-btn" style="display:none">Update...</button>
+            </div>
+          </div>
+        </div>
+        <details id="upd-notes"><summary id="upd-notes-summary">Changelog</summary><pre id="upd-notes-body"></pre></details>
+        <div class="upd-card">
+          <h3>Previous versions</h3>
+          <div id="upd-snapshots">No snapshots yet.</div>
+        </div>
+        <div id="upd-modal" class="upd-modal" style="display:none">
+          <div class="upd-modal-box">
+            <h3>Apply update</h3>
+            <div id="upd-modal-body"></div>
+            <label class="upd-check"><input type="checkbox" id="upd-compressed"> Compressed bundle</label>
+            <div id="upd-modal-note" class="upd-note"></div>
+            <div class="upd-actions">
+              <button class="upd-btn" id="upd-modal-cancel">Cancel</button>
+              <button class="upd-btn primary" id="upd-modal-confirm">Install</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ Tab: About ═══ -->
     <div class="tab-pane" id="{sid}-tab-about">
       <div class="loading" id="{sid}-load-about">Waiting for data...</div>
@@ -449,6 +489,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (pane) pane.classList.add('active');
       if (tab === 'usage' && !usLoaded) {{ usLoaded = true; usFetch(); }}
       if (tab === 'config' && !cfgLoaded) {{ cfgLoaded = true; cfgFetch(); }}
+      if (tab === 'update') {{ if (!updLoaded) {{ updLoaded = true; updFetch(); }} else {{ updEnterTab(); }} }}
       reportHeight();
     }});
 
@@ -803,6 +844,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     var usTasks = true;
     var usLoaded = false;
     var cfgLoaded = false;
+    var updLoaded = false;
     var cfgFetch = function() {{}};
     var cfgOnEvent = function() {{}};
     var usRefreshMs = 900000;
@@ -1529,6 +1571,8 @@ def _build_dashboard_shell(dash_id: str) -> str:
     window.pipeDashboardCallAction = callAction;
 
     {CONFIG_TAB_JS}
+
+    {UPDATE_TAB_JS}
 
     var sock = null;
     var gotData = false;
