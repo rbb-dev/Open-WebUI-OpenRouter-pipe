@@ -93,6 +93,69 @@ def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, A
     return entries
 
 
+def _fusion_plugin_injection(
+    model_id: str,
+    plugins: Any,
+    *,
+    fusion_enabled: bool,
+    is_task_request: bool,
+) -> list[Any] | None:
+    if not fusion_enabled or is_task_request:
+        return None
+    if not is_fusion_model(model_id):
+        return None
+    items = list(plugins) if isinstance(plugins, list) else []
+    for entry in items:
+        if isinstance(entry, dict) and entry.get("id") == "fusion":
+            return None
+    return [*items, {"id": "fusion"}]
+
+
+def _fusion_active_entry(model_id: str, plugins: Any, *, fusion_enabled: bool, is_task_request: bool) -> bool:
+    if not fusion_enabled or is_task_request:
+        return False
+    if not is_fusion_model(model_id):
+        return False
+    items = plugins if isinstance(plugins, list) else []
+    for entry in items:
+        if isinstance(entry, dict) and entry.get("id") == "fusion":
+            return entry.get("enabled") is not False
+    return False
+
+
+def _fusion_server_tools_stripped(
+    model_id: str,
+    plugins: Any,
+    tools: Any,
+    *,
+    fusion_enabled: bool,
+    is_task_request: bool,
+) -> list[Any] | None:
+    if not _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_task_request=is_task_request):
+        return None
+    items = tools if isinstance(tools, list) else []
+    kept = [
+        t for t in items
+        if not (isinstance(t, dict) and isinstance(t.get("type"), str) and t["type"].startswith("openrouter:"))
+    ]
+    if len(kept) == len(items):
+        return None
+    return kept
+
+
+def _fusion_force_tool_choice(
+    model_id: str,
+    plugins: Any,
+    tool_choice: Any,
+    *,
+    fusion_enabled: bool,
+    is_task_request: bool,
+) -> bool:
+    if tool_choice is not None:
+        return False
+    return _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_task_request=is_task_request)
+
+
 def _apply_server_tools_metadata(
     responses_body: "ResponsesBody",
     metadata: Any,
@@ -633,6 +696,30 @@ class RequestOrchestrator:
                 responses_body.model,
             )
             endpoint_override = "responses"
+        injected_plugins = _fusion_plugin_injection(
+            responses_body.model,
+            responses_body.plugins,
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            is_task_request=use_task_model_adapter,
+        )
+        if injected_plugins is not None:
+            responses_body.plugins = injected_plugins
+            self.logger.debug(
+                "Injected fusion plugin entry for model=%s",
+                responses_body.model,
+            )
+        if _fusion_force_tool_choice(
+            responses_body.model,
+            responses_body.plugins,
+            responses_body.tool_choice,
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            is_task_request=use_task_model_adapter,
+        ):
+            responses_body.tool_choice = "required"
+            self.logger.debug(
+                "Forcing tool_choice=required for dedicated fusion model=%s",
+                responses_body.model,
+            )
         fusion_live_enabled = self._resolve_fusion_live_enabled(valves, fusion_model, is_direct)
         self.logger.debug(
             "Fusion live UI gate: model=%s fusion=%s fusion_enable=%s direct=%s -> enabled=%s",
@@ -876,6 +963,19 @@ class RequestOrchestrator:
                     responses_body.plugins = plugins
 
         _apply_server_tools_metadata(responses_body, __metadata__, logger=self.logger)
+        stripped_tools = _fusion_server_tools_stripped(
+            responses_body.model,
+            responses_body.plugins,
+            responses_body.tools,
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            is_task_request=use_task_model_adapter,
+        )
+        if stripped_tools is not None:
+            responses_body.tools = stripped_tools or None
+            self.logger.debug(
+                "Stripped openrouter server tools from fusion request model=%s",
+                responses_body.model,
+            )
 
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.

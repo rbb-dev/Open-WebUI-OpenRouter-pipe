@@ -11,9 +11,10 @@ Design:
 - Configuration (preset / panel / judge / max_tool_calls) maps to the Fusion
   plugin object; sentinels (empty string / 0) mean "use Fusion's default".
 - ``FUSION_FORCE_TOOL_CALL`` (default off) sets ``tool_choice="required"`` on the
-  request — exactly as OpenRouter documents for forcing Fusion. On the
-  ``openrouter/fusion`` alias Fusion is the only injected tool, so ``required``
-  forces it; if the caller adds other tools the model may pick one of those
+  request — exactly as OpenRouter documents for forcing Fusion. On the fusion
+  models this is redundant: the pipe forces ``required`` on every chat request
+  itself, so the switch only matters on non-fusion models an admin attached the
+  filter to. If the caller adds other tools the model may pick one of those
   instead (documented OpenRouter behaviour, see docs/openrouter_fusion.md).
 """
 from __future__ import annotations
@@ -32,8 +33,8 @@ FUSION_FILTER_DISPLAY_NAME = "OpenRouter Fusion"
 #   OWUI full model id  "open_webui_openrouter_pipe.openrouter.fusion"  (runtime body["model"])
 # The first two keep the vendor/model slash; the last two are all-dots. Match both
 # shapes — the slash form via the anchored pattern, the dotted form via a suffix match.
-_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion$")
-_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)openrouter\.fusion$")
+_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion(?:-flash)?$")
+_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)openrouter\.fusion(?:-flash)?$")
 
 
 def canonical_model_slug(raw: str) -> str:
@@ -88,8 +89,8 @@ OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
 # Match the fusion model in slash forms ("openrouter/fusion", "<prefix>.openrouter/fusion")
 # and all-dots forms ("openrouter.fusion", "<funcid>.openrouter.fusion"). The pipe
 # sanitizes '/'->'.' in OWUI model ids, so the runtime body["model"] is all-dots.
-_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion$")
-_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\\.)openrouter\\.fusion$")
+_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion(?:-flash)?$")
+_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\\.)openrouter\\.fusion(?:-flash)?$")
 
 
 class FusionConfigError(Exception):
@@ -162,11 +163,14 @@ class Filter:
             default=False,
             title="Always run Fusion",
             description=(
-                "Off (default): the model decides whether the prompt needs the multi-model "
-                "panel (cheaper; some replies answer directly). On: force the panel to run "
-                "every message (tool_choice='required'). Only applies when Fusion is the only "
-                "tool in the request; if you also enable other tool integrations, deliberation "
-                "is not guaranteed."
+                "On the dedicated fusion models this switch has no effect: the pipe already "
+                "forces the panel on every message (tool_choice='required'), regardless of "
+                "this setting. It matters only when an admin has attached this filter to a "
+                "non-fusion model (ALLOW_ON_NON_FUSION_MODELS). There — Off (default): the "
+                "model decides whether the prompt needs the multi-model panel (cheaper; some "
+                "replies answer directly). On: force the panel to run every message. Only "
+                "reliable when Fusion is the only tool in the request; other tool "
+                "integrations let the model satisfy the forcing with a different tool."
             ),
         )
 

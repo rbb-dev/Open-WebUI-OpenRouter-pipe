@@ -85,6 +85,39 @@ def test_canonical_slug_strips_pipe_prefix():
     assert canonical_model_slug(FUSION) == FUSION
 
 
+# --- fusion-flash forward-compat ---------------------------------------------
+
+FLASH = "openrouter/fusion-flash"
+FLASH_PREFIXED = "openrouter.openrouter/fusion-flash"
+FLASH_SANITIZED = "openrouter.fusion-flash"
+FLASH_OWUI_FULL = "open_webui_openrouter_pipe.openrouter.fusion-flash"
+
+
+FLASH_OWUI_SHORT = "openrouter.openrouter.fusion-flash"
+
+
+@pytest.mark.parametrize("mid", [FLASH, FLASH_PREFIXED, FLASH_SANITIZED, FLASH_OWUI_FULL, FLASH_OWUI_SHORT])
+def test_is_fusion_model_matches_flash_forms(mid):
+    assert is_fusion_model(mid) is True
+
+
+@pytest.mark.parametrize("mid", [
+    "openrouter/fusion-flashy", "openrouter/fusion-flash-pro", "openrouter/flash",
+])
+def test_is_fusion_model_rejects_flash_lookalikes(mid):
+    assert is_fusion_model(mid) is False
+
+
+def test_rendered_filter_inlet_handles_flash_id():
+    """The BAKED pattern copy inside the rendered filter source must match flash too
+    (the module-level and baked regexes are independent copies)."""
+    body = {"model": FLASH_OWUI_FULL, "input": "hi"}
+    out = _inlet(body, valves={"FUSION_PRESET": "general-high"})
+    cfg = _fusion_plugin(out)
+    assert cfg is not None
+    assert cfg.get("preset") == "general-high"
+
+
 # --- hard lock ---------------------------------------------------------------
 
 def test_noop_on_non_fusion_model_by_default():

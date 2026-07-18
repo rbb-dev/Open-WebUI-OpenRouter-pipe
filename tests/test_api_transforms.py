@@ -273,6 +273,28 @@ class TestFilterOpenrouterChatRequest:
 class TestResponsesPayloadToChatCompletionsPayload:
     """Tests for _responses_payload_to_chat_completions_payload()."""
 
+    def test_strips_fusion_plugin_for_fusion_model(self):
+        """Fusion on /chat/completions returns flattened prose with no structured
+        events — a fallback re-send must not pay for an unrenderable deliberation."""
+        payload = {
+            "model": "openrouter/fusion",
+            "input": "hi",
+            "plugins": [{"id": "fusion"}, {"id": "file-parser", "pdf": {"engine": "native"}}],
+        }
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert result["plugins"] == [{"id": "file-parser", "pdf": {"engine": "native"}}]
+
+    def test_drops_plugins_key_when_only_fusion_entry(self):
+        payload = {"model": "openrouter/fusion", "input": "hi", "plugins": [{"id": "fusion"}]}
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert "plugins" not in result
+
+    def test_keeps_fusion_plugin_for_non_fusion_model(self):
+        """A caller-attached fusion plugin on an ordinary model is deliberate config."""
+        payload = {"model": "openai/gpt-4o", "input": "hi", "plugins": [{"id": "fusion"}]}
+        result = _responses_payload_to_chat_completions_payload(payload)
+        assert result["plugins"] == [{"id": "fusion"}]
+
     def test_converts_input_to_messages(self):
         """Test that input array is converted to messages."""
         payload = {

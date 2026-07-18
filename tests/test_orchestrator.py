@@ -1882,3 +1882,276 @@ class TestFusionLiveGate:
 
         assert result == "answer"
         assert captured.get("fusion_live_enabled") is True
+
+    @staticmethod
+    def _fusion_entries(body):
+        plugins = getattr(body, "plugins", None) if not isinstance(body, dict) else body.get("plugins")
+        return [p for p in (plugins or []) if isinstance(p, dict) and p.get("id") == "fusion"]
+
+    async def _run_call_site(self, orchestrator, pipe, mock_valves, mock_session,
+                             *, task=None, fusion_enabled=True, metadata=None):
+        mock_valves.ENABLE_OPENROUTER_FUSION = fusion_enabled
+        captured: dict[str, Any] = {}
+
+        async def fake_loop(*args, **kwargs):
+            captured["body"] = args[0] if args else kwargs.get("body")
+            return "answer"
+
+        async def fake_task(task_body, *_args, **_kwargs):
+            captured["task_body"] = task_body
+            return "task-answer"
+
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=fake_loop)
+        pipe._ensure_task_model_adapter()._run_task_model_request = AsyncMock(side_effect=fake_task)
+
+        await orchestrator.process_request(
+            body={"model": "openrouter/fusion", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=metadata or {},
+            __tools__=None,
+            __task__=task,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="openrouter/fusion",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"openrouter/fusion"},
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_call_site_injects_fusion_plugin_for_chat_requests(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert self._fusion_entries(captured["body"]) == [{"id": "fusion"}]
+
+    @pytest.mark.asyncio
+    async def test_call_site_never_injects_for_task_requests(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             task="title_generation")
+        assert "task_body" in captured
+        assert self._fusion_entries(captured["task_body"]) == []
+
+    @pytest.mark.asyncio
+    async def test_call_site_never_injects_with_master_switch_off(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             fusion_enabled=False)
+        assert self._fusion_entries(captured["body"]) == []
+
+    @pytest.mark.asyncio
+    async def test_call_site_forces_tool_choice_for_fusion_chat(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert captured["body"].tool_choice == "required"
+
+    @pytest.mark.asyncio
+    async def test_call_site_never_forces_for_task_requests(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             task="title_generation")
+        assert (captured["task_body"].get("tool_choice") or None) is None
+
+    @pytest.mark.asyncio
+    async def test_call_site_never_forces_with_master_switch_off(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             fusion_enabled=False)
+        assert captured["body"].tool_choice is None
+
+    @pytest.mark.asyncio
+    async def test_call_site_strips_openrouter_server_tools_after_metadata_apply(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        metadata = {"openrouter_pipe": {"server_tools": {"web_search": {}, "web_fetch": {}, "datetime": {}}}}
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             metadata=metadata)
+        body = captured["body"]
+        tool_types = [t.get("type") for t in (body.tools or []) if isinstance(t, dict)]
+        assert not [t for t in tool_types if isinstance(t, str) and t.startswith("openrouter:")]
+        assert body.tool_choice == "required"
+
+
+class TestFusionServerToolsStripped:
+    """openrouter:* server tools on a fusion-model request let the model satisfy
+    tool_choice=required with web_search instead of deliberating — and fusion
+    already runs web_search/web_fetch internally, so they are pure escape hatch."""
+
+    def _strip(self, **kw):
+        from open_webui_openrouter_pipe.requests.orchestrator import _fusion_server_tools_stripped
+        args = dict(model_id="openrouter/fusion", plugins=[{"id": "fusion"}],
+                    tools=[{"type": "openrouter:web_search"},
+                           {"type": "openrouter:web_fetch"},
+                           {"type": "function", "name": "my_tool"}],
+                    fusion_enabled=True, is_task_request=False)
+        args.update(kw)
+        return _fusion_server_tools_stripped(
+            args["model_id"], args["plugins"], args["tools"],
+            fusion_enabled=args["fusion_enabled"],
+            is_task_request=args["is_task_request"],
+        )
+
+    def test_strips_openrouter_tools_keeps_function_tools(self):
+        assert self._strip() == [{"type": "function", "name": "my_tool"}]
+
+    def test_none_when_no_openrouter_tools(self):
+        assert self._strip(tools=[{"type": "function", "name": "my_tool"}]) is None
+
+    def test_none_for_non_fusion_model(self):
+        assert self._strip(model_id="openai/gpt-4o") is None
+
+    def test_none_for_task_requests(self):
+        assert self._strip(is_task_request=True) is None
+
+    def test_none_with_master_switch_off(self):
+        assert self._strip(fusion_enabled=False) is None
+
+    def test_none_when_fusion_entry_disabled(self):
+        assert self._strip(plugins=[{"id": "fusion", "enabled": False}]) is None
+
+    def test_strips_for_fusion_flash(self):
+        assert self._strip(model_id="openrouter/fusion-flash") == [{"type": "function", "name": "my_tool"}]
+
+    def test_input_tools_not_mutated(self):
+        tools = [{"type": "openrouter:web_search"}, {"type": "function", "name": "t"}]
+        self._strip(tools=tools)
+        assert tools == [{"type": "openrouter:web_search"}, {"type": "function", "name": "t"}]
+
+
+class TestFusionForceToolChoice:
+    """Fusion MODELS always deliberate via tool_choice=required — a declinable
+    tool on a model users picked FOR deliberation is useless. The
+    openrouter:fusion SERVER TOOL on a caller's own model is never forced. Same
+    guard set as the plugin injection, plus never overriding a caller's choice."""
+
+    def _force(self, **kw):
+        from open_webui_openrouter_pipe.requests.orchestrator import _fusion_force_tool_choice
+        args = dict(model_id="openrouter/fusion", plugins=[{"id": "fusion"}],
+                    tool_choice=None, fusion_enabled=True, is_task_request=False)
+        args.update(kw)
+        return _fusion_force_tool_choice(
+            args["model_id"], args["plugins"], args["tool_choice"],
+            fusion_enabled=args["fusion_enabled"],
+            is_task_request=args["is_task_request"],
+        )
+
+    def test_forces_for_base_fusion_with_active_entry(self):
+        assert self._force() is True
+
+    def test_forces_for_filter_configured_entry(self):
+        assert self._force(plugins=[{"id": "fusion", "preset": "general-fast"}]) is True
+
+    def test_never_overrides_caller_tool_choice(self):
+        assert self._force(tool_choice="auto") is False
+        assert self._force(tool_choice="none") is False
+        assert self._force(tool_choice={"type": "function", "name": "x"}) is False
+
+    def test_no_force_for_task_requests(self):
+        assert self._force(is_task_request=True) is False
+
+    def test_no_force_with_master_switch_off(self):
+        assert self._force(fusion_enabled=False) is False
+
+    def test_no_force_when_fusion_entry_disabled(self):
+        assert self._force(plugins=[{"id": "fusion", "enabled": False}]) is False
+
+    def test_no_force_without_fusion_entry(self):
+        assert self._force(plugins=[{"id": "file-parser"}]) is False
+
+    def test_no_force_for_non_fusion_model(self):
+        assert self._force(model_id="openai/gpt-4o") is False
+
+    def test_forces_for_fusion_flash(self):
+        assert self._force(model_id="openrouter/fusion-flash") is True
+
+
+class TestFusionPluginInjection:
+    """Guarded {"id": "fusion"} injection: restores fusion-model activation without
+    cost bombs.
+
+    OpenRouter's fusion aliases no longer self-activate on /responses; the pipe
+    must inject the plugin entry for the whole fusion model family — but never for
+    task requests (title/tags would fire a full panel per title), never with the
+    master switch off, and never over an existing entry."""
+
+    _BASE_FORMS = (
+        "openrouter/fusion",
+        "openrouter.openrouter/fusion",
+        "openrouter.fusion",
+        "open_webui_openrouter_pipe.openrouter.fusion",
+    )
+
+    def _inject(self, **kw):
+        from open_webui_openrouter_pipe.requests.orchestrator import _fusion_plugin_injection
+        args = dict(model_id="openrouter/fusion", plugins=None,
+                    fusion_enabled=True, is_task_request=False)
+        args.update(kw)
+        return _fusion_plugin_injection(
+            args["model_id"], args["plugins"],
+            fusion_enabled=args["fusion_enabled"],
+            is_task_request=args["is_task_request"],
+        )
+
+    def test_injects_for_base_fusion(self):
+        assert self._inject() == [{"id": "fusion"}]
+
+    def test_injects_for_every_base_id_form(self):
+        for model in self._BASE_FORMS:
+            assert self._inject(model_id=model) == [{"id": "fusion"}]
+
+    def test_appends_after_existing_non_fusion_plugins(self):
+        assert self._inject(plugins=[{"id": "file-parser", "pdf": {"engine": "native"}}]) == [
+            {"id": "file-parser", "pdf": {"engine": "native"}},
+            {"id": "fusion"},
+        ]
+
+    def test_no_injection_for_task_requests(self):
+        assert self._inject(is_task_request=True) is None
+
+    def test_no_injection_when_master_switch_off(self):
+        assert self._inject(fusion_enabled=False) is None
+
+    def test_existing_fusion_entry_untouched(self):
+        assert self._inject(plugins=[{"id": "fusion", "preset": "general-fast"}]) is None
+
+    def test_disabled_fusion_entry_untouched(self):
+        assert self._inject(plugins=[{"id": "fusion", "enabled": False}]) is None
+
+    def test_no_injection_for_non_fusion_model(self):
+        assert self._inject(model_id="openai/gpt-4o") is None
+
+    def test_injects_for_fusion_flash(self):
+        assert self._inject(model_id="openrouter/fusion-flash") == [{"id": "fusion"}]
+
+    def test_input_plugins_list_not_mutated(self):
+        original = [{"id": "file-parser"}]
+        result = self._inject(plugins=original)
+        assert original == [{"id": "file-parser"}]
+        assert result is not original

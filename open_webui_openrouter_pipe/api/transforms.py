@@ -38,6 +38,7 @@ from ..models.registry import ModelFamily
 from ..tools.tool_schema import _strictify_schema
 from ..core.config import LOGGER
 from ..core.utils import _coerce_bool, _parse_model_fallback_csv, _sticky_session_key, strip_hidden_marker_lines
+from ..filters.fusion_filter_renderer import is_fusion_model
 from ..requests.transformer import transform_messages_to_input
 
 # -----------------------------------------------------------------------------
@@ -1084,6 +1085,14 @@ def _responses_payload_to_chat_completions_payload(
     for key in ("model", "models", "preset", "user", "session_id", "metadata", "plugins", "provider", "route", "debug", "image_config", "modalities", "transforms", "stop_server_tools_when", "trace"):
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
+
+    plugins = chat_payload.get("plugins")
+    if isinstance(plugins, list) and is_fusion_model(str(responses_payload.get("model") or "")):
+        kept = [p for p in plugins if not (isinstance(p, dict) and p.get("id") == "fusion")]
+        if kept:
+            chat_payload["plugins"] = kept
+        else:
+            chat_payload.pop("plugins", None)
 
     # Streaming flags
     stream = bool(responses_payload.get("stream"))

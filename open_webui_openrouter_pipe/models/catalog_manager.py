@@ -1158,6 +1158,7 @@ class ModelCatalogManager:
                 # Gate web_tools_supported on absence of image_output and
                 # video_generation features (mirrors the web_search overlay
                 # gate at line ~936).
+                from ..filters.fusion_filter_renderer import is_fusion_model as _is_fusion
                 web_tools_supported = bool(
                     web_tools_filter_function_id
                     and (
@@ -1166,6 +1167,8 @@ class ModelCatalogManager:
                     )
                     and not pipe_capabilities.get("image_output")
                     and not pipe_capabilities.get("video_generation")
+                    and not _is_fusion(openrouter_id)
+                    and not _is_fusion(str(original_id or ""))
                 )
 
                 native_supported = bool(
