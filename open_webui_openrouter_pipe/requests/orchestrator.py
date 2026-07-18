@@ -21,6 +21,8 @@ from ..core.errors import (
     _parse_supported_effort_values,
 )
 from ..core.config import _PIPE_METADATA_KEY
+from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
+from .fusion_engine import FusionInnerInvocation, run_internal_fusion
 from ..core.utils import _select_best_effort_fallback
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
@@ -109,6 +111,44 @@ def _fusion_plugin_injection(
         if isinstance(entry, dict) and entry.get("id") == "fusion":
             return None
     return [*items, {"id": "fusion"}]
+
+
+_FUSION_PARITY_DIALS = (
+    "reasoning_preferences",
+    "gemini_thinking",
+    "anthropic_verbosity",
+    "max_output_tokens",
+    "capability_tool_gate",
+    "context_transforms_state",
+)
+
+
+def _fusion_backend_openrouter(valves: Any) -> bool:
+    return getattr(valves, "FUSION_BACKEND", "openrouter") != "internal"
+
+
+def _fusion_internal_divert(
+    model_id: str,
+    plugins: Any,
+    *,
+    valves: Any,
+    is_task_request: bool,
+    metadata: Any,
+) -> bool:
+    if not bool(getattr(valves, "ENABLE_OPENROUTER_FUSION", False)):
+        return False
+    if _fusion_backend_openrouter(valves):
+        return False
+    if is_task_request or not is_fusion_model(model_id):
+        return False
+    meta = metadata if isinstance(metadata, dict) else {}
+    pipe_meta = meta.get(_PIPE_METADATA_KEY)
+    if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
+        return False
+    entry = find_fusion_entry(plugins)
+    if isinstance(entry, dict) and entry.get("enabled") is False:
+        return False
+    return True
 
 
 def _fusion_active_entry(model_id: str, plugins: Any, *, fusion_enabled: bool, is_task_request: bool) -> bool:
@@ -225,6 +265,7 @@ class RequestOrchestrator:
         *,
         user_id: str = "",
         virtual_variant_bases: dict[str, str] | None = None,
+        outcome_sink: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
@@ -699,7 +740,7 @@ class RequestOrchestrator:
         injected_plugins = _fusion_plugin_injection(
             responses_body.model,
             responses_body.plugins,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
             is_task_request=use_task_model_adapter,
         )
         if injected_plugins is not None:
@@ -712,7 +753,7 @@ class RequestOrchestrator:
             responses_body.model,
             responses_body.plugins,
             responses_body.tool_choice,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
             is_task_request=use_task_model_adapter,
         ):
             responses_body.tool_choice = "required"
@@ -967,7 +1008,7 @@ class RequestOrchestrator:
             responses_body.model,
             responses_body.plugins,
             responses_body.tools,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION),
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
             is_task_request=use_task_model_adapter,
         )
         if stripped_tools is not None:
@@ -980,6 +1021,75 @@ class RequestOrchestrator:
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
+
+        if _fusion_internal_divert(
+            responses_body.model,
+            responses_body.plugins,
+            valves=valves,
+            is_task_request=use_task_model_adapter,
+            metadata=__metadata__,
+        ):
+            plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
+            self.logger.info(
+                "Diverting fusion request to internal engine model=%s panel=%s judge=%s",
+                responses_body.model, ",".join(plan.panel_models), plan.judge_model,
+            )
+            invocation = FusionInnerInvocation(
+                orchestrator=self,
+                messages=list(body.get("messages") or []) if isinstance(body, dict) else [],
+                outer_model_id=responses_body.model,
+                user=__user__,
+                request=__request__,
+                event_call=__event_call__,
+                metadata=__metadata__,
+                tools=__tools__,
+                valves=valves,
+                session=session,
+                pipe_identifier=pipe_identifier,
+                allowlist_norm_ids=set(allowlist_norm_ids or set()),
+                enforced_norm_ids=set(enforced_norm_ids or set()),
+                catalog_norm_ids=set(catalog_norm_ids or set()),
+                features=dict(features or {}),
+                user_id=user_id,
+            )
+            engine_source = run_internal_fusion(
+                self._pipe,
+                invocation=invocation,
+                plan=plan,
+            )
+            if responses_body.stream:
+                return await self._pipe._streaming_handler._run_streaming_loop(
+                    responses_body,
+                    valves,
+                    __event_emitter__,
+                    __metadata__,
+                    __tools__,
+                    session=session,
+                    user_id=user_id,
+                    endpoint_override=endpoint_override,
+                    request_context=__request__,
+                    user_obj=user_model,
+                    pipe_identifier=pipe_identifier,
+                    fusion_live_enabled=fusion_live_enabled,
+                    event_source=engine_source,
+                    outcome_sink=outcome_sink,
+                )
+            return await self._pipe._streaming_handler._run_nonstreaming_loop(
+                responses_body,
+                valves,
+                __event_emitter__,
+                __metadata__,
+                __tools__,
+                session=session,
+                user_id=user_id,
+                endpoint_override=endpoint_override,
+                request_context=__request__,
+                user_obj=user_model,
+                pipe_identifier=pipe_identifier,
+                fusion_live_enabled=fusion_live_enabled,
+                event_source=engine_source,
+                outcome_sink=outcome_sink,
+            )
 
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
@@ -1006,6 +1116,7 @@ class RequestOrchestrator:
                         user_obj=user_model,
                         pipe_identifier=pipe_identifier,
                         fusion_live_enabled=fusion_live_enabled,
+                        outcome_sink=outcome_sink,
                     )
                 # Return final text (non-streaming)
                 return await self._pipe._streaming_handler._run_nonstreaming_loop(
@@ -1021,6 +1132,7 @@ class RequestOrchestrator:
                     user_obj=user_model,
                     pipe_identifier=pipe_identifier,
                     fusion_live_enabled=fusion_live_enabled,
+                    outcome_sink=outcome_sink,
                 )
             except OpenRouterAPIError as exc:
                 if not reasoning_effort_retry_attempted:

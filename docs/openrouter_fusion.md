@@ -1,9 +1,18 @@
 # OpenRouter Fusion
 
-[OpenRouter Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router) turns a prompt
-into a small **multi-model deliberation**: a *panel* of up to 8 models answers in parallel (with web
-search/fetch), a *judge* model produces a structured analysis (consensus, disagreements, gaps, blind
-spots), and the outer model writes the final answer from it.
+Fusion turns a prompt into a small **multi-model deliberation**: a *panel* of up to 8 models
+answers in parallel, a *judge* model produces a structured analysis (consensus, disagreements,
+gaps, blind spots), and a final answer is written from that analysis.
+
+The pipe offers two engines behind one valve (`FUSION_BACKEND`).
+[OpenRouter's hosted Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router) runs
+the deliberation on OpenRouter's servers, where the panel's only tool is generic web search. The
+pipe's **built-in engine** (the default) runs the same flow as ordinary pipe requests, so the
+panel, the judge, and the synthesizer all work with the chatting user's entire Open WebUI
+workspace: knowledge bases, personal and workspace tools, tool servers, and the pipe's web tools —
+permission-gated per user, with every call cost-attributed. Each model streams its answer and its
+thinking into the live panel as it works. And where hosted Fusion loses the entire run to one
+dropped stream, the built-in engine marks the failed panelist and completes the run.
 
 > **Cost:** Fusion bills the sum of every underlying call — roughly **4–5× a single completion**, and
 > it scales with panel size. Treat it as an expensive feature.
@@ -58,10 +67,10 @@ the **valve** is the underlying `UserValves` field name).
 
 | Valve | UI title | Maps to | Notes |
 |-------|----------|---------|-------|
-| `FUSION_PRESET` | Preset | `preset` | `general-high` (strongest) or `general-budget` (cheaper). Empty = Fusion default. Explicit panel/judge below override a preset. |
+| `FUSION_PRESET` | Preset | `preset` | `general-high` (frontier trio + frontier judge), `general-budget` (low-cost trio + frontier judge), or `general-fast` (low-cost trio + quicker judge). Empty = `general-high`. Explicit panel/judge below override a preset. |
 | `FUSION_ANALYSIS_MODELS` | Panel models (comma-separated) | `analysis_models` | 1–8 model IDs answering in parallel. More than 8 is rejected with a clear error. Empty = preset/default panel. |
-| `FUSION_JUDGE_MODEL` | Judge model | `model` | Model that reviews the panel and writes the analysis. Empty = Fusion default. |
-| `FUSION_MAX_TOOL_CALLS` | Max tool calls per model | `max_tool_calls` | 1–16 web-search/fetch steps per inner model. `0` = Fusion default (8). |
+| `FUSION_JUDGE_MODEL` | Judge model | `model` | Model that reviews the panel and writes the analysis. Empty = the preset's judge. |
+| `FUSION_MAX_TOOL_CALLS` | Max tool calls per model | `max_tool_calls` | Tool budget per inner model, 1–16 (`0` = default 8). On the OpenRouter engine this caps web-search/fetch steps; on the internal engine it is a hard per-model cap on individual tool invocations (knowledge bases, tool servers, web tools alike — excess calls are skipped) and also bounds tool rounds. |
 | `FUSION_FORCE_TOOL_CALL` | Always run Fusion | `tool_choice="required"` | **No effect on the fusion models** — the pipe already forces deliberation there. Matters only on non-fusion models an admin attached the filter to (see below). |
 
 ### "Always run Fusion" (forcing)
@@ -86,6 +95,44 @@ only to OWUI-native function tools you attach yourself: with those present, the 
 Both the filter and the pipe leave a caller-supplied `tool_choice` / `function_call` untouched, and
 skip forcing when the Fusion plugin is explicitly `enabled:false` (requiring a tool with no active
 Fusion would just force some other tool).
+
+## Engine backends
+
+The `FUSION_BACKEND` pipe valve chooses which engine actually runs a deliberation when
+someone chats with a dedicated fusion model. The live panel, judge analysis, per-chat
+controls, and final answer look identical on both.
+
+| | `openrouter` | `internal` (default) |
+|---|---|---|
+| Where the panel runs | OpenRouter's servers | Inside the pipe, as ordinary pipe model calls |
+| Panel tools | OpenRouter web search + fetch only | The chatting user's full Open WebUI tool surface: knowledge bases, tool servers, and pipe server tools |
+| Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
+| Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
+| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card; the judge works from the survivors; the run completes |
+| Tool budget (`max_tool_calls`) | Caps web search/fetch steps | Hard per-model cap on individual tool invocations, plus a bound on tool rounds |
+
+Behaviour shared by both engines:
+
+- Deliberation is **guaranteed** on fusion-model chats — the internal engine always
+  deliberates; the OpenRouter engine is forced via `tool_choice: "required"`.
+- A caller-supplied `{"id": "fusion", "enabled": false}` plugins entry is an explicit
+  opt-out on **both** engines: the request runs as a plain model call.
+- Task/title generation requests never deliberate.
+- The *Always run Fusion* user toggle is inert on fusion models for both engines, and
+  the add-on server-tool surface on non-fusion models always uses OpenRouter's plugin
+  regardless of `FUSION_BACKEND`.
+
+On the internal engine the three stages are prompted by admin-editable templates
+(`FUSION_PANEL_SYSTEM_PROMPT`, `FUSION_JUDGE_SYSTEM_PROMPT`,
+`FUSION_SYNTHESIS_SYSTEM_PROMPT`). The judge runs at temperature 0 and must return a
+strict five-key JSON analysis; if it fails validation twice the run degrades to
+no-analysis mode (panel answers stay usable, synthesis proceeds from the raw drafts).
+The final answer is written by the preset's judge model from the panel drafts plus the
+analysis. Preset rosters are engine constants: `general-high` = the self-updating
+`~…-latest` quality trio judged by an Opus-class model; `general-budget` = a low-cost
+trio with the same judge; `general-fast` = the same trio with a Sonnet-class judge.
+Note: `FORCE_*` provider-glob valves match model IDs literally, so tilde aliases only
+match patterns written with the leading `~`.
 
 ## Enablement — pipe valves (admin)
 
@@ -125,7 +172,7 @@ back to the model), while the visible surface stays the panel.
 
 While the panel deliberates, each model's card is **live**: its status line becomes a ticker showing
 the tail of whatever that model is currently producing plus a running word count, streamed from
-OpenRouter's per-token panel events (batched server-side to a few updates per second per model).
+the engine's per-token panel events (batched by the pipe to a few updates per second per model).
 Models that expose reasoning gain a collapsible **Thinking** section on their card — hidden until
 reasoning actually arrives, streaming live while expanded, rendered as Markdown on first open, and
 kept in the persisted panel for every completed model (a panel still mid-answer at the moment of a

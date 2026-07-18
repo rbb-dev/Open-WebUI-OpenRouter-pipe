@@ -3346,6 +3346,7 @@ class TestToolExecution:
             # Create minimal context
             context = Mock(spec=_ToolExecutionContext)
             context.user_id = user_id
+            context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
             context.global_semaphore = None
 

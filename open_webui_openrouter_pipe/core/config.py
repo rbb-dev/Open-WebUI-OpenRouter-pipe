@@ -22,6 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import core_schema
 from pydantic import GetCoreSchemaHandler
 
+from .fusion_defaults import (
+    DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
+    DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
+    DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
+)
+
 try:
     from open_webui import env as _owui_env
     from open_webui.utils.headers import (
@@ -111,6 +117,11 @@ ULID_TIME_LENGTH = 16
 ULID_RANDOM_LENGTH = ULID_LENGTH - ULID_TIME_LENGTH
 CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _ULID_TIME_MASK = (1 << (ULID_TIME_LENGTH * 5)) - 1
+
+NO_CONTENT_AFTER_TOOLS_FALLBACK = (
+    "I couldn't produce a final answer after running tools. "
+    "Please retry with a narrower tool query or a shorter context window."
+)
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
@@ -1704,6 +1715,26 @@ class Valves(BaseModel):
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
         description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Re-asserted on every sync.",
+    )
+    FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
+        default="internal",
+        title="Fusion Backend",
+        description="Which engine runs deliberation for the dedicated fusion models. 'openrouter': requests go to OpenRouter's hosted Fusion — the panel and judge execute on their servers. 'internal': the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls, so panel members inherit the user's full Open WebUI tool surface (knowledge bases, tool servers, pipe server tools), every dial (ZDR, reasoning effort, cost attribution) applies per member, and a single failed member degrades gracefully instead of killing the whole stream. The live panel UI is identical on both backends.",
+    )
+    FUSION_PANEL_SYSTEM_PROMPT: str = Field(
+        default=DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
+        title="Fusion Panel System Prompt",
+        description="System prompt sent to every panel member on the internal fusion backend. It enforces independent, committed, source-cited answers and forbids members from revealing the deliberation machinery. Edit to reshape panel behaviour; the shipped default was produced by a multi-model design tournament and is tuned to pair with the judge and synthesis prompts.",
+    )
+    FUSION_JUDGE_SYSTEM_PROMPT: str = Field(
+        default=DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
+        title="Fusion Judge System Prompt",
+        description="System prompt for the internal fusion judge (runs at temperature 0). CAUTION: the judge must emit a single strict JSON object with exactly the five keys consensus / contradictions / partial_coverage / unique_insights / blind_spots — the live Analysis panel and the synthesis stage are built on that exact JSON contract. Keep the output-contract rules intact when editing; if the judge stops producing valid JSON the run degrades to no-analysis mode.",
+    )
+    FUSION_SYNTHESIS_SYSTEM_PROMPT: str = Field(
+        default=DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
+        title="Fusion Synthesis System Prompt",
+        description="System prompt for the internal fusion synthesis call — the model that receives the panel drafts plus the judge's analysis and writes the final user-facing answer. It enforces 'compose, never average', honest handling of contradictions, and total secrecy about the deliberation machinery. Edit to change the final answer's voice or composition rules.",
     )
     VIDEO_INITIAL_POLL_DELAY_SECONDS: float = Field(
         default=5.0,

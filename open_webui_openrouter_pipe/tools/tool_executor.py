@@ -66,6 +66,8 @@ class _ToolExecutionContext:
     user: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
     request_id: str = ""
+    fusion_inner: bool = False
+    tool_call_budget: int | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: Optional[str] = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
@@ -258,7 +260,7 @@ class ToolExecutor:
                 ))
                 continue
             tool_type = (tool_cfg.get("type") or "function").lower()
-            if not self._pipe._circuit_breaker.tool_allows(context.user_id, tool_type):
+            if not context.fusion_inner and not self._pipe._circuit_breaker.tool_allows(context.user_id, tool_type):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
                 await _append_and_notify(call, self._build_tool_output(
                     call,
@@ -301,6 +303,17 @@ class ToolExecutor:
                 ))
                 continue
 
+            if context.tool_call_budget is not None:
+                if context.tool_call_budget <= 0:
+                    breaker_only_skips = False
+                    await _append_and_notify(call, self._build_tool_output(
+                        call,
+                        f"Tool '{call.get('name')}' skipped: fusion tool budget exhausted.",
+                        status="skipped",
+                    ))
+                    continue
+                context.tool_call_budget -= 1
+
             future: asyncio.Future = loop.create_future()
             allow_batch = self._is_batchable_tool_call(args)
             queued = _QueuedToolCall(
@@ -327,7 +340,7 @@ class ToolExecutor:
             enqueued_any = True
             breaker_only_skips = False
 
-        if not enqueued_any and breaker_only_skips and context.user_id:
+        if not enqueued_any and breaker_only_skips and context.user_id and not context.fusion_inner:
             self._pipe._circuit_breaker.record_failure(context.user_id)
 
         for call, future in pending:

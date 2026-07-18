@@ -2697,7 +2697,8 @@ class Pipe:
             self.logger.warning("%s", message)
             for item in batch:
                 tool_type = (item.tool_cfg.get("type") or "function").lower()
-                self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
+                if not context.fusion_inner:
+                    self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
                 if not item.future.done():
                     item.future.set_result(
                         self._ensure_tool_executor()._build_tool_output(
@@ -2756,7 +2757,7 @@ class Pipe:
     ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
         """Invoke a single tool call with circuit breaker protection."""
         tool_type = (item.tool_cfg.get("type") or "function").lower()
-        if not self._circuit_breaker.tool_allows(context.user_id, tool_type):
+        if not context.fusion_inner and not self._circuit_breaker.tool_allows(context.user_id, tool_type):
             await self._ensure_tool_executor()._notify_tool_breaker(context, tool_type, item.call.get("name"))
             return (
                 "skipped",
@@ -2799,7 +2800,8 @@ class Pipe:
         if not callable(fn):
             message = f"Tool '{tool_name}' is missing a callable handler."
             self.logger.warning("%s", message)
-            self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
+            if not context.fusion_inner:
+                self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
             return ("failed", message, [], [])
         fn_to_call = cast(ToolCallable, fn)
         timeout = float(context.timeout)
@@ -2855,7 +2857,8 @@ class Pipe:
                 timing_mark(f"tool_run:{tool_name}:done")
                 return ("completed", text, files, embeds)
             except Exception as exc:
-                self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
+                if not context.fusion_inner:
+                    self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(
                         "Tool '%s' execution failed.",
@@ -2887,7 +2890,8 @@ class Pipe:
                     timing_mark(f"tool_run:{tool_name}:done")
                     return ("completed", text, files, embeds)
         except Exception as exc:
-            self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
+            if not context.fusion_inner:
+                self._circuit_breaker.record_tool_failure(context.user_id, tool_type)
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Tool '%s' execution failed.",

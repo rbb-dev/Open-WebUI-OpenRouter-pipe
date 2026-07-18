@@ -20,7 +20,7 @@ import inspect
 import random
 import aiohttp
 from time import perf_counter
-from typing import Any, Optional, Dict, Literal, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Optional, Dict, Literal, TYPE_CHECKING
 from fastapi import Request
 
 # Import parent module classes that are needed at runtime
@@ -91,7 +91,7 @@ from ..api.transforms import (
 )
 
 # Import config classes
-from ..core.config import EncryptedStr, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS
+from ..core.config import EncryptedStr, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS, _PIPE_METADATA_KEY, NO_CONTENT_AFTER_TOOLS_FALLBACK
 from ..core.context_budget import (
     apply_live_tool_output_budget,
 )
@@ -423,6 +423,8 @@ class StreamingHandler:
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
         fusion_live_enabled: bool = False,
+        event_source: AsyncGenerator[dict[str, Any], None] | None = None,
+        outcome_sink: dict[str, Any] | None = None,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -438,6 +440,10 @@ class StreamingHandler:
 
         if not isinstance(metadata, dict):
             metadata = {}
+
+        _loop_pipe_meta = metadata.get(_PIPE_METADATA_KEY)
+        fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
+        breaker_key_value = None if fusion_inner_call else (user_id or None)
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS and (not owui_tool_passthrough)
@@ -1167,6 +1173,14 @@ class StreamingHandler:
         loop_limit_reached = False
         retry_barrier_crossed = False
         handed_back_for_retry = False
+
+        def _record_outcome() -> None:
+            if outcome_sink is None:
+                return
+            outcome_sink["error_occurred"] = error_occurred
+            outcome_sink["was_cancelled"] = was_cancelled
+            outcome_sink["reason"] = session_log_reason or None
+
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
                 # The +1 iteration is reserved exclusively for the synthesis
@@ -1185,69 +1199,75 @@ class StreamingHandler:
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
                 final_response: dict[str, Any] | None = None
-                _sanitize_request_input(self._pipe, body)
-                api_model_override = getattr(body, "api_model", None)
-                model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
-                items = getattr(body, "input", None)
-                if isinstance(items, list):
-                    tools_list = getattr(body, "tools", None)
-                    _maybe_apply_anthropic_prompt_caching(
-                        items,
-                        model_id=model_for_cache,
-                        valves=valves,
-                        tools=tools_list if isinstance(tools_list, list) else None,
-                    )
-                request_payload = body.model_dump(exclude_none=True)
-                if api_model_override:
-                    request_payload["model"] = api_model_override
-                    request_payload.pop("api_model", None)
-                _apply_identifier_valves_to_payload(
-                    request_payload,
-                    valves=valves,
-                    owui_metadata=metadata,
-                    owui_user_id=user_id,
-                    logger=self.logger,
-                )
-                _apply_model_fallback_to_payload(request_payload, logger=self.logger)
-                _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
-                _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
-                _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
-                _strip_disable_model_settings_params(request_payload)
-
-                api_key_value = EncryptedStr.decrypt(valves.API_KEY)
-                is_streaming = bool(request_payload.get("stream"))
-                if is_streaming:
-                    event_iter = self._pipe.send_openrouter_streaming_request(
-                        session,
-                        request_payload,
-                        api_key=api_key_value,
-                        base_url=valves.BASE_URL,
-                        valves=valves,
-                        endpoint_override=endpoint_override,
-                        workers=valves.SSE_WORKERS_PER_REQUEST,
-                        breaker_key=user_id or None,
-                        delta_char_limit=valves.STREAMING_DELTA_CHAR_LIMIT,
-                        idle_flush_ms=valves.STREAMING_IDLE_FLUSH_MS,
-                        nagle_min_chars=valves.STREAMING_NAGLE_MIN_FLUSH_CHARS,
-                        chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
-                        chunk_queue_warn_size=valves.STREAMING_CHUNK_QUEUE_WARN_SIZE,
-                        event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
-                        event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
-                        user=user_obj,
-                        owui_chat_id=chat_id if isinstance(chat_id, str) else None,
-                    )
+                if event_source is not None:
+                    if loop_index > 0:
+                        break
+                    model_for_cache = body.model
+                    event_iter = event_source
                 else:
-                    event_iter = self._pipe.send_openrouter_nonstreaming_request_as_events(
-                        session,
+                    _sanitize_request_input(self._pipe, body)
+                    api_model_override = getattr(body, "api_model", None)
+                    model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
+                    items = getattr(body, "input", None)
+                    if isinstance(items, list):
+                        tools_list = getattr(body, "tools", None)
+                        _maybe_apply_anthropic_prompt_caching(
+                            items,
+                            model_id=model_for_cache,
+                            valves=valves,
+                            tools=tools_list if isinstance(tools_list, list) else None,
+                        )
+                    request_payload = body.model_dump(exclude_none=True)
+                    if api_model_override:
+                        request_payload["model"] = api_model_override
+                        request_payload.pop("api_model", None)
+                    _apply_identifier_valves_to_payload(
                         request_payload,
-                        api_key=api_key_value,
-                        base_url=valves.BASE_URL,
                         valves=valves,
-                        endpoint_override=endpoint_override,
-                        breaker_key=user_id or None,
-                        user=user_obj,
-                        owui_chat_id=chat_id if isinstance(chat_id, str) else None,
+                        owui_metadata=metadata,
+                        owui_user_id=user_id,
+                        logger=self.logger,
                     )
+                    _apply_model_fallback_to_payload(request_payload, logger=self.logger)
+                    _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
+                    _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
+                    _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
+                    _strip_disable_model_settings_params(request_payload)
+
+                    api_key_value = EncryptedStr.decrypt(valves.API_KEY)
+                    is_streaming = bool(request_payload.get("stream"))
+                    if is_streaming:
+                        event_iter = self._pipe.send_openrouter_streaming_request(
+                            session,
+                            request_payload,
+                            api_key=api_key_value,
+                            base_url=valves.BASE_URL,
+                            valves=valves,
+                            endpoint_override=endpoint_override,
+                            workers=valves.SSE_WORKERS_PER_REQUEST,
+                            breaker_key=breaker_key_value,
+                            delta_char_limit=valves.STREAMING_DELTA_CHAR_LIMIT,
+                            idle_flush_ms=valves.STREAMING_IDLE_FLUSH_MS,
+                            nagle_min_chars=valves.STREAMING_NAGLE_MIN_FLUSH_CHARS,
+                            chunk_queue_maxsize=valves.STREAMING_CHUNK_QUEUE_MAXSIZE,
+                            chunk_queue_warn_size=valves.STREAMING_CHUNK_QUEUE_WARN_SIZE,
+                            event_queue_maxsize=valves.STREAMING_EVENT_QUEUE_MAXSIZE,
+                            event_queue_warn_size=valves.STREAMING_EVENT_QUEUE_WARN_SIZE,
+                            user=user_obj,
+                            owui_chat_id=chat_id if isinstance(chat_id, str) else None,
+                        )
+                    else:
+                        event_iter = self._pipe.send_openrouter_nonstreaming_request_as_events(
+                            session,
+                            request_payload,
+                            api_key=api_key_value,
+                            base_url=valves.BASE_URL,
+                            valves=valves,
+                            endpoint_override=endpoint_override,
+                            breaker_key=breaker_key_value,
+                            user=user_obj,
+                            owui_chat_id=chat_id if isinstance(chat_id, str) else None,
+                        )
                 timing_mark("event_iteration_start")
                 first_event_logged = False
                 async for event in event_iter:
@@ -1318,6 +1338,8 @@ class StreamingHandler:
                                 note_generation_activity()
                                 display_state = _reasoning_display_state(key)
                                 display_state["mono_close"] = None
+                                if fusion_inner_call and event_emitter is not None:
+                                    await event_emitter({"type": "fusion_inner:reasoning.delta", "data": {"delta": append}})
                                 await _maybe_emit_reasoning_status(append)
                             if is_final and event_emitter:
                                 await _maybe_emit_reasoning_status("", force=True)
@@ -1332,7 +1354,9 @@ class StreamingHandler:
                         )
                     ):
                         if etype in ("response.fusion_call.panel.delta",
-                                     "response.fusion_call.panel.reasoning.delta"):
+                                     "response.fusion_call.panel.reasoning.delta",
+                                     "response.fusion_call.analysis.reasoning.delta",
+                                     "response.fusion_call.synthesis.reasoning.delta"):
                             fusion_state.record(event)
                             if fusion_batcher is not None:
                                 _batched = fusion_batcher.add(event)
@@ -1347,6 +1371,11 @@ class StreamingHandler:
                             if fusion_batcher is not None:
                                 for _straggler in fusion_batcher.flush_all():
                                     await _emit_fusion_event(_straggler)
+                        elif etype == "response.fusion_call.analysis.completed":
+                            if fusion_batcher is not None:
+                                for _straggler in fusion_batcher.flush_all():
+                                    await _emit_fusion_event(_straggler)
+                            event = fusion_state.augment_analysis_completed(event)
                         _fusion_ms = fusion_state.record(event)
                         if _fusion_ms == "fusion_open":
                             assistant_message = ""
@@ -1386,6 +1415,11 @@ class StreamingHandler:
                             "response.output_text.delta",
                             "response.output_text.done",
                         ):
+                            if etype == "response.output_text.done":
+                                if fusion_batcher is not None:
+                                    for _straggler in fusion_batcher.flush_all():
+                                        await _emit_fusion_event(_straggler)
+                                event = fusion_state.augment_final_answer(event)
                             fusion_state.record(event)
                             await _emit_fusion_embed_once()
                             if etype == "response.output_text.done" and not assistant_message:
@@ -2131,7 +2165,7 @@ class StreamingHandler:
                             notice = _render_error_template(valves.STREAM_INTERRUPTED_TEMPLATE, template_vars)
                         except Exception:
                             notice = _render_error_template(DEFAULT_STREAM_INTERRUPTED_TEMPLATE, template_vars)
-                        if notice:
+                        if notice and not fusion_inner_call:
                             delta = f"\n\n{notice}" if assistant_message else notice
                             assistant_message = f"{assistant_message}{delta}" if assistant_message else notice
                             if event_emitter:
@@ -2505,6 +2539,7 @@ class StreamingHandler:
                                     exc,
                                     exc_info=self.logger.isEnabledFor(logging.DEBUG),
                                 )
+                                _record_outcome()
                                 return assistant_message
 
                         break
@@ -2840,10 +2875,7 @@ class StreamingHandler:
                     "No assistant content was produced after tool execution; sending fallback guidance.",
                     level="warning",
                 )
-                fallback = (
-                    "I couldn't produce a final answer after running tools. "
-                    "Please retry with a narrower tool query or a shorter context window."
-                )
+                fallback = NO_CONTENT_AFTER_TOOLS_FALLBACK
                 delta = f"\n\n{fallback}" if assistant_message else fallback
                 assistant_message = f"{assistant_message}{delta}" if assistant_message else fallback
                 if event_emitter:
@@ -2858,6 +2890,7 @@ class StreamingHandler:
         except asyncio.CancelledError:
             was_cancelled = True
             session_log_reason = "cancelled"
+            _record_outcome()
             raise
         except OpenRouterAPIError as exc:
             error_occurred = True
@@ -2865,6 +2898,7 @@ class StreamingHandler:
             cancel_thinking()
             if not retry_barrier_crossed:
                 handed_back_for_retry = True
+                _record_outcome()
                 raise
             assistant_message = ""
             await self._pipe._ensure_error_formatter()._report_openrouter_error(
@@ -3197,6 +3231,7 @@ class StreamingHandler:
             )
 
         # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
+        _record_outcome()
         return assistant_message
 
 
@@ -3217,6 +3252,8 @@ class StreamingHandler:
         user_obj: Optional[Any] = None,
         pipe_identifier: Optional[str] = None,
         fusion_live_enabled: bool = False,
+        event_source: AsyncGenerator[dict[str, Any], None] | None = None,
+        outcome_sink: dict[str, Any] | None = None,
     ) -> str | dict[str, Any]:
         """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
 
@@ -3248,6 +3285,8 @@ class StreamingHandler:
             user_obj=user_obj,
             pipe_identifier=pipe_identifier,
             fusion_live_enabled=fusion_live_enabled,
+            event_source=event_source,
+            outcome_sink=outcome_sink,
         )
 
 

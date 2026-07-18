@@ -338,6 +338,23 @@ body{
 .loading .spin{width:13px;height:13px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 
+.think-view{margin-top:12px;border:1px solid var(--border-light);border-radius:11px;background:var(--sunken);overflow:hidden;}
+.tv-head{display:flex;align-items:center;gap:7px;padding:7px 12px;border-bottom:1px solid var(--border-light);
+  font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint);}
+.tv-expand{margin-left:auto;display:flex;align-items:center;gap:3px;cursor:pointer;text-transform:none;
+  font-size:11px;font-weight:600;color:var(--text-faint);}
+.tv-expand:hover{color:var(--accent);}
+.tv-expand .chev{width:13px;height:13px;transition:transform .25s;}
+.think-view.expanded .tv-expand .chev{transform:rotate(180deg);}
+.tv-scroll{max-height:140px;overflow-y:auto;padding:9px 13px;}
+.think-view.expanded .tv-scroll{max-height:none;}
+.tv-scroll .md{font-size:12px;color:var(--text-muted);}
+.think-block .think-row{margin-top:12px;}
+.think-block.top .think-row{margin-top:10px;margin-bottom:12px;}
+.think-block .tbody{display:none;}
+.think-block.open .tbody{display:block;animation:reveal .35s ease;}
+.think-block.open .think-toggle .chev{transform:rotate(180deg);}
+
 @media (max-width:560px){
   body{padding:8px;}
   .fusion{border-radius:13px;}
@@ -427,6 +444,7 @@ body{
           <span class="sub" id="finalSub">written from the analysis</span>
           <button class="copy-btn" id="copyFinalBtn" type="button" title="Copy the final answer" aria-label="Copy final answer" style="margin-left:auto;"><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><svg class="i-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></button>
         </div>
+        <div id="synthArea"></div>
         <div class="md" id="finalMd"></div>
       </div>
     </div>
@@ -689,9 +707,11 @@ body{
       });
     }
     if (_collected.analysis) parts.push(H ? analysisToHtml(_collected.analysis, _collected.judge) : analysisToText(_collected.analysis, _collected.judge));
+    if (_collected.judgeThink) parts.push(H ? '<h3>Judge — thinking</h3><div>'+renderMarkdown(_collected.judgeThink)+'</div>' : '### Judge — thinking\n\n'+_collected.judgeThink+'\n');
     if (finalBuf) parts.push(H ? '<h2>Final answer</h2><div>'+renderMarkdown(finalBuf)+'</div>' : '## Final answer\n\n'+finalBuf+'\n');
+    if (_collected.synthThink) parts.push(H ? '<h3>Final answer — thinking</h3><div>'+renderMarkdown(_collected.synthThink)+'</div>' : '### Final answer — thinking\n\n'+_collected.synthThink+'\n');
     var u=_collected.usage;
-    if (u){ var line='Cost $'+((u.cost||0).toFixed(4))+' · '+((u.total_tokens||0).toLocaleString())+' tokens · '+(panelCount+1)+' models'; parts.push(H ? '<hr><p><em>'+esc(line)+'</em></p>' : '\n---\n'+line); }
+    if (u){ var line='Cost $'+((u.cost||0).toFixed(4))+' · '+((u.total_tokens||0).toLocaleString())+' tokens · '+(_sawSynthesis ? (panelCount+2)+' model calls' : (panelCount+1)+' models'); parts.push(H ? '<hr><p><em>'+esc(line)+'</em></p>' : '\n---\n'+line); }
     return parts.join(H ? '' : '\n');
   }
 
@@ -795,7 +815,7 @@ body{
     return c;
   }
   function _thinkRowHtml(){
-    return '<div class="think-row"><span class="think-toggle"><span class="think-lbl">Thinking</span>'
+    return '<div class="think-row"><span class="think-toggle"><span class="think-lbl">Thinking</span><span class="show-lbl">Show</span>'
       + '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>'
       + '<button class="copy-btn think-copy" type="button" title="Copy the thinking" aria-label="Copy thinking">'+copyIcon()+'</button></div>'
       + '<div class="tbody"><div class="md tthink raw"></div></div>';
@@ -824,6 +844,8 @@ body{
     if (tog) tog.addEventListener('click', function(e){
       e.stopPropagation();
       card.classList.toggle('thinking-open');
+      var _sl = tog.querySelector('.show-lbl');
+      if (_sl) _sl.textContent = card.classList.contains('thinking-open') ? 'Hide' : 'Show';
       var st = _liveFor(id);
       var body = card.querySelector('.tbody .tthink');
       if (card.classList.contains('thinking-open') && body && st.think){
@@ -912,13 +934,85 @@ body{
   }
   function approxWords(s){ var str=String(s), n=str.trim().split(/\s+/).filter(Boolean).length, est=Math.round(str.length/6); if (est>n*3) n=est; return n<10 ? n : Math.round(n/10)*10; }
 
+  function _viewportHtml(stage){
+    return '<div class="think-view" id="tv-'+stage+'">'
+      + '<div class="tv-head"><span class="live-dot"></span>Live thinking'
+      +   '<span class="tv-expand"><span class="tvx-lbl">Expand</span>'
+      +   '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span></div>'
+      + '<div class="tv-scroll"><div class="md"></div></div></div>';
+  }
+  function _bindViewport(stage){
+    var v = document.getElementById('tv-'+stage); if (!v) return;
+    var ex = v.querySelector('.tv-expand');
+    if (ex) ex.addEventListener('click', function(){
+      var open = v.classList.toggle('expanded');
+      var l = ex.querySelector('.tvx-lbl'); if (l) l.textContent = open ? 'Collapse' : 'Expand';
+      reportHeight();
+    });
+  }
+  function _renderViewport(stage){
+    _stageLast[stage] = Date.now();
+    var v = document.getElementById('tv-'+stage); if (!v) return;
+    var sc = v.querySelector('.tv-scroll'); if (!sc) return;
+    var md = sc.querySelector('.md'); if (!md) return;
+    var atBottom = (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4);
+    md.innerHTML = renderMarkdown(_stageThink[stage]);
+    if (atBottom) sc.scrollTop = sc.scrollHeight;
+  }
+  function stageReasoningDelta(ev, stage){
+    var d = ev.delta || ''; if (!d) return;
+    _stageThink[stage] += d;
+    if (!document.getElementById('tv-'+stage)) return;
+    if (Date.now() - (_stageLast[stage]||0) >= 500) _renderViewport(stage);
+    else if (!_stageTimer[stage]) _stageTimer[stage] = setTimeout(function(){ _stageTimer[stage] = 0; _renderViewport(stage); }, 500);
+  }
+  function buildThinkBlock(text){
+    var wrap = document.createElement('div');
+    wrap.className = 'think-block';
+    wrap.innerHTML =
+      '<div class="think-row on"><span class="think-toggle"><span class="think-lbl">Thinking · '+approxWords(text)+' words</span><span class="show-lbl">Show</span>'
+      + '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>'
+      + '<button class="copy-btn think-copy" type="button" title="Copy the thinking" aria-label="Copy thinking">'+copyIcon()+'</button></div>'
+      + '<div class="tbody"><div class="md tthink"></div></div>';
+    var tog = wrap.querySelector('.think-toggle');
+    var body = wrap.querySelector('.tbody .tthink');
+    var sl = wrap.querySelector('.show-lbl');
+    tog.addEventListener('click', function(){
+      var open = wrap.classList.toggle('open');
+      if (open && !body.innerHTML) body.innerHTML = renderMarkdown(text);
+      if (sl) sl.textContent = open ? 'Hide' : 'Show';
+      reportHeight();
+    });
+    var cb = wrap.querySelector('.think-copy');
+    if (cb) cb.addEventListener('click', function(e){
+      e.stopPropagation();
+      if (writeClipboard(wrapHtml('<div>'+renderMarkdown(text)+'</div>'), text)) flashCopied(cb);
+    });
+    return wrap;
+  }
+  function finishStageThinking(container, text){
+    if (!container || !text) return;
+    var blk = buildThinkBlock(text);
+    blk.className = 'think-block top';
+    var head = container.querySelector('.an-head');
+    if (head) container.insertBefore(blk, head.nextSibling);
+    else container.insertBefore(blk, container.firstChild);
+  }
+  function finishSynthesisThinking(text){
+    var area = document.getElementById('synthArea'); if (!area) return;
+    area.innerHTML = '';
+    if (text) area.appendChild(buildThinkBlock(text));
+  }
+
   function judgeStarting(judgeId){
     reveal('sec-analysis');
     setPhase('judge'); setStatus('judging');
     var m = modelMeta(judgeId);
     document.getElementById('analysis').innerHTML =
       '<div class="loading" style="padding:16px 2px"><span class="spin"></span> '
-      + esc(m.label)+' is weighing the '+panelCount+' answers — finding agreement, conflicts and gaps…</div>';
+      + esc(m.label)+' is weighing the '+panelCount+' answers — finding agreement, conflicts and gaps…</div>'
+      + _viewportHtml('analysis');
+    _bindViewport('analysis');
   }
 
   function ic(path,color){ return '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:'+color+'">'+path+'</svg>'; }
@@ -937,7 +1031,7 @@ body{
 
     H += '<div class="an-head">'
        +   '<div class="gem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.8L19 9l-3.6 3.3.9 5L12 14.8 7.7 17.3l.9-5L5 9l4.8-1.2z"/></svg></div>'
-       +   '<div class="t"><b>The Judge\u2019s Analysis</b><span>How the '+panelCount+' answers compare — the value Fusion adds</span></div>'
+       +   '<div class="t"><b>The Judge\u2019s Analysis</b><span>How the '+panelCount+' answers compare — agreements, conflicts, gaps</span></div>'
        +   '<div class="an-judge"><span class="av">'+esc(jm.initial)+'</span>'+esc(jm.label)+'</div>'
        +   '<button class="copy-btn" id="copyAnalysisBtn" type="button" title="Copy the analysis" aria-label="Copy analysis">'+copyIcon()+'</button>'
        +   '<div class="an-toggle"><span class="ant-lbl">Hide</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>'
@@ -1027,10 +1121,25 @@ body{
     document.getElementById('finalAv').textContent = m.initial;
     document.getElementById('finalAv').style.background = avColor(m.cls);
     document.getElementById('finalSub').textContent = 'written by '+m.label+' from the analysis';
+    var _ss = document.getElementById('synthStatus'); if (_ss && _ss.parentNode) _ss.parentNode.removeChild(_ss);
     finalBuf = ''; _frozenLen = 0;
     var md = document.getElementById('finalMd');
     md.innerHTML = '<div id="finalFrozen"></div><div id="finalLive"></div>';
     document.getElementById('finalLive').classList.add('cursor');
+  }
+  function synthesisStarting(model){
+    reveal('sec-final');
+    setPhase('answer'); setStatus('writing');
+    _synthModel = model;
+    var m = modelMeta(model);
+    document.getElementById('finalAv').textContent = m.initial;
+    document.getElementById('finalAv').style.background = avColor(m.cls);
+    document.getElementById('finalSub').textContent = 'written by '+m.label+' from the analysis';
+    var area = document.getElementById('synthArea');
+    if (area){
+      area.innerHTML = '<div class="loading" id="synthStatus"><span class="spin"></span> '+esc(m.label)+' is writing the final answer…</div>'+_viewportHtml('synthesis');
+      _bindViewport('synthesis');
+    }
   }
   function _splitFrozen(buf, from){
     var n = buf.length, i = from, start = from;
@@ -1101,9 +1210,9 @@ body{
     f.innerHTML =
       stat('Cost', '$'+cost.toFixed(4))
       + stat('Tokens', tot.toLocaleString(), inp.toLocaleString()+' in · '+out.toLocaleString()+' out')
-      + stat('Models', panelCount + ' + 1', 'panel + judge')
+      + stat('Models', _sawSynthesis ? (panelCount + ' + 1 + 1') : (panelCount + ' + 1'), _sawSynthesis ? 'panel + judge + synthesis' : 'panel + judge')
       + stat('Elapsed', (elapsedSec != null ? fmt(elapsedSec*1000) : '\u2014'), 'wall clock')
-      + '<div class="cost-note">Fusion ran <b>'+(panelCount+1)+' models</b> to produce this answer.</div>';
+      + '<div class="cost-note">'+(_sawSynthesis ? 'Fusion made <b>'+(panelCount+2)+' model calls</b> to produce this answer.' : 'Fusion ran <b>'+(panelCount+1)+' models</b> to produce this answer.')+'</div>';
     document.getElementById('modelLine').textContent = clean(model||DATA.model);
   }
   function stat(k,v,sub){ return '<div class="stat"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+(sub?' <small>'+esc(sub)+'</small>':'')+'</div></div>'; }
@@ -1112,17 +1221,27 @@ body{
   var _judge = null;
   var _fusionIdx = null;
   var _finalStarted = false;
+  var _sawSynthesis = false;
+  var _synthModel = null;
+  var _stageThink = {analysis:'', synthesis:''};
+  var _stageTimer = {analysis:0, synthesis:0};
+  var _stageLast = {analysis:0, synthesis:0};
   function isPreamble(idx){ return _fusionIdx == null || idx < _fusionIdx; }
-  function ensureFinal(){ if (!_finalStarted){ _finalStarted = true; startFinal(_judge); } }
+  function ensureFinal(){ if (!_finalStarted){ _finalStarted = true; startFinal(_synthModel || _judge); } }
 
   function resetUI(){
     ['sec-preamble','sec-roster','sec-analysis','sec-final','sec-footer'].forEach(function(id){ document.getElementById(id).classList.add('hidden'); });
     document.getElementById('roster').innerHTML='';
     document.getElementById('analysis').innerHTML='<div class="loading"><span class="spin"></span> Judge is comparing the answers…</div>';
     document.getElementById('finalMd').innerHTML='';
+    var _sa=document.getElementById('synthArea'); if(_sa) _sa.innerHTML='';
     document.getElementById('rosterCount').textContent='0';
     document.getElementById('elapsed').textContent='';
     PHASES.forEach(function(p){var el=document.querySelector('.step[data-k="'+p.key+'"]');el.classList.remove('done','active');});
+    _sawSynthesis=false; _synthModel=null; _stageThink={analysis:'',synthesis:''};
+    if(_stageTimer.analysis) clearTimeout(_stageTimer.analysis);
+    if(_stageTimer.synthesis) clearTimeout(_stageTimer.synthesis);
+    _stageTimer={analysis:0,synthesis:0}; _stageLast={analysis:0,synthesis:0};
   }
 
   function push(ev){
@@ -1143,7 +1262,9 @@ body{
         break;
       case 'response.output_text.done':
         if (isPreamble(ev.output_index)) showPreamble(ev.text||'');
-        else { ensureFinal(); if (!finalBuf) appendFinal(ev.text||''); endFinal(); }
+        else { ensureFinal(); if (!finalBuf) appendFinal(ev.text||''); endFinal();
+          _collected.synthThink = ev.reasoning || _stageThink.synthesis;
+          finishSynthesisThinking(_collected.synthThink); }
         break;
       case 'response.fusion_call.in_progress':
         reveal('sec-roster'); setPhase('panel'); setStatus('deliberating');
@@ -1154,7 +1275,14 @@ body{
       case 'response.fusion_call.panel.reasoning.delta': panelReasoningDelta(ev); break;
       case 'response.fusion_call.panel.completed':      completePanelModel(ev); break;
       case 'response.fusion_call.analysis.in_progress': _judge = ev.judge_model; judgeStarting(ev.judge_model); break;
-      case 'response.fusion_call.analysis.completed':   renderAnalysis(ev.analysis, _judge); break;
+      case 'response.fusion_call.analysis.reasoning.delta':  stageReasoningDelta(ev, 'analysis'); break;
+      case 'response.fusion_call.analysis.completed':
+        renderAnalysis(ev.analysis, _judge);
+        _collected.judgeThink = ev.reasoning || _stageThink.analysis;
+        finishStageThinking(document.getElementById('analysis'), _collected.judgeThink);
+        break;
+      case 'response.fusion_call.synthesis.in_progress':     _sawSynthesis = true; synthesisStarting(ev.model); break;
+      case 'response.fusion_call.synthesis.reasoning.delta': stageReasoningDelta(ev, 'synthesis'); break;
       case 'response.fusion_call.completed':            break;
       case 'response.done':
       case 'response.completed':
@@ -1274,6 +1402,8 @@ class FusionDeliberationState:
     seen_analysis_done: bool = False
     completed: bool = False
     panel_reasoning_buf: dict[str, str] = field(default_factory=dict)
+    judge_reasoning_buf: str = ""
+    synthesis_reasoning_buf: str = ""
 
     def record(self, event: dict) -> str | None:
         """Append the event; return a milestone key if it should trigger a new
@@ -1294,6 +1424,24 @@ class FusionDeliberationState:
                         room = _PANEL_REASONING_BUF_CAP - len(existing)
                         self.panel_reasoning_buf[model] = existing + delta[:room]
             return None
+
+        if etype == "response.fusion_call.analysis.reasoning.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta and len(self.judge_reasoning_buf) < _PANEL_REASONING_BUF_CAP:
+                room = _PANEL_REASONING_BUF_CAP - len(self.judge_reasoning_buf)
+                self.judge_reasoning_buf += delta[:room]
+            return None
+
+        if etype == "response.fusion_call.synthesis.reasoning.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta and len(self.synthesis_reasoning_buf) < _PANEL_REASONING_BUF_CAP:
+                room = _PANEL_REASONING_BUF_CAP - len(self.synthesis_reasoning_buf)
+                self.synthesis_reasoning_buf += delta[:room]
+            return None
+
+        if etype == "response.fusion_call.synthesis.in_progress":
+            self.events.append(event)
+            return "synthesis_start"
 
         item = event.get("item")
         item_type = item.get("type") if isinstance(item, dict) else None
@@ -1370,6 +1518,16 @@ class FusionDeliberationState:
         buf = self.panel_reasoning_buf.get(model) if isinstance(model, str) else None
         if buf:
             return {**event, "reasoning": buf}
+        return event
+
+    def augment_analysis_completed(self, event: dict) -> dict:
+        if self.judge_reasoning_buf and isinstance(event, dict):
+            return {**event, "reasoning": self.judge_reasoning_buf}
+        return event
+
+    def augment_final_answer(self, event: dict) -> dict:
+        if self.synthesis_reasoning_buf and isinstance(event, dict):
+            return {**event, "reasoning": self.synthesis_reasoning_buf}
         return event
 
     def synthesize_missing_analysis(self) -> dict | None:

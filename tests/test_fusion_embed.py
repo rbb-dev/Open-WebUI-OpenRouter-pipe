@@ -1,5 +1,3 @@
-"""Tests for the Fusion live-UI embed module."""
-
 import json
 
 from open_webui_openrouter_pipe.streaming.fusion_embed import (
@@ -40,6 +38,13 @@ _KEEP = [
     "'response.fusion_call.panel.delta'", "'response.fusion_call.panel.reasoning.delta'",
     'class="ticker"', "tick-words", "think-lbl", "think-toggle", "thinking-open",
     "_lastH",
+    'id="synthArea"', "think-view", "tv-scroll", "tv-expand", "think-block",
+    "function synthesisStarting", "function stageReasoningDelta", "function buildThinkBlock",
+    "'response.fusion_call.synthesis.in_progress'",
+    "'response.fusion_call.analysis.reasoning.delta'",
+    "'response.fusion_call.synthesis.reasoning.delta'",
+    "_sawSynthesis", "panel + judge + synthesis", "Fusion made <b>", "Fusion ran <b>",
+    'think-lbl">Thinking</span><span class="show-lbl">Show',
 ]
 
 
@@ -246,7 +251,6 @@ def test_empty_analysis_sections_use_reworded_neutral_strings():
         assert stale not in html
 
 
-# --- panel delta handling (state) --------------------------------------------
 
 
 def test_record_panel_deltas_not_appended_and_no_milestone():
@@ -310,7 +314,6 @@ def test_augmented_completed_round_trips_reasoning_into_snapshot():
                 and "panel" in str(e.get("type", ""))]
 
 
-# --- FusionDeltaBatcher ------------------------------------------------------
 
 
 def _delta_ev(kind, model, delta, **extra):
@@ -366,3 +369,127 @@ def test_batcher_discard_model_drops_both_kinds():
     b.discard_model("a/b")
     flushed = b.flush_all()
     assert [(e["model"], e["delta"]) for e in flushed] == [("c/d", "keep")]
+
+
+class TestCopyAllModelCount:
+    def test_copy_all_usage_line_is_backend_conditional(self):
+        from open_webui_openrouter_pipe.streaming.fusion_embed import build_fusion_embed_html, FusionDeliberationState
+
+        state = FusionDeliberationState()
+        html = build_fusion_embed_html(state)
+        assert "_sawSynthesis ? (panelCount+2)+' model calls' : (panelCount+1)+' models'" in html
+
+
+class TestStageReasoningState:
+    def _state(self):
+        return FusionDeliberationState()
+
+    def test_stage_reasoning_accumulates_not_baked(self):
+        s = self._state()
+        for i in range(3):
+            ms = s.record({"type": "response.fusion_call.analysis.reasoning.delta",
+                           "output_index": 0, "model": "j/x", "delta": f"j{i} "})
+            assert ms is None
+        ms = s.record({"type": "response.fusion_call.synthesis.reasoning.delta",
+                       "output_index": 0, "model": "j/x", "delta": "s0 "})
+        assert ms is None
+        assert s.judge_reasoning_buf == "j0 j1 j2 "
+        assert s.synthesis_reasoning_buf == "s0 "
+        assert s.events == []
+
+    def test_stage_buffers_do_not_mix_with_panel_buffer(self):
+        s = self._state()
+        s.record({"type": "response.fusion_call.panel.reasoning.delta",
+                  "output_index": 0, "model": "j/x", "delta": "panel-think"})
+        s.record({"type": "response.fusion_call.analysis.reasoning.delta",
+                  "output_index": 0, "model": "j/x", "delta": "judge-think"})
+        assert s.panel_reasoning_buf["j/x"] == "panel-think"
+        assert s.judge_reasoning_buf == "judge-think"
+
+    def test_synthesis_in_progress_baked_with_milestone(self):
+        s = self._state()
+        ev = {"type": "response.fusion_call.synthesis.in_progress",
+              "output_index": 0, "model": "j/x"}
+        assert s.record(ev) == "synthesis_start"
+        assert ev in s.events
+
+    def test_augment_analysis_completed(self):
+        s = self._state()
+        s.record({"type": "response.fusion_call.analysis.reasoning.delta",
+                  "output_index": 0, "model": "j/x", "delta": "why"})
+        ev = {"type": "response.fusion_call.analysis.completed", "output_index": 0,
+              "analysis": {"consensus": [], "contradictions": [], "partial_coverage": [],
+                           "unique_insights": [], "blind_spots": []}}
+        out = s.augment_analysis_completed(ev)
+        assert out["reasoning"] == "why"
+        assert "reasoning" not in ev
+
+    def test_augment_final_answer(self):
+        s = self._state()
+        s.record({"type": "response.fusion_call.synthesis.reasoning.delta",
+                  "output_index": 0, "model": "j/x", "delta": "how"})
+        ev = {"type": "response.output_text.done", "output_index": 1, "text": "answer"}
+        out = s.augment_final_answer(ev)
+        assert out["reasoning"] == "how"
+
+    def test_augment_noop_when_empty(self):
+        s = self._state()
+        ev = {"type": "response.fusion_call.analysis.completed", "output_index": 0}
+        assert s.augment_analysis_completed(ev) is ev
+        ev2 = {"type": "response.output_text.done", "output_index": 1, "text": "a"}
+        assert s.augment_final_answer(ev2) is ev2
+
+
+def test_template_footer_has_both_backend_variants():
+    html = build_fusion_embed_html(FusionDeliberationState())
+    assert "panel + judge + synthesis" in html
+    assert "Fusion made <b>" in html
+    assert "Fusion ran <b>" in html
+    assert "'panel + judge')" in html
+
+
+def test_panel_think_row_carries_show_hide_control():
+    html = build_fusion_embed_html(FusionDeliberationState())
+    assert 'think-lbl">Thinking</span><span class="show-lbl">Show' in html
+
+
+def test_synthesis_lifecycle_bakes_milestone_and_augments_reasoning():
+    s = FusionDeliberationState()
+    s.record({"type": "response.output_item.added", "output_index": 1,
+              "item": {"type": "openrouter:fusion"}})
+    s.record({"type": "response.fusion_call.panel.added", "output_index": 1, "model": "a/b"})
+    s.record({"type": "response.fusion_call.panel.completed", "output_index": 1,
+              "model": "a/b", "content": "ans"})
+    s.record({"type": "response.fusion_call.analysis.in_progress", "output_index": 1,
+              "judge_model": "j/x"})
+    s.record({"type": "response.fusion_call.analysis.reasoning.delta",
+              "output_index": 0, "model": "j/x", "delta": "judge-think"})
+    analysis_completed = s.augment_analysis_completed({
+        "type": "response.fusion_call.analysis.completed", "output_index": 1,
+        "analysis": {"consensus": [], "contradictions": [], "partial_coverage": [],
+                     "unique_insights": [], "blind_spots": []}})
+    s.record(analysis_completed)
+    assert s.record({"type": "response.fusion_call.synthesis.in_progress",
+                     "output_index": 0, "model": "s/y"}) == "synthesis_start"
+    s.record({"type": "response.fusion_call.synthesis.reasoning.delta",
+              "output_index": 0, "model": "s/y", "delta": "synth-think"})
+    s.record({"type": "response.output_item.added", "output_index": 2,
+              "item": {"type": "message"}})
+    s.record({"type": "response.output_text.delta", "output_index": 2, "delta": "Hello"})
+    final_done = s.augment_final_answer({"type": "response.output_text.done",
+                                         "output_index": 2, "text": "Hello world"})
+    s.record(final_done)
+    s.record({"type": "response.completed", "response": {"usage": {"cost": 0.1}}})
+
+    baked = _events_literal(build_fusion_embed_html(s))
+    types = [e["type"] for e in baked]
+    assert "response.fusion_call.synthesis.in_progress" in types
+    assert "response.fusion_call.analysis.reasoning.delta" not in types
+    assert "response.fusion_call.synthesis.reasoning.delta" not in types
+    ac = next(e for e in baked if e["type"] == "response.fusion_call.analysis.completed")
+    assert ac["reasoning"] == "judge-think"
+    fd = next(e for e in baked if e["type"] == "response.output_text.done"
+              and e.get("output_index") == 2)
+    assert fd["reasoning"] == "synth-think"
+    assert s.judge_reasoning_buf == "judge-think"
+    assert s.synthesis_reasoning_buf == "synth-think"

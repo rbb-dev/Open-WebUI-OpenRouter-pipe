@@ -751,6 +751,69 @@ class FilterManager:
             .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
         )
 
+    _inner_web_tools_module_cache: dict[str, Any] = {}
+
+    async def collect_installed_web_tools_config(
+        self, user_id: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        from open_webui.models.functions import Functions
+
+        function_id = _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID
+        try:
+            row = await Functions.get_function_by_id(function_id)
+        except Exception as exc:
+            self.logger.debug("Web tools filter lookup failed: %s", exc)
+            return None
+        if row is None or not getattr(row, "is_active", False):
+            return None
+        content = getattr(row, "content", None)
+        if not isinstance(content, str) or "class Filter" not in content:
+            return None
+        cache_key = str(hash(content))
+        module_ns = self._inner_web_tools_module_cache.get(cache_key)
+        if module_ns is None:
+            import sys
+            import types
+
+            module_name = f"_owui_or_webtools_inner_{abs(hash(content)) % 10**10}"
+            module = types.ModuleType(module_name)
+            module.__file__ = "<installed-web-tools-filter>"
+            try:
+                sys.modules[module_name] = module
+                exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)
+            except Exception as exc:
+                sys.modules.pop(module_name, None)
+                self.logger.warning("Installed web tools filter failed to load for fusion inner calls: %s", exc)
+                return None
+            module_ns = module.__dict__
+            self._inner_web_tools_module_cache.clear()
+            self._inner_web_tools_module_cache[cache_key] = module_ns
+        filter_cls = module_ns.get("Filter")
+        if filter_cls is None:
+            return None
+        try:
+            instance = filter_cls()
+            stored_valves = await Functions.get_function_valves_by_id(function_id) or {}
+            instance.valves = filter_cls.Valves(**{k: v for k, v in stored_valves.items() if v is not None})
+            stored_user = {}
+            if user_id:
+                stored_user = await Functions.get_user_valves_by_id_and_user_id(function_id, user_id) or {}
+            user_valves = filter_cls.UserValves(**{k: v for k, v in stored_user.items() if v is not None})
+            metadata: dict[str, Any] = {}
+            instance.inlet({"model": "fusion-inner"}, __metadata__=metadata, __user__={"valves": user_valves})
+        except Exception as exc:
+            self.logger.warning("Installed web tools filter inlet failed for fusion inner calls: %s", exc)
+            return None
+        pipe_meta = metadata.get(_PIPE_METADATA_KEY)
+        if not isinstance(pipe_meta, dict):
+            return {}, []
+        server_tools = pipe_meta.get("server_tools")
+        stop_when = pipe_meta.get("stop_server_tools_when")
+        return (
+            dict(server_tools) if isinstance(server_tools, dict) else {},
+            list(stop_when) if isinstance(stop_when, list) else [],
+        )
+
     @timed
     async def ensure_openrouter_web_tools_filter_function_id(
         self,

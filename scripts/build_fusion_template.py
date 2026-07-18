@@ -541,8 +541,15 @@ def build_template(html: str) -> str:
     html = replace_once(
         html,
         "      + '<div class=\"cost-note\">Fusion ran <b>'+(panelCount+1)+' models</b> across <b>~148s</b> to produce this answer — roughly <b>4–5× the cost</b> of a single call. The depth above is what you paid for.</div>';",
-        "      + '<div class=\"cost-note\">Fusion ran <b>'+(panelCount+1)+' models</b> to produce this answer.</div>';",
+        "      + '<div class=\"cost-note\">'+(_sawSynthesis ? 'Fusion made <b>'+(panelCount+2)+' model calls</b> to produce this answer.' : 'Fusion ran <b>'+(panelCount+1)+' models</b> to produce this answer.')+'</div>';",
         label="44 cost-note",
+    )
+
+    html = replace_once(
+        html,
+        "      + stat('Models', panelCount + ' + 1', 'panel + judge')",
+        "      + stat('Models', _sawSynthesis ? (panelCount + ' + 1 + 1') : (panelCount + ' + 1'), _sawSynthesis ? 'panel + judge + synthesis' : 'panel + judge')",
+        label="49 models-synthesis-count",
     )
 
     html = replace_once(
@@ -645,6 +652,14 @@ KEEP_TOKENS = [
     "'response.fusion_call.panel.delta'", "'response.fusion_call.panel.reasoning.delta'",
     'class="ticker"', "tick-words", "think-lbl", "think-toggle", "thinking-open",
     "function _thinkRowHtml", "function _bindThinking", "_lastH",
+    'id="synthArea"', "think-view", "tv-scroll", "tv-expand", "think-block",
+    "function synthesisStarting", "function stageReasoningDelta", "function buildThinkBlock",
+    "function _viewportHtml", "function finishSynthesisThinking", "function finishStageThinking",
+    "'response.fusion_call.synthesis.in_progress'",
+    "'response.fusion_call.analysis.reasoning.delta'",
+    "'response.fusion_call.synthesis.reasoning.delta'",
+    "_sawSynthesis", "panel + judge + synthesis", "Fusion made ",
+    'think-lbl">Thinking</span><span class="show-lbl">Show',
 ]
 
 

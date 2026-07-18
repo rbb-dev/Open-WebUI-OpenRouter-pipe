@@ -123,13 +123,15 @@ class Filter:
         )
 
     class UserValves(BaseModel):
-        FUSION_PRESET: Literal["", "general-high", "general-budget"] = Field(
+        FUSION_PRESET: Literal["", "general-high", "general-budget", "general-fast"] = Field(
             default="",
             title="Preset",
             description=(
-                "Curated Fusion panel + judge bundle. 'general-high' = strongest models; "
-                "'general-budget' = faster and cheaper. Empty = Fusion default, or set your "
-                "own panel/judge below (explicit panel/judge override a preset)."
+                "Curated Fusion panel + judge bundle. 'general-high' = the strongest "
+                "frontier trio with a frontier judge; 'general-budget' = a fast low-cost "
+                "trio with the same frontier judge; 'general-fast' = the same low-cost "
+                "trio with a quicker judge (lowest latency). Empty = general-high. "
+                "Explicit panel/judge below override a preset."
             ),
         )
         FUSION_ANALYSIS_MODELS: str = Field(
@@ -155,17 +157,21 @@ class Filter:
             le=16,
             title="Max tool calls per model",
             description=(
-                "Max web search/fetch steps each panel and judge model may take before it "
-                "must answer (1-16). 0 = Fusion default (8)."
+                "Tool budget for each panel and judge model (1-16; 0 = default 8). On the "
+                "OpenRouter engine this caps web search/fetch steps. On the pipe's "
+                "internal engine it is enforced as a hard per-model cap on individual "
+                "tool invocations (knowledge bases, tool servers, web tools alike); "
+                "excess calls are skipped, and it also bounds the model's tool rounds."
             ),
         )
         FUSION_FORCE_TOOL_CALL: bool = Field(
             default=False,
             title="Always run Fusion",
             description=(
-                "On the dedicated fusion models this switch has no effect: the pipe already "
-                "forces the panel on every message (tool_choice='required'), regardless of "
-                "this setting. It matters only when an admin has attached this filter to a "
+                "On the dedicated fusion models this switch has no effect: deliberation is "
+                "guaranteed on both engines (the OpenRouter engine via tool_choice="
+                "'required'; the internal engine always deliberates). It matters only "
+                "when an admin has attached this filter to a "
                 "non-fusion model (ALLOW_ON_NON_FUSION_MODELS). There — Off (default): the "
                 "model decides whether the prompt needs the multi-model panel (cheaper; some "
                 "replies answer directly). On: force the panel to run every message. Only "
@@ -245,7 +251,7 @@ class Filter:
 
             has_overrides = bool(set(cfg) - {"id"})
             if is_fusion and idx is None and not has_overrides:
-                pass  # leave the alias' own defaults; don't append an empty {"id":"fusion"}
+                pass
             elif idx is not None:
                 plugins[idx] = cfg  # replace in place (preserve position)
                 body["plugins"] = plugins

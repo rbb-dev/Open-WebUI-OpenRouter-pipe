@@ -1,13 +1,3 @@
-"""Tests for the RequestOrchestrator module.
-
-This test file covers edge cases and error handling paths in the orchestrator:
-- Direct upload handling (files, audio, video)
-- Base64 decoding edge cases
-- Audio format sniffing
-- Tool registry processing
-- Web search plugin configuration
-- Error retry logic (reasoning effort, prompt caching, etc.)
-"""
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
 from __future__ import annotations
@@ -35,7 +25,6 @@ from open_webui_openrouter_pipe.filters.fusion_filter_renderer import is_fusion_
 
 @pytest_asyncio.fixture
 async def orchestrator_and_pipe():
-    """Create an orchestrator with a properly configured pipe."""
     pipe = Pipe()
     logger = logging.getLogger("test_orchestrator")
     logger.setLevel(logging.DEBUG)
@@ -46,7 +35,6 @@ async def orchestrator_and_pipe():
 
 @pytest.fixture
 def mock_valves():
-    """Create mock valves with default test values."""
     valves = Mock()
     valves.MAX_INPUT_IMAGES_PER_REQUEST = 0
     valves.IMAGE_INPUT_SELECTION = "latest_user"
@@ -58,6 +46,7 @@ def mock_valves():
     valves.OPENROUTER_ERROR_TEMPLATE = "Error: {detail}"
     valves.ZDR_ENFORCE = False
     valves.ALLOW_USER_ZDR_OVERRIDE = False
+    valves.FUSION_BACKEND = "openrouter"
     valves.REASONING_EFFORT = "medium"
     valves.TASK_MODEL_REASONING_EFFORT = "low"
     valves.USE_MODEL_MAX_OUTPUT_TOKENS = False
@@ -73,14 +62,12 @@ def mock_valves():
 
 @pytest.fixture
 def mock_session():
-    """Create a mock aiohttp session."""
     session = AsyncMock(spec=aiohttp.ClientSession)
     return session
 
 
 @pytest.fixture
 def base_request_body():
-    """Create a basic request body for testing."""
     return {
         "model": "openai/gpt-4o",
         "messages": [
@@ -96,11 +83,9 @@ def base_request_body():
 
 
 class TestDecodeBase64PrefixEdgeCases:
-    """Tests for the internal _decode_base64_prefix function edge cases."""
 
     @pytest.mark.asyncio
     async def test_empty_data_returns_empty_bytes(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Empty input data should return empty bytes (line 147)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # We need to trigger the code path by having audio attachments
@@ -144,10 +129,6 @@ class TestDecodeBase64PrefixEdgeCases:
 
     @pytest.mark.asyncio
     async def test_invalid_base64_chars_in_prefix(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Non-base64 characters in prefix should return empty bytes and use declared format (line 160).
-
-        When base64 contains invalid characters, the sniff returns empty which falls back to declared format.
-        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create audio attachment with invalid base64 but with a declared format
@@ -202,11 +183,9 @@ class TestDecodeBase64PrefixEdgeCases:
 
 
 class TestDirectUploadSkipPaths:
-    """Tests for skipping invalid attachments in direct uploads."""
 
     @pytest.mark.asyncio
     async def test_file_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """File attachments with non-string or empty id should be skipped (line 197)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create file attachments with invalid ids
@@ -255,7 +234,6 @@ class TestDirectUploadSkipPaths:
 
     @pytest.mark.asyncio
     async def test_audio_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Audio attachments with non-string or empty id should be skipped (line 229)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create audio attachments with invalid ids
@@ -302,7 +280,6 @@ class TestDirectUploadSkipPaths:
 
     @pytest.mark.asyncio
     async def test_video_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Video attachments with non-string or empty id should be skipped (line 255)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create video attachments with invalid ids
@@ -354,11 +331,9 @@ class TestDirectUploadSkipPaths:
 
 
 class TestCsvSetNonStringInput:
-    """Tests for _csv_set handling of non-string inputs."""
 
     @pytest.mark.asyncio
     async def test_csv_set_with_non_string_returns_empty_set(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Non-string input to _csv_set should return empty set (line 213)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create audio with non-string allowlist value
@@ -416,11 +391,9 @@ class TestCsvSetNonStringInput:
 
 
 class TestExtraToolsExceptionHandling:
-    """Tests for extra_tools exception handling."""
 
     @pytest.mark.asyncio
     async def test_extra_tools_exception_caught(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Exception when accessing extra_tools should be caught (lines 556-557)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create a completions body mock that raises on extra_tools access
@@ -485,11 +458,9 @@ class TestExtraToolsExceptionHandling:
 
 
 class TestToolRenameLogging:
-    """Tests for tool rename debug logging."""
 
     @pytest.mark.asyncio
     async def test_tool_renames_logged_when_debug_enabled(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Tool renames should be logged when DEBUG level is enabled (line 624)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Enable debug logging
@@ -551,11 +522,9 @@ class TestToolRenameLogging:
 
 
 class TestOpenRouterAPIErrorHandling:
-    """Tests for OpenRouterAPIError handling and retry logic."""
 
     @pytest.mark.asyncio
     async def test_reasoning_effort_retry(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Reasoning effort error should trigger retry with fallback effort (lines 710-755)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -625,7 +594,6 @@ class TestOpenRouterAPIErrorHandling:
 
     @pytest.mark.asyncio
     async def test_reasoning_retry_without_reasoning(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Error that should retry without reasoning (lines 757-762)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -685,7 +653,6 @@ class TestOpenRouterAPIErrorHandling:
 
     @pytest.mark.asyncio
     async def test_error_reported_when_no_retry_applicable(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Error should be reported when no retry is applicable (lines 764-771)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -739,7 +706,6 @@ class TestOpenRouterAPIErrorHandling:
 
     @pytest.mark.asyncio
     async def test_event_emitter_error_caught_on_status_update(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Event emitter errors should be caught when emitting status update (line 747-748)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -813,11 +779,9 @@ class TestOpenRouterAPIErrorHandling:
 
 
 class TestNonStreamingPath:
-    """Tests for non-streaming request path."""
 
     @pytest.mark.asyncio
     async def test_nonstreaming_request(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Non-streaming requests should use _run_nonstreaming_loop (lines 679-691)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Make it non-streaming
@@ -871,11 +835,9 @@ class TestNonStreamingPath:
 
 
 class TestAudioFormatSniffing:
-    """Tests for audio format sniffing helper."""
 
     @pytest.mark.asyncio
     async def test_sniff_wav_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """WAV format should be sniffed from RIFF header."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # WAV header: RIFF....WAVE
@@ -924,7 +886,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_mp3_id3_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """MP3 with ID3 header should be sniffed."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # MP3 with ID3 tag
@@ -973,7 +934,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_mp3_sync_frame(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """MP3 sync frame should be sniffed."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # MP3 sync frame: 0xFF 0xFB (MPEG-1 Layer 3)
@@ -1022,7 +982,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_m4a_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """M4A (ISO BMFF) format should be sniffed from ftyp marker."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # ISO BMFF container: ....ftyp
@@ -1072,7 +1031,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_flac_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """FLAC format should be sniffed from fLaC magic bytes."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # FLAC magic bytes
@@ -1122,7 +1080,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_ogg_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """OGG format should be sniffed from OggS magic bytes."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # OGG magic bytes
@@ -1172,7 +1129,6 @@ class TestAudioFormatSniffing:
 
     @pytest.mark.asyncio
     async def test_sniff_webm_format(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """WebM format should be sniffed from EBML magic bytes."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # WebM/Matroska EBML magic bytes
@@ -1227,11 +1183,9 @@ class TestAudioFormatSniffing:
 
 
 class TestToolsRegistryAsList:
-    """Tests for tools registry handling when provided as a list."""
 
     @pytest.mark.asyncio
     async def test_tools_registry_as_list_with_spec(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Tools registry as list with spec objects should be processed."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -1288,11 +1242,9 @@ class TestToolsRegistryAsList:
 
 
 class TestReasoningBodyInitialization:
-    """Tests for reasoning body initialization during retry."""
 
     @pytest.mark.asyncio
     async def test_reasoning_initialized_when_not_dict(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Reasoning should be initialized as dict when None (lines 750-751)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Setup mocks
@@ -1370,15 +1322,9 @@ class TestReasoningBodyInitialization:
 
 
 class TestDecodeBase64EdgeCases:
-    """Additional tests for _decode_base64_prefix edge cases (lines 147, 150-156, 168-169)."""
 
     @pytest.mark.asyncio
     async def test_empty_base64_data(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Empty base64 data should return empty bytes (line 147).
-
-        When the base64 data is empty string "", _decode_base64_prefix returns b""
-        and sniff returns "", so if no format is declared, it fails.
-        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Audio with empty base64 and NO declared format - should fail
@@ -1421,10 +1367,6 @@ class TestDecodeBase64EdgeCases:
 
     @pytest.mark.asyncio
     async def test_base64_with_corrupted_data_fallback_decode(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Base64 with slightly corrupted padding triggers fallback decode (lines 165-169).
-
-        When validate=True fails, the code tries validate=False.
-        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create audio with base64 that may need fallback decode
@@ -1476,11 +1418,9 @@ class TestDecodeBase64EdgeCases:
 
 
 class TestAttachmentSkipContinuePaths:
-    """Tests to cover the continue statements for invalid attachments (lines 197, 213, 229, 255)."""
 
     @pytest.mark.asyncio
     async def test_file_with_mixed_valid_and_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Mix of valid and invalid file IDs - valid ones should be processed (line 197)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # Mix of valid and invalid
@@ -1526,7 +1466,6 @@ class TestAttachmentSkipContinuePaths:
 
     @pytest.mark.asyncio
     async def test_audio_with_only_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Only invalid audio IDs - all should be skipped (line 229)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         metadata = {
@@ -1571,7 +1510,6 @@ class TestAttachmentSkipContinuePaths:
 
     @pytest.mark.asyncio
     async def test_video_with_only_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Only invalid video IDs - all should be skipped (line 255)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         metadata = {
@@ -1617,7 +1555,6 @@ class TestAttachmentSkipContinuePaths:
 
     @pytest.mark.asyncio
     async def test_csv_set_with_non_string_value(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):
-        """Non-string value in _csv_set returns empty set (line 213)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         # WAV audio with non-string allowlist
@@ -1667,11 +1604,9 @@ class TestAttachmentSkipContinuePaths:
 
 
 class TestReasoningEffortNoEventEmitter:
-    """Test reasoning effort retry when no event emitter is provided (line 715)."""
 
     @pytest.mark.asyncio
     async def test_reasoning_effort_retry_no_emitter(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Reasoning effort retry should work without event emitter (line 715 path)."""
         orchestrator, pipe = orchestrator_and_pipe
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
@@ -1734,10 +1669,6 @@ class TestReasoningEffortNoEventEmitter:
 
     @pytest.mark.asyncio
     async def test_reasoning_effort_retry_with_existing_dict_reasoning(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        """Reasoning effort retry when responses_body.reasoning is already a dict (line 715).
-
-        This covers the path where reasoning is a dict and we extract original_effort.
-        """
         orchestrator, pipe = orchestrator_and_pipe
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
@@ -1809,7 +1740,6 @@ def _gate_valves(*, fusion_enabled: bool = True):
 
 
 class TestFusionLiveGate:
-    """RequestOrchestrator fusion-live-UI activation: gate logic and the process_request thread-through."""
 
     _FUSION_FORMS = (
         "openrouter/fusion",
@@ -1895,6 +1825,7 @@ class TestFusionLiveGate:
 
         async def fake_loop(*args, **kwargs):
             captured["body"] = args[0] if args else kwargs.get("body")
+            captured["loop_kwargs"] = kwargs
             return "answer"
 
         async def fake_task(task_body, *_args, **_kwargs):
@@ -1999,10 +1930,131 @@ class TestFusionLiveGate:
         assert body.tool_choice == "required"
 
 
+    @pytest.mark.asyncio
+    async def test_internal_backend_never_injects(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        mock_valves.FUSION_BACKEND = "internal"
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert self._fusion_entries(captured["body"]) == []
+
+    @pytest.mark.asyncio
+    async def test_internal_backend_never_forces(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        mock_valves.FUSION_BACKEND = "internal"
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert captured["body"].tool_choice is None
+
+    @pytest.mark.asyncio
+    async def test_internal_backend_never_strips_server_tools(
+        self, orchestrator_and_pipe, mock_valves, mock_session
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        mock_valves.FUSION_BACKEND = "internal"
+        metadata = {"openrouter_pipe": {"server_tools": {"web_search": {}, "web_fetch": {}, "datetime": {}}}}
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
+                                             metadata=metadata)
+        body = captured["body"]
+        tool_types = [t.get("type") for t in (body.tools or []) if isinstance(t, dict)]
+        assert [t for t in tool_types if isinstance(t, str) and t.startswith("openrouter:")]
+
+
+    @pytest.mark.asyncio
+    async def test_internal_backend_diverts_to_engine(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        import open_webui_openrouter_pipe.requests.orchestrator as orch_mod
+
+        orchestrator, pipe = orchestrator_and_pipe
+        mock_valves.FUSION_BACKEND = "internal"
+        engine_calls: list[dict] = []
+
+        def fake_engine(pipe_arg, **kwargs):
+            engine_calls.append(kwargs)
+
+            async def gen():
+                yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+            return gen()
+
+        monkeypatch.setattr(orch_mod, "run_internal_fusion", fake_engine)
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert engine_calls, "engine was not invoked on internal backend"
+        assert captured["loop_kwargs"].get("event_source") is not None
+        assert engine_calls[0]["plan"].panel_models
+
+    @pytest.mark.asyncio
+    async def test_openrouter_backend_never_diverts(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        import open_webui_openrouter_pipe.requests.orchestrator as orch_mod
+
+        orchestrator, pipe = orchestrator_and_pipe
+        engine_calls: list[dict] = []
+
+        def fake_engine(pipe_arg, **kwargs):
+            engine_calls.append(kwargs)
+
+            async def gen():
+                yield {}
+
+            return gen()
+
+        monkeypatch.setattr(orch_mod, "run_internal_fusion", fake_engine)
+        captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
+        assert engine_calls == []
+        assert captured["loop_kwargs"].get("event_source") is None
+
+
+class TestFusionInternalDivert:
+    def _divert(self, **kw):
+        from open_webui_openrouter_pipe.requests.orchestrator import _fusion_internal_divert
+
+        valves = Mock()
+        valves.ENABLE_OPENROUTER_FUSION = kw.pop("fusion_enabled", True)
+        valves.FUSION_BACKEND = kw.pop("backend", "internal")
+        args = dict(model_id="openrouter/fusion", plugins=[{"id": "fusion"}],
+                    is_task_request=False, metadata={})
+        args.update(kw)
+        return _fusion_internal_divert(
+            args["model_id"], args["plugins"], valves=valves,
+            is_task_request=args["is_task_request"], metadata=args["metadata"],
+        )
+
+    def test_diverts_on_internal_with_entry(self):
+        assert self._divert() is True
+
+    def test_diverts_with_absent_entry(self):
+        assert self._divert(plugins=None) is True
+
+    def test_no_divert_when_entry_disabled(self):
+        assert self._divert(plugins=[{"id": "fusion", "enabled": False}]) is False
+
+    def test_no_divert_on_openrouter_backend(self):
+        assert self._divert(backend="openrouter") is False
+
+    def test_no_divert_master_switch_off(self):
+        assert self._divert(fusion_enabled=False) is False
+
+    def test_no_divert_for_tasks(self):
+        assert self._divert(is_task_request=True) is False
+
+    def test_no_divert_non_fusion_model(self):
+        assert self._divert(model_id="openai/gpt-4o") is False
+
+    def test_no_divert_for_inner_marker(self):
+        from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+
+        assert self._divert(metadata={_PIPE_METADATA_KEY: {"fusion_inner": True}}) is False
+
+    def test_diverts_for_fusion_flash(self):
+        assert self._divert(model_id="openrouter/fusion-flash") is True
+
+
 class TestFusionServerToolsStripped:
-    """openrouter:* server tools on a fusion-model request let the model satisfy
-    tool_choice=required with web_search instead of deliberating — and fusion
-    already runs web_search/web_fetch internally, so they are pure escape hatch."""
 
     def _strip(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_server_tools_stripped
@@ -2046,10 +2098,6 @@ class TestFusionServerToolsStripped:
 
 
 class TestFusionForceToolChoice:
-    """Fusion MODELS always deliberate via tool_choice=required — a declinable
-    tool on a model users picked FOR deliberation is useless. The
-    openrouter:fusion SERVER TOOL on a caller's own model is never forced. Same
-    guard set as the plugin injection, plus never overriding a caller's choice."""
 
     def _force(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_force_tool_choice
@@ -2093,13 +2141,6 @@ class TestFusionForceToolChoice:
 
 
 class TestFusionPluginInjection:
-    """Guarded {"id": "fusion"} injection: restores fusion-model activation without
-    cost bombs.
-
-    OpenRouter's fusion aliases no longer self-activate on /responses; the pipe
-    must inject the plugin entry for the whole fusion model family — but never for
-    task requests (title/tags would fire a full panel per title), never with the
-    master switch off, and never over an existing entry."""
 
     _BASE_FORMS = (
         "openrouter/fusion",

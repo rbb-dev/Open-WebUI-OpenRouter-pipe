@@ -4,9 +4,9 @@
 [![Version](https://img.shields.io/badge/version-2.6.9-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.9.1%2B-green.svg)](https://openwebui.com/)
 
-**360+ AI models. Chat, image, video, and live multi-model Fusion — all from your Open WebUI.**
+**380+ AI models. Chat, image, video, and live multi-model Fusion with full access to your knowledge bases and tools — all from your Open WebUI.**
 
-GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Riverflow — text, images, and video generation through OpenRouter's unified API, plus OpenRouter Fusion's live multi-model deliberation. One key, one bill, every model that matters.
+GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Riverflow — text, images, and video generation through OpenRouter's unified API, plus live multi-model Fusion deliberation that runs inside your Open WebUI — panels that draw on your knowledge bases and tools, not just the open web. One key, one bill, every model that matters.
 
 <p align="center">
   <img align="top" width="49%" alt="chat" src="https://github.com/user-attachments/assets/c937443b-f1be-4091-9555-b49789f16a97" />
@@ -26,7 +26,7 @@ GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Ri
 * **Multimodal-aware routing adapters** — inspects the payload (text + images/files/audio/video) and picks the endpoint and format the target model supports.
 * **Responses-first endpoint routing** — builds canonical requests and routes between `/responses` and `/chat/completions` based on model rules, fallbacks, or attachments.
 * **Native image and video generation** — exposed as regular chat models with per-model knobs.
-* **OpenRouter Fusion** — multi-model deliberation (a panel of models + a judge) rendered as a live, theme-aware in-chat panel.
+* **Fusion** — multi-model deliberation (a panel of models plus a judge), rendered as a live, theme-aware in-chat panel. The built-in engine runs the deliberation inside the pipe, so every panelist has access to the user's knowledge bases, tools, and tool servers — not just web search.
 * **OpenRouter server tools** — `web_search`, `web_fetch`, `datetime`, `advisor`, `subagent`, and `model search` behind one OWUI filter, with a per-request cost cap.
 * **Operator controls via valves** — routing, limits, storage, security, telemetry, and templates.
 
@@ -35,16 +35,18 @@ GPT-5.5, Gemini 3, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Ri
 ## What You Get
 
 🎯 **Every Model, One Place**
-330+ chat models, 16 video models, 37 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
+340+ chat models, 16 video models, 36 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
 
 🎨 **Image Generation, Inline**
-37 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Custom fonts, transparent backgrounds, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
+36 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Custom fonts, transparent backgrounds, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
 
 🎬 **Video Generation**
 16 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, xAI Grok Imagine. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
 
 🧬 **Fusion — Many Models, One Answer, Live**
-Ask once; OpenRouter Fusion runs a *panel* of up to 8 models in parallel, a *judge* model weighs their answers — consensus, disagreements, gaps, blind spots — and writes the final answer from that analysis. The pipe renders the whole deliberation as a **live, theme-aware panel** in the chat: the intent, each model's answer, the judge's breakdown, and the final answer streaming in. One toggle on the `openrouter/fusion` model.
+Ask once; a *panel* of up to 8 models answers in parallel, a *judge* weighs their answers — consensus, disagreements, gaps, blind spots — and the final answer is written from that analysis. The pipe renders the whole deliberation as a **live, theme-aware panel** in the chat: each model's answer and thinking streaming in, the judge's breakdown, and the final answer as it is written.
+
+Two engines, one switch: OpenRouter's hosted Fusion, or the pipe's built-in engine. On the built-in engine, panelists, judge, and synthesizer run as ordinary pipe requests, each with full access to the chatting user's workspace — knowledge bases, personal and workspace tools, tool servers, and the pipe's web tools. Hosted Fusion can only search the open web; the built-in engine deliberates over your data. Every inner call is cost-attributed and budget-capped, and a failed panelist costs you one card, not the whole run.
 
 🖼️ **Multimodal That Actually Works**
 Drop in images, PDFs, audio, video. The pipe figures out what each model supports — `/responses` vs `/chat/completions`, file vs RAG, streaming vs not.
@@ -62,8 +64,8 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 
 ## What's New
 
-- **OpenRouter Fusion** — multi-model deliberation (a panel of up to 8 models + a judge) rendered as a **live, theme-aware HTML panel** that streams the intent, per-model answers, judge analysis, and final answer in-chat. Preset / panel / judge / max-tool-calls knobs via the filter.
-- **Native image generation** — 37 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, xAI Grok Imagine, Microsoft MAI) with 7 per-family filters (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras, Grok Imagine Options).
+- **Fusion, two engines** — multi-model deliberation (up to 8 panel models plus a judge), rendered as a **live, theme-aware HTML panel** that streams every model's answer and thinking, the judge's analysis, and the final answer. Switch between OpenRouter's hosted engine and the pipe's built-in engine, which gives every panelist full access to the user's knowledge bases, tools, and tool servers. Preset, panel, judge, and tool-budget knobs via the filter.
+- **Native image generation** — 36 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, xAI Grok Imagine, Microsoft MAI) with 7 per-family filters (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras, Grok Imagine Options).
 - **Video generation** — 16 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop.
 - **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
@@ -75,7 +77,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission, graceful degradation. 4100+ pytest tests, both readable and compressed bundle variants.
+Rate limiting, circuit breakers, request admission, graceful degradation. 5200+ pytest tests, both readable and compressed bundle variants.
 
 🔐 **Security First**
 Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).
@@ -148,7 +150,7 @@ That's it.
 
 ### Try the per-model help
 
-Type `help` (literally just that word, nothing else) in a chat against any image or video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. Different answer for every one of the 30+ generation models.
+Type `help` (literally just that word, nothing else) in a chat against any video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. A different answer for each of the 16 video models.
 
 ---
 

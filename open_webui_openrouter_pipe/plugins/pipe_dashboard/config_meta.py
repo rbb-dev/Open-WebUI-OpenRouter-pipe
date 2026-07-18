@@ -352,6 +352,26 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Models & Catalog/Catalog & Access",
         "detail": "Chooses whether users see only free OpenRouter models, never see them, or see everything — filtering the catalog by each model's price.\n\nA model counts as free only when its pricing is known and every pricing field sums to exactly zero; a model whose pricing is missing or unknown is treated as paid. This choice stacks with `Tool-calling model filter` and `Show only ZDR models`, so a model must clear every active filter to stay listed, and a model hidden here is also refused at request time with the `Blocked model message` rather than merely dropped from the picker.\n\n- `all` — no price filter; every imported model stays visible.\n- `only` — keeps just the free models, hiding everything with a price.\n- `exclude` — hides the free models, leaving the priced ones.\n\n**Tip:** Under `only`, a model with no pricing data in the catalog is treated as paid and dropped, even if it is in fact free."
     },
+    "FUSION_BACKEND": {
+        "title": "Fusion engine",
+        "group": "Filters & Integrations/Fusion",
+        "detail": "Chooses which engine actually runs a Fusion deliberation when someone chats with the dedicated `openrouter/fusion` models — OpenRouter's hosted service or this pipe's own internal engine. The live panel view, judge analysis, and final answer look the same either way.\n\n- `openrouter` — the request goes to OpenRouter and their servers run the panel and judge. Panel members can use OpenRouter's web search but can never see your Open WebUI knowledge bases or tool servers.\n- `internal` — the pipe runs the same panel \u2192 judge \u2192 synthesis flow itself, as ordinary pipe model calls. Panel members inherit the chatting user's full tool surface (knowledge bases, tool servers, pipe server tools), every per-model dial applies (ZDR, reasoning effort, provider routing), each call is cost-attributed to the user like any other chat, and one failed panel member degrades that card instead of killing the whole run.\n\n**Tip:** The per-chat Fusion controls (preset, panel models, judge) work identically on both engines, so you can flip this switch without retraining anyone."
+    },
+    "FUSION_JUDGE_SYSTEM_PROMPT": {
+        "title": "Fusion judge instructions",
+        "group": "Filters & Integrations/Fusion",
+        "detail": "The system prompt for the internal engine's judge — the model that reads every panel answer and produces the structured comparison (agreements, contradictions, unique insights, blind spots) shown in the Analysis panel and handed to the synthesis stage. Runs at temperature 0. Used only while `Fusion engine` is `internal`.\n\n**Caution:** the judge must emit a single strict JSON object with exactly the keys `consensus`, `contradictions`, `partial_coverage`, `unique_insights`, and `blind_spots` — the live Analysis panel and the synthesis stage are built on that contract. If you edit, keep the output-format rules intact; a judge that stops producing valid JSON gets one repair attempt, then the run falls back to no-analysis mode (panel answers still shown, synthesis works from raw drafts). The shipped default was produced by a multi-model design tournament and is tuned to pair with the panel and synthesis prompts."
+    },
+    "FUSION_PANEL_SYSTEM_PROMPT": {
+        "title": "Fusion panel instructions",
+        "group": "Filters & Integrations/Fusion",
+        "detail": "The system prompt every panel member receives on the internal engine before answering the user's question in parallel. It is what makes panel answers independent, committed, and citation-backed — and it forbids members from revealing they are part of a multi-model deliberation. Used only while `Fusion engine` is `internal`.\n\nEdit it to change how panel members behave: their tone, how strongly they commit to positions, how they use tools and cite sources. Edits apply from the next fusion chat. The shipped default was produced by a multi-model design tournament and is tuned to pair with the judge and synthesis prompts \u2014 wholesale rewrites are safe for the pipeline (any text works), but weaker panel discipline shows up directly as a weaker judge analysis and final answer."
+    },
+    "FUSION_SYNTHESIS_SYSTEM_PROMPT": {
+        "title": "Fusion synthesis instructions",
+        "group": "Filters & Integrations/Fusion",
+        "detail": "The system prompt for the internal engine's final stage — the model that receives the panel drafts plus the judge's analysis and writes the answer the user actually reads. It enforces composing from the strongest material rather than averaging drafts, honest handling of genuine disagreements, and complete silence about the deliberation machinery. Used only while `Fusion engine` is `internal`.\n\nEdit it to change the final answer's voice, structure, or composition rules. Edits apply from the next fusion chat. Like the other two prompts, the shipped default came from a multi-model design tournament; the three are tuned as a set, so if you materially change what the judge outputs, revisit this prompt so the synthesis stage still knows how to read it."
+    },
     "GEMINI_THINKING_BUDGET": {
         "title": "Gemini thinking budget",
         "group": "Reasoning & Thinking/General",

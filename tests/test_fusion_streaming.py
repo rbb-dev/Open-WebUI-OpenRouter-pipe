@@ -1,4 +1,3 @@
-"""Phase C tests: the openrouter/fusion live-UI streaming wiring."""
 
 import asyncio
 from typing import Any, cast
@@ -86,8 +85,6 @@ REASONING_DELTA_EVENTS = [
 
 
 class TestFusionPanelDeltaStreaming:
-    """New OpenRouter panel.delta / panel.reasoning.delta events: batched live
-    emission, augmented panel.completed, and a delta-free baked snapshot."""
 
     @staticmethod
     def _fusion_events(emitted):
@@ -165,8 +162,6 @@ def _tripwire_records(caplog):
 
 
 class TestFusionActivationTripwire:
-    """A fusion request that streams no response.fusion_call.* events warns exactly
-    once — and only when an enabled fusion plugin was actually outbound on /responses."""
 
     @pytest.mark.asyncio
     async def test_warns_when_fusion_never_opens_despite_enabled_plugin(
@@ -223,9 +218,6 @@ class TestFusionActivationTripwire:
     async def test_silent_on_internal_chat_fallback(
         self, monkeypatch, pipe_instance_async, caplog
     ):
-        """AUTO_FALLBACK inside the send dispatcher re-runs a failed /responses
-        request via /chat within the SAME stream (endpoint_override stays
-        "responses") — the fallback sentinel must suppress the tripwire."""
         import logging
         events = [{"type": "openrouter_pipe.chat_fallback"}] + PLAIN_EVENTS
         with caplog.at_level(logging.WARNING):
@@ -524,9 +516,6 @@ _EMPTY_ANALYSIS = {
 
 @pytest.mark.asyncio
 async def test_fusion_missing_analysis_emits_synthetic_analysis_over_socket(monkeypatch, pipe_instance_async):
-    """Judge skips analysis and no fusion output_item.done arrives: the terminal
-    backstop must still heal the live spinner by emitting a synthetic
-    analysis.completed over the socket (not only into the persisted snapshot)."""
     events = [e for e in FUSION_EVENTS if e.get("type") != "response.fusion_call.analysis.completed"]
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(events))
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
@@ -546,9 +535,6 @@ async def test_fusion_missing_analysis_emits_synthetic_analysis_over_socket(monk
 
 @pytest.mark.asyncio
 async def test_fusion_output_item_done_synthesizes_analysis_and_emits_sources(monkeypatch, pipe_instance_async):
-    """A fusion output_item.done with missing analysis + item.sources must both
-    heal the live spinner (synthetic analysis over socket) and surface the
-    item-level sources as OWUI 'source' citation events."""
     sources = [
         {"url": "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe",
          "title": "rbb-dev/Open-WebUI-OpenRouter-pipe - GitHub"},
@@ -599,8 +585,6 @@ async def test_fusion_output_item_done_synthesizes_analysis_and_emits_sources(mo
 
 @pytest.mark.asyncio
 async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pipe_instance_async):
-    """Duplicate source URLs are emitted once, and surfaced citations are
-    persisted to the message 'sources' field so they survive a page refresh."""
     import open_webui_openrouter_pipe.streaming.streaming_core as sc
 
     dup_url = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe"
@@ -665,8 +649,6 @@ async def test_fusion_sources_dedup_and_persist_to_sources_field(monkeypatch, pi
 
 @pytest.mark.asyncio
 async def test_fusion_good_path_emits_single_analysis_no_duplicate(monkeypatch, pipe_instance_async):
-    """When the judge DOES emit analysis.completed, the fix must be a no-op:
-    exactly one (real) analysis.completed over the socket, no synthetic duplicate."""
     _result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)
     analysis = _fusion_events_of_type(emitted, "response.fusion_call.analysis.completed")
     assert len(analysis) == 1
@@ -691,7 +673,6 @@ def _fusion_done_events(sources):
 
 @pytest.mark.asyncio
 async def test_fusion_sources_skips_malformed_entries(monkeypatch, pipe_instance_async):
-    """Non-dict, missing-url, and blank-url source entries are skipped without error."""
     events = _fusion_done_events([
         "not-a-dict",
         {"title": "no url key"},
@@ -717,8 +698,6 @@ async def test_fusion_sources_skips_malformed_entries(monkeypatch, pipe_instance
 
 @pytest.mark.asyncio
 async def test_fusion_source_document_falls_back_to_url_when_title_missing(monkeypatch, pipe_instance_async):
-    """A source with empty/absent title uses the URL as the document body (never the
-    generic 'Citation' placeholder) — pins the intentional title-or-url fallback."""
     events = _fusion_done_events([
         {"url": "https://x.example/", "title": ""},
         {"url": "https://y.example/"},
@@ -743,8 +722,6 @@ async def test_fusion_source_document_falls_back_to_url_when_title_missing(monke
 
 @pytest.mark.asyncio
 async def test_fusion_sources_emitted_when_analysis_present(monkeypatch, pipe_instance_async):
-    """Sources surface on the good path too: the real analysis is emitted once and
-    no synthetic duplicate is added when analysis.completed was provided."""
     events = [
         {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
         {"type": "response.output_item.added", "output_index": 0,
@@ -780,3 +757,281 @@ async def test_fusion_sources_emitted_when_analysis_present(monkeypatch, pipe_in
     assert analysis[0]["analysis"]["consensus"] == ["c"], "real analysis, not synthetic"
     source_urls = {e["data"]["source"]["url"] for e in _source_events(emitted)}
     assert source_urls == {"https://ok.example/"}
+
+
+class TestEventSourceSeam:
+
+    @staticmethod
+    def _forbidden_stream():
+        async def fake_stream(self, session, request_body, **_kwargs):
+            raise AssertionError("upstream send must not be called with event_source")
+            yield
+        return fake_stream
+
+    async def _run_with_source(self, pipe, monkeypatch, events, **kwargs):
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", self._forbidden_stream())
+        monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events",
+                            self._forbidden_stream(), raising=False)
+
+        async def source():
+            for event in events:
+                yield event
+
+        body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter, metadata={}, tools={},
+            session=cast(Any, object()), user_id="u",
+            event_source=source(), **kwargs,
+        )
+        return result, emitted
+
+    @pytest.mark.asyncio
+    async def test_event_source_replaces_upstream_send(self, monkeypatch, pipe_instance_async):
+        result, emitted = await self._run_with_source(
+            pipe_instance_async, monkeypatch, FUSION_EVENTS, fusion_live_enabled=True,
+        )
+        assert "The answer is 42." in result
+        assert [e for e in emitted if e.get("type") == "fusion:event"]
+
+    @pytest.mark.asyncio
+    async def test_event_source_completion_usage_flows(self, monkeypatch, pipe_instance_async):
+        _result, emitted = await self._run_with_source(
+            pipe_instance_async, monkeypatch, FUSION_EVENTS, fusion_live_enabled=False,
+        )
+        completions = [e for e in emitted if e.get("type") == "chat:completion"
+                       and isinstance(e.get("data"), dict) and e["data"].get("usage")]
+        assert completions
+
+    @pytest.mark.asyncio
+    async def test_event_source_without_fusion_events_plain_stream(self, monkeypatch, pipe_instance_async):
+        plain = [
+            {"type": "response.created", "response": {"model": "openai/gpt-5"}},
+            {"type": "response.output_item.added", "output_index": 0, "item": {"type": "message"}},
+            {"type": "response.output_text.delta", "output_index": 0, "delta": "hello"},
+            {"type": "response.output_text.done", "output_index": 0, "text": "hello"},
+            {"type": "response.completed", "response": {"output": [], "usage": {}, "model": "openai/gpt-5"}},
+        ]
+        result, _emitted = await self._run_with_source(
+            pipe_instance_async, monkeypatch, plain, fusion_live_enabled=False,
+        )
+        assert result == "hello"
+
+
+class TestOutcomeSink:
+
+    async def _run_sink(self, pipe, monkeypatch, events, *, explode=False):
+        async def source():
+            for event in events:
+                yield event
+            if explode:
+                raise RuntimeError("mid-stream death")
+
+        body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+        sink: dict[str, Any] = {}
+
+        async def emitter(event):
+            pass
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter, metadata={}, tools={},
+            session=cast(Any, object()), user_id="u", fusion_live_enabled=False,
+            event_source=source(), outcome_sink=sink,
+        )
+        return result, sink
+
+    @pytest.mark.asyncio
+    async def test_clean_run_reports_no_error(self, monkeypatch, pipe_instance_async):
+        result, sink = await self._run_sink(pipe_instance_async, monkeypatch, FUSION_EVENTS)
+        assert sink["error_occurred"] is False
+        assert sink["was_cancelled"] is False
+        assert "The answer is 42." in result
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_exception_reported(self, monkeypatch, pipe_instance_async):
+        partial = FUSION_EVENTS[:3]
+        result, sink = await self._run_sink(pipe_instance_async, monkeypatch, partial, explode=True)
+        assert sink["error_occurred"] is True
+        assert sink["was_cancelled"] is False
+        assert "mid-stream death" in (sink.get("reason") or "")
+
+
+class TestInnerBreakerSuppression:
+
+    async def _capture_send_kwargs(self, pipe, monkeypatch, metadata):
+        captured: dict[str, Any] = {}
+
+        async def fake_stream(self, session, request_body, **kwargs):
+            captured.update(kwargs)
+            yield {"type": "response.completed",
+                   "response": {"output": [], "usage": {}, "model": "openai/gpt-5"}}
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", fake_stream)
+        body = ResponsesBody(model="openai/gpt-5", input=[], stream=True)
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, None, metadata=metadata, tools={},
+            session=cast(Any, object()), user_id="u",
+        )
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_normal_request_keeps_breaker_key(self, monkeypatch, pipe_instance_async):
+        captured = await self._capture_send_kwargs(pipe_instance_async, monkeypatch, {})
+        assert captured.get("breaker_key") == "u"
+
+    @pytest.mark.asyncio
+    async def test_inner_marker_suppresses_breaker_key(self, monkeypatch, pipe_instance_async):
+        from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+
+        metadata = {_PIPE_METADATA_KEY: {"fusion_inner": True}}
+        captured = await self._capture_send_kwargs(pipe_instance_async, monkeypatch, metadata)
+        assert captured.get("breaker_key") is None
+
+
+class TestInnerReasoningForward:
+
+    REASONING_STREAM = [
+        {"type": "response.created", "response": {"model": "openai/gpt-5"}},
+        {"type": "response.reasoning_text.delta", "delta": "thinking hard"},
+        {"type": "response.output_item.added", "output_index": 0, "item": {"type": "message"}},
+        {"type": "response.output_text.done", "output_index": 0, "text": "answer"},
+        {"type": "response.completed", "response": {"output": [], "usage": {}, "model": "openai/gpt-5"}},
+    ]
+
+    async def _run_marked(self, pipe, monkeypatch, *, marked):
+        from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(self.REASONING_STREAM))
+        metadata = {_PIPE_METADATA_KEY: {"fusion_inner": True}} if marked else {}
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        body = ResponsesBody(model="openai/gpt-5", input=[], stream=True)
+        await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter, metadata=metadata, tools={},
+            session=cast(Any, object()), user_id="u",
+        )
+        return [e for e in emitted if e.get("type") == "fusion_inner:reasoning.delta"]
+
+    @pytest.mark.asyncio
+    async def test_inner_call_forwards_reasoning_deltas(self, monkeypatch, pipe_instance_async):
+        fwd = await self._run_marked(pipe_instance_async, monkeypatch, marked=True)
+        assert fwd
+        assert fwd[0]["data"]["delta"] == "thinking hard"
+
+    @pytest.mark.asyncio
+    async def test_normal_call_never_forwards(self, monkeypatch, pipe_instance_async):
+        fwd = await self._run_marked(pipe_instance_async, monkeypatch, marked=False)
+        assert fwd == []
+
+
+class TestInternalBackendTripwire:
+
+    @pytest.mark.asyncio
+    async def test_event_source_run_never_trips(self, monkeypatch, pipe_instance_async, caplog):
+        import logging
+
+        async def source():
+            for event in FUSION_EVENTS:
+                yield event
+
+        body = ResponsesBody(model="openrouter/fusion", input=[], stream=True,
+                             plugins=[{"id": "fusion"}])
+        with caplog.at_level(logging.WARNING):
+            await pipe_instance_async._streaming_handler._run_streaming_loop(
+                body, pipe_instance_async.valves, None, metadata={}, tools={},
+                session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
+                event_source=source(),
+            )
+        assert not _tripwire_records(caplog)
+
+
+STAGE_FEEDBACK_EVENTS = [
+    {"type": "response.created", "response": {"model": "openrouter/fusion"}},
+    {"type": "response.output_item.added", "output_index": 0,
+     "item": {"type": "openrouter:fusion", "status": "in_progress"}},
+    {"type": "response.fusion_call.in_progress", "output_index": 0},
+    {"type": "response.fusion_call.panel.added", "output_index": 0, "model": "m/a"},
+    {"type": "response.fusion_call.panel.completed", "output_index": 0, "model": "m/a", "content": "A"},
+    {"type": "response.fusion_call.analysis.in_progress", "output_index": 0, "judge_model": "j/x"},
+    {"type": "response.fusion_call.analysis.reasoning.delta", "output_index": 0,
+     "model": "j/x", "delta": "w" * 600},
+    {"type": "response.fusion_call.analysis.completed", "output_index": 0,
+     "analysis": {"consensus": [], "contradictions": [], "partial_coverage": [],
+                  "unique_insights": [], "blind_spots": []}},
+    {"type": "response.fusion_call.completed", "output_index": 0},
+    {"type": "response.output_item.done", "output_index": 0,
+     "item": {"type": "openrouter:fusion", "status": "completed"}},
+    {"type": "response.fusion_call.synthesis.in_progress", "output_index": 0, "model": "j/x"},
+    {"type": "response.fusion_call.synthesis.reasoning.delta", "output_index": 0,
+     "model": "j/x", "delta": "s" * 600},
+    {"type": "response.output_item.added", "output_index": 1, "item": {"type": "message"}},
+    {"type": "response.output_text.delta", "output_index": 1, "delta": "final"},
+    {"type": "response.output_text.done", "output_index": 1, "text": "final"},
+    {"type": "response.completed",
+     "response": {"output": [], "usage": {"cost": 0.1}, "model": "openrouter/fusion"}},
+]
+
+
+class TestStageFeedbackStreaming:
+    @staticmethod
+    def _fusion_events(emitted):
+        return [e["data"]["event"] for e in emitted if e.get("type") == "fusion:event"]
+
+    async def _run_stage(self, pipe, monkeypatch):
+        async def source():
+            for ev in STAGE_FEEDBACK_EVENTS:
+                yield ev
+
+        body = ResponsesBody(model="openrouter/fusion", input=[], stream=True,
+                             plugins=[{"id": "fusion"}])
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await pipe._streaming_handler._run_streaming_loop(
+            body, pipe.valves, emitter, metadata={}, tools={},
+            session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
+            event_source=source(),
+        )
+        return result, emitted
+
+    @pytest.mark.asyncio
+    async def test_stage_reasoning_live_emitted_and_not_baked(self, monkeypatch, pipe_instance_async):
+        _result, emitted = await self._run_stage(pipe_instance_async, monkeypatch)
+        fev = self._fusion_events(emitted)
+        jr = [e for e in fev if e.get("type") == "response.fusion_call.analysis.reasoning.delta"]
+        sr = [e for e in fev if e.get("type") == "response.fusion_call.synthesis.reasoning.delta"]
+        assert jr and "w" in jr[0]["delta"]
+        assert sr and "s" in sr[0]["delta"]
+        embeds = [e for e in emitted if e.get("type") == "embeds"]
+        assert embeds
+        baked = embeds[-1]["data"]["embeds"][0]
+        assert "reasoning.delta" not in baked or baked.count("analysis.reasoning.delta") <= 1
+
+    @pytest.mark.asyncio
+    async def test_analysis_completed_carries_judge_reasoning(self, monkeypatch, pipe_instance_async):
+        _result, emitted = await self._run_stage(pipe_instance_async, monkeypatch)
+        fev = self._fusion_events(emitted)
+        done = [e for e in fev if e.get("type") == "response.fusion_call.analysis.completed"]
+        assert done and done[0].get("reasoning", "").startswith("w")
+
+    @pytest.mark.asyncio
+    async def test_synthesis_in_progress_milestone_emitted(self, monkeypatch, pipe_instance_async):
+        _result, emitted = await self._run_stage(pipe_instance_async, monkeypatch)
+        fev = self._fusion_events(emitted)
+        assert any(e.get("type") == "response.fusion_call.synthesis.in_progress" for e in fev)
+
+    @pytest.mark.asyncio
+    async def test_final_answer_carries_synthesis_reasoning(self, monkeypatch, pipe_instance_async):
+        _result, emitted = await self._run_stage(pipe_instance_async, monkeypatch)
+        fev = self._fusion_events(emitted)
+        done = [e for e in fev if e.get("type") == "response.output_text.done"]
+        assert done and done[-1].get("reasoning", "").startswith("s")
