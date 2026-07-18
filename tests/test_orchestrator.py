@@ -2009,6 +2009,94 @@ class TestFusionLiveGate:
         assert captured["loop_kwargs"].get("event_source") is None
 
 
+class TestImageModelHelp:
+    @pytest.mark.asyncio
+    async def test_help_prompt_on_image_model_returns_curated_help(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+        orchestrator, pipe = orchestrator_and_pipe
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+
+        def fake_spec(model_id):
+            return {"architecture": {"output_modalities": ["image", "text"]}}
+
+        monkeypatch.setattr(OpenRouterModelRegistry, "spec", staticmethod(fake_spec))
+        monkeypatch.setattr(OpenRouterModelRegistry, "api_model_id", staticmethod(lambda m: m))
+
+        async def forbidden(*a, **k):
+            raise AssertionError("upstream send must not run for help")
+
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=forbidden)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        result = await orchestrator.process_request(
+            body={"model": "recraft/recraft-v4", "messages": [{"role": "user", "content": "help"}], "stream": True},
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=emitter,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="recraft/recraft-v4",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+        assert isinstance(result, str) and "recraft" in result.lower()
+        assert any(e.get("type") == "chat:completion" for e in emitted)
+
+    @pytest.mark.asyncio
+    async def test_non_help_prompt_on_image_model_proceeds(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+        orchestrator, pipe = orchestrator_and_pipe
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+
+        def fake_spec(model_id):
+            return {"architecture": {"output_modalities": ["image", "text"]}}
+
+        monkeypatch.setattr(OpenRouterModelRegistry, "spec", staticmethod(fake_spec))
+        monkeypatch.setattr(OpenRouterModelRegistry, "api_model_id", staticmethod(lambda m: m))
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="generated")
+
+        result = await orchestrator.process_request(
+            body={"model": "recraft/recraft-v4", "messages": [{"role": "user", "content": "draw a cat"}], "stream": True},
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="recraft/recraft-v4",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+        assert result == "generated"
+
+
 class TestFusionInternalDivert:
     def _divert(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_internal_divert

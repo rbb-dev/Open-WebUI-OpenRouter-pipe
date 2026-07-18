@@ -43,6 +43,9 @@ GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, 
 🎬 **Video Generation**
 16 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, xAI Grok Imagine. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
 
+💡 **Per-Model Help, Built In**
+Type `help` (literally just that word, nothing else) in a chat against any image or video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. A different answer for every one of the 50+ generation models.
+
 🧬 **Fusion — Many Models, One Answer, Live**
 Ask once; a *panel* of up to 8 models answers in parallel, a *judge* weighs their answers — consensus, disagreements, gaps, blind spots — and the final answer is written from that analysis. The pipe renders the whole deliberation as a **live, theme-aware panel** in the chat: each model's answer and thinking streaming in, the judge's breakdown, and the final answer as it is written.
 
@@ -147,12 +150,6 @@ Back in the chat, click the model dropdown — you'll see all OpenRouter chat, i
 For image generation, just describe what you want. For video, type a prompt and the pipe submits, polls, downloads, and renders inline. For chat models with reasoning, the `<think>` tokens stream live.
 
 That's it.
-
-### Try the per-model help
-
-Type `help` (literally just that word, nothing else) in a chat against any video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. A different answer for each of the 16 video models.
-
----
 
 ## Requirements
 

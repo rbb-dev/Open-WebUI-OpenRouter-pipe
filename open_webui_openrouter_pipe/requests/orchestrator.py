@@ -22,7 +22,8 @@ from ..core.errors import (
 )
 from ..core.config import _PIPE_METADATA_KEY
 from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
-from .fusion_engine import FusionInnerInvocation, run_internal_fusion
+from ..integrations.image_help import render_image_help
+from .fusion_engine import FusionInnerInvocation, latest_user_text, run_internal_fusion
 from ..core.utils import _select_best_effort_fallback
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
@@ -869,6 +870,23 @@ class RequestOrchestrator:
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
             )
+
+        model_output_modalities = (
+            (video_spec.get("architecture") or {}).get("output_modalities") or []
+            if isinstance(video_spec, dict) else []
+        )
+        if "image" in model_output_modalities and not use_task_model_adapter:
+            prompt_text = latest_user_text(body.get("messages") if isinstance(body, dict) else None)
+            if prompt_text.strip().lower() == "help":
+                api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
+                image_model = video_spec.get("image_model") if isinstance(video_spec, dict) else None
+                help_content = render_image_help(api_model_id, image_model if isinstance(image_model, dict) else None)
+                if __event_emitter__:
+                    await __event_emitter__({"type": "chat:message:delta", "data": {"content": help_content}})
+                    await self._pipe._event_emitter_handler._emit_completion(
+                        __event_emitter__, content=help_content, done=True,
+                    )
+                return help_content
 
         tools_registry = __tools__
         if inspect.isawaitable(tools_registry):

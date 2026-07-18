@@ -1,20 +1,3 @@
-"""Per-model help text for OpenRouter image-output models.
-
-Mirror of `video_help.py` shape — `_IMAGE_PER_MODEL_HELP_DATA` keyed by canonical
-model id, with `_IMAGE_KNOB_GATE` resolving knob labels against a model's catalog
-metadata. `render_image_help(model_id, image_model)` returns the curated help
-when an entry exists, or falls back to a generic catalog dump.
-
-**Wiring status (intentional)**: `render_image_help` is exported for future use
-but is NOT currently invoked from any production code path. Image generation
-flows through the standard chat-completions request — there is no dedicated
-adapter (unlike video, where `VideoGenerationAdapter` intercepts the "help"
-prompt at `integrations/video.py:62`). A future feature can call
-`render_image_help(model_id, image_model_dict)` from a help command, model-info
-popover, or orchestrator-level prompt interception. The function is unit-tested
-to lock in the contract for that future caller.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -840,6 +823,4 @@ def _image_render_catalog_fallback(model_id: str, image_model: dict[str, Any] | 
 
 
 def render_image_help(model_id: str, image_model: dict[str, Any] | None = None) -> str:
-    """Render help text for an image-output model. Falls back to catalog
-    metadata if no curated entry exists for the model id."""
     return _image_render_template((model_id or "").strip(), image_model)
