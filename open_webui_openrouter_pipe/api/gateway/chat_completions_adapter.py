@@ -863,6 +863,7 @@ class ChatCompletionsAdapter:
                     getattr(exc, "openrouter_code", None),
                     exc,
                 )
+                yield {"type": "openrouter_pipe.chat_fallback"}
                 async for event in nagle_coalesce_stream(
                     _run_chat(),
                     idle_flush_seconds=idle_flush_seconds,

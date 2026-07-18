@@ -190,7 +190,7 @@ def build_template(html: str) -> str:
     fusion_assign = (
         "  window.FusionUI = {\n"
         "    push: push,\n"
-        "    reset: function(){ _judge=null; _fusionIdx=null; _finalStarted=false; preambleBuf=''; finalBuf=''; "
+        "    reset: function(){ _judge=null; _fusionIdx=null; _live={}; _finalStarted=false; preambleBuf=''; finalBuf=''; "
         "_collected={panels:[],analysis:null,judge:null,usage:null,model:null}; resetUI(); }\n"
         "  };\n"
     )
@@ -254,7 +254,7 @@ def build_template(html: str) -> str:
     html = replace_once(
         html,
         "  var finalBuf = '';",
-        "  var finalBuf = ''; var _finalRaf = 0; var _hRaf = 0; var _frozenLen = 0;",
+        "  var finalBuf = ''; var _finalRaf = 0; var _hRaf = 0; var _frozenLen = 0; var _lastH = 0;",
         label="25 raf-state",
     )
 
@@ -272,6 +272,8 @@ def build_template(html: str) -> str:
         "      _hRaf = 0;\n"
         "      try{\n"
         "        var h = Math.max(document.body.scrollHeight, document.body.offsetHeight) + 1;\n"
+        "        if (h === _lastH) return;\n"
+        "        _lastH = h;\n"
         "        parent.postMessage({type:'iframe:height', height:h}, '*');\n"
         "      }catch(e){}\n"
         "    });\n"
@@ -639,6 +641,10 @@ KEEP_TOKENS = [
     "an-toggle", "ant-lbl", ".analysis.collapsed",
     "function freezeClock", "_clockStart", "elapsedSec",
     "var NAMES =", "VENDORCLS", "function prettySlug", "function prettyLabel", "/*__FUSION_NAMES_JSON__*/{}",
+    "function panelReasoningDelta", "function panelAnswerDelta",
+    "'response.fusion_call.panel.delta'", "'response.fusion_call.panel.reasoning.delta'",
+    'class="ticker"', "tick-words", "think-lbl", "think-toggle", "thinking-open",
+    "function _thinkRowHtml", "function _bindThinking", "_lastH",
 ]
 
 

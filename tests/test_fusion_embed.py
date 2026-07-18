@@ -36,6 +36,10 @@ _KEEP = [
     'id="sec-final"', "function startFinal", "function appendFinal", "function endFinal",
     "fusionLiveSocket", "user-join",
     "document.body.scrollHeight", "requestAnimationFrame", "cancelAnimationFrame",
+    "function panelReasoningDelta", "function panelAnswerDelta",
+    "'response.fusion_call.panel.delta'", "'response.fusion_call.panel.reasoning.delta'",
+    'class="ticker"', "tick-words", "think-lbl", "think-toggle", "thinking-open",
+    "_lastH",
 ]
 
 
@@ -240,3 +244,125 @@ def test_empty_analysis_sections_use_reworded_neutral_strings():
         "No shared blind spots flagged",
     ]:
         assert stale not in html
+
+
+# --- panel delta handling (state) --------------------------------------------
+
+
+def test_record_panel_deltas_not_appended_and_no_milestone():
+    state = FusionDeliberationState()
+    assert state.record({"type": "response.fusion_call.panel.delta",
+                         "model": "a/b", "delta": "chunk"}) is None
+    assert state.record({"type": "response.fusion_call.panel.reasoning.delta",
+                         "model": "a/b", "delta": "think"}) is None
+    assert state.events == []
+
+
+def test_record_accumulates_reasoning_per_model():
+    state = FusionDeliberationState()
+    state.record({"type": "response.fusion_call.panel.reasoning.delta", "model": "a/b", "delta": "one "})
+    state.record({"type": "response.fusion_call.panel.reasoning.delta", "model": "a/b", "delta": "two"})
+    state.record({"type": "response.fusion_call.panel.reasoning.delta", "model": "c/d", "delta": "other"})
+    assert state.panel_reasoning_buf == {"a/b": "one two", "c/d": "other"}
+
+
+def test_record_reasoning_buffer_capped():
+    state = FusionDeliberationState()
+    state.record({"type": "response.fusion_call.panel.reasoning.delta",
+                  "model": "a/b", "delta": "x" * 600_000})
+    state.record({"type": "response.fusion_call.panel.reasoning.delta",
+                  "model": "a/b", "delta": "more"})
+    assert len(state.panel_reasoning_buf["a/b"]) <= 512 * 1024
+
+
+def test_augment_panel_completed_attaches_reasoning_without_mutating_original():
+    state = FusionDeliberationState()
+    state.record({"type": "response.fusion_call.panel.reasoning.delta", "model": "a/b", "delta": "thought"})
+    original = {"type": "response.fusion_call.panel.completed",
+                "output_index": 1, "model": "a/b", "content": "answer"}
+    augmented = state.augment_panel_completed(original)
+    assert augmented is not original
+    assert augmented["reasoning"] == "thought"
+    assert augmented["content"] == "answer"
+    assert "reasoning" not in original
+
+
+def test_augment_panel_completed_passthrough_without_reasoning():
+    state = FusionDeliberationState()
+    original = {"type": "response.fusion_call.panel.completed", "model": "a/b", "content": "answer"}
+    assert state.augment_panel_completed(original) is original
+
+
+def test_augmented_completed_round_trips_reasoning_into_snapshot():
+    state = FusionDeliberationState()
+    state.record({"type": "response.output_item.added", "output_index": 1,
+                  "item": {"type": "openrouter:fusion"}})
+    state.record({"type": "response.fusion_call.panel.reasoning.delta", "model": "a/b", "delta": "thought"})
+    augmented = state.augment_panel_completed(
+        {"type": "response.fusion_call.panel.completed",
+         "output_index": 1, "model": "a/b", "content": "ans"}
+    )
+    state.record(augmented)
+    events = _events_literal(build_fusion_embed_html(state))
+    completed = [e for e in events if e.get("type") == "response.fusion_call.panel.completed"]
+    assert completed and completed[0]["reasoning"] == "thought"
+    assert not [e for e in events if str(e.get("type", "")).endswith(".delta")
+                and "panel" in str(e.get("type", ""))]
+
+
+# --- FusionDeltaBatcher ------------------------------------------------------
+
+
+def _delta_ev(kind, model, delta, **extra):
+    ev = {"type": f"response.fusion_call.panel{kind}", "output_index": 1,
+          "item_id": "st_1", "model": model, "delta": delta}
+    ev.update(extra)
+    return ev
+
+
+def test_batcher_flushes_on_size():
+    from open_webui_openrouter_pipe.streaming.fusion_embed import FusionDeltaBatcher
+    b = FusionDeltaBatcher(max_chars=10, max_age=999.0)
+    assert b.add(_delta_ev(".delta", "a/b", "12345"), now=0.0) is None
+    out = b.add(_delta_ev(".delta", "a/b", "67890X"), now=0.0)
+    assert out is not None
+    assert out["delta"] == "1234567890X"
+    assert out["type"] == "response.fusion_call.panel.delta"
+    assert out["model"] == "a/b"
+    assert out["output_index"] == 1
+
+
+def test_batcher_flushes_on_age():
+    from open_webui_openrouter_pipe.streaming.fusion_embed import FusionDeltaBatcher
+    b = FusionDeltaBatcher(max_chars=10_000, max_age=0.2)
+    assert b.add(_delta_ev(".delta", "a/b", "a"), now=0.0) is None
+    out = b.add(_delta_ev(".delta", "a/b", "b"), now=0.5)
+    assert out is not None
+    assert out["delta"] == "ab"
+
+
+def test_batcher_keys_by_model_and_kind():
+    from open_webui_openrouter_pipe.streaming.fusion_embed import FusionDeltaBatcher
+    b = FusionDeltaBatcher(max_chars=10_000, max_age=999.0)
+    b.add(_delta_ev(".delta", "a/b", "answer-a"), now=0.0)
+    b.add(_delta_ev(".reasoning.delta", "a/b", "think-a"), now=0.0)
+    b.add(_delta_ev(".delta", "c/d", "answer-c"), now=0.0)
+    flushed = b.flush_all()
+    deltas = sorted((e["type"], e["model"], e["delta"]) for e in flushed)
+    assert deltas == [
+        ("response.fusion_call.panel.delta", "a/b", "answer-a"),
+        ("response.fusion_call.panel.delta", "c/d", "answer-c"),
+        ("response.fusion_call.panel.reasoning.delta", "a/b", "think-a"),
+    ]
+    assert b.flush_all() == []
+
+
+def test_batcher_discard_model_drops_both_kinds():
+    from open_webui_openrouter_pipe.streaming.fusion_embed import FusionDeltaBatcher
+    b = FusionDeltaBatcher(max_chars=10_000, max_age=999.0)
+    b.add(_delta_ev(".delta", "a/b", "answer"), now=0.0)
+    b.add(_delta_ev(".reasoning.delta", "a/b", "think"), now=0.0)
+    b.add(_delta_ev(".delta", "c/d", "keep"), now=0.0)
+    b.discard_model("a/b")
+    flushed = b.flush_all()
+    assert [(e["model"], e["delta"]) for e in flushed] == [("c/d", "keep")]

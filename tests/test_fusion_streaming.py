@@ -38,9 +38,11 @@ FUSION_EVENTS = [
 ]
 
 
-async def _run(pipe, monkeypatch, *, fusion_live_enabled):
-    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(FUSION_EVENTS))
+async def _run(pipe, monkeypatch, *, fusion_live_enabled, events=None, plugins=None, endpoint_override=None):
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(events or FUSION_EVENTS))
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+    if plugins is not None:
+        body.plugins = plugins
     emitted: list[dict] = []
 
     async def emitter(event):
@@ -49,8 +51,187 @@ async def _run(pipe, monkeypatch, *, fusion_live_enabled):
     result = await pipe._streaming_handler._run_streaming_loop(
         body, pipe.valves, emitter, metadata={}, tools={},
         session=cast(Any, object()), user_id="u", fusion_live_enabled=fusion_live_enabled,
+        endpoint_override=endpoint_override,
     )
     return result, emitted
+
+
+REASONING_DELTA_EVENTS = [
+    {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
+    {"type": "response.output_item.added", "output_index": 0,
+     "item": {"type": "openrouter:fusion", "status": "in_progress"}},
+    {"type": "response.fusion_call.in_progress", "output_index": 0},
+    {"type": "response.fusion_call.panel.added", "output_index": 0, "model": "~google/gemini-flash"},
+    {"type": "response.fusion_call.panel.reasoning.delta", "output_index": 0,
+     "model": "~google/gemini-flash", "delta": "r" * 300},
+    {"type": "response.fusion_call.panel.reasoning.delta", "output_index": 0,
+     "model": "~google/gemini-flash", "delta": "s" * 300},
+    {"type": "response.fusion_call.panel.delta", "output_index": 0,
+     "model": "~google/gemini-flash", "delta": "pending-answer-tail"},
+    {"type": "response.fusion_call.panel.completed", "output_index": 0,
+     "model": "~google/gemini-flash", "content": "# Answer A"},
+    {"type": "response.fusion_call.panel.added", "output_index": 0, "model": "~x/failed-model"},
+    {"type": "response.fusion_call.panel.reasoning.delta", "output_index": 0,
+     "model": "~x/failed-model", "delta": "orphan-think"},
+    {"type": "response.fusion_call.analysis.in_progress", "output_index": 0, "judge_model": "anthropic/claude"},
+    {"type": "response.fusion_call.analysis.completed", "output_index": 0,
+     "analysis": {"consensus": ["agree"], "contradictions": [], "partial_coverage": [],
+                  "unique_insights": [], "blind_spots": []}},
+    {"type": "response.fusion_call.completed", "output_index": 0},
+    {"type": "response.output_item.added", "output_index": 1, "item": {"type": "message"}},
+    {"type": "response.output_text.done", "output_index": 1, "text": "The answer is 42."},
+    {"type": "response.completed",
+     "response": {"output": [], "usage": {"cost": 0.4, "total_tokens": 100}, "model": "anthropic/claude-opus"}},
+]
+
+
+class TestFusionPanelDeltaStreaming:
+    """New OpenRouter panel.delta / panel.reasoning.delta events: batched live
+    emission, augmented panel.completed, and a delta-free baked snapshot."""
+
+    @staticmethod
+    def _fusion_events(emitted):
+        return [e["data"]["event"] for e in emitted if e.get("type") == "fusion:event"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_deltas_batched_not_relayed_one_by_one(
+        self, monkeypatch, pipe_instance_async
+    ):
+        _result, emitted = await _run(pipe_instance_async, monkeypatch,
+                                      fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
+        reasoning = [e for e in self._fusion_events(emitted)
+                     if e.get("type") == "response.fusion_call.panel.reasoning.delta"
+                     and e.get("model") == "~google/gemini-flash"]
+        assert len(reasoning) == 1
+        assert reasoning[0]["delta"] == "r" * 300 + "s" * 300
+
+    @pytest.mark.asyncio
+    async def test_panel_completed_carries_accumulated_reasoning(
+        self, monkeypatch, pipe_instance_async
+    ):
+        _result, emitted = await _run(pipe_instance_async, monkeypatch,
+                                      fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
+        completed = [e for e in self._fusion_events(emitted)
+                     if e.get("type") == "response.fusion_call.panel.completed"]
+        assert completed
+        assert completed[0].get("reasoning") == "r" * 300 + "s" * 300
+        assert completed[0].get("content") == "# Answer A"
+
+    @pytest.mark.asyncio
+    async def test_pending_answer_deltas_discarded_at_completed(
+        self, monkeypatch, pipe_instance_async
+    ):
+        _result, emitted = await _run(pipe_instance_async, monkeypatch,
+                                      fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
+        answer_deltas = [e for e in self._fusion_events(emitted)
+                        if e.get("type") == "response.fusion_call.panel.delta"]
+        assert answer_deltas == []
+
+    @pytest.mark.asyncio
+    async def test_orphan_reasoning_flushed_at_analysis_start(
+        self, monkeypatch, pipe_instance_async
+    ):
+        _result, emitted = await _run(pipe_instance_async, monkeypatch,
+                                      fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
+        orphan = [e for e in self._fusion_events(emitted)
+                  if e.get("type") == "response.fusion_call.panel.reasoning.delta"
+                  and e.get("model") == "~x/failed-model"]
+        assert len(orphan) == 1
+        assert orphan[0]["delta"] == "orphan-think"
+
+    @pytest.mark.asyncio
+    async def test_source_fixture_events_never_mutated(
+        self, monkeypatch, pipe_instance_async
+    ):
+        src_completed = next(e for e in REASONING_DELTA_EVENTS
+                             if e.get("type") == "response.fusion_call.panel.completed")
+        await _run(pipe_instance_async, monkeypatch,
+                   fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
+        assert "reasoning" not in src_completed
+
+
+PLAIN_EVENTS = [
+    {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
+    {"type": "response.output_item.added", "output_index": 0, "item": {"type": "message"}},
+    {"type": "response.output_text.delta", "output_index": 0, "delta": "Plain answer."},
+    {"type": "response.output_text.done", "output_index": 0, "text": "Plain answer."},
+    {"type": "response.completed",
+     "response": {"output": [], "usage": {"cost": 0.01, "total_tokens": 10}, "model": "anthropic/claude-opus"}},
+]
+
+
+def _tripwire_records(caplog):
+    return [r for r in caplog.records if "structured fusion events" in r.getMessage()]
+
+
+class TestFusionActivationTripwire:
+    """A fusion request that streams no response.fusion_call.* events warns exactly
+    once — and only when an enabled fusion plugin was actually outbound on /responses."""
+
+    @pytest.mark.asyncio
+    async def test_warns_when_fusion_never_opens_despite_enabled_plugin(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       events=PLAIN_EVENTS, plugins=[{"id": "fusion"}])
+        assert len(_tripwire_records(caplog)) == 1
+
+    @pytest.mark.asyncio
+    async def test_silent_when_no_fusion_plugin_outbound(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       events=PLAIN_EVENTS, plugins=None)
+        assert not _tripwire_records(caplog)
+
+    @pytest.mark.asyncio
+    async def test_silent_when_fusion_plugin_disabled(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       events=PLAIN_EVENTS, plugins=[{"id": "fusion", "enabled": False}])
+        assert not _tripwire_records(caplog)
+
+    @pytest.mark.asyncio
+    async def test_silent_on_chat_completions_fallback(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       events=PLAIN_EVENTS, plugins=[{"id": "fusion"}],
+                       endpoint_override="chat_completions")
+        assert not _tripwire_records(caplog)
+
+    @pytest.mark.asyncio
+    async def test_silent_when_fusion_actually_ran(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       plugins=[{"id": "fusion"}])
+        assert not _tripwire_records(caplog)
+
+    @pytest.mark.asyncio
+    async def test_silent_on_internal_chat_fallback(
+        self, monkeypatch, pipe_instance_async, caplog
+    ):
+        """AUTO_FALLBACK inside the send dispatcher re-runs a failed /responses
+        request via /chat within the SAME stream (endpoint_override stays
+        "responses") — the fallback sentinel must suppress the tripwire."""
+        import logging
+        events = [{"type": "openrouter_pipe.chat_fallback"}] + PLAIN_EVENTS
+        with caplog.at_level(logging.WARNING):
+            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
+                       events=events, plugins=[{"id": "fusion"}])
+        assert not _tripwire_records(caplog)
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 # === BEGIN GENERATED TEMPLATE ===
 _FUSION_TEMPLATE_HTML = r'''<!DOCTYPE html>
@@ -206,6 +208,18 @@ body{
 @keyframes indet{0%{margin-left:-35%;}100%{margin-left:100%;}}
 .mbody{display:none;border-top:1px solid var(--border-light);margin-top:2px;padding-top:11px;}
 .mcard.open .mbody{display:block;animation:reveal .35s ease;}
+.ticker{flex:1;min-width:0;overflow:hidden;white-space:nowrap;font-weight:500;}
+.tick-words{flex:none;white-space:nowrap;color:var(--text-faint);font-weight:500;}
+.think-row{display:none;align-items:center;gap:6px;margin-top:2px;font-size:11px;color:var(--text-faint);}
+.think-row.on{display:flex;}
+.think-toggle{display:flex;align-items:center;gap:3px;cursor:pointer;}
+.think-toggle .chev{width:13px;height:13px;transition:transform .25s;}
+.mcard.thinking-open .think-toggle .chev{transform:rotate(180deg);}
+.think-row .copy-btn{margin-left:auto;}
+.tbody{display:none;border-top:1px dashed var(--border-light);margin-top:2px;padding-top:11px;}
+.mcard.thinking-open .tbody{display:block;animation:reveal .35s ease;}
+.tbody .tthink{font-size:12px;color:var(--text-muted);}
+.tbody .tthink.raw{white-space:pre-wrap;overflow-wrap:break-word;}
 
 .analysis{background:var(--surface-2);border:1px solid var(--border);border-radius:15px;
   padding:4px 16px 16px;box-shadow:var(--shadow-sm);}
@@ -607,9 +621,9 @@ body{
   }
 
   var _collected = {panels:[], analysis:null, judge:null, usage:null, model:null};
-  function recordPanel(id, content){
-    for (var i=0;i<_collected.panels.length;i++){ if (_collected.panels[i].model===id){ _collected.panels[i].content=content; return; } }
-    _collected.panels.push({model:id, content:content});
+  function recordPanel(id, content, reasoning){
+    for (var i=0;i<_collected.panels.length;i++){ if (_collected.panels[i].model===id){ _collected.panels[i].content=content; if (reasoning) _collected.panels[i].reasoning=reasoning; return; } }
+    _collected.panels.push({model:id, content:content, reasoning:reasoning||''});
   }
   function avHex(cls){ return (getComputedStyle(document.documentElement).getPropertyValue(COLORVAR[cls]||'--c1').trim() || '#888'); }
   function mTag(id){ var m=modelMeta(id); return '<strong style="color:'+avHex(m.cls)+'">'+esc(m.label)+'</strong>'; }
@@ -666,8 +680,12 @@ body{
       parts.push(H ? '<h2>The Panel ('+_collected.panels.length+' models)</h2>' : '## The Panel ('+_collected.panels.length+' models)\n');
       _collected.panels.forEach(function(p){
         var m=modelMeta(p.model);
-        if (H) parts.push('<h3 style="color:'+avHex(m.cls)+'">'+esc(m.label)+'</h3><div>'+renderMarkdown(p.content)+'</div>');
-        else parts.push('### '+m.label+' ('+clean(p.model)+')\n\n'+p.content+'\n');
+        if (H) parts.push('<h3 style="color:'+avHex(m.cls)+'">'+esc(m.label)+'</h3>'
+          + (p.reasoning ? '<details><summary>'+esc(m.label)+' — thinking</summary><div>'+renderMarkdown(p.reasoning)+'</div></details>' : '')
+          + '<div>'+renderMarkdown(p.content)+'</div>');
+        else parts.push('### '+m.label+' ('+clean(p.model)+')\n\n'
+          + (p.reasoning ? '#### Thinking\n\n'+p.reasoning+'\n\n' : '')
+          + p.content+'\n');
       });
     }
     if (_collected.analysis) parts.push(H ? analysisToHtml(_collected.analysis, _collected.judge) : analysisToText(_collected.analysis, _collected.judge));
@@ -757,18 +775,106 @@ body{
       + '<div class="avatar" style="background:'+avColor(m.cls)+'">'+esc(m.initial)+'</div>'
       + '<div class="mname"><b>'+esc(m.label)+'</b><span class="mono">'+esc(clean(id))+'</span></div>'
       + '</div>'
-      + '<div class="mstate" style="color:'+avColor(m.cls)+'"><span class="thinking-dots"><i></i><i></i><i></i></span> deliberating</div>'
-      + '<div class="bar-wrap"><div class="bar" style="background:'+avColor(m.cls)+'"></div></div>';
+      + '<div class="mstate" style="color:'+avColor(m.cls)+'"><span class="thinking-dots"><i></i><i></i><i></i></span> <span class="ticker" dir="auto">deliberating</span><span class="tick-words"></span></div>'
+      + '<div class="bar-wrap"><div class="bar" style="background:'+avColor(m.cls)+'"></div></div>'
+      + _thinkRowHtml();
     roster.appendChild(card);
+    _bindThinking(card, id);
     document.getElementById('rosterCount').textContent = roster.children.length;
     panelCount = roster.children.length;
     document.getElementById('rosterNote').textContent = panelCount + ' models deliberating in parallel';
   }
 
+  var _live = {};
+  function _liveFor(id){ return _live[id] || (_live[id] = {ans:'', think:'', streaming:false, rendered:false}); }
+  function _cardFor(id){
+    if (!id) return null;
+    var sel = 'm-'+id.replace(/[^a-z0-9]/gi,'');
+    var c = document.getElementById(sel);
+    if (!c){ addPanelModel(id); c = document.getElementById(sel); }
+    return c;
+  }
+  function _thinkRowHtml(){
+    return '<div class="think-row"><span class="think-toggle"><span class="think-lbl">Thinking</span>'
+      + '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>'
+      + '<button class="copy-btn think-copy" type="button" title="Copy the thinking" aria-label="Copy thinking">'+copyIcon()+'</button></div>'
+      + '<div class="tbody"><div class="md tthink raw"></div></div>';
+  }
+  function _cpTail(s, n){
+    var t = String(s).slice(-n);
+    var c = t.charCodeAt(0);
+    if (c >= 0xDC00 && c <= 0xDFFF) t = t.slice(1);
+    return t;
+  }
+  function _thinkLabel(card, st){
+    var l = card.querySelector('.think-lbl');
+    if (l) l.textContent = 'Thinking · '+approxWords(st.think)+' words';
+  }
+  function _tickCard(card, st){
+    var t = card.querySelector('.ticker'); if (!t) return;
+    var src = st.ans || st.think;
+    t.textContent = src ? _cpTail(src.replace(/\s+/g,' '), 90) : 'deliberating';
+    t.scrollLeft = t.scrollWidth;
+    var w = card.querySelector('.tick-words');
+    if (w) w.textContent = src ? ' · '+(st.ans ? 'writing' : 'thinking')+' · '+approxWords(src)+' words' : '';
+  }
+  function _bindThinking(card, id){
+    var row = card.querySelector('.think-row'); if (!row) return;
+    var tog = row.querySelector('.think-toggle');
+    if (tog) tog.addEventListener('click', function(e){
+      e.stopPropagation();
+      card.classList.toggle('thinking-open');
+      var st = _liveFor(id);
+      var body = card.querySelector('.tbody .tthink');
+      if (card.classList.contains('thinking-open') && body && st.think){
+        if (!st.rendered && !st.streaming){
+          body.classList.remove('raw'); body.innerHTML = renderMarkdown(st.think); st.rendered = true;
+        } else if (st.streaming && !body.lastChild){
+          body.appendChild(document.createTextNode(st.think));
+        }
+      }
+      reportHeight();
+    });
+    var cb = row.querySelector('.think-copy');
+    if (cb) cb.addEventListener('click', function(e){
+      e.stopPropagation();
+      var st = _liveFor(id);
+      if (writeClipboard(wrapHtml('<div>'+renderMarkdown(st.think)+'</div>'), st.think)) flashCopied(cb);
+    });
+  }
+  function panelReasoningDelta(ev){
+    var id = ev.model; if (!id) return;
+    var st = _liveFor(id);
+    st.streaming = true;
+    st.think += (ev.delta||'');
+    var card = _cardFor(id); if (!card) return;
+    var row = card.querySelector('.think-row'); if (row) row.classList.add('on');
+    _thinkLabel(card, st);
+    if (card.classList.contains('thinking-open')){
+      var body = card.querySelector('.tbody .tthink');
+      if (body){
+        if (!body.lastChild || body.lastChild.nodeType !== 3) body.appendChild(document.createTextNode(''));
+        body.lastChild.appendData(ev.delta||'');
+      }
+    }
+    if (!st.ans) _tickCard(card, st);
+  }
+  function panelAnswerDelta(ev){
+    var id = ev.model; if (!id) return;
+    var st = _liveFor(id);
+    st.ans += (ev.delta||'');
+    var card = _cardFor(id); if (!card) return;
+    _tickCard(card, st);
+  }
+
   function completePanelModel(ev){
     var id = ev.model; if (!id) return;
     var m = modelMeta(id);
-    recordPanel(id, ev.content);
+    var st = _liveFor(id);
+    st.streaming = false;
+    st.rendered = false;
+    if (ev.reasoning) st.think = ev.reasoning;
+    recordPanel(id, ev.content, st.think);
     var card = document.getElementById('m-'+id.replace(/[^a-z0-9]/gi,''));
     if (!card) { addPanelModel(id); card = document.getElementById('m-'+id.replace(/[^a-z0-9]/gi,'')); }
     setPhase('answers');
@@ -780,20 +886,31 @@ body{
       + '<button class="copy-btn" type="button" title="Copy this answer" aria-label="Copy answer">'+copyIcon()+'</button>'
       + '</div>'
       + '<div class="mstate ready"><svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg> answer ready · '+approxWords(ev.content)+' words<div class="mstate-toggle"><span class="show-lbl">Show</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div></div>'
+      + _thinkRowHtml()
       + '<div class="mbody"><div class="md">'+renderMarkdown(ev.content)+'</div></div>';
     card.addEventListener('click', function(e){
-      if (e.target.closest('a') || e.target.closest('.copy-btn')) return;
+      if (e.target.closest('a') || e.target.closest('.copy-btn') || e.target.closest('.think-row') || e.target.closest('.tbody')) return;
       card.classList.toggle('open');
       card.querySelector('.show-lbl').textContent = card.classList.contains('open') ? 'Hide' : 'Show';
       reportHeight();
     });
-    var _cb = card.querySelector('.copy-btn');
+    var _cb = card.querySelector('.copy-btn:not(.think-copy)');
     if (_cb) _cb.addEventListener('click', function(e){
       e.stopPropagation();
       if (copyElement(card.querySelector('.mbody'), ev.content)) flashCopied(_cb);
     });
+    _bindThinking(card, id);
+    if (st.think){
+      var _row = card.querySelector('.think-row');
+      if (_row) _row.classList.add('on');
+      _thinkLabel(card, st);
+      if (card.classList.contains('thinking-open')){
+        var _tb = card.querySelector('.tbody .tthink');
+        if (_tb){ _tb.classList.remove('raw'); _tb.innerHTML = renderMarkdown(st.think); st.rendered = true; }
+      }
+    }
   }
-  function approxWords(s){ var n=String(s).trim().split(/\s+/).filter(Boolean).length; return n<10 ? n : Math.round(n/10)*10; }
+  function approxWords(s){ var str=String(s), n=str.trim().split(/\s+/).filter(Boolean).length, est=Math.round(str.length/6); if (est>n*3) n=est; return n<10 ? n : Math.round(n/10)*10; }
 
   function judgeStarting(judgeId){
     reveal('sec-analysis');
@@ -902,7 +1019,7 @@ body{
     });
   }
 
-  var finalBuf = ''; var _finalRaf = 0; var _hRaf = 0; var _frozenLen = 0;
+  var finalBuf = ''; var _finalRaf = 0; var _hRaf = 0; var _frozenLen = 0; var _lastH = 0;
   function startFinal(judgeId){
     reveal('sec-final');
     setPhase('answer'); setStatus('writing');
@@ -1033,6 +1150,8 @@ body{
         document.getElementById('rosterNote').textContent = 'models thinking in parallel';
         break;
       case 'response.fusion_call.panel.added':          addPanelModel(ev.model); break;
+      case 'response.fusion_call.panel.delta':          panelAnswerDelta(ev); break;
+      case 'response.fusion_call.panel.reasoning.delta': panelReasoningDelta(ev); break;
       case 'response.fusion_call.panel.completed':      completePanelModel(ev); break;
       case 'response.fusion_call.analysis.in_progress': _judge = ev.judge_model; judgeStarting(ev.judge_model); break;
       case 'response.fusion_call.analysis.completed':   renderAnalysis(ev.analysis, _judge); break;
@@ -1048,7 +1167,7 @@ body{
 
   window.FusionUI = {
     push: push,
-    reset: function(){ _judge=null; _fusionIdx=null; _finalStarted=false; preambleBuf=''; finalBuf=''; _frozenLen=0; _collected={panels:[],analysis:null,judge:null,usage:null,model:null}; resetUI(); }
+    reset: function(){ _judge=null; _fusionIdx=null; _live={}; _finalStarted=false; preambleBuf=''; finalBuf=''; _frozenLen=0; _collected={panels:[],analysis:null,judge:null,usage:null,model:null}; resetUI(); }
   };
 
   var EVENTS = /*__FUSION_EVENTS_JSON__*/[];
@@ -1102,6 +1221,8 @@ body{
       _hRaf = 0;
       try{
         var h = Math.max(document.body.scrollHeight, document.body.offsetHeight) + 1;
+        if (h === _lastH) return;
+        _lastH = h;
         parent.postMessage({type:'iframe:height', height:h}, '*');
       }catch(e){}
     });
@@ -1135,6 +1256,13 @@ body{
 # === END GENERATED TEMPLATE ===
 
 
+_PANEL_DELTA_TYPES = (
+    "response.fusion_call.panel.delta",
+    "response.fusion_call.panel.reasoning.delta",
+)
+_PANEL_REASONING_BUF_CAP = 512 * 1024
+
+
 @dataclass
 class FusionDeliberationState:
     """Accumulates the verbatim /responses event stream for the embed."""
@@ -1145,6 +1273,7 @@ class FusionDeliberationState:
     seen_analysis_started: bool = False
     seen_analysis_done: bool = False
     completed: bool = False
+    panel_reasoning_buf: dict[str, str] = field(default_factory=dict)
 
     def record(self, event: dict) -> str | None:
         """Append the event; return a milestone key if it should trigger a new
@@ -1153,6 +1282,17 @@ class FusionDeliberationState:
             return None
         etype = event.get("type")
         if not isinstance(etype, str):
+            return None
+
+        if etype in _PANEL_DELTA_TYPES:
+            if etype.endswith(".reasoning.delta"):
+                model = event.get("model")
+                delta = event.get("delta")
+                if isinstance(model, str) and model and isinstance(delta, str) and delta:
+                    existing = self.panel_reasoning_buf.get(model, "")
+                    if len(existing) < _PANEL_REASONING_BUF_CAP:
+                        room = _PANEL_REASONING_BUF_CAP - len(existing)
+                        self.panel_reasoning_buf[model] = existing + delta[:room]
             return None
 
         item = event.get("item")
@@ -1225,6 +1365,13 @@ class FusionDeliberationState:
         self.events.append(event)
         return None
 
+    def augment_panel_completed(self, event: dict) -> dict:
+        model = event.get("model") if isinstance(event, dict) else None
+        buf = self.panel_reasoning_buf.get(model) if isinstance(model, str) else None
+        if buf:
+            return {**event, "reasoning": buf}
+        return event
+
     def synthesize_missing_analysis(self) -> dict | None:
         if not self.seen_analysis_started or self.seen_analysis_done:
             return None
@@ -1251,6 +1398,55 @@ class FusionDeliberationState:
         self.events.insert(pos, synthetic)
         self.seen_analysis_done = True
         return synthetic
+
+
+class FusionDeltaBatcher:
+    def __init__(self, *, max_chars: int = 512, max_age: float = 0.2) -> None:
+        self._max_chars = max_chars
+        self._max_age = max_age
+        self._pending: dict[tuple[str, str], dict[str, Any]] = {}
+
+    @staticmethod
+    def _key(event: dict) -> tuple[str, str] | None:
+        etype = event.get("type")
+        model = event.get("model")
+        if not isinstance(etype, str) or not isinstance(model, str) or not model:
+            return None
+        return (model, etype)
+
+    @staticmethod
+    def _batched(entry: dict[str, Any]) -> dict:
+        return {**entry["template"], "delta": "".join(entry["parts"])}
+
+    def add(self, event: dict, now: float | None = None) -> dict | None:
+        if not isinstance(event, dict):
+            return None
+        key = self._key(event)
+        delta = event.get("delta")
+        if key is None or not isinstance(delta, str) or not delta:
+            return None
+        ts = time.monotonic() if now is None else now
+        entry = self._pending.get(key)
+        if entry is None:
+            entry = {"template": event, "parts": [], "first_ts": ts, "chars": 0}
+            self._pending[key] = entry
+        entry["parts"].append(delta)
+        entry["chars"] += len(delta)
+        if entry["chars"] >= self._max_chars or (ts - entry["first_ts"]) >= self._max_age:
+            del self._pending[key]
+            return self._batched(entry)
+        return None
+
+    def discard_model(self, model: str) -> None:
+        if not isinstance(model, str):
+            return
+        for key in [k for k in self._pending if k[0] == model]:
+            del self._pending[key]
+
+    def flush_all(self) -> list[dict]:
+        flushed = [self._batched(entry) for entry in self._pending.values()]
+        self._pending.clear()
+        return flushed
 
 
 def build_fusion_embed_html(

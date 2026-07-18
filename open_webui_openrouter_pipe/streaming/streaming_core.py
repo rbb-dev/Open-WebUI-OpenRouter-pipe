@@ -49,7 +49,7 @@ from ..core.logging_system import SessionLogger
 
 # Import EventEmitter type alias
 from .event_emitter import EventEmitter
-from .fusion_embed import FusionDeliberationState, build_fusion_embed_html
+from .fusion_embed import FusionDeliberationState, FusionDeltaBatcher, build_fusion_embed_html
 
 # Import timing instrumentation
 from ..core.timing_logger import timed, timing_mark
@@ -536,8 +536,10 @@ class StreamingHandler:
 
         fusion_armed = bool(fusion_live_enabled)
         fusion_state = FusionDeliberationState() if fusion_armed else None
+        fusion_batcher = FusionDeltaBatcher() if fusion_armed else None
         fusion_embed_emitted = False
         fusion_embed_task: asyncio.Task[None] | None = None
+        fell_back_to_chat = False
 
         def _add_fusion_name(names: dict[str, str], mid: str) -> None:
             if mid in names:
@@ -1255,6 +1257,9 @@ class StreamingHandler:
                         first_event_logged = True
                         timing_mark("first_event_received")
                     etype = event.get("type")
+                    if etype == "openrouter_pipe.chat_fallback":
+                        fell_back_to_chat = True
+                        continue
                     # Note: Don't call note_model_activity() here for ALL events.
                     # We only want to cancel thinking tasks when actual output or action starts,
                     # not during reasoning phases. Moved to specific event handlers below.
@@ -1326,6 +1331,22 @@ class StreamingHandler:
                             and event["item"].get("type") == "openrouter:fusion"
                         )
                     ):
+                        if etype in ("response.fusion_call.panel.delta",
+                                     "response.fusion_call.panel.reasoning.delta"):
+                            fusion_state.record(event)
+                            if fusion_batcher is not None:
+                                _batched = fusion_batcher.add(event)
+                                if _batched is not None:
+                                    await _emit_fusion_event(_batched)
+                            continue
+                        if etype == "response.fusion_call.panel.completed":
+                            event = fusion_state.augment_panel_completed(event)
+                            if fusion_batcher is not None and isinstance(event.get("model"), str):
+                                fusion_batcher.discard_model(event["model"])
+                        elif etype == "response.fusion_call.analysis.in_progress":
+                            if fusion_batcher is not None:
+                                for _straggler in fusion_batcher.flush_all():
+                                    await _emit_fusion_event(_straggler)
                         _fusion_ms = fusion_state.record(event)
                         if _fusion_ms == "fusion_open":
                             assistant_message = ""
@@ -2073,6 +2094,9 @@ class StreamingHandler:
                     if etype in ("response.completed", "response.done"):
                         if reasoning_display:
                             _close_open_reasoning_windows()
+                        if fusion_armed and fusion_batcher is not None:
+                            for _straggler in fusion_batcher.flush_all():
+                                await _emit_fusion_event(_straggler)
                         if fusion_armed and fusion_state is not None:
                             _fusion_resp = event.get("response")
                             if isinstance(_fusion_resp, dict) and "elapsed_seconds" not in _fusion_resp:
@@ -3011,6 +3035,22 @@ class StreamingHandler:
 
             if fusion_embed_task is not None and not fusion_embed_task.done():
                 fusion_embed_task.cancel()
+
+            if (
+                fusion_armed and fusion_state is not None
+                and fusion_state.fusion_index is None
+                and not was_cancelled and not error_occurred
+                and not fell_back_to_chat
+                and endpoint_override != "chat_completions"
+                and any(
+                    isinstance(p, dict) and p.get("id") == "fusion" and p.get("enabled") is not False
+                    for p in (body.plugins or [])
+                )
+            ):
+                self.logger.warning(
+                    "No structured fusion events observed for fusion request model=%s",
+                    body.model,
+                )
 
             if (
                 fusion_armed and fusion_state is not None
