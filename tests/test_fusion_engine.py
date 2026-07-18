@@ -433,14 +433,11 @@ class TestRunInternalFusion:
 class TestInstalledWebToolsConfig:
     def _fake_functions(self, monkeypatch, *, content, is_active=True,
                         stored_valves=None, stored_user=None):
+        import types
+
         import open_webui.models.functions as fx
 
-        class Row:
-            pass
-
-        row = Row()
-        row.is_active = is_active
-        row.content = content
+        row = types.SimpleNamespace(is_active=is_active, content=content)
 
         monkeypatch.setattr(fx.Functions, "get_function_by_id",
                             AsyncMock(return_value=row), raising=False)
