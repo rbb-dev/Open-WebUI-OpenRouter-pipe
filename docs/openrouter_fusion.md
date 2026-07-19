@@ -1,7 +1,3 @@
-<table>
-<tr>
-<td width="75%" valign="top">
-
 # OpenRouter Fusion
 
 Fusion turns a prompt into a small **multi-model deliberation**: a *panel* of up to 8 models
@@ -255,11 +251,6 @@ chat that uses the filter.
 > while `ALLOW_ON_NON_FUSION_MODELS` is `False` — the inlet bails out before it can inject the plugin
 > or set `tool_choice`. Turn this valve on first.
 
-</td>
-<td width="25%" valign="top">
+## What a deliberation looks like
 
-<img src="images/fusion.png" alt="OpenRouter Fusion diagram">
-
-</td>
-</tr>
-</table>
+![A complete Fusion deliberation: intent preamble, the panel cards with their thinking sections, the judge's analysis, the synthesized final answer, and the cost footer](images/fusion.png)
