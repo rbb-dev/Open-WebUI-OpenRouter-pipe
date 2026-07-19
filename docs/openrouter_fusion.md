@@ -1,3 +1,7 @@
+<table>
+<tr>
+<td width="75%" valign="top">
+
 # OpenRouter Fusion
 
 Fusion turns a prompt into a small **multi-model deliberation**: a *panel* of up to 8 models
@@ -250,3 +254,12 @@ chat that uses the filter.
 > **Gotcha:** attaching the filter to another model and enabling *Always run Fusion* does **nothing**
 > while `ALLOW_ON_NON_FUSION_MODELS` is `False` — the inlet bails out before it can inject the plugin
 > or set `tool_choice`. Turn this valve on first.
+
+</td>
+<td width="25%" valign="top">
+
+<img src="images/fusion.png" alt="OpenRouter Fusion diagram">
+
+</td>
+</tr>
+</table>
