@@ -1,0 +1,77 @@
+# git-cliff ~ configuration file
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Each entry links to the commit that introduced it.
+
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}](<REPO>/releases/tag/{{ version }}) — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**BREAKING** · {% endif %}\
+{% if commit.scope %}**{{ commit.scope }}** — {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim }} ([`{{ commit.id | truncate(length=7, end="") }}`](<REPO>/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor %}
+"""
+footer = """
+"""
+trim = true
+render_always = true
+postprocessors = [
+    { pattern = '<REPO>', replace = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe" },
+]
+
+[git]
+# Only version tags mark releases (excludes backup/* snapshots and the rolling `dev` tag).
+tag_pattern = "v[0-9]*"
+conventional_commits = true
+filter_unconventional = false
+require_conventional = false
+split_commits = false
+commit_preprocessors = [
+    # Turn "(#123)" into a link to the PR/issue.
+    { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))" },
+]
+protect_breaking_commits = false
+commit_parsers = [
+    # Real merge commits carry no changelog value (verified: every "Merge*" subject has 2+ parents).
+    { message = "(?i)^merge", skip = true },
+    # (?i) is required: early history uses "Fix ...", "Docs: ...", "Document ...", "Refactor ...".
+    { message = "(?i)^feat", group = "<!-- 0 -->🚀 Features" },
+    { message = "(?i)^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+    { message = "(?i)^security|(?i)^sec\\(", group = "<!-- 2 -->🛡️ Security" },
+    { message = "(?i)^refactor", group = "<!-- 3 -->🚜 Refactor" },
+    { message = "(?i)^perf", group = "<!-- 4 -->⚡ Performance" },
+    { message = "(?i)^doc", group = "<!-- 5 -->📚 Documentation" },
+    { message = "(?i)^test", group = "<!-- 6 -->🧪 Testing" },
+    { message = "(?i)^style", group = "<!-- 7 -->🎨 Styling" },
+    { message = "(?i)^chore\\(release\\): prepare for", skip = true },
+    { message = "(?i)^chore\\(deps.*\\)", skip = true },
+    { message = "(?i)^chore\\(pr\\)", skip = true },
+    { message = "(?i)^chore\\(pull\\)", skip = true },
+    { message = "(?i)^chore|(?i)^ci|(?i)^build|(?i)^bump version", group = "<!-- 8 -->⚙️ Miscellaneous Tasks" },
+    { message = "(?i)^revert", group = "<!-- 9 -->◀️ Revert" },
+    { message = ".*", group = "<!-- 10 -->💼 Other" },
+]
+filter_commits = false
+fail_on_unmatched_commit = false
+link_parsers = []
+use_branch_tags = false
+topo_order = false
+topo_order_commits = true
+sort_commits = "oldest"
+recurse_submodules = false
