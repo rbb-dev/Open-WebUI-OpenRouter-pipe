@@ -468,6 +468,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
 
     var ID = "{sid}";
     var state = {{}};
+    var _hRaf = 0, _lastH = 0;
 
     function $(id) {{ return document.getElementById(id); }}
     function esc(s) {{ var d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }}
@@ -569,8 +570,16 @@ def _build_dashboard_shell(dash_id: str) -> str:
       return '<div class="gc"><span class="gc-l">' + l + '</span><span class="gc-v">' + v + '</span></div>';
     }}
     function reportHeight() {{
-      var h = document.documentElement.scrollHeight;
-      parent.postMessage({{ type: 'iframe:height', height: h }}, '*');
+      if (_hRaf) return;
+      _hRaf = requestAnimationFrame(function() {{
+        _hRaf = 0;
+        try {{
+          var h = Math.max(document.body.scrollHeight, document.body.offsetHeight) + 1;
+          if (h === _lastH) return;
+          _lastH = h;
+          parent.postMessage({{ type: 'iframe:height', height: h }}, '*');
+        }} catch (e) {{ }}
+      }});
     }}
 
     // ── Live sessions ──
