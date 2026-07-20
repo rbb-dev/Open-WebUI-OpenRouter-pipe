@@ -63,7 +63,10 @@ commit_parsers = [
     { message = "(?i)^chore\\(deps.*\\)", skip = true },
     { message = "(?i)^chore\\(pr\\)", skip = true },
     { message = "(?i)^chore\\(pull\\)", skip = true },
-    { message = "(?i)^chore|(?i)^ci|(?i)^build|(?i)^bump version", group = "<!-- 8 -->⚙️ Miscellaneous Tasks" },
+    # Version bumps are housekeeping and cannot self-reference: a changelog that lists the
+    # bump commit is invalidated the moment that commit is amended. Skip them.
+    { message = "(?i)^(chore: )?bump version", skip = true },
+    { message = "(?i)^chore|(?i)^ci|(?i)^build", group = "<!-- 8 -->⚙️ Miscellaneous Tasks" },
     { message = "(?i)^revert", group = "<!-- 9 -->◀️ Revert" },
     { message = ".*", group = "<!-- 10 -->💼 Other" },
 ]
