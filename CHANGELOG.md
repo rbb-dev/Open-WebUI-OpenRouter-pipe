@@ -36,6 +36,7 @@ Each entry links to the commit that introduced it.
 - document plugin system and pipe_dashboard; refresh valve atlas ([`ef15995`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ef159959080945b2dc6764e57f314fd7a807e16a))
 - **fusion** — document guaranteed deliberation and live panel streaming ([`230d434`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/230d4346dbb25cc3f0f4252d61e99fffe338a5e3))
 - add fusion screenshot ([`d070892`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d070892e1f9006c3e3617df54f975af6a0f3b5e1))
+- regenerate changelog and fix git-cliff config ([`fbf95e2`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/fbf95e27b56b2fdaf8b4606e2158738102b6553e))
 
 ### 🧪 Testing
 
@@ -54,7 +55,6 @@ Each entry links to the commit that introduced it.
 ### ⚙️ Miscellaneous Tasks
 
 - ignore .env ([`5043d00`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/5043d006d0c922f5df041e0de03aee17bcf0ddcc))
-- bump version to 2.6.9 ([`d3844a8`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d3844a8f4723e755965ea21735fbecb47556c5d6))
 ## [2.6.8](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.8) — 2026-06-29
 
 ### 🐛 Bug Fixes
@@ -71,10 +71,6 @@ Each entry links to the commit that introduced it.
 ### 🧪 Testing
 
 - **reasoning** — cover fragmented reasoning.text consolidate->replay round-trip on chat ([`34d7318`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/34d7318e9631a45153eadf40f8cd35edeee027a4))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.8 ([`08b5509`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/08b5509770cf038b0dc60cc82a38a15b2ae7600a))
 ## [2.6.7](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.7) — 2026-06-27
 
 ### 🚀 Features
@@ -97,10 +93,6 @@ Each entry links to the commit that introduced it.
 ### 📚 Documentation
 
 - feature OpenRouter Fusion in README + refresh model/test counts ([`4757a35`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4757a352923e746faa492179c7465c9242531cb6))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.7 ([`d485641`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d48564184c854674bf31a7b568cdef1dc84bc6d2))
 ## [2.6.6](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.6) — 2026-06-15
 
 ### 🚀 Features
@@ -132,28 +124,16 @@ Each entry links to the commit that introduced it.
 ### 🧪 Testing
 
 - **logging** — assert worker messages survive concurrent writes, tolerant of stray lines ([`176879c`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/176879c8e72115ebdd1580b4f836466725b5c21f))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.6 ([`a94c1a5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a94c1a5bbb8702af16021af149f6f2bb64bc2117))
 ## [2.6.5](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.5) — 2026-06-09
 
 ### 🐛 Bug Fixes
 
 - **catalog** — update OpenRouter frontend models URL to new catalog endpoint ([`9a298fd`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9a298fde1ba76dba20335479b6e01ed5898c4086))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.5 ([`223f4fd`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/223f4fd3722739ad4f4905bdca311bb540cb14ce))
 ## [2.6.4](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.4) — 2026-05-19
 
 ### 🚀 Features
 
 - **image+video** — support xAI Grok Imagine image and video models ([`22340d9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/22340d99d46ec577229031c1413b43bc10d724cb))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.4 ([`27b3881`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/27b3881603b89b7aecba81c288b620245ab7fbd7))
 ## [2.6.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.3) — 2026-05-18
 
 ### 🚀 Features
@@ -164,19 +144,11 @@ Each entry links to the commit that introduced it.
 
 - **timing_logger** — use RLock so @timed re-entry doesn't self-deadlock ([`33d9b5b`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/33d9b5b093d8be4ffa297b1c15d85c5c52ce0308))
 - **logging** — recover task model message_id on OWUI 0.9.x ([`30cb3ce`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/30cb3ce32ff5e3e4489e1bfb9add54fbfb8b3f30))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.3 ([`795b7d6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/795b7d6afa464cc29e6a5f72ccd7e19d1bbc2dc4))
 ## [2.6.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.2) — 2026-05-17
 
 ### 🐛 Bug Fixes
 
 - **bundle** — anyio #1111 workaround no longer mutates _tasks ([`bb841ed`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/bb841ed69f2a92cfd66d2cdeff858258a1b7fb43))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.6.2 ([`9d5a4b6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9d5a4b67b0f0e97d6296fdde5321b53ddb8b59b2))
 ## [2.6.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.1) — 2026-05-15
 
 ### 🐛 Bug Fixes
@@ -186,7 +158,6 @@ Each entry links to the commit that introduced it.
 ### ⚙️ Miscellaneous Tasks
 
 - revert 3.12 matrix and verbose pytest to locate hang ([`baae29f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/baae29fdab41c637c7d5fb25445c53d0f71e61ff))
-- bump version to 2.6.1 ([`4bd2da8`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4bd2da82d826ca36bf7dea073208e17116617337))
 ## [2.6.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.6.0) — 2026-05-12
 
 ### 🚀 Features
@@ -196,16 +167,11 @@ Each entry links to the commit that introduced it.
 ### ⚙️ Miscellaneous Tasks
 
 - harden bundle loader + Python 3.12 CI matrix ([`2da767f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/2da767f890d84758c51ae1b025ea3768d1faf56a))
-- bump version to 2.6.0 ([`10d797b`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/10d797bfeb725321432fc1635ad22706f44056ae))
 ## [2.5.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.5.3) — 2026-05-09
 
 ### 🚀 Features
 
 - hot-reload pipe lifecycle without OWUI restart ([`7c667ce`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/7c667ce6c1552f78d7b1605b5e6e75f703692793))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.5.3 ([`9f275b6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9f275b6e13e210090b729b427b3aae13b6505008))
 ## [2.5.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.5.2) — 2026-05-08
 
 ### 🚀 Features
@@ -220,10 +186,6 @@ Each entry links to the commit that introduced it.
 ### 🐛 Bug Fixes
 
 - **image** — video parity - preserve on chat refresh, ensure from pipe() ([`76eb78c`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/76eb78cbea737f1494993c70667f42516b284729))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.5.1 ([`bf3f85f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/bf3f85f2934bd67779aedbd0ae527c40f6015036))
 ## [2.5.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.5.0) — 2026-05-04
 
 ### 🚀 Features
@@ -239,19 +201,11 @@ Each entry links to the commit that introduced it.
 
 - clean up broken local references ([`e16d82f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e16d82f35fbfcf771eff99ffff72d240d3acd21a))
 - image generation feature doc + README refresh ([`ba1f696`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ba1f696de5bd67da9c68fbc612258bed8875dc10))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.5.0 ([`84fa902`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/84fa902612c33c8c14208b7600af5c19afc656d6))
 ## [2.4.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.4.2) — 2026-04-28
 
 ### 🐛 Bug Fixes
 
 - function_call.name must match ^[a-zA-Z0-9_-]+$ for OpenAI Responses API ([`dde7053`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/dde70538523870c8daecb3e8f3841223990fea19))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.4.2 ([`b2ba00e`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b2ba00e14ea3db4fd63a3a8aa5bf828dc3bbf85c))
 ## [2.4.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.4.1) — 2026-04-28
 
 ### 🚀 Features
@@ -274,10 +228,6 @@ Each entry links to the commit that introduced it.
 
 - centralize filter metadata namespace key into _PIPE_METADATA_KEY constant ([`4c3964d`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4c3964d2a8500c051cc0d92d272515ded4515147))
 - unify tool card emission, gate server tools by SHOW_TOOL_CARDS, fix bugs ([`2c5cba6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/2c5cba63e9979e95f1083955ae9ab0a1d75da6de))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.4.1 ([`696f5e6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/696f5e6baea2f708f901640bf304fd5a6b0f1178))
 ## [2.4.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.4.0) — 2026-04-23
 
 ### 🐛 Bug Fixes
@@ -285,10 +235,6 @@ Each entry links to the commit that introduced it.
 - inject OpenRouter web plugin for all models, not just those with native web_search pricing ([#26](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues/26)) ([`c0c3f8e`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c0c3f8e7a655c55b581e29f36792220f6d6608a7))
 - migrate all OWUI calls from sync to async for Open WebUI 0.9.x compatibility ([#32](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues/32)) ([`b764d41`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b764d41eb798996204a3db38f95414315c987e9e))
 - populate filename on file blocks sent to OpenRouter ([#31](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues/31)) ([`ee127cf`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ee127cf868bd3cb47fd709a4a550c31b5cb1f1f2))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.4.0 ([`23b07a8`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/23b07a855b20e1c55c014d248b369b2bc5edc32a))
 ## [2.3.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.3.3) — 2026-04-06
 
 ### 🚀 Features
@@ -298,20 +244,12 @@ Each entry links to the commit that introduced it.
 ### 🐛 Bug Fixes
 
 - add explicit permissions to CI workflow ([`7b45793`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/7b45793a7db5d2d2cebce3b3b58a47b499984f20))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.3.3 ([`549e788`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/549e7882b101d5cb3b6a57dec0b3c11a6bbf7fd5))
 ## [2.3.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.3.2) — 2026-04-04
 
 ### 🐛 Bug Fixes
 
 - support non-catalog model id fallback ([`0b43820`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/0b4382045bf0da2c0347ca29d97acf8b3397c3f1))
 - prevent resource leaks on request cancellation ([`e5fd4bc`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e5fd4bc4da44ef11dfa96cb5cf24598c6d974cf2))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.3.2 ([`cd03daf`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/cd03daf02427cc25ea2b6f836fb96756380287ba))
 ## [2.3.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.3.1) — 2026-03-31
 
 ### 🐛 Bug Fixes
@@ -323,10 +261,6 @@ Each entry links to the commit that introduced it.
 ### 🚜 Refactor
 
 - reuse OWUI artifact payload sanitization ([`a3e4455`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a3e44557ab5a86daa1757cdb60d4ddf044794aa2))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.3.1 ([`ec66bbb`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ec66bbb4d32f8e941c55234da452d84afe870cfc))
 ## [2.3.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.3.0) — 2026-03-14
 
 ### 🚀 Features
@@ -338,10 +272,6 @@ Each entry links to the commit that introduced it.
 
 - handle lone Unicode surrogates in artifact persistence ([`47e8097`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/47e809777645d8bf59742110aef21d8a4e912666))
 - preserve Responses item order in pipeline continuations ([`4308aef`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4308aef787885e4d4b1ba449fa78f6fe339d5d5b))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.3.0 ([`876113e`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/876113eaaa67e3020079369254493be5ce97f296))
 ## [2.2.11](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.2.11) — 2026-03-05
 
 ### 🚀 Features
@@ -368,10 +298,6 @@ Each entry links to the commit that introduced it.
 
 - properly close unawaited Pipe.close() coroutine in __del__ ([`dd1cafc`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/dd1cafc0fbb63b75121eec901f7a90f6b7d36108))
 - remove arbitrary 50% fraction cap from tool output budget guard ([`3c6b4b1`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/3c6b4b15590ceb92618077372e166d07fb428c41))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.2.9 ([`d2c5a51`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d2c5a5155c8c44d5c5cdd30e4e79061038a61470))
 ## [2.2.8](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.2.8) — 2026-02-28
 
 ### 🚀 Features
@@ -382,10 +308,6 @@ Each entry links to the commit that introduced it.
 
 - support OWUI access_control schema in model overlay sync ([`b5e06f9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b5e06f964d62b7302f37b62b033da2fa4b23a102))
 - close reasoning timing before tool card emission in pipeline mode ([`f2bcc32`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f2bcc329831107b14c7eb86b0db878b8d7548e7b))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.2.8 ([`2c7ca7a`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/2c7ca7aa4e5a438e8277f37176187bdf71b45e78))
 ## [2.2.7](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.2.7) — 2026-02-23
 
 ### 🐛 Bug Fixes
@@ -429,10 +351,6 @@ Each entry links to the commit that introduced it.
 
 - inline _format_openrouter_error_markdown into its single caller ([`56b9fc5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/56b9fc54e72f7214c1090b8b1d8a2d98a483780b))
 - remove dead SSEParser class and its 33 tests ([`34b30a3`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/34b30a36df1661287b96404dce29d6ab9bc1c4ba))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.2.5 ([`84b6e56`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/84b6e56bde59612172a40f1d3016afaffd45b448))
 ## [2.2.4](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.2.4) — 2026-02-16
 
 ### 🐛 Bug Fixes
@@ -472,7 +390,6 @@ Each entry links to the commit that introduced it.
 ### ⚙️ Miscellaneous Tasks
 
 - finalize modularization — deduplicate names, clean imports, add ruff to CI ([`556afa2`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/556afa2f770b66429e5f75b51bb5cd7b440a8eac))
-- bump version to 2.2.3, switch bundle workflow to v2 ([`2be49d6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/2be49d66bec6e256f425939c434a23c91c9e13b4))
 ## [2.2.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.2.2) — 2026-02-13
 
 ### 🚀 Features
@@ -505,20 +422,12 @@ Each entry links to the commit that introduced it.
 
 - add ZDR links to README and docs index ([`f8027e5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f8027e5c1f79f257e4d498442b0b4c561c02e7b5))
 - update bundle install references ([`bc82dfb`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/bc82dfb171133f4e523df1a5f349d8563f8efbd5))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.2.0 ([`163cb41`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/163cb419797e7eda5df3917c32f6edd90d6207be))
 ## [2.1.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.1.0) — 2026-01-31
 
 ### 🚀 Features
 
 - add icon/text styles for final usage status ([`a7c986a`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a7c986a025f29701d75445ab7f0737a6bf838e93))
 - add OpenRouter ZDR filtering, enforcement, and catalog flags ([`2bb32db`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/2bb32dbe9b0eb7380ed13564b4a63ce3449414b5))
-
-### ⚙️ Miscellaneous Tasks
-
-- bump version to 2.1.0 ([`9e7a6bb`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9e7a6bb1fe962017f19bd3e179d551e2d4f2f208))
 ## [2.0.7](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.0.7) — 2026-01-31
 
 ### 🚀 Features
@@ -550,7 +459,6 @@ Each entry links to the commit that introduced it.
 - ship dual bundles and test them in CI ([`cd672a7`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/cd672a7c0d9533279def552dd2ad83fe1dccd726))
 - align OpenRouter usage flags with docs ([`f9d4bf9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f9d4bf92148c0701b1c1518b9bd37b734ad65a41))
 - OpenRouter Gemini-3 reasoning cleanup ([`a74c43d`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/a74c43d43b571bc11d20836ebe6b495e7a9a4d0c))
-- bump version to 2.0.7 ([`1a8e7bc`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/1a8e7bcf4e1799052254ed8473482bf09721c053))
 ## [2.0.6](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.0.6) — 2026-01-28
 
 ### 🚀 Features
@@ -577,7 +485,6 @@ Each entry links to the commit that introduced it.
 ### ⚙️ Miscellaneous Tasks
 
 - use uv for faster dependency installation ([`98504ec`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/98504ecc2a290f0a015c0146545320155aa4f971))
-- bump version to 2.0.5 ([`c917c9f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c917c9fcdd8084fb0c5393406dd0da960d59ce75))
 ## [2.0.4](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.0.4) — 2026-01-25
 
 ### 🚀 Features
@@ -853,7 +760,6 @@ Each entry links to the commit that introduced it.
 
 ### ⚙️ Miscellaneous Tasks
 
-- Bump version to 1.0.5 and improve logging ([`870e553`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/870e5532196a4144afddacec80642dd4ef3fc641))
 - remove unused helpers ([`bc756f2`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/bc756f2e8a556f86b87659fdf50ca7667130cbce))
 - remove duplicate ResponsesBody debug log ([`e188c2f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/e188c2fd6fbaeefca871440788dcd06ca2d1dc12))
 - dead-code cleanup and pipe id simplification ([`4b252c6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/4b252c6b359630455b47d91b674f07dfd1ce3fe6))
@@ -866,7 +772,6 @@ Each entry links to the commit that introduced it.
 - add GitHub Actions workflow with venv + deps ([`c38f8df`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/c38f8df97c693ce3e33811585410d412f54552fa))
 - clean up aiohttp ClientSession leaks in tests ([`f4f35aa`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f4f35aa88d1b98a625e09d4e40ac895cf84bfda0))
 - install aioresponses for tests ([`3eaee84`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/3eaee84805ed67652da6635b8117b2b51ca55639))
-- bump version to v2.0.2 ([`6e3d67a`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/6e3d67a88b2ba8edb9897319be3c9efaa651d9e6))
 - trigger bundle workflow ([`f2efba6`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/f2efba6b0be82f0dbe983a63ccaaacc8b43261ca))
 
 ### ◀️ Revert
