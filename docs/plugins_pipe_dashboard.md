@@ -62,7 +62,7 @@ The `dashboard` command opens a console organized into tabs. Each tab covers one
 
 ### Live
 
-![Live dashboard](images/dashboard_live.jpeg)
+![Dashboard walkthrough](images/dashboard_video.gif)
 
 The Live tab shows one row per in-flight or recently-completed request, across every worker. Each row carries:
 
@@ -77,8 +77,6 @@ Completed rows stay visible, dimmed, for the **Keep completed** window (5 minute
 The table sorts on any column and has a filter box.
 
 ### Usage
-
-![Usage](images/dashboard_usage.jpeg)
 
 The Usage tab needs `PIPE_DASHBOARD_USAGE_COLLECT` on. Without it, the tab shows a hint to enable collection.
 
@@ -114,8 +112,6 @@ The System tab covers readiness and infrastructure:
 - **Workers** — per worker: PID, uptime, active-request count, last-seen age, and a status badge (Active, Stale, or Warmup failed). This card appears in every deployment.
 
 ### Storage
-
-![Storage](images/dashboard_storage.jpeg)
 
 The Storage tab summarizes the artifact store:
 
@@ -201,8 +197,6 @@ The About tab lists the registered plugins by name, id, and version.
 ---
 
 ## Editing configuration
-
-![Config tab](images/dashboard_config.jpeg)
 
 The Config tab is the pipe's configuration editor. It lists every admin valve in a searchable, grouped tree, each with its own help text. Edit any value in place.
 
