@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import re
 import time
 import uuid
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, NamedTuple
 
 from ..core.config import _PIPE_METADATA_KEY, NO_CONTENT_AFTER_TOOLS_FALLBACK
+from ..core.errors import OpenRouterAPIError
 from ..core.fusion_defaults import (
     DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
     DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
@@ -23,13 +25,23 @@ from ..structured_task.schema import build_response_format, downgrade_strict_for
 from ..tools.tool_executor import _ToolExecutionContext
 
 
+_fusion_engine_log = logging.getLogger(__name__)
+
+
+def _member_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, OpenRouterAPIError):
+        return "the model call failed"
+    if isinstance(exc, (TypeError, ValueError)):
+        return "the model response could not be processed"
+    return "the model call failed before completing"
+
+
 def build_inner_metadata(metadata: Any) -> dict[str, Any]:
-    base = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+    base = dict(metadata) if isinstance(metadata, dict) else {}
     for key in ("chat_id", "message_id", "model"):
         base.pop(key, None)
-    pipe_meta = base.get(_PIPE_METADATA_KEY)
-    if not isinstance(pipe_meta, dict):
-        pipe_meta = {}
+    raw_pipe_meta = base.get(_PIPE_METADATA_KEY)
+    pipe_meta = copy.deepcopy(raw_pipe_meta) if isinstance(raw_pipe_meta, dict) else {}
     pipe_meta["fusion_inner"] = True
     base[_PIPE_METADATA_KEY] = pipe_meta
     return base
@@ -126,7 +138,7 @@ async def run_fusion_member(
     inner_body: dict[str, Any] = {
         "model": model,
         "stream": True,
-        "messages": [{"role": "system", "content": system_prompt}, *copy.deepcopy(messages)],
+        "messages": [{"role": "system", "content": system_prompt}, *[dict(m) for m in messages]],
     }
     if temperature is not None:
         inner_body["temperature"] = temperature
@@ -201,12 +213,11 @@ async def run_fusion_member(
                 fail_reason=preview or "rejected before send",
                 sources=tuple(collector.sources),
             )
-        failed = (
-            bool(sink.get("error_occurred"))
-            or not content.strip()
-            or content == NO_CONTENT_AFTER_TOOLS_FALLBACK
-        )
+        empty_result = not content.strip() or content == NO_CONTENT_AFTER_TOOLS_FALLBACK
+        failed = bool(sink.get("error_occurred")) or empty_result
         reason = sink.get("reason") if failed else None
+        if failed and empty_result and not isinstance(reason, str):
+            reason = "the model returned no answer"
         return FusionMemberResult(
             model=model, content=content, usage=collector.usage,
             failed=failed, fail_reason=reason if isinstance(reason, str) else None,
@@ -215,9 +226,10 @@ async def run_fusion_member(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        _fusion_engine_log.warning("fusion member %s failed", model, exc_info=True)
         return FusionMemberResult(
             model=model, content="", usage=collector.usage,
-            failed=True, fail_reason=f"{type(exc).__name__}: {exc}",
+            failed=True, fail_reason=_member_failure_reason(exc),
             sources=tuple(collector.sources),
         )
     finally:
@@ -439,9 +451,10 @@ async def run_internal_fusion(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            _fusion_engine_log.warning("fusion member %s failed", member_model, exc_info=True)
             res = FusionMemberResult(
                 model=member_model, content="", usage=None,
-                failed=True, fail_reason=f"{type(exc).__name__}: {exc}",
+                failed=True, fail_reason=_member_failure_reason(exc),
             )
         await live_queue.put(("member_done", member_model, res))
 
@@ -507,9 +520,12 @@ async def run_internal_fusion(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    _fusion_engine_log.warning(
+                        "fusion member %s failed", plan.judge_model, exc_info=True
+                    )
                     res = FusionMemberResult(
                         model=plan.judge_model, content="", usage=None,
-                        failed=True, fail_reason=f"{type(exc).__name__}: {exc}",
+                        failed=True, fail_reason=_member_failure_reason(exc),
                     )
                 await judge_queue.put(("member_done", plan.judge_model, res))
 
@@ -582,7 +598,7 @@ async def run_internal_fusion(
                    "text": failure_answer}
         else:
             material = build_synthesis_material(ordered, analysis)
-            synth_messages = copy.deepcopy(invocation.messages)
+            synth_messages = [dict(m) for m in invocation.messages]
             synth_messages.append({"role": "system", "content": material})
             yield {"type": "response.fusion_call.synthesis.in_progress",
                    "output_index": 0, "item_id": item_id, "model": plan.synthesis_model}
@@ -604,9 +620,12 @@ async def run_internal_fusion(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    _fusion_engine_log.warning(
+                        "fusion member %s failed", plan.synthesis_model, exc_info=True
+                    )
                     res = FusionMemberResult(
                         model=plan.synthesis_model, content="", usage=None,
-                        failed=True, fail_reason=f"{type(exc).__name__}: {exc}",
+                        failed=True, fail_reason=_member_failure_reason(exc),
                     )
                 await synth_queue.put(("member_done", plan.synthesis_model, res))
 

@@ -62,6 +62,49 @@ class TestBuildInnerMetadata:
     def test_none_metadata(self):
         assert build_inner_metadata(None)[_PIPE_METADATA_KEY]["fusion_inner"] is True
 
+    def test_unpicklable_shared_objects_survive(self):
+        import threading
+
+        lock = threading.Lock()
+        outer = {
+            "chat_id": "c",
+            "tools": {"t": {"callable": lambda: None, "client": lock}},
+            "mcp_clients": [lock],
+            "files": [{"id": "f1"}],
+        }
+        inner = build_inner_metadata(outer)
+        assert inner[_PIPE_METADATA_KEY]["fusion_inner"] is True
+        assert "chat_id" not in inner
+        assert inner["tools"] is outer["tools"]
+        assert inner["mcp_clients"] is outer["mcp_clients"]
+        assert inner["files"] is outer["files"]
+
+    @pytest.mark.asyncio
+    async def test_live_future_in_metadata_survives(self):
+        from types import SimpleNamespace
+
+        fut = asyncio.get_running_loop().create_future()
+        holder = SimpleNamespace(session_future=fut)
+        outer = {"tools": {"m": {"client": holder}}}
+        inner = build_inner_metadata(outer)
+        assert inner["tools"]["m"]["client"] is holder
+        fut.cancel()
+
+    def test_per_member_bases_isolated_without_touching_shared(self):
+        shared_tools = {"t": {"spec": {"name": "t"}}}
+        outer = {"tools": shared_tools, _PIPE_METADATA_KEY: {"server_tools": {"web_search": {}}}}
+        first = build_inner_metadata(outer)
+        second = build_inner_metadata(outer)
+        first[_PIPE_METADATA_KEY]["server_tools"]["web_fetch"] = {}
+        first["extra"] = 1
+        assert "web_fetch" not in second[_PIPE_METADATA_KEY]["server_tools"]
+        assert "web_fetch" not in outer[_PIPE_METADATA_KEY]["server_tools"]
+        assert "extra" not in outer
+        assert "extra" not in second
+        assert outer["tools"] is shared_tools
+        assert first["tools"] is shared_tools
+        assert second["tools"] is shared_tools
+
 
 class TestBuildInnerValves:
     def test_loop_cap_and_cost_dump(self):
@@ -311,6 +354,152 @@ class TestRunFusionMemberReentry:
             valves_arg = kwargs.get("valves") or next(
                 (a for a in args if hasattr(a, "COSTS_REDIS_DUMP")), None)
             assert valves_arg is not None and valves_arg.COSTS_REDIS_DUMP is False
+
+
+class TestMemberFailureReasons:
+    @pytest.mark.asyncio
+    async def test_member_failure_reason_sanitized_and_logged(self, orchestrator_and_pipe, caplog):
+        import logging as _logging
+
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                raise TypeError("cannot pickle '_asyncio.Future' object")
+
+        inv = _invocation(_Orch(), pipe, Valves())
+        with caplog.at_level(_logging.WARNING):
+            result = await run_fusion_member(
+                pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+                system_prompt="P", max_tool_calls=4, live_queue=None,
+                bypass_restrictions=True, server_tools_config=None,
+            )
+        assert result.failed is True
+        reason = result.fail_reason or ""
+        assert "TypeError" not in reason
+        assert "pickle" not in reason
+        assert "interrupted" not in reason
+        assert reason == "the model response could not be processed"
+        assert any("fusion member" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_empty_answer_maps_to_no_answer_reason(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return ""
+
+        inv = _invocation(_Orch(), pipe, Valves())
+        result = await run_fusion_member(
+            pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+            system_prompt="P", max_tool_calls=4, live_queue=None,
+            bypass_restrictions=True, server_tools_config=None,
+        )
+        assert result.failed is True
+        assert result.fail_reason == "the model returned no answer"
+
+    @pytest.mark.asyncio
+    async def test_api_error_maps_to_call_failed(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                raise OpenRouterAPIError(status=502, reason="upstream said no")
+
+        inv = _invocation(_Orch(), pipe, Valves())
+        result = await run_fusion_member(
+            pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+            system_prompt="P", max_tool_calls=4, live_queue=None,
+            bypass_restrictions=True, server_tools_config=None,
+        )
+        assert result.failed is True
+        assert result.fail_reason == "the model call failed"
+        assert "upstream said no" not in (result.fail_reason or "")
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_maps_to_before_completing(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                raise RuntimeError("socket exploded at 10.0.0.7")
+
+        inv = _invocation(_Orch(), pipe, Valves())
+        result = await run_fusion_member(
+            pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+            system_prompt="P", max_tool_calls=4, live_queue=None,
+            bypass_restrictions=True, server_tools_config=None,
+        )
+        assert result.failed is True
+        assert result.fail_reason == "the model call failed before completing"
+        assert "socket" not in (result.fail_reason or "")
+
+
+class TestInnerMessageCopies:
+    @pytest.mark.asyncio
+    async def test_member_body_shares_content_objects(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+        captured: list[dict] = []
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                captured.append(body)
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return "answer"
+
+        content_blocks = [{"type": "text", "text": "hello"}]
+        messages = [{"role": "user", "content": content_blocks}]
+        inv = _invocation(_Orch(), pipe, Valves(), messages=messages)
+        result = await run_fusion_member(
+            pipe, inv, model="openai/gpt-5", messages=messages,
+            system_prompt="P", max_tool_calls=4, live_queue=None,
+            bypass_restrictions=True, server_tools_config=None,
+        )
+        assert result.failed is False
+        body_messages = captured[0]["messages"]
+        assert body_messages[0]["role"] == "system"
+        assert body_messages[1] is not messages[0]
+        assert body_messages[1]["content"] is content_blocks
+
+    @pytest.mark.asyncio
+    async def test_synthesis_messages_share_content_objects(self, monkeypatch, pipe_instance_async):
+        import open_webui_openrouter_pipe.requests.fusion_engine as fe
+
+        seen: list[Any] = []
+
+        async def fake(pipe, invocation, **kw):
+            seen.append(kw.get("messages"))
+            model = kw["model"]
+            if model == "j/x":
+                return FusionMemberResult(
+                    model=model, content=json.dumps(VALID_ANALYSIS), usage=None,
+                    failed=False, fail_reason=None,
+                )
+            return FusionMemberResult(
+                model=model, content="draft", usage=None, failed=False, fail_reason=None,
+            )
+
+        monkeypatch.setattr(fe, "run_fusion_member", fake)
+        from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+        monkeypatch.setattr(FilterManager, "collect_installed_web_tools_config",
+                            AsyncMock(return_value=None))
+        content_blocks = [{"type": "text", "text": "Q?"}]
+        inv = FusionInnerInvocation(
+            orchestrator=Mock(), messages=[{"role": "user", "content": content_blocks}],
+            outer_model_id="openrouter/fusion", user={"id": "u"}, request=None,
+            event_call=None, metadata={}, tools={}, valves=pipe_instance_async.valves,
+            session=object(), pipe_identifier="p", user_id="u",
+        )
+        plan = FusionRunPlan(("m/a",), "j/x", "j/x", 8)
+        async for _ev in fe.run_internal_fusion(pipe_instance_async, invocation=inv, plan=plan):
+            pass
+        synth_messages = seen[-1]
+        assert synth_messages is not None
+        assert synth_messages[0] is not inv.messages[0]
+        assert synth_messages[0]["content"] is content_blocks
+        assert synth_messages[-1]["role"] == "system"
 
 
 class TestRunInternalFusion:
