@@ -4778,6 +4778,165 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
 from open_webui_openrouter_pipe import _strictify_schema
 
 
+def test_strictify_native_schema_golden_unchanged():
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "q"},
+            "count": {"type": "integer"},
+            "nested": {"type": "object", "properties": {"flag": {"type": "boolean"}}, "required": ["flag"]},
+        },
+        "required": ["query"],
+    }
+    golden = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["count", "nested", "query"],
+        "properties": {
+            "count": {"type": ["integer", "null"]},
+            "nested": {
+                "type": ["object", "null"],
+                "additionalProperties": False,
+                "required": ["flag"],
+                "properties": {"flag": {"type": "boolean"}},
+            },
+            "query": {"description": "q", "type": "string"},
+        },
+    }
+    assert _strictify_schema(schema) == golden
+
+
+def test_strictify_leaves_ref_nodes_bare_and_strictifies_defs():
+    schema = {
+        "type": "object",
+        "properties": {
+            "location": {"$ref": "#/$defs/Address"},
+            "priority": {"anyOf": [{"$ref": "#/$defs/Priority"}, {"type": "null"}], "default": None},
+        },
+        "required": ["location"],
+        "$defs": {
+            "Address": {"type": "object", "properties": {"street": {"type": "string"}}, "required": ["street"]},
+            "Priority": {"type": "string", "enum": ["low", "high"]},
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+    }
+    out = _strictify_schema(schema)
+    assert out["properties"]["location"] == {"$ref": "#/$defs/Address"}
+    assert out["properties"]["priority"]["anyOf"][0] == {"$ref": "#/$defs/Priority"}
+    assert "$schema" not in out
+    assert "default" not in out["properties"]["priority"]
+    address = out["$defs"]["Address"]
+    assert address["additionalProperties"] is False
+    assert address["required"] == ["street"]
+    assert out["$defs"]["Priority"] == {"type": "string", "enum": ["low", "high"]}
+
+
+def test_strictify_unwraps_single_element_allof():
+    schema = {
+        "type": "object",
+        "properties": {"cfg": {"allOf": [{"$ref": "#/$defs/Cfg"}], "description": "c"}},
+        "$defs": {"Cfg": {"type": "object", "properties": {"x": {"type": "integer"}}}},
+    }
+    out = _strictify_schema(schema)
+    assert out["properties"]["cfg"] == {"$ref": "#/$defs/Cfg"}
+    cfg = out["$defs"]["Cfg"]
+    assert cfg["additionalProperties"] is False
+    assert cfg["required"] == ["x"]
+
+
+def test_strictify_merges_multi_element_allof():
+    schema = {
+        "type": "object",
+        "properties": {
+            "combo": {
+                "allOf": [
+                    {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+                    {"properties": {"b": {"type": "integer"}}, "required": ["b"]},
+                ]
+            }
+        },
+        "required": ["combo"],
+    }
+    out = _strictify_schema(schema)
+    combo = out["properties"]["combo"]
+    assert "allOf" not in combo
+    assert set(combo["properties"]) == {"a", "b"}
+    assert combo["additionalProperties"] is False
+    assert combo["type"] == "object"
+    assert sorted(combo["required"]) == ["a", "b"]
+
+
+def test_strictify_dereferences_multi_element_allof_with_ref():
+    schema = {
+        "type": "object",
+        "properties": {
+            "cfg": {
+                "allOf": [
+                    {"$ref": "#/$defs/Base"},
+                    {"properties": {"b": {"type": "integer"}}, "required": ["b"]},
+                ]
+            }
+        },
+        "required": ["cfg"],
+        "$defs": {
+            "Base": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            }
+        },
+    }
+    out = _strictify_schema(schema)
+    cfg = out["properties"]["cfg"]
+    assert "allOf" not in cfg
+    assert "$ref" not in cfg
+    assert set(cfg["properties"]) == {"a", "b"}
+    assert cfg["additionalProperties"] is False
+    assert sorted(cfg["required"]) == ["a", "b"]
+    assert out["$defs"]["Base"]["additionalProperties"] is False
+
+
+def test_strictify_leaves_unresolvable_allof_untouched():
+    schema = {
+        "type": "object",
+        "properties": {
+            "cfg": {
+                "allOf": [
+                    {"$ref": "https://example.com/external.json"},
+                    {"properties": {"b": {"type": "integer"}}},
+                ]
+            }
+        },
+        "required": ["cfg"],
+    }
+    out = _strictify_schema(schema)
+    cfg = out["properties"]["cfg"]
+    assert cfg["allOf"][0] == {"$ref": "https://example.com/external.json"}
+    assert "$ref" not in cfg
+    assert "properties" not in cfg
+
+
+def test_strictify_strips_unsupported_constraint_keywords():
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1, "maxLength": 10, "pattern": "^a", "format": "email"},
+            "num": {"type": "integer", "minimum": 0, "maximum": 5, "multipleOf": 1},
+            "arr": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3, "uniqueItems": True},
+        },
+        "required": ["name", "num", "arr"],
+    }
+    out = _strictify_schema(schema)
+    for keyword in ("minLength", "maxLength", "pattern", "format"):
+        assert keyword not in out["properties"]["name"]
+    for keyword in ("minimum", "maximum", "multipleOf"):
+        assert keyword not in out["properties"]["num"]
+    for keyword in ("minItems", "maxItems", "uniqueItems"):
+        assert keyword not in out["properties"]["arr"]
+    assert out["properties"]["name"]["type"] == "string"
+    assert out["properties"]["arr"]["items"] == {"type": "string"}
+
+
 def test_strictify_preserves_required_fields():
     schema = {
         "type": "object",

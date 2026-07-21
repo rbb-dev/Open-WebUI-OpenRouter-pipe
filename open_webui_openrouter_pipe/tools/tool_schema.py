@@ -11,12 +11,110 @@ Implements aggressive schema transformation for compatibility with strict mode.
 
 from __future__ import annotations
 
+import copy
 import json
 from functools import lru_cache
 from typing import Any, Dict
 from ..core.config import LOGGER
 
 _STRICT_SCHEMA_CACHE_SIZE = 128
+
+_STRICT_UNSUPPORTED_KEYS = (
+    "default",
+    "$schema",
+    "pattern",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "format",
+)
+
+
+def _inline_allof(
+    node: Dict[str, Any],
+    defs_lookup: Dict[str, Any],
+    resolve_budget: list[int],
+) -> None:
+    for _ in range(8):
+        had_allof = "allOf" in node
+        _inline_allof_once(node, defs_lookup, resolve_budget)
+        if not had_allof or "allOf" not in node or resolve_budget[0] <= 0:
+            return
+
+
+def _inline_allof_once(
+    node: Dict[str, Any],
+    defs_lookup: Dict[str, Any],
+    resolve_budget: list[int],
+) -> None:
+    branches = node.get("allOf")
+    if not isinstance(branches, list) or not branches:
+        if isinstance(branches, list):
+            node.pop("allOf", None)
+        return
+    dict_branches = [branch for branch in branches if isinstance(branch, dict)]
+    if len(dict_branches) != len(branches):
+        return
+    structural_keys = ("properties", "required", "items", "anyOf", "oneOf")
+    if (
+        len(dict_branches) == 1
+        and "$ref" in dict_branches[0]
+        and not any(key in node for key in structural_keys)
+    ):
+        replacement = dict(dict_branches[0])
+        node.clear()
+        node.update(replacement)
+        return
+    resolved_branches: list[Dict[str, Any]] = []
+    for branch in dict_branches:
+        if "$ref" not in branch:
+            resolved_branches.append(branch)
+            continue
+        ref_value = branch.get("$ref")
+        target = defs_lookup.get(ref_value) if isinstance(ref_value, str) else None
+        if not isinstance(target, dict) or resolve_budget[0] <= 0:
+            return
+        resolve_budget[0] -= 1
+        inlined = copy.deepcopy(target)
+        inlined.update({key: value for key, value in branch.items() if key != "$ref"})
+        resolved_branches.append(inlined)
+    merged_props: Dict[str, Any] = {}
+    merged_required: list[str] = []
+    extras: Dict[str, Any] = {}
+    for branch in resolved_branches:
+        for key, value in branch.items():
+            if key == "properties" and isinstance(value, dict):
+                merged_props.update(value)
+            elif key == "required" and isinstance(value, list):
+                merged_required.extend(
+                    str(name) for name in value if str(name) not in merged_required
+                )
+            else:
+                extras[key] = value
+    node.pop("allOf", None)
+    for key, value in extras.items():
+        node.setdefault(key, value)
+    if merged_props:
+        existing = node.get("properties")
+        if isinstance(existing, dict):
+            combined_props = dict(merged_props)
+            combined_props.update(existing)
+            node["properties"] = combined_props
+        else:
+            node["properties"] = merged_props
+        node.setdefault("type", "object")
+    if merged_required:
+        existing_required = node.get("required")
+        combined = list(existing_required) if isinstance(existing_required, list) else []
+        combined.extend(name for name in merged_required if name not in combined)
+        node["required"] = combined
 
 @lru_cache(maxsize=_STRICT_SCHEMA_CACHE_SIZE)
 def _strictify_schema_cached(serialized_schema: str) -> str:
@@ -69,18 +167,50 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
         or (isinstance(root_t, list) and "object" in root_t)
         or "properties" in schema
     ):
+        hoisted: Dict[str, Any] = {}
+        for defs_key in ("$defs", "definitions"):
+            defs = schema.get(defs_key)
+            if isinstance(defs, dict):
+                hoisted[defs_key] = schema.pop(defs_key)
         schema = {
             "type": "object",
             "properties": {"value": schema},
             "required": ["value"],
             "additionalProperties": False,
+            **hoisted,
         }
+
+    defs_lookup: Dict[str, Any] = {}
+    for defs_key in ("$defs", "definitions"):
+        defs = schema.get(defs_key)
+        if isinstance(defs, dict):
+            for def_name, def_body in defs.items():
+                if isinstance(def_body, dict):
+                    defs_lookup[f"#/{defs_key}/{def_name}"] = def_body
+    resolve_budget = [64]
 
     stack = [schema]
     while stack:
         node = stack.pop()
         if not isinstance(node, dict):
             continue
+
+        for unsupported_key in _STRICT_UNSUPPORTED_KEYS:
+            node.pop(unsupported_key, None)
+
+        if "$ref" in node:
+            continue
+
+        _inline_allof(node, defs_lookup, resolve_budget)
+        if "$ref" in node:
+            continue
+
+        for defs_key in ("$defs", "definitions"):
+            defs = node.get(defs_key)
+            if isinstance(defs, dict):
+                for definition in defs.values():
+                    if isinstance(definition, dict):
+                        stack.append(definition)
 
         t = node.get("type")
         is_object = ("properties" in node) or (t == "object") or (
@@ -108,6 +238,11 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
 
             for name, p in props.items():
                 if not isinstance(p, dict):
+                    continue
+
+                for unsupported_key in _STRICT_UNSUPPORTED_KEYS:
+                    p.pop(unsupported_key, None)
+                if "$ref" in p:
                     continue
 
                 # Ensure every property schema has a type key (strict mode requirement)
@@ -154,7 +289,12 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
         items = node.get("items")
         if isinstance(items, dict):
             # Ensure items schema has a type key
-            if "type" not in items and "properties" not in items and "items" not in items:
+            if (
+                "type" not in items
+                and "properties" not in items
+                and "items" not in items
+                and "$ref" not in items
+            ):
                 items["type"] = "object"
                 LOGGER.debug("Added default type 'object' to empty items schema")
             stack.append(items)
@@ -169,7 +309,12 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
                 for br in branches:
                     if isinstance(br, dict):
                         # Ensure branch schema has a type key
-                        if "type" not in br and "properties" not in br and "items" not in br:
+                        if (
+                            "type" not in br
+                            and "properties" not in br
+                            and "items" not in br
+                            and "$ref" not in br
+                        ):
                             br["type"] = "object"
                             LOGGER.debug("Added default type 'object' to empty %s branch", key)
                         stack.append(br)
