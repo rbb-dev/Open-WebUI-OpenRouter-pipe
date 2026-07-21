@@ -28,6 +28,19 @@ from ..tools.tool_executor import _ToolExecutionContext
 _fusion_engine_log = logging.getLogger(__name__)
 
 
+def _render_captured_files(files: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for entry in files:
+        url = entry.get("url")
+        if not isinstance(url, str) or not url or url.startswith("data:"):
+            continue
+        if entry.get("type") == "image":
+            lines.append(f"![tool image]({url})")
+        else:
+            lines.append(f"[tool file]({url})")
+    return "\n".join(lines)
+
+
 def _member_failure_reason(exc: Exception) -> str:
     if isinstance(exc, OpenRouterAPIError):
         return "the model call failed"
@@ -159,6 +172,16 @@ async def run_fusion_member(
     outer_ctx = pipe._TOOL_CONTEXT.get()
     ctx = None
     token = None
+    captured_files: list[dict[str, Any]] = []
+
+    async def _files_only_emitter(event: Any) -> None:
+        if not isinstance(event, dict) or event.get("type") != "files":
+            return
+        data = event.get("data")
+        files = data.get("files") if isinstance(data, dict) else None
+        if isinstance(files, list):
+            captured_files.extend(f for f in files if isinstance(f, dict))
+
     if outer_ctx is not None:
         ctx = _ToolExecutionContext(
             queue=asyncio.Queue(maxsize=50),
@@ -168,7 +191,7 @@ async def run_fusion_member(
             batch_timeout=outer_ctx.batch_timeout,
             idle_timeout=outer_ctx.idle_timeout,
             user_id=invocation.user_id,
-            event_emitter=None,
+            event_emitter=_files_only_emitter,
             batch_cap=outer_ctx.batch_cap,
             request=outer_ctx.request,
             user=outer_ctx.user,
@@ -206,6 +229,12 @@ async def run_fusion_member(
             outcome_sink=sink,
         )
         content = result if isinstance(result, str) else ""
+        if captured_files:
+            rendered_files = _render_captured_files(captured_files)
+            if rendered_files:
+                content = (
+                    f"{content}\n\n{rendered_files}" if content.strip() else rendered_files
+                )
         if "error_occurred" not in sink:
             preview = content.strip().replace("\n", " ")[:160]
             return FusionMemberResult(

@@ -3524,6 +3524,82 @@ class TestToolExecution:
         finally:
             await pipe.close()
 
+    @pytest.mark.asyncio
+    async def test_tool_result_fallback_extracts_mcp_text_blocks(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            blocks = [
+                {"type": "text", "text": "hello"},
+                {"type": "image", "data": "zzz"},
+                {"type": "text", "text": "world"},
+            ]
+
+            async def mcp_tool(**kwargs):
+                return blocks
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "srv_tool", "call_id": "c1"}
+            item.tool_cfg = {"type": "mcp", "callable": mcp_tool}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "u-fallback"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            executor = pipe._ensure_tool_executor()
+            executor._process_tool_result_safe = AsyncMock(side_effect=RuntimeError("boom"))
+
+            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "completed"
+            assert text == "hello\nworld"
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_tool_result_fallback_extracts_object_content(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            class _Block:
+                def __init__(self, text):
+                    self.type = "text"
+                    self.text = text
+
+            class _Result:
+                content = [_Block("alpha"), _Block("beta")]
+
+            async def mcp_tool(**kwargs):
+                return _Result()
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "srv_obj", "call_id": "c1"}
+            item.tool_cfg = {"type": "mcp", "callable": mcp_tool}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "u-fallback-obj"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            executor = pipe._ensure_tool_executor()
+            executor._process_tool_result_safe = AsyncMock(side_effect=RuntimeError("boom"))
+
+            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "completed"
+            assert text == "alpha\nbeta"
+        finally:
+            await pipe.close()
+
 
 # =============================================================================
 # GET USER BY ID TESTS
@@ -10159,3 +10235,11 @@ async def test_pipes_video_catalog_uses_ttl_cache_seconds():
     finally:
         await pipe.close()
 
+
+
+def test_fallback_tool_text_passthrough_and_none():
+    from open_webui_openrouter_pipe.pipe import _fallback_tool_text
+
+    assert _fallback_tool_text("plain") == "plain"
+    assert _fallback_tool_text(None) == ""
+    assert _fallback_tool_text(123) == "123"

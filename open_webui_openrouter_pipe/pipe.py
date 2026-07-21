@@ -157,6 +157,27 @@ class _LifecycleRegistry:
             return ref() if ref else None
 
 
+def _fallback_tool_text(raw_result: Any) -> str:
+    candidate: Any = raw_result
+    if not isinstance(candidate, (str, list)):
+        content_attr = getattr(raw_result, "content", None)
+        if content_attr is not None:
+            candidate = content_attr
+    if isinstance(candidate, list):
+        texts: list[str] = []
+        for block in candidate:
+            if isinstance(block, dict):
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    texts.append(block["text"])
+            elif getattr(block, "type", None) == "text":
+                block_text = getattr(block, "text", None)
+                if isinstance(block_text, str):
+                    texts.append(block_text)
+        if texts:
+            return "\n".join(texts)
+    return "" if raw_result is None else str(raw_result)
+
+
 def _get_lifecycle_registry():
     reg = sys.modules.get(_LIFECYCLE_REGISTRY_KEY)
     if reg is None:
@@ -2854,7 +2875,7 @@ class Pipe:
             except Exception as proc_exc:
                 # Safety net - never crash, just return stringified result
                 self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc)
-                return ("" if raw_result is None else str(raw_result)), [], []
+                return _fallback_tool_text(raw_result), [], []
 
         try:
             timing_mark(f"tool_run:{tool_name}:executing")

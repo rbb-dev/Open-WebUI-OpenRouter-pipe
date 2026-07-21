@@ -952,8 +952,15 @@ class RequestOrchestrator:
                     k: v for k, v in metadata_tools_raw.items() if isinstance(k, str) and isinstance(v, dict)
                 }
                 if metadata_tools:
+                    exposed_map = __metadata__.get("_pipe_exposed_to_origin")
+                    known_origins: set[str] = set()
+                    if isinstance(exposed_map, dict):
+                        for exposed_name in owui_registry:
+                            origin = exposed_map.get(exposed_name, exposed_name)
+                            if isinstance(origin, str):
+                                known_origins.add(origin)
                     for name, tool_cfg in metadata_tools.items():
-                        if name not in owui_registry:
+                        if name not in owui_registry and name not in known_origins:
                             owui_registry[name] = tool_cfg
 
         tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(

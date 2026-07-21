@@ -516,6 +516,84 @@ class TestToolRenameLogging:
                     assert result == "Test response"
 
 
+class TestInnerToolOriginDedup:
+
+    async def _run_merge(self, orchestrator, pipe, mock_valves, mock_session, base_request_body, tools, metadata):
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="ok")
+        with patch("open_webui_openrouter_pipe.requests.orchestrator._build_collision_safe_tool_specs_and_registry") as mock_build:
+            mock_build.return_value = ([], {}, {})
+            with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
+                mock_family.base_model.return_value = "openai/gpt-4o"
+                mock_family.supports.return_value = True
+                mock_family.capabilities.return_value = {}
+                mock_family.max_completion_tokens.return_value = None
+                with patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as mock_registry:
+                    mock_registry.api_model_id.return_value = "openai/gpt-4o"
+                    await orchestrator.process_request(
+                        body=base_request_body,
+                        __user__={"id": "user1"},
+                        __request__=None,
+                        __event_emitter__=None,
+                        __event_call__=None,
+                        __metadata__=metadata,
+                        __tools__=tools,
+                        __task__=None,
+                        __task_body__=None,
+                        valves=mock_valves,
+                        session=mock_session,
+                        openwebui_model_id="openai/gpt-4o",
+                        pipe_identifier="test-pipe",
+                        allowlist_norm_ids={"openai/gpt-4o"},
+                        enforced_norm_ids=set(),
+                        catalog_norm_ids=set(),
+                        features={},
+                    )
+        return mock_build.call_args.kwargs.get("owui_registry")
+
+    @pytest.mark.asyncio
+    async def test_inner_metadata_tool_deduped_by_origin(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        orchestrator, pipe = orchestrator_and_pipe
+        registry = await self._run_merge(
+            orchestrator, pipe, mock_valves, mock_session, base_request_body,
+            tools={"search_2": {"spec": {"name": "search_2"}}},
+            metadata={
+                "tools": {"search": {"spec": {"name": "search"}}},
+                "_pipe_exposed_to_origin": {"search_2": "search"},
+            },
+        )
+        assert set(registry or {}) == {"search_2"}
+
+    @pytest.mark.asyncio
+    async def test_outer_metadata_tools_still_merge(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        orchestrator, pipe = orchestrator_and_pipe
+        registry = await self._run_merge(
+            orchestrator, pipe, mock_valves, mock_session, base_request_body,
+            tools={"alpha": {"spec": {"name": "alpha"}}},
+            metadata={"tools": {"beta": {"spec": {"name": "beta"}}}},
+        )
+        assert set(registry or {}) == {"alpha", "beta"}
+
+    @pytest.mark.asyncio
+    async def test_metadata_tool_with_new_name_merges_when_map_present(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        orchestrator, pipe = orchestrator_and_pipe
+        registry = await self._run_merge(
+            orchestrator, pipe, mock_valves, mock_session, base_request_body,
+            tools={"search_2": {"spec": {"name": "search_2"}}},
+            metadata={
+                "tools": {
+                    "search": {"spec": {"name": "search"}},
+                    "weather": {"spec": {"name": "weather"}},
+                },
+                "_pipe_exposed_to_origin": {"search_2": "search"},
+            },
+        )
+        assert set(registry or {}) == {"search_2", "weather"}
+
+
 # -----------------------------------------------------------------------------
 # Test OpenRouterAPIError handling and retry logic (lines 692-771)
 # -----------------------------------------------------------------------------

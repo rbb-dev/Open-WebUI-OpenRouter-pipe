@@ -437,6 +437,84 @@ class TestMemberFailureReasons:
         assert "socket" not in (result.fail_reason or "")
 
 
+class TestMemberFileCapture:
+    def _outer_ctx(self):
+        import asyncio as _asyncio
+        from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+        return _ToolExecutionContext(
+            queue=_asyncio.Queue(maxsize=10),
+            per_request_semaphore=_asyncio.Semaphore(2),
+            global_semaphore=None,
+            timeout=5.0,
+            batch_timeout=5.0,
+            idle_timeout=None,
+            user_id="u1",
+            event_emitter=None,
+            batch_cap=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_mcp_files_render_into_member_content(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                ctx = pipe._TOOL_CONTEXT.get()
+                await ctx.event_emitter({"type": "files", "data": {"files": [
+                    {"type": "image", "url": "http://x/img.png"},
+                    {"type": "file", "url": "http://x/doc.pdf"},
+                ]}})
+                await ctx.event_emitter({"type": "status", "data": {"description": "ignored-status"}})
+                await ctx.event_emitter({"type": "message", "data": {"files": [
+                    {"type": "image", "url": "http://x/leak.png"},
+                ]}})
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return "answer text"
+
+        token = pipe._TOOL_CONTEXT.set(self._outer_ctx())
+        try:
+            inv = _invocation(_Orch(), pipe, Valves())
+            result = await run_fusion_member(
+                pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+                system_prompt="P", max_tool_calls=4, live_queue=None,
+                bypass_restrictions=True, server_tools_config=None,
+            )
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+        assert result.failed is False
+        assert "answer text" in result.content
+        assert "![tool image](http://x/img.png)" in result.content
+        assert "[tool file](http://x/doc.pdf)" in result.content
+        assert "ignored-status" not in result.content
+
+    @pytest.mark.asyncio
+    async def test_files_only_member_not_marked_empty(self, orchestrator_and_pipe):
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                ctx = pipe._TOOL_CONTEXT.get()
+                await ctx.event_emitter({"type": "files", "data": {"files": [
+                    {"type": "image", "url": "http://x/only.png"},
+                ]}})
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return ""
+
+        token = pipe._TOOL_CONTEXT.set(self._outer_ctx())
+        try:
+            inv = _invocation(_Orch(), pipe, Valves())
+            result = await run_fusion_member(
+                pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+                system_prompt="P", max_tool_calls=4, live_queue=None,
+                bypass_restrictions=True, server_tools_config=None,
+            )
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+        assert result.failed is False
+        assert "![tool image](http://x/only.png)" in result.content
+
+
 class TestInnerMessageCopies:
     @pytest.mark.asyncio
     async def test_member_body_shares_content_objects(self, orchestrator_and_pipe):
@@ -851,3 +929,93 @@ class TestStageLiveFeedbackEvents:
         assert "response.fusion_call.synthesis.in_progress" not in types
         assert "response.fusion_call.synthesis.reasoning.delta" not in types
         assert types[-1] == "response.completed"
+
+
+class TestMemberFileCaptureRobustness:
+    @pytest.mark.asyncio
+    async def test_malformed_files_events_do_not_crash_or_capture(self, orchestrator_and_pipe):
+        import asyncio as _asyncio
+        from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                ctx = pipe._TOOL_CONTEXT.get()
+                await ctx.event_emitter({"type": "files"})
+                await ctx.event_emitter({"type": "files", "data": "x"})
+                await ctx.event_emitter({"type": "files", "data": {"files": "x"}})
+                await ctx.event_emitter({"type": "files", "data": {"files": [
+                    {"type": "image", "url": "http://x/ok.png"},
+                    "not-a-dict",
+                    {"type": "image"},
+                ]}})
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return "body"
+
+        outer_ctx = _ToolExecutionContext(
+            queue=_asyncio.Queue(maxsize=10),
+            per_request_semaphore=_asyncio.Semaphore(2),
+            global_semaphore=None,
+            timeout=5.0,
+            batch_timeout=5.0,
+            idle_timeout=None,
+            user_id="u1",
+            event_emitter=None,
+            batch_cap=1,
+        )
+        token = pipe._TOOL_CONTEXT.set(outer_ctx)
+        try:
+            inv = _invocation(_Orch(), pipe, Valves())
+            result = await run_fusion_member(
+                pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+                system_prompt="P", max_tool_calls=4, live_queue=None,
+                bypass_restrictions=True, server_tools_config=None,
+            )
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+        assert result.failed is False
+        assert "![tool image](http://x/ok.png)" in result.content
+        assert result.content.count("](") == 1
+
+    @pytest.mark.asyncio
+    async def test_data_urls_excluded_from_member_content(self, orchestrator_and_pipe):
+        import asyncio as _asyncio
+        from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+
+        _orchestrator, pipe = orchestrator_and_pipe
+
+        class _Orch:
+            async def process_request(self, body, *args, **kwargs):
+                ctx = pipe._TOOL_CONTEXT.get()
+                await ctx.event_emitter({"type": "files", "data": {"files": [
+                    {"type": "image", "url": "data:image/png;base64," + "A" * 5000},
+                    {"type": "image", "url": "/api/v1/files/abc/content"},
+                ]}})
+                kwargs["outcome_sink"]["error_occurred"] = False
+                return "answer"
+
+        outer_ctx = _ToolExecutionContext(
+            queue=_asyncio.Queue(maxsize=10),
+            per_request_semaphore=_asyncio.Semaphore(2),
+            global_semaphore=None,
+            timeout=5.0,
+            batch_timeout=5.0,
+            idle_timeout=None,
+            user_id="u1",
+            event_emitter=None,
+            batch_cap=1,
+        )
+        token = pipe._TOOL_CONTEXT.set(outer_ctx)
+        try:
+            inv = _invocation(_Orch(), pipe, Valves())
+            result = await run_fusion_member(
+                pipe, inv, model="m/x", messages=[{"role": "user", "content": "q"}],
+                system_prompt="P", max_tool_calls=4, live_queue=None,
+                bypass_restrictions=True, server_tools_config=None,
+            )
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+        assert result.failed is False
+        assert "data:image" not in result.content
+        assert "![tool image](/api/v1/files/abc/content)" in result.content
