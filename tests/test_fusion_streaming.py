@@ -278,6 +278,104 @@ async def test_fusion_final_answer_streams_over_socket_and_persists_collapsed(mo
     )
 
 
+def _native_message_items(emitted):
+    added = [
+        e for e in emitted
+        if e.get("type") == "response.output_item.added"
+        and (e.get("item") or {}).get("type") == "message"
+    ]
+    done = [
+        e for e in emitted
+        if e.get("type") == "response.output_item.done"
+        and (e.get("item") or {}).get("type") == "message"
+    ]
+    return added, done
+
+
+@pytest.mark.asyncio
+async def test_fusion_emits_native_message_item_with_clean_answer(monkeypatch, pipe_instance_async):
+    result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)
+
+    added, done = _native_message_items(emitted)
+    assert len(added) == 1
+    assert len(done) == 1
+    item = added[0]["item"]
+    assert item["role"] == "assistant"
+    assert item["status"] == "completed"
+    assert item["id"].startswith("msg-")
+    assert item["content"] == [{"type": "output_text", "text": "The answer is 42."}]
+    assert "<details" not in item["content"][0]["text"]
+    assert done[0]["item"] == item
+
+    assert (result or "").startswith("<details")
+    assert "The answer is 42." in (result or "")
+
+    final_frames = [
+        e for e in emitted
+        if e.get("type") == "chat:completion" and (e.get("data") or {}).get("done") is True
+    ]
+    assert final_frames
+    assert final_frames[-1]["data"].get("content") is None
+
+
+@pytest.mark.asyncio
+async def test_fusion_disabled_emits_no_native_message_item(monkeypatch, pipe_instance_async):
+    events = [
+        {"type": "response.created", "response": {"model": "anthropic/claude"}},
+        {"type": "response.output_text.delta", "output_index": 0, "delta": "plain "},
+        {"type": "response.output_text.done", "output_index": 0, "text": "plain answer"},
+        {"type": "response.completed",
+         "response": {"output": [], "usage": {"total_tokens": 5}, "model": "anthropic/claude"}},
+    ]
+    result, emitted = await _run(
+        pipe_instance_async, monkeypatch, fusion_live_enabled=False, events=events,
+    )
+    added, done = _native_message_items(emitted)
+    assert added == []
+    assert done == []
+    assert "plain" in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_fusion_incomplete_run_emits_no_native_message_item(monkeypatch, pipe_instance_async):
+    events = [e for e in FUSION_EVENTS if e.get("output_index") != 1]
+    result, emitted = await _run(
+        pipe_instance_async, monkeypatch, fusion_live_enabled=True, events=events,
+    )
+    added, done = _native_message_items(emitted)
+    assert added == []
+    assert done == []
+    assert "<details" not in (result or "")
+
+
+@pytest.mark.asyncio
+async def test_fusion_errored_run_emits_no_native_message_item(monkeypatch, pipe_instance_async):
+    events = [e for e in FUSION_EVENTS if e.get("type") != "response.completed"]
+
+    def _raising_stream(evts):
+        async def raising_stream(self, session, request_body, **_kwargs):
+            for event in evts:
+                yield event
+            raise RuntimeError("stream exploded")
+        return raising_stream
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _raising_stream(events))
+    body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe_instance_async._streaming_handler._run_streaming_loop(
+        body, pipe_instance_async.valves, emitter, metadata={}, tools={},
+        session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
+    )
+    added, done = _native_message_items(emitted)
+    assert added == []
+    assert done == []
+    assert "<details" not in (result or "")
+
+
 @pytest.mark.asyncio
 async def test_fusion_missing_analysis_synthesizes_completed_in_persisted_snapshot(monkeypatch, pipe_instance_async):
     import json

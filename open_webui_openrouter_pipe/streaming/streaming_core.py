@@ -3098,6 +3098,28 @@ class StreamingHandler:
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
                 and assistant_message and not error_occurred and not was_cancelled
             ):
+                if event_emitter:
+                    fusion_answer_item = {
+                        "type": "message",
+                        "id": f"msg-{uuid.uuid4().hex}",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": assistant_message}],
+                    }
+                    try:
+                        await event_emitter({
+                            "type": "response.output_item.added",
+                            "item": fusion_answer_item,
+                        })
+                        await event_emitter({
+                            "type": "response.output_item.done",
+                            "item": fusion_answer_item,
+                        })
+                        emitted_response_output_items = True
+                    except Exception:
+                        self.logger.debug(
+                            "Failed to emit fusion answer output item", exc_info=True
+                        )
                 assistant_message = (
                     '<details type="fusion_answer" done="true">\n'
                     '<summary>Final answer</summary>\n\n'
