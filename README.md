@@ -13,7 +13,7 @@ GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, 
   <img align="top" width="49%" alt="generation" src="https://github.com/user-attachments/assets/27681655-c494-408d-bc1a-b09e3d09f4c7" />
 </p>
 <p align="center">
-  <img width="49%" alt="Pipe Dashboard walkthrough" src="docs/images/dashboard_video.gif" />
+  <img alt="Pipe Dashboard walkthrough" src="docs/images/dashboard_video.gif" />
 </p>
 
 
