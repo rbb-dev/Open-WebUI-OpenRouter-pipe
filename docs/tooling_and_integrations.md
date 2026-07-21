@@ -67,8 +67,12 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
    - When `TOOL_EXECUTION_MODE="Pipeline"` and `ENABLE_STRICT_TOOL_CALLING=true`, each tool schema is strictified:
      - Object nodes get `additionalProperties: false`.
      - All declared properties are marked required; properties that were not explicitly required become nullable (their type gains `"null"`).
+     - `$ref` and `$defs`/`definitions` are preserved: referenced definitions are strictified in place, `$ref` nodes pass through untouched, and single-`$ref` `allOf` wrappers are unwrapped. Multi-branch `allOf` is merged (local `$ref` branches are resolved from the schema's own definitions); unresolvable references leave the `allOf` untouched.
+     - Keywords OpenAI strict mode rejects are stripped (`default`, `$schema`, `pattern`, length/numeric/array constraint keywords, `format`).
      - Missing property `type` values are inferred defensively (object/array) so schemas remain valid.
+     - If a schema cannot be serialized for strictification, it is sent unmodified (with a warning logged).
      - A small LRU cache (size 128) avoids repeated strictification work for identical schemas.
+     - The strictified copy is only what is advertised to the model; the executor keeps the tool's original schema, so argument validation (such as the empty-arguments guard) uses the tool's own `required` list.
 
 2. **Open WebUI Direct Tool Servers** (`__metadata__["tool_servers"]`)
    - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
@@ -180,10 +184,11 @@ Batching behavior:
 - If tool arguments include any of: `depends_on`, `_depends_on`, `sequential`, `no_batch`, the call is treated as non-batchable.
 - Batching does not require identical arguments; it is a concurrency optimization, not a deduplication mechanism.
 
-Timeouts and retries:
+Timeouts:
 
 - Each tool call is run with a per-call timeout (`TOOL_TIMEOUT_SECONDS`).
-- Tool calls are retried up to 2 attempts (per call) when they raise exceptions.
+- Tool calls are executed exactly once — a raising tool is never automatically retried, because tools may have side effects (an MCP tool that sends an email must not fire twice). The failure is reported back to the model, which can decide whether to call again.
+- An MCP tool whose client connection was already closed by Open WebUI reports "no longer available in this session" instead of a raw error, and does not count against the tool's breaker.
 - Tool batches are guarded by a batch timeout (derived from `TOOL_BATCH_TIMEOUT_SECONDS` and the per-call timeout).
 - If the tool queue stays idle for `TOOL_IDLE_TIMEOUT_SECONDS`, the worker loop cancels pending work and surfaces an error.
 
@@ -194,7 +199,7 @@ Timeouts and retries:
 The pipe applies a shared breaker window (`BREAKER_MAX_FAILURES` within `BREAKER_WINDOW_SECONDS`) across different subsystems:
 
 - **Per-user request breaker:** prevents repeated failing requests from thrashing the system.
-- **Per-user, per-tool-type breaker:** temporarily disables executing tool calls of a given *type* (for example, `function`) for a user after repeated tool failures.
+- **Per-user, per-tool breaker:** temporarily disables executing a specific tool (keyed by tool type and tool name) for a user after repeated failures of that tool. Other tools of the same type keep working, and one flaky MCP tool no longer disables a whole server's tools.
 - **Per-user DB breaker:** can temporarily suppress persistence-related work after repeated database failures.
 
 When a tool breaker is open, tool calls are skipped and a status message is emitted to the UI (best effort).

@@ -141,9 +141,13 @@ def _strictify_schema(schema):
     if not isinstance(schema, dict):
         return {}
 
-    canonical = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    cached = _strictify_schema_cached(canonical)
-    return json.loads(cached)
+    try:
+        canonical = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        cached = _strictify_schema_cached(canonical)
+        return json.loads(cached)
+    except Exception:
+        LOGGER.warning("Failed to strictify tool schema; sending it unmodified", exc_info=True)
+        return schema
 
 
 def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:

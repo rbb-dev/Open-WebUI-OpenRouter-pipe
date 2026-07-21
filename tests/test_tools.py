@@ -6853,3 +6853,86 @@ class TestToolExecutionContextFields:
         assert context.request is None
         assert context.user is None
         assert context.metadata is None
+
+
+def test_strictify_returns_original_on_unserializable_schema():
+    sentinel = object()
+    schema = {"type": "object", "properties": {"cb": {"type": "string", "meta": sentinel}}}
+    out = _strictify_schema(schema)
+    assert out is schema
+
+
+def test_exec_registry_spec_keeps_prestrictify_required():
+    async def fn(**kwargs):
+        return "x"
+
+    registry = {
+        "mytool": {
+            "spec": {
+                "name": "mytool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+                    "required": ["a"],
+                },
+            },
+            "callable": fn,
+        }
+    }
+    tools, exec_reg, _ = _build_collision_safe_tool_specs_and_registry(
+        request_tool_specs=None,
+        owui_registry=registry,
+        direct_registry=None,
+        builtin_registry=None,
+        extra_tools=None,
+        strictify=True,
+        owui_tool_passthrough=False,
+        logger=None,
+    )
+    wire = next(t for t in tools if t.get("name") == "mytool")
+    assert sorted(wire["parameters"]["required"]) == ["a", "b"]
+    assert exec_reg["mytool"]["spec"]["parameters"]["required"] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_empty_string_args_coerced_for_optional_only_tool():
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-key")
+        loop = asyncio.get_running_loop()
+        context = create_tool_context(loop)
+        executor = pipe._ensure_tool_executor()
+        context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
+        token = pipe._TOOL_CONTEXT.set(context)
+        try:
+            seen = {}
+
+            async def optional_tool(**kwargs):
+                seen["args"] = kwargs
+                return "ran"
+
+            tools = {
+                "optional_tool": {
+                    "type": "function",
+                    "spec": {
+                        "name": "optional_tool",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}},
+                            "required": [],
+                        },
+                    },
+                    "callable": optional_tool,
+                }
+            }
+            calls = [{"type": "function_call", "call_id": "c1", "name": "optional_tool", "arguments": ""}]
+            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+
+            assert len(outputs) == 1
+            assert "ran" in outputs[0]["output"]
+            assert "Missing tool arguments" not in outputs[0]["output"]
+            assert seen["args"] == {}
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+    finally:
+        await pipe.close()

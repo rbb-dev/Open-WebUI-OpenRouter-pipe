@@ -1788,3 +1788,58 @@ def test_try_acquire_lock_sync_payload_serialization(pipe_instance):
             # Payload should be a JSON string, not a dict
             assert isinstance(call_kwargs["payload"], str)
             assert "session_log_lock" in call_kwargs["payload"]
+
+
+@pytest.mark.asyncio
+async def test_db_persist_drop_logs_error_with_types(pipe_instance, monkeypatch, caplog):
+    import logging as _logging
+
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    def _explode(_rows):
+        raise RuntimeError("serialize failed")
+
+    monkeypatch.setattr(store, "_prepare_rows_for_storage", _explode)
+    rows = [{"item_type": "function_call", "chat_id": "c", "payload": {}}]
+    with caplog.at_level(_logging.ERROR):
+        result = await store._db_persist(rows)
+    assert result == []
+    records = [
+        r for r in caplog.records
+        if r.levelno >= _logging.ERROR and "Artifact persist failed" in r.getMessage()
+    ]
+    assert records
+    assert "function_call" in records[0].getMessage()
+
+
+def test_try_acquire_lock_sync_unserializable_payload_returns_false(pipe_instance):
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._item_model = Mock()
+    store._session_factory = Mock()
+    store._engine = Mock()
+    result = store._try_acquire_lock_sync({"id": "L1", "payload": object()})
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_db_persist_drop_still_records_breaker_failure(pipe_instance, monkeypatch):
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    def _explode(_rows):
+        raise RuntimeError("serialize failed")
+
+    monkeypatch.setattr(store, "_prepare_rows_for_storage", _explode)
+    recorded = Mock()
+    monkeypatch.setattr(store, "_record_db_failure", recorded)
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    tok = SessionLogger.user_id.set("u9")
+    try:
+        result = await store._db_persist([{"item_type": "message", "payload": {}}])
+    finally:
+        SessionLogger.user_id.reset(tok)
+    assert result == []
+    recorded.assert_called_once_with("u9")

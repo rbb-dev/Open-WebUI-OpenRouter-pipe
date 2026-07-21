@@ -967,7 +967,10 @@ class ArtifactStore:
 
         payload = lock_row.get("payload")
         if payload is not None and not isinstance(payload, str):
-            payload = json.dumps(payload)
+            try:
+                payload = json.dumps(payload)
+            except Exception:
+                return False
 
         values = {
             "id": lock_id,
@@ -1045,7 +1048,13 @@ class ArtifactStore:
             return await self._db_persist_direct(rows, user_id=user_id)
         except Exception as exc:
             self._record_db_failure(user_id)
-            self.logger.warning("Artifact persist failed: %s", exc)
+            self.logger.error(
+                "Artifact persist failed, dropping %d row(s) (types=%s): %s",
+                len(rows),
+                sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
+                exc,
+                exc_info=True,
+            )
             return []
 
     @timed

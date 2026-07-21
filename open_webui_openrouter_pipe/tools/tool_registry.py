@@ -371,8 +371,6 @@ def _build_collision_safe_tool_specs_and_registry(
         if isinstance(cfg_spec, dict):
             updated_spec = dict(cfg_spec)
             updated_spec["name"] = origin_name
-            if isinstance(spec.get("parameters"), dict):
-                updated_spec["parameters"] = spec["parameters"]
             cfg["spec"] = updated_spec
         exec_registry[exposed_name] = cfg
 

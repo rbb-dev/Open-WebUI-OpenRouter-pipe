@@ -40,7 +40,7 @@ Breaker scopes include:
 
 - **Per-user request breaker:** blocks new requests for a user when repeated failures occur within the breaker window.
 - **Per-user persistence breaker:** skips database persistence work for a user when repeated DB failures occur (requests can continue with reduced durability).
-- **Per-user/tool-type breaker:** skips tool execution for specific tool types when repeated tool failures occur.
+- **Per-user, per-tool breaker:** skips execution of a specific tool (keyed by tool type and tool name) when that tool fails repeatedly; other tools keep working.
 
 Breakers are self-healing: once failures age out of the window (or a successful operation occurs where applicable), normal operation resumes without operator intervention.
 
