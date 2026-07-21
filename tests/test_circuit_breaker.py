@@ -180,6 +180,27 @@ class TestCircuitBreakerToolBreaker:
         assert breaker.tool_allows("user-1", "") is True
         assert breaker.tool_allows("user-1", None) is True  # type: ignore[arg-type]
 
+    def test_tool_breaker_isolates_by_tool_name(self) -> None:
+        breaker = CircuitBreaker(threshold=2, window_seconds=60)
+        user_id = "user-1"
+        for _ in range(3):
+            breaker.record_tool_failure(user_id, "mcp", "srv_a_search")
+        assert breaker.tool_allows(user_id, "mcp", "srv_a_search") is False
+        assert breaker.tool_allows(user_id, "mcp", "srv_b_lookup") is True
+        assert breaker.tool_allows(user_id, "function", "srv_a_search") is True
+        breaker.reset_tool(user_id, "mcp", "srv_a_search")
+        assert breaker.tool_allows(user_id, "mcp", "srv_a_search") is True
+
+    def test_reset_tool_preserves_other_tool_window(self) -> None:
+        breaker = CircuitBreaker(threshold=2, window_seconds=60)
+        user_id = "user-1"
+        for _ in range(3):
+            breaker.record_tool_failure(user_id, "mcp", "srv_a_search")
+            breaker.record_tool_failure(user_id, "mcp", "srv_b_lookup")
+        breaker.reset_tool(user_id, "mcp", "srv_a_search")
+        assert breaker.tool_allows(user_id, "mcp", "srv_a_search") is True
+        assert breaker.tool_allows(user_id, "mcp", "srv_b_lookup") is False
+
     def test_tool_allows_evicts_old_failures(self) -> None:
         """Tool allows should evict failures outside the time window (line 181)."""
         breaker = CircuitBreaker(threshold=2, window_seconds=10)

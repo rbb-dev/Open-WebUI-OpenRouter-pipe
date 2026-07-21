@@ -3334,7 +3334,7 @@ class TestToolExecution:
             user_id = "test_user_tool_blocked"
             tool_type = "blocked_tool"
             for _ in range(pipe._circuit_breaker.threshold + 2):
-                pipe._circuit_breaker.record_tool_failure(user_id, tool_type)
+                pipe._circuit_breaker.record_tool_failure(user_id, tool_type, "blocked_tool_func")
 
             # Create mock item
             item = Mock(spec=_QueuedToolCall)
@@ -3356,6 +3356,171 @@ class TestToolExecution:
             assert "temporarily disabled" in text.lower()
             assert files == []
             assert embeds == []
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_raising_tool_callable_invoked_once(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            calls = {"count": 0}
+
+            async def boom(**kwargs):
+                calls["count"] += 1
+                raise ValueError("tool exploded")
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "boomtool", "call_id": "call_1"}
+            item.tool_cfg = {"type": "function", "callable": boom}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "test_user_single_shot"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "failed"
+            assert calls["count"] == 1
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_mcp_disconnect_not_recorded_against_breaker(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            async def gone(**kwargs):
+                raise RuntimeError("MCP client is not connected.")
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "srv_lookup", "call_id": "call_1"}
+            item.tool_cfg = {"type": "mcp", "callable": gone}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "test_user_mcp_gone"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "failed"
+            assert "no longer available" in text
+            assert "not connected" not in text
+            assert pipe._circuit_breaker.tool_allows(
+                context.user_id, "mcp", "srv_lookup"
+            ) is True
+            windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
+            assert all(len(window) == 0 for window in windows.values())
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_nameless_tool_failures_trip_gate(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            async def boom(**kwargs):
+                raise ValueError("bad tool")
+
+            def make_item():
+                item = Mock(spec=_QueuedToolCall)
+                item.call = {"call_id": "call_1"}
+                item.tool_cfg = {"type": "function", "callable": boom}
+                item.args = {}
+                return item
+
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "test_user_nameless"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            for _ in range(pipe._circuit_breaker.threshold):
+                status, _text, _files, _embeds = await pipe._invoke_tool_call(make_item(), context)
+                assert status == "failed"
+
+            windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
+            assert ("function", "unknown") not in windows
+            assert ("function", "None") not in windows
+            status, text, _files, _embeds = await pipe._invoke_tool_call(make_item(), context)
+            assert status == "skipped"
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_non_mcp_not_connected_still_records(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            async def down(**kwargs):
+                raise RuntimeError("db not connected")
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "db_query", "call_id": "call_1"}
+            item.tool_cfg = {"type": "function", "callable": down}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "test_user_db_down"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "failed"
+            assert "Tool error" in text
+            assert "no longer available" not in text
+            windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
+            assert len(windows.get(("function", "db_query"), [])) == 1
+        finally:
+            await pipe.close()
+
+    @pytest.mark.asyncio
+    async def test_mcp_raising_tool_invoked_once(self):
+        from open_webui_openrouter_pipe.pipe import _QueuedToolCall, _ToolExecutionContext
+
+        pipe = Pipe()
+        try:
+            calls = {"count": 0}
+
+            async def broken(**kwargs):
+                calls["count"] += 1
+                raise ValueError("mcp tool exploded")
+
+            item = Mock(spec=_QueuedToolCall)
+            item.call = {"name": "srv_thing", "call_id": "call_1"}
+            item.tool_cfg = {"type": "mcp", "callable": broken}
+            item.args = {}
+            context = Mock(spec=_ToolExecutionContext)
+            context.user_id = "test_user_mcp_raise"
+            context.fusion_inner = False
+            context.per_request_semaphore = asyncio.Semaphore(1)
+            context.global_semaphore = None
+            context.timeout = 5.0
+            context.event_emitter = None
+
+            status, _text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+
+            assert status == "failed"
+            assert calls["count"] == 1
+            windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
+            assert len(windows.get(("mcp", "srv_thing"), [])) == 1
         finally:
             await pipe.close()
 

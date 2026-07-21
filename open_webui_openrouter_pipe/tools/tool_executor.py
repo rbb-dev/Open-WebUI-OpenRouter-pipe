@@ -260,7 +260,9 @@ class ToolExecutor:
                 ))
                 continue
             tool_type = (tool_cfg.get("type") or "function").lower()
-            if not context.fusion_inner and not self._pipe._circuit_breaker.tool_allows(context.user_id, tool_type):
+            if not context.fusion_inner and not self._pipe._circuit_breaker.tool_allows(
+                context.user_id, tool_type, str(call.get("name") or "")
+            ):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
                 await _append_and_notify(call, self._build_tool_output(
                     call,

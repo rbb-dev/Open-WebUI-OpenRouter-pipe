@@ -132,7 +132,7 @@ async def test_execute_function_calls_with_context_circuit_breaker_skips():
         try:
             # Force circuit breaker to deny tool type
             for _ in range(20):
-                pipe._circuit_breaker.record_tool_failure("test-user", "function")
+                pipe._circuit_breaker.record_tool_failure("test-user", "function", "my_tool")
 
             async def my_tool(**kwargs):
                 return "result"
@@ -149,7 +149,7 @@ async def test_execute_function_calls_with_context_circuit_breaker_skips():
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
-            assert "skipped" in outputs[0]["output"].lower() or outputs[0]["status"] == "completed"
+            assert "skipped" in outputs[0]["output"].lower()
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -958,7 +958,7 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
         try:
             # Force circuit breaker to deny all tool types
             for _ in range(20):
-                pipe._circuit_breaker.record_tool_failure("breaker-test-user", "function")
+                pipe._circuit_breaker.record_tool_failure("breaker-test-user", "function", "my_tool")
 
             async def my_tool(**kwargs):
                 return "result"

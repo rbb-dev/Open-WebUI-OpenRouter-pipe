@@ -47,7 +47,7 @@ class CircuitBreaker:
         )
 
         # Per-user per-tool-type failure tracking
-        self._tool_breakers: dict[str, dict[str, deque[float]]] = defaultdict(
+        self._tool_breakers: dict[str, dict[tuple[str, str], deque[float]]] = defaultdict(
             lambda: defaultdict(lambda: deque(maxlen=threshold))
         )
 
@@ -66,11 +66,11 @@ class CircuitBreaker:
             breaker_records[user_id] = deque(window, maxlen=new_threshold)
         self._breaker_records = defaultdict(lambda: deque(maxlen=new_threshold), breaker_records)
 
-        tool_breakers: dict[str, dict[str, deque[float]]] = {}
+        tool_breakers: dict[str, dict[tuple[str, str], deque[float]]] = {}
         for user_id, tool_windows in self._tool_breakers.items():
             tool_breakers[user_id] = {
-                tool_type: deque(window, maxlen=new_threshold)
-                for tool_type, window in tool_windows.items()
+                tool_key: deque(window, maxlen=new_threshold)
+                for tool_key, window in tool_windows.items()
             }
         self._tool_breakers = defaultdict(
             lambda: defaultdict(lambda: deque(maxlen=new_threshold)),
@@ -138,7 +138,7 @@ class CircuitBreaker:
     # Tool Circuit Breaker (per-user per-tool-type)
     # --------------------------------------------------------------------------
 
-    def tool_allows(self, user_id: str, tool_type: str) -> bool:
+    def tool_allows(self, user_id: str, tool_type: str, tool_name: str = "") -> bool:
         """Check if a specific tool type is allowed for a user.
 
         Similar to allows() but tracks failures per tool type.
@@ -155,7 +155,7 @@ class CircuitBreaker:
         if not user_id or not tool_type:
             return True
 
-        window = self._tool_breakers[user_id][tool_type]
+        window = self._tool_breakers[user_id][(tool_type, tool_name)]
         now = time.time()
 
         # Evict old failures outside the window
@@ -164,7 +164,7 @@ class CircuitBreaker:
 
         return len(window) < self._threshold
 
-    def record_tool_failure(self, user_id: str, tool_type: str) -> None:
+    def record_tool_failure(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
         """Record a tool execution failure for a specific tool type.
 
         Args:
@@ -173,9 +173,9 @@ class CircuitBreaker:
         """
         if not user_id or not tool_type:
             return
-        self._tool_breakers[user_id][tool_type].append(time.time())
+        self._tool_breakers[user_id][(tool_type, tool_name)].append(time.time())
 
-    def reset_tool(self, user_id: str, tool_type: str) -> None:
+    def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
         """Clear failure records for a specific tool type.
 
         Args:
@@ -184,8 +184,9 @@ class CircuitBreaker:
         """
         if not user_id or not tool_type:
             return
-        if user_id in self._tool_breakers and tool_type in self._tool_breakers[user_id]:
-            self._tool_breakers[user_id][tool_type].clear()
+        tool_key = (tool_type, tool_name)
+        if user_id in self._tool_breakers and tool_key in self._tool_breakers[user_id]:
+            self._tool_breakers[user_id][tool_key].clear()
 
     # --------------------------------------------------------------------------
     # Auth Failure Tracking (class-level, shared across all instances)
