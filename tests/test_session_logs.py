@@ -1042,3 +1042,36 @@ def test_text_format_archive_still_contains_jsonl_and_is_mergeable(tmp_path, pip
     settings = (str(tmp_path), password, "lzma", None)
     events = pipe._session_log_manager.read_archive_events(out_path, settings)
     assert any(e.get("message") == "hello-text-mode" for e in events)
+
+
+def test_assembler_thread_exits_cleanly_when_pipe_ref_nulled(pipe_instance) -> None:
+    import threading
+    import time as _time
+
+    manager = pipe_instance._session_log_manager
+    manager.stop_workers()
+
+    unhandled: list[object] = []
+    original_hook = threading.excepthook
+    threading.excepthook = lambda args: unhandled.append(args)
+    try:
+        pipe_instance.valves = pipe_instance.valves.model_copy(update={
+            "SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS": 0.01,
+            "SESSION_LOG_ASSEMBLER_JITTER_SECONDS": 0,
+        })
+        manager._stop_event = None
+        manager.start_assembler_worker()
+        thread = manager._assembler_thread
+        assert thread is not None and thread.is_alive()
+
+        manager._pipe = None
+        deadline = _time.monotonic() + 5.0
+        while thread.is_alive() and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+        assert not thread.is_alive()
+        assert unhandled == []
+    finally:
+        threading.excepthook = original_hook
+        manager._pipe = pipe_instance
+        if manager._stop_event:
+            manager._stop_event.set()

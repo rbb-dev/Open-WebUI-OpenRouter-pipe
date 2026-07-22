@@ -298,7 +298,10 @@ class SessionLogManager:
                 return
 
             # Desynchronize workers so multiple UVicorn processes don't spike the DB at once.
-            jitter = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+            try:
+                jitter = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+            except Exception:
+                return
             if jitter:
                 initial = random.uniform(0.0, jitter)
                 if _wait(stop_event, initial):
@@ -311,8 +314,13 @@ class SessionLogManager:
                     self.run_assembler_once()
                 except Exception:
                     self.logger.debug("Session log assembler failed", exc_info=True)
-                interval = self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
-                extra = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+                if stop_event.is_set():
+                    break
+                try:
+                    interval = self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
+                    extra = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+                except Exception:
+                    break
                 delay = interval + (random.uniform(0.0, extra) if extra else 0.0)
                 if _wait(stop_event, delay):
                     break
