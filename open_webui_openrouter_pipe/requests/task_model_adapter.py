@@ -134,6 +134,7 @@ class TaskModelAdapter:
             valves=valves,
             owui_metadata=owui_metadata or {},
             owui_user_id=identifier_user_id,
+            owui_user=user_obj,
             logger=self.logger,
         )
         task_body = _filter_openrouter_request(task_body)

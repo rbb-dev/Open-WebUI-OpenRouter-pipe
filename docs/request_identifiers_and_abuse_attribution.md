@@ -53,7 +53,7 @@ Each identifier is gated by a valve. When enabled, the pipe sources IDs from Ope
 
 | Valve | OpenRouter top-level | OpenRouter metadata key | Source in Open WebUI context |
 |---|---|---|---|
-| `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]` |
+| `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]`, or `__user__["email"]` / `__user__["name"]` per `END_USER_ID_SOURCE` (metadata stays on the id) |
 | `SEND_SESSION_ID` | *(none)* | `session_id` | `__metadata__["session_id"]` |
 | `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` |
 | `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` |
@@ -166,6 +166,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 
 ## Operational guidance
 
-* `SEND_END_USER_ID` — sends the `user` field, OpenRouter's end-user abuse identifier. Enable in multi-user deployments.
+* `SEND_END_USER_ID` — sends the `user` field, OpenRouter's end-user abuse identifier (shown as "Client User ID" in their activity view). Enable in multi-user deployments.
+* `END_USER_ID_SOURCE` — chooses what that `user` field carries: the OWUI GUID (default), the user's email, or their display name. Email and name make OpenRouter's dashboard human-readable but send PII with every request; empty values fall back to the GUID, and `metadata.user_id` always keeps the stable GUID so analytics keyed on it never fragment.
 * `SEND_SESSION_ID` / `SEND_CHAT_ID` / `SEND_MESSAGE_ID` — add the raw id to `metadata` for incident-response traceability.
 * Treat the emitted IDs as **non-secret** but sensitive operational data; they can correlate events.

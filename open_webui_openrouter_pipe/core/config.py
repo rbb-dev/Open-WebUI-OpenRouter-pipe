@@ -1542,7 +1542,11 @@ class Valves(BaseModel):
     )
     SEND_END_USER_ID: bool = Field(
         default=False,
-        description="When True, send OpenRouter `user` using the OWUI user GUID, and also include `metadata.user_id`.",
+        description="When True, send OpenRouter `user` (value chosen by END_USER_ID_SOURCE), and also include `metadata.user_id` with the OWUI user GUID.",
+    )
+    END_USER_ID_SOURCE: Literal["id", "email", "name"] = Field(
+        default="id",
+        description="What the OpenRouter `user` field carries when SEND_END_USER_ID is on: the OWUI GUID, the user's email, or their display name. Email/name fall back to the GUID when empty. Sending email or name shares PII with OpenRouter.",
     )
     SEND_SESSION_ID: bool = Field(
         default=False,

@@ -1227,6 +1227,7 @@ class StreamingHandler:
                         valves=valves,
                         owui_metadata=metadata,
                         owui_user_id=user_id,
+                        owui_user=user_obj,
                         logger=self.logger,
                     )
                     _apply_model_fallback_to_payload(request_payload, logger=self.logger)

@@ -1538,13 +1538,16 @@ def _apply_identifier_valves_to_payload(
     valves: "Pipe.Valves",
     owui_metadata: dict[str, Any],
     owui_user_id: str,
+    owui_user: Any = None,
     logger: logging.Logger = LOGGER,
 ) -> None:
     """Mutate request payload to include valve-gated identifiers.
 
     Rules (per operator requirements):
     - Only emit `metadata` when at least one identifier valve contributes a value.
-    - When `SEND_END_USER_ID` is enabled, emit both top-level `user` and `metadata.user_id`.
+    - When `SEND_END_USER_ID` is enabled, emit top-level `user` (GUID, email, or
+      display name per `END_USER_ID_SOURCE`, falling back to the GUID) and keep
+      `metadata.user_id` on the stable GUID.
     - Top-level `session_id` is the prompt-cache session pin: an opaque HMAC of chat_id
       (gated by `SEND_CACHE_SESSION_ID`); any client-supplied `session_id` is dropped.
     - `SEND_SESSION_ID`, `SEND_CHAT_ID`, `SEND_MESSAGE_ID` emit `metadata.<id>` only.
@@ -1557,10 +1560,25 @@ def _apply_identifier_valves_to_payload(
     metadata_out: dict[str, str] = {}
 
     if valves.SEND_END_USER_ID:
-        candidate = (owui_user_id or "").strip()
-        if candidate and len(candidate) <= _MAX_OPENROUTER_ID_CHARS:
-            payload["user"] = candidate
-            metadata_out["user_id"] = candidate
+        user_value = (owui_user_id or "").strip()
+        source = str(getattr(valves, "END_USER_ID_SOURCE", "id") or "id")
+        alternate = ""
+        if source in ("email", "name") and owui_user is not None:
+            if isinstance(owui_user, dict):
+                raw_alternate = owui_user.get(source)
+            else:
+                raw_alternate = getattr(owui_user, source, None)
+            if isinstance(raw_alternate, str):
+                alternate = raw_alternate.strip()
+        display = (
+            alternate
+            if alternate and len(alternate) <= _MAX_OPENROUTER_ID_CHARS
+            else user_value
+        )
+        if display and len(display) <= _MAX_OPENROUTER_ID_CHARS:
+            payload["user"] = display
+            if user_value and len(user_value) <= _MAX_OPENROUTER_ID_CHARS:
+                metadata_out["user_id"] = user_value
         else:
             payload.pop("user", None)
             logger.debug("SEND_END_USER_ID enabled but OWUI user id missing/invalid; omitting `user`.")

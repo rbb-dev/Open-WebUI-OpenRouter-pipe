@@ -245,3 +245,124 @@ def test_cache_pin_survives_openrouter_filters(monkeypatch):
     }
     assert _filter_openrouter_chat_request(chat_payload).get("session_id") == expected
 
+
+
+def test_end_user_id_source_default_sends_guid():
+    valves = Pipe.Valves(SEND_END_USER_ID=True, SEND_CACHE_SESSION_ID=False)
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+    )
+    assert payload["user"] == "guid-1"
+    assert payload["metadata"]["user_id"] == "guid-1"
+
+
+def test_end_user_id_source_email_sends_email_keeps_guid_metadata():
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="email", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+    )
+    assert payload["user"] == "person@example.com"
+    assert payload["metadata"]["user_id"] == "guid-1"
+
+
+def test_end_user_id_source_name_sends_display_name():
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="name", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+    )
+    assert payload["user"] == "Person"
+    assert payload["metadata"]["user_id"] == "guid-1"
+
+
+def test_end_user_id_source_email_falls_back_to_guid_when_missing():
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="email", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user={"id": "guid-1", "email": "", "name": "Person"},
+    )
+    assert payload["user"] == "guid-1"
+
+    payload_no_user_obj = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload_no_user_obj,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+    )
+    assert payload_no_user_obj["user"] == "guid-1"
+
+
+def test_end_user_id_source_oversized_email_falls_back_to_guid():
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="email", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user={"email": "x" * 5000},
+    )
+    assert payload["user"] == "guid-1"
+
+
+def test_end_user_id_source_email_reads_attribute_objects():
+    from types import SimpleNamespace
+
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="email", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    user_model = SimpleNamespace(id="guid-1", email="person@example.com", name="Person")
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user=user_model,
+    )
+    assert payload["user"] == "person@example.com"
+    assert payload["metadata"]["user_id"] == "guid-1"
+
+
+def test_end_user_id_source_name_reads_attribute_objects():
+    from types import SimpleNamespace
+
+    valves = Pipe.Valves(
+        SEND_END_USER_ID=True, END_USER_ID_SOURCE="name", SEND_CACHE_SESSION_ID=False,
+    )
+    payload = _base_payload()
+    _apply_identifier_valves_to_payload(
+        payload,
+        valves=valves,
+        owui_metadata={},
+        owui_user_id="guid-1",
+        owui_user=SimpleNamespace(id="guid-1", email="e@example.com", name="Person"),
+    )
+    assert payload["user"] == "Person"
