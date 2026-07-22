@@ -46,6 +46,7 @@ from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 
 # Import SessionLogger
 from ..core.logging_system import SessionLogger
+from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
 
 # Import EventEmitter type alias
 from .event_emitter import EventEmitter
@@ -2680,19 +2681,22 @@ class StreamingHandler:
 
                         # Extract citations from successful tool results.
                         collected_sources: list[dict[str, Any]] = []
-                        if get_citation_source_from_tool_result is not None:
-                            for cid, output in output_by_call_id.items():
-                                if cid in omitted_call_ids:
-                                    continue
-                                call = call_by_id.get(cid)
-                                if not call:
-                                    continue
-                                tool_name = (call.get("name") or "").strip()
-                                if output.get("status") != "completed":
-                                    continue
-                                try:
+                        for cid, output in output_by_call_id.items():
+                            if cid in omitted_call_ids:
+                                continue
+                            call = call_by_id.get(cid)
+                            if not call:
+                                continue
+                            tool_name = (call.get("name") or "").strip()
+                            if output.get("status") != "completed":
+                                continue
+                            try:
+                                tool_result = output.get("output") or ""
+                                if (
+                                    tool_name in BUILTIN_CITATION_TOOLS
+                                    and get_citation_source_from_tool_result is not None
+                                ):
                                     tool_params = _safe_json_loads(call.get("arguments") or "{}")
-                                    tool_result = output.get("output") or ""
                                     citations = get_citation_source_from_tool_result(
                                         tool_name=tool_name,
                                         tool_params=tool_params if isinstance(tool_params, dict) else {},
@@ -2708,13 +2712,40 @@ class StreamingHandler:
                                                 tool_name,
                                                 source.get("source", {}).get("name", "unknown"),
                                             )
-                                except Exception as exc:
-                                    self.logger.warning(
-                                        "Failed to extract citations from tool=%s: %s",
-                                        tool_name,
-                                        exc,
-                                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
-                                    )
+                                    continue
+                                result_text = tool_result if isinstance(tool_result, str) else str(tool_result)
+                                context_name = tool_name or "tool"
+                                collected_sources.append({
+                                    "source": {"name": context_name, "type": "tool", "id": cid or context_name},
+                                    "document": [result_text],
+                                    "metadata": [{"source": context_name, "name": context_name}],
+                                })
+                                for url, title, snippet in harvest_tool_citations(result_text):
+                                    if url in ordinal_by_url:
+                                        continue
+                                    ordinal_by_url[url] = len(ordinal_by_url) + 1
+                                    host = _citation_host(url)
+                                    citation = {
+                                        "source": {"name": host or "source", "url": url},
+                                        "document": [(snippet or title or url)[:citation_excerpt_max]],
+                                        "metadata": [{
+                                            "source": url,
+                                            "date_accessed": datetime.date.today().isoformat(),
+                                        }],
+                                    }
+                                    emitted_citations.append(citation)
+                                    if event_emitter:
+                                        await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
+                                        self.logger.debug(
+                                            "Emitted citation from tool=%s: %s", tool_name, url,
+                                        )
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Failed to extract citations from tool=%s: %s",
+                                    tool_name,
+                                    exc,
+                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                )
 
                         # RAG-style source context injection for non-native function calling.
                         is_native_fc = metadata.get("params", {}).get("function_calling") == "native"

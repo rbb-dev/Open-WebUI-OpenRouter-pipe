@@ -11854,3 +11854,209 @@ def test_citation_host_strips_www_prefix_not_character_set():
     assert _citation_host("example.com") == "example.com"
     # only a leading www. is stripped, not an internal one
     assert _citation_host("https://wwworld.com") == "wwworld.com"
+
+
+class TestToolCitationHarvesting:
+
+    def _events_for_call(self, name):
+        return [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "id": "call-1",
+                            "name": name,
+                            "arguments": "{}",
+                        }
+                    ],
+                    "usage": {},
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "done"},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+
+    def _cycling_stream(self, events):
+        event_index = [0]
+
+        async def cycling_stream(self, session, request_body, **_kwargs):
+            while event_index[0] < len(events):
+                event = events[event_index[0]]
+                event_index[0] += 1
+                yield event
+                if event.get("type") == "response.completed":
+                    break
+
+        return cycling_stream
+
+    async def _run_tool_round(self, pipe, monkeypatch, *, tool_name, tool_output):
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
+
+        async def mock_tool(**kwargs):
+            return "unused"
+
+        tool_registry = {tool_name: {"callable": mock_tool, "spec": {"name": tool_name}}}
+        monkeypatch.setattr(
+            Pipe, "send_openrouter_streaming_request",
+            self._cycling_stream(self._events_for_call(tool_name)),
+        )
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1", "output": tool_output, "status": "completed"}]
+
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}}, tools=tool_registry,
+            session=cast(Any, object()), user_id="user-123",
+        )
+        return emitted
+
+    def _citation_events(self, emitted):
+        found = []
+        for event in emitted:
+            if event.get("type") not in ("source", "citation"):
+                continue
+            data = event.get("data") or {}
+            metadata = data.get("metadata") or []
+            src = metadata[0].get("source") if metadata and isinstance(metadata[0], dict) else None
+            found.append((src, (data.get("source") or {}).get("name")))
+        return found
+
+    @pytest.mark.asyncio
+    async def test_mcp_labeled_result_urls_become_citations(self, monkeypatch, pipe_instance_async):
+        text = (
+            "Title: First\nURL: https://one.example/a\nPublished: x\nAuthor: y\nHighlights:\nalpha"
+            "\n\n---\n\n"
+            "Title: Second\nURL: https://two.example/b\nPublished: x\nAuthor: y\nHighlights:\nbeta"
+        )
+        emitted = await self._run_tool_round(
+            pipe_instance_async, monkeypatch, tool_name="AI_search", tool_output=text,
+        )
+        citations = self._citation_events(emitted)
+        urls = [c[0] for c in citations]
+        assert "https://one.example/a" in urls
+        assert "https://two.example/b" in urls
+
+    @pytest.mark.asyncio
+    async def test_no_url_tool_result_emits_no_citation_chip(self, monkeypatch, pipe_instance_async):
+        emitted = await self._run_tool_round(
+            pipe_instance_async, monkeypatch, tool_name="create_tasks", tool_output='{"ok": true}',
+        )
+        assert self._citation_events(emitted) == []
+
+    @pytest.mark.asyncio
+    async def test_builtin_name_routes_to_owui_extractor_not_harvester(self, monkeypatch, pipe_instance_async):
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        harvester_calls = {"count": 0}
+
+        def spy_harvester(result):
+            harvester_calls["count"] += 1
+            return []
+
+        owui_calls = {"count": 0}
+
+        def spy_owui(**kwargs):
+            owui_calls["count"] += 1
+            return []
+
+        monkeypatch.setattr(sc, "harvest_tool_citations", spy_harvester)
+        monkeypatch.setattr(sc, "get_citation_source_from_tool_result", spy_owui)
+        await self._run_tool_round(
+            pipe_instance_async, monkeypatch, tool_name="search_web", tool_output="[]",
+        )
+        assert owui_calls["count"] == 1
+        assert harvester_calls["count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_duplicate_urls_across_tool_outputs_deduped(self, monkeypatch, pipe_instance_async):
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
+
+        async def mock_tool(**kwargs):
+            return "unused"
+
+        tool_registry = {"AI_fetch": {"callable": mock_tool, "spec": {"name": "AI_fetch"}}}
+        events = [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {"type": "function_call", "call_id": "call-1", "id": "call-1",
+                         "name": "AI_fetch", "arguments": "{}"},
+                        {"type": "function_call", "call_id": "call-2", "id": "call-2",
+                         "name": "AI_fetch", "arguments": "{}"},
+                    ],
+                    "usage": {},
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "done"},
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(
+            Pipe, "send_openrouter_streaming_request", self._cycling_stream(events),
+        )
+        fetch_text = "# Page\nURL: https://same.example/page\n\nbody"
+
+        async def mock_execute(calls, registry):
+            return [
+                {"type": "function_call_output", "call_id": "call-1", "output": fetch_text, "status": "completed"},
+                {"type": "function_call_output", "call_id": "call-2", "output": fetch_text, "status": "completed"},
+            ]
+
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}}, tools=tool_registry,
+            session=cast(Any, object()), user_id="user-123",
+        )
+        chip_urls = [
+            (e.get("data") or {}).get("metadata", [{}])[0].get("source")
+            for e in emitted if e.get("type") in ("source", "citation")
+        ]
+        assert chip_urls.count("https://same.example/page") == 1
+
+
+class TestToolCitationRoutingComplement:
+
+    @pytest.mark.asyncio
+    async def test_non_builtin_name_routes_to_harvester_not_owui(self, monkeypatch, pipe_instance_async):
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        owui_calls = {"count": 0}
+        harvester_calls = {"count": 0}
+
+        def spy_owui(**kwargs):
+            owui_calls["count"] += 1
+            return []
+
+        def spy_harvester(result):
+            harvester_calls["count"] += 1
+            return []
+
+        monkeypatch.setattr(sc, "get_citation_source_from_tool_result", spy_owui)
+        monkeypatch.setattr(sc, "harvest_tool_citations", spy_harvester)
+        harness = TestToolCitationHarvesting()
+        await harness._run_tool_round(
+            pipe_instance_async, monkeypatch, tool_name="AI_search", tool_output='{"ok": true}',
+        )
+        assert owui_calls["count"] == 0
+        assert harvester_calls["count"] == 1
