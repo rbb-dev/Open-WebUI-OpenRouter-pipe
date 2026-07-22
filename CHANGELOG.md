@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.7.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.2) — 2026-07-22
+
+### 🚀 Features
+
+- **config** — choose guid, email, or name for the OpenRouter user id ([`184d99c`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/184d99c4c4f6c78f65c8bd9a1f5fee30541dad38))
+
+### 🐛 Bug Fixes
+
+- **logging** — let the session log assembler exit cleanly on shutdown ([`5a1ea16`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/5a1ea16fc0dee07512880994b431af5f0e6e3bd7))
 ## [2.7.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.1) — 2026-07-22
 
 ### 🐛 Bug Fixes
@@ -24,6 +33,7 @@ Each entry links to the commit that introduced it.
 
 - **dashboard** — replace dashboard screenshots with a walkthrough gif ([`5b31e87`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/5b31e874a8c826b24c038f2a9bfc2fa4d25fcf73))
 - **readme** — stop constraining the dashboard gif to 49% width ([`eb6eadf`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/eb6eadf55feccf4613dd0e6bf32bd59483c32826))
+- regenerate changelog for v2.7.1 ([`376d578`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/376d578a2252711bc3d97b68cec360d5596aa587))
 ## [2.7.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.0) — 2026-07-20
 
 ### 🚀 Features
