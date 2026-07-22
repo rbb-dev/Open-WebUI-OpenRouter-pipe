@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.7.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.1) — 2026-07-22
+
+### 🐛 Bug Fixes
+
+- **dashboard** — let the embed iframe shrink when switching to a shorter tab ([`86c8dea`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/86c8dea3359229829ef264eec4c869232d7b352c))
+- **fusion** — drop live-object deep copies and sanitize member failures ([`7a5596c`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/7a5596cb07abc40c3250044d2ff9ca4e66644325))
+- **tools** — keep $ref and $defs intact when strictifying MCP schemas ([`de190bb`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/de190bbf255a12985d809e52a0d6be8d475ea05e))
+- **tools** — stop retrying and cross-tripping side-effectful MCP tools ([`920b1c2`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/920b1c2bf1f337c2726619bda376bfbf964ddc16))
+- **fusion** — also emit the final answer as a native output item ([`7198a43`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/7198a439d25d24f51b803d90ed99fdb5782a13d0))
+- **fusion** — dedupe inner tools and capture MCP media links ([`afdfdce`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/afdfdcedab8951965e2515d9d9ded50aa3d41b57))
+- **tools** — keep original tool params and guard persistence drops ([`9f0dc4f`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/9f0dc4fbbd4c71bc9fbf9cfa43b8149ab6809935))
+- **models** — admit variant suffixes of ZDR-capable bases under enforcement ([`fc55cb8`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/fc55cb8fa2c15cd1d126acad2b12c9203f139fc0))
+- **tools** — harvest real URL citations from MCP and custom tool results ([`34aa475`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/34aa475b254fd9922d41e283e538257a717ca2f3))
+
+### 📚 Documentation
+
+- **dashboard** — replace dashboard screenshots with a walkthrough gif ([`5b31e87`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/5b31e874a8c826b24c038f2a9bfc2fa4d25fcf73))
+- **readme** — stop constraining the dashboard gif to 49% width ([`eb6eadf`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/eb6eadf55feccf4613dd0e6bf32bd59483c32826))
 ## [2.7.0](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.0) — 2026-07-20
 
 ### 🚀 Features
@@ -30,6 +48,7 @@ Each entry links to the commit that introduced it.
 - **fusion** — guarantee deliberation on fusion models ([`d2e6cf5`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/d2e6cf5a23d62391a20e1c906c0164f722a9143c))
 - **tests** — satisfy pyright attribute checks in fusion engine tests ([`32d5fe1`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/32d5fe1580d53a025f5dd7adde5ad543bcdf4e94))
 - **docs** — revert fusion doc changes ([`b279a31`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/b279a31f40616e529478f1db1c329801b0612ea4))
+- **changelog** — skip version-bump commits in git-cliff config ([`91026bb`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/91026bbae2e3055f97eadc4644c6409714166c77))
 
 ### 📚 Documentation
 
