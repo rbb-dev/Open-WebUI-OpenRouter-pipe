@@ -679,7 +679,12 @@ class RequestOrchestrator:
                 user_requests_zdr = False
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
         if enforce_zdr:
-            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
+            zdr_lookup_id = (
+                normalized_model_id.rsplit(":", 1)[0]
+                if ":" in normalized_model_id
+                else normalized_model_id
+            )
+            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(zdr_lookup_id)
             if zdr_capable is False:
                 if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)

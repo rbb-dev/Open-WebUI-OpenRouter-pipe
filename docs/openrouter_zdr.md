@@ -29,6 +29,9 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
 - **`ZDR_ENFORCE`**
   - Forces `provider.zdr=true` on every request.
   - Rejects requests for models without ZDR endpoints.
+  - Variant suffixes (for example `:nitro` or `:free` entries created via `VARIANT_MODELS`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. If the variant's routing constraints leave no ZDR endpoint (for example a `:free` tier with no ZDR provider), OpenRouter rejects the request with a routing error rather than falling back.
+  - Video models are always rejected, with or without a variant suffix.
+  - `ZDR_MODELS_ONLY` keeps strict per-id matching and continues to hide variant entries; it remains a catalog filter with no request-level enforcement.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.
@@ -42,6 +45,12 @@ When `ALLOW_USER_ZDR_OVERRIDE` is enabled (and `ZDR_ENFORCE` is disabled), users
 
 - **`REQUEST_ZDR`**
   - Requests ZDR routing for that chat.
+
+---
+
+## Plugins and tools are outside ZDR
+
+OpenRouter's ZDR enforcement applies to provider routing for inference only. Plugins and tools — including web search and the `:online` variant's search plugin — are operated by third-party services with their own data retention policies. Review those policies separately if you have strict retention requirements.
 
 ---
 

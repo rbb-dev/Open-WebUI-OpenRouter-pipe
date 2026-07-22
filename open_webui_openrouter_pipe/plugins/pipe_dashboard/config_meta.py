@@ -960,7 +960,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "ZDR_ENFORCE": {
         "title": "Enforce ZDR routing",
         "group": "Models & Catalog/ZDR",
-        "detail": "Forces every chat to route only to Zero Data Retention endpoints and refuses any model that has none.\n\nEach request carries `provider.zdr=true`, so OpenRouter itself keeps it on a no-retention endpoint, and a model with no ZDR endpoint is stopped with the `Blocked model message` before anything is sent. Enforcement is site-wide and overrides per-user choice: `Allow user ZDR opt-in` and each user's `Request ZDR` toggle are ignored while this is on.\n\n**Warning:** If OpenRouter's ZDR list can't be loaded, the request is rejected rather than sent unverified — unlike `Show only ZDR models`, this fails closed so an outage can't silently bypass ZDR."
+        "detail": "Forces every chat to route only to Zero Data Retention endpoints and refuses any model that has none.\n\nEach request carries `provider.zdr=true`, so OpenRouter itself keeps it on a no-retention endpoint, and a model with no ZDR endpoint is stopped with the `Blocked model message` before anything is sent. Variant entries such as `:nitro` or `:free` are judged by their base model's ZDR endpoints; the routing flag then guarantees only ZDR endpoints serve them. Enforcement is site-wide and overrides per-user choice: `Allow user ZDR opt-in` and each user's `Request ZDR` toggle are ignored while this is on.\n\n**Warning:** If OpenRouter's ZDR list can't be loaded, the request is rejected rather than sent unverified — unlike `Show only ZDR models`, this fails closed so an outage can't silently bypass ZDR."
     },
     "ZDR_MODELS_ONLY": {
         "title": "Show only ZDR models",

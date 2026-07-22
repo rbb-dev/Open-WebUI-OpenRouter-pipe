@@ -693,3 +693,29 @@ class TestVariantRegistryEnforcement:
             assert OpenRouterModelRegistry.is_zdr_capable("unknown/model") is False
         finally:
             OpenRouterModelRegistry._zdr_model_ids = original_zdr
+
+
+def test_is_zdr_capable_suffixed_video_id_still_blocked():
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    original_specs = dict(OpenRouterModelRegistry._specs)
+    original_zdr = OpenRouterModelRegistry._zdr_model_ids
+    try:
+        OpenRouterModelRegistry._specs["openai.sora-2-pro"] = {"features": {"video_generation"}}
+        OpenRouterModelRegistry._zdr_model_ids = {"openai.sora-2-pro", "openai.sora-2-pro:nitro"}
+        assert OpenRouterModelRegistry.is_zdr_capable("openai/sora-2-pro:nitro") is False
+        assert OpenRouterModelRegistry.is_zdr_capable("openai/sora-2-pro") is False
+    finally:
+        OpenRouterModelRegistry._specs = original_specs
+        OpenRouterModelRegistry._zdr_model_ids = original_zdr
+
+
+def test_is_zdr_capable_suffixed_id_none_list_unchanged():
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    original_zdr = OpenRouterModelRegistry._zdr_model_ids
+    try:
+        OpenRouterModelRegistry._zdr_model_ids = None
+        assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o:nitro") is None
+    finally:
+        OpenRouterModelRegistry._zdr_model_ids = original_zdr

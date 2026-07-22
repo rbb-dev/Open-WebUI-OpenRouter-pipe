@@ -943,16 +943,18 @@ class OpenRouterModelRegistry:
     def is_zdr_capable(cls, model_id: str) -> bool | None:
         """Return True/False if ZDR list is available, otherwise None.
 
-        Uses strict full-ID matching (no base fallback). Routing-only
-        variants (e.g. ``:nitro``) that are absent from the ZDR endpoint
-        will return False even if their base model is ZDR-capable.
+        Uses strict full-ID matching against the ZDR set (no base fallback);
+        the ZDR_ENFORCE gate strips variant suffixes before calling so routing
+        variants of a ZDR-capable base are admitted there. The video hard-block
+        always evaluates against the suffix-stripped base id.
         """
-        spec = cls.spec(model_id)
+        norm = ModelFamily.base_model(model_id)
+        base_norm = norm.rsplit(":", 1)[0] if ":" in norm else norm
+        spec = cls._specs.get(base_norm) or {}
         if "video_generation" in set(spec.get("features") or set()):
             return False
         if cls._zdr_model_ids is None:
             return None
-        norm = ModelFamily.base_model(model_id)
         return norm in cls._zdr_model_ids
 
     @classmethod

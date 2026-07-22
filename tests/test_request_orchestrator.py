@@ -5710,3 +5710,126 @@ async def test_unknown_variant_is_restricted():
 
     finally:
         await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_zdr_enforce_admits_suffixed_variant_and_stamps_provider():
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = True
+        pipe.valves.VARIANT_MODELS = "openai/gpt-4o-mini:nitro"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini:nitro",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123"},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o-mini:nitro"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert captured_payloads, "Expected the suffixed variant to be admitted under ZDR_ENFORCE"
+        payload = captured_payloads[-1]
+        assert payload.get("model") == "openai/gpt-4o-mini:nitro"
+        provider = payload.get("provider") or {}
+        assert provider.get("zdr") is True
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_zdr_user_valve_admits_suffixed_variant_and_stamps_provider():
+    pipe = Pipe()
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+        pipe.valves.VARIANT_MODELS = "openai/gpt-4o-mini:nitro"
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            body = {
+                "model": "openai/gpt-4o-mini:nitro",
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": True,
+            }
+
+            result = await pipe.pipe(
+                body=body,
+                __user__={"id": "user_123", "valves": {"REQUEST_ZDR": True}},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o-mini:nitro"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+
+            await _consume_stream(result)
+
+        assert captured_payloads, "Expected the suffixed variant to be admitted for user-requested ZDR"
+        provider = (captured_payloads[-1].get("provider") or {})
+        assert provider.get("zdr") is True
+    finally:
+        await pipe.close()
