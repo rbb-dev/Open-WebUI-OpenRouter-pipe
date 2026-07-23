@@ -2347,6 +2347,7 @@ async def test_sync_model_metadata_includes_description_when_enabled(pipe_instan
     ]
 
     pipe._ensure_catalog_manager()
+    pipe._catalog_manager._fetch_frontend_model_catalog = AsyncMock(return_value=None)
 
 
     pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
@@ -4130,3 +4131,64 @@ class TestProviderRoutingDefaultFilterIds:
             auto_default_provider_routing_filter=True,
         )
         assert changed is False
+
+
+class TestDescriptionsFetchGate:
+    """Descriptions-only configs must still fetch the frontend catalog."""
+
+    class _FetchReached(Exception):
+        pass
+
+    def _configure(self, pipe, *, descriptions: bool) -> list:
+        for valve_name in (
+            "UPDATE_MODEL_IMAGES",
+            "UPDATE_MODEL_CAPABILITIES",
+            "UPDATE_MODEL_DESCRIPTIONS",
+            "AUTO_ATTACH_WEB_TOOLS_FILTER",
+            "AUTO_INSTALL_WEB_TOOLS_FILTER",
+            "AUTO_DEFAULT_WEB_TOOLS_FILTER",
+            "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
+            "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+            "AUTO_INSTALL_IMAGE_GEN_FILTER",
+            "AUTO_INSTALL_VIDEO_FILTERS",
+            "AUTO_ATTACH_VIDEO_FILTERS",
+            "AUTO_INSTALL_IMAGE_FILTERS",
+            "AUTO_ATTACH_IMAGE_FILTERS",
+            "AUTO_INSTALL_FUSION_FILTER",
+            "AUTO_ATTACH_FUSION_FILTER",
+        ):
+            setattr(pipe.valves, valve_name, False)
+        pipe.valves.UPDATE_MODEL_DESCRIPTIONS = descriptions
+        pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+        pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+
+        manager = pipe._ensure_catalog_manager()
+        reached: list = []
+
+        async def _recorder(session):
+            reached.append(True)
+            raise TestDescriptionsFetchGate._FetchReached()
+
+        manager._fetch_frontend_model_catalog = _recorder
+        return reached
+
+    @pytest.mark.asyncio
+    async def test_descriptions_only_config_fetches_frontend_catalog(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        reached = self._configure(pipe, descriptions=True)
+        try:
+            await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+                [{"id": "a/b", "name": "AB"}], pipe_identifier="openrouter"
+            )
+        except TestDescriptionsFetchGate._FetchReached:
+            pass
+        assert reached == [True]
+
+    @pytest.mark.asyncio
+    async def test_everything_off_skips_sync_entirely(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        reached = self._configure(pipe, descriptions=False)
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+            [{"id": "a/b", "name": "AB"}], pipe_identifier="openrouter"
+        )
+        assert reached == []

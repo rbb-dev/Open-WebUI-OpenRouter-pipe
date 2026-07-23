@@ -1000,6 +1000,7 @@ class ModelCatalogManager:
             if (
                 valves.UPDATE_MODEL_IMAGES
                 or valves.UPDATE_MODEL_CAPABILITIES
+                or valves.UPDATE_MODEL_DESCRIPTIONS
                 or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
                 or provider_routing_enabled
             ):
