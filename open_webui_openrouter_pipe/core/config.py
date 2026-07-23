@@ -1963,6 +1963,15 @@ class Valves(BaseModel):
             "Leave empty to disable user provider routing filters."
         ),
     )
+    AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS: bool = Field(
+        default=True,
+        description=(
+            "Enable attached provider routing filters by default in new chats, so saved provider "
+            "preferences apply without users having to switch the filter on per chat. The filter does "
+            "nothing until preferences are actually configured, so defaulting it on is free. "
+            "Disable to make users opt in per chat."
+        ),
+    )
 
 
 class UserValves(BaseModel):

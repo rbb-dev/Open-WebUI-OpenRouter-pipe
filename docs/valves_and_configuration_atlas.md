@@ -406,12 +406,13 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | --- | --- | --- | --- |
 | `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs (e.g., `openai/gpt-4o, anthropic/claude-3.5-sonnet`) for which to generate admin-only provider routing filters. These filters enforce provider preferences (order, fallbacks, ZDR, etc.) that users cannot override or disable. Leave empty to disable. |
 | `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Models in both lists get filters with admin defaults and user overrides. |
+| `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` | `bool` | `True` | Pre-enables attached provider routing filters in new chats (via `defaultFilterIds`), so saved provider preferences apply without users switching the filter on per chat. The filter is a no-op until preferences are set. Disable to make users opt in per chat. |
 
 Notes:
 - Provider routing filters are generated dynamically from OpenRouter's public per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`), which lists every provider serving the model; the frontend catalog is only a degraded single-provider fallback when that fetch fails.
 - Each filter exposes an **ORDER dropdown** (human-readable provider names): full priority permutations for up to 4 providers, and a linear "X first" preference per provider beyond that (full permutations would grow factorially).
 - Admin-only filters use `toggle=False` (always run, cannot be disabled per-chat).
-- User-configurable filters use `toggle=True` (can be toggled on/off per-chat).
+- User-configurable filters use `toggle=True` (can be toggled on/off per-chat) and start enabled in new chats while `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` is on.
 - Provider routing is **not applied** to task model requests (title, tags, follow-ups).
 - Variant-only providers (e.g., Venice serving only `:free` variants) are excluded from base model routing options.
 

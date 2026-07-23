@@ -210,6 +210,26 @@ def _apply_video_default_filter_ids(
     return True
 
 
+def _apply_provider_routing_default_filter_ids(
+    meta_dict: dict,
+    *,
+    provider_routing_filter_id: str | None,
+    auto_default_provider_routing_filter: bool,
+) -> bool:
+    """Apply provider routing filter default-on flag to `meta_dict["defaultFilterIds"]`."""
+    if not auto_default_provider_routing_filter or not provider_routing_filter_id:
+        return False
+    filter_ids = _normalize_id_list(meta_dict, "filterIds")
+    if provider_routing_filter_id not in filter_ids:
+        return False
+    default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
+    if provider_routing_filter_id in default_ids:
+        return False
+    default_ids.append(provider_routing_filter_id)
+    meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
+    return True
+
+
 class ModelCatalogManager:
     """Manages model metadata synchronization from OpenRouter to Open WebUI."""
 
@@ -492,6 +512,7 @@ class ModelCatalogManager:
             valves.ENABLE_IMAGE_GENERATION,
             admin_routing_models,
             user_routing_models,
+            valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS,
         )
         if sync_key == self._model_metadata_sync_key:
             return
@@ -1488,6 +1509,9 @@ class ModelCatalogManager:
                                 and valves.AUTO_DEFAULT_FUSION_FILTER
                             ),
                             provider_routing_filter_id=pr_filter_id,
+                            auto_default_provider_routing_filter=bool(
+                                valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS
+                            ),
                             valid_openrouter_filter_ids=_valid_openrouter_filter_ids,
                             openrouter_pipe_capabilities=pipe_capabilities,
                             description=description,
@@ -1608,6 +1632,7 @@ class ModelCatalogManager:
         auto_attach_fusion_filter: bool = False,
         auto_default_fusion_filter: bool = False,
         provider_routing_filter_id: str | None = None,
+        auto_default_provider_routing_filter: bool = False,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
         description: str | None = None,
@@ -2016,6 +2041,12 @@ class ModelCatalogManager:
                     provider_routing_filter_id,
                     openwebui_model_id,
                 )
+            if _apply_provider_routing_default_filter_ids(
+                meta_dict,
+                provider_routing_filter_id=provider_routing_filter_id,
+                auto_default_provider_routing_filter=auto_default_provider_routing_filter,
+            ):
+                meta_updated = True
 
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)
@@ -2102,6 +2133,11 @@ class ModelCatalogManager:
                     provider_routing_filter_id,
                     openwebui_model_id,
                 )
+            _apply_provider_routing_default_filter_ids(
+                meta_dict,
+                provider_routing_filter_id=provider_routing_filter_id,
+                auto_default_provider_routing_filter=auto_default_provider_routing_filter,
+            )
 
             if openrouter_pipe_capabilities is not None:
                 pipe_meta = _ensure_pipe_meta(meta_dict)

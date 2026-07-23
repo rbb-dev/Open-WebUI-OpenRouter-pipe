@@ -19,7 +19,7 @@ When you configure provider routing for a model, the pipe:
 1. **Fetches provider data** from OpenRouter's per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`), which lists every provider serving the model
 2. **Generates a dedicated filter** for each model with human-readable dropdown options
 3. **Installs the filter** in Open WebUI's Functions database
-4. **Attaches the filter** to the model so it appears in the Integrations menu
+4. **Attaches the filter** to the model so it appears in the Integrations menu, enabled by default in new chats (`AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS`, on by default) so saved preferences apply without a per-chat toggle
 
 The generated filters expose OpenRouter's provider routing options as easy-to-use dropdowns and toggles — no need to guess provider slugs or remember API field names.
 
@@ -59,7 +59,7 @@ When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVI
 
 1. Open a chat with a model that has a provider routing filter
 
-2. In the **Integrations menu** (tools icon), enable the provider routing filter
+2. In the **Integrations menu** (tools icon), the provider routing filter is already enabled in new chats (while `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` is on); toggle it off to bypass routing for that chat
 
 3. Click the **filter settings** (gear icon) to configure:
    - **ORDER**: Provider priority (e.g., "OpenAI > Azure > Together")

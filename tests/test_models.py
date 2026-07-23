@@ -526,6 +526,7 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
         pipe.valves.ENABLE_IMAGE_GENERATION,
         pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
         pipe.valves.USER_PROVIDER_ROUTING_MODELS,
+        pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS,
     )
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
@@ -4061,3 +4062,71 @@ class TestProviderOverlayQuantizationClamp:
                 await session.close()
         assert len(overlay["a/b"]["quantizations"]) == 100
         assert overlay["a/b"]["quantizations"] == sorted(overlay["a/b"]["quantizations"])
+
+
+class TestProviderRoutingDefaultFilterIds:
+    """Provider routing filters must default on in new chats (like web tools)."""
+
+    def _helper(self):
+        from open_webui_openrouter_pipe.models.catalog_manager import (
+            _apply_provider_routing_default_filter_ids,
+        )
+
+        return _apply_provider_routing_default_filter_ids
+
+    def test_default_added_when_enabled(self) -> None:
+        meta = {"filterIds": ["openrouter_provider_a_b"]}
+        changed = self._helper()(
+            meta,
+            provider_routing_filter_id="openrouter_provider_a_b",
+            auto_default_provider_routing_filter=True,
+        )
+        assert changed is True
+        assert meta["defaultFilterIds"] == ["openrouter_provider_a_b"]
+
+    def test_not_added_when_disabled(self) -> None:
+        meta = {"filterIds": ["openrouter_provider_a_b"]}
+        changed = self._helper()(
+            meta,
+            provider_routing_filter_id="openrouter_provider_a_b",
+            auto_default_provider_routing_filter=False,
+        )
+        assert changed is False
+        assert "defaultFilterIds" not in meta
+
+    def test_not_added_when_not_attached(self) -> None:
+        meta = {"filterIds": ["openrouter_web_tools"]}
+        changed = self._helper()(
+            meta,
+            provider_routing_filter_id="openrouter_provider_a_b",
+            auto_default_provider_routing_filter=True,
+        )
+        assert changed is False
+
+    def test_idempotent_and_preserves_existing_defaults(self) -> None:
+        meta = {
+            "filterIds": ["openrouter_web_tools", "openrouter_provider_a_b"],
+            "defaultFilterIds": ["openrouter_web_tools"],
+        }
+        helper = self._helper()
+        assert helper(
+            meta,
+            provider_routing_filter_id="openrouter_provider_a_b",
+            auto_default_provider_routing_filter=True,
+        ) is True
+        assert meta["defaultFilterIds"] == ["openrouter_web_tools", "openrouter_provider_a_b"]
+        assert helper(
+            meta,
+            provider_routing_filter_id="openrouter_provider_a_b",
+            auto_default_provider_routing_filter=True,
+        ) is False
+        assert meta["defaultFilterIds"] == ["openrouter_web_tools", "openrouter_provider_a_b"]
+
+    def test_no_filter_id_is_noop(self) -> None:
+        meta = {"filterIds": []}
+        changed = self._helper()(
+            meta,
+            provider_routing_filter_id=None,
+            auto_default_provider_routing_filter=True,
+        )
+        assert changed is False
