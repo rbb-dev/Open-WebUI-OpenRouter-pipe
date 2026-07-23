@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Each entry links to the commit that introduced it.
 
+## [2.7.3](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.3) — 2026-07-23
+
+### 🚀 Features
+
+- **filters** — enable provider routing filters by default in new chats ([#57](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues/57)) ([`ee2f85e`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ee2f85eb0b60a4eab3f669d16787aa5115a9ee50))
+
+### 🐛 Bug Fixes
+
+- **filters** — list every provider in provider routing dropdowns via the model endpoints API ([#57](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues/57)) ([`1c8cbc9`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/1c8cbc9a15dc6c0729c99b0ebc6c91bfe120cd41))
+- **catalog** — fetch the frontend catalog when only description sync is enabled ([`752f1fc`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/752f1fcd8c905db6e54a8695069f011911987652))
 ## [2.7.2](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.2) — 2026-07-22
 
 ### 🚀 Features
@@ -15,6 +25,10 @@ Each entry links to the commit that introduced it.
 ### 🐛 Bug Fixes
 
 - **logging** — let the session log assembler exit cleanly on shutdown ([`5a1ea16`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/5a1ea16fc0dee07512880994b431af5f0e6e3bd7))
+
+### 📚 Documentation
+
+- regenerate changelog for v2.7.2 ([`ae34e71`](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/commit/ae34e71800a9eaedbdf0399c9e16e4b5e607dd88))
 ## [2.7.1](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/releases/tag/v2.7.1) — 2026-07-22
 
 ### 🐛 Bug Fixes
