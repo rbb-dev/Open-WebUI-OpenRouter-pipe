@@ -31,7 +31,14 @@ try:
 except ImportError:
     ModelForm = None  # type: ignore
 
-from ..core.config import _OPENROUTER_SITE_URL, _OPENROUTER_FRONTEND_MODELS_URL, _PIPE_METADATA_KEY
+from ..core.config import (
+    _OPENROUTER_SITE_URL,
+    _OPENROUTER_FRONTEND_MODELS_URL,
+    _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE,
+    _PIPE_METADATA_KEY,
+    _PROVIDER_ROUTING_MAX_PROVIDERS,
+    _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
+)
 # Lazy import to avoid circular dependency.
 from .registry import OpenRouterModelRegistry, ModelFamily
 
@@ -225,6 +232,7 @@ class ModelCatalogManager:
 
         # Cached provider map for immediate access in pipes()
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
+        self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
 
     def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
         """Return the cached provider map from the last frontend catalog fetch.
@@ -609,9 +617,10 @@ class ModelCatalogManager:
             ...
         }
 
-        The frontend catalog returns one entry per model+provider combination. This method
-        groups entries by model slug to extract the full list of available providers,
-        quantizations, display names, and other metadata for each model.
+        The frontend catalog returns one row per model with a single featured
+        endpoint, so this map carries at most ONE provider per model. It is only
+        the degraded fallback; the full provider list for routed models comes
+        from the per-model endpoints API via _build_routed_provider_overlay.
 
         Note: Filters out variant-only endpoints (where model_variant_slug is set) to avoid
         advertising providers that only serve :free/:thinking variants. This prevents users
@@ -715,6 +724,190 @@ class ModelCatalogManager:
             type(payload).__name__,
         )
         return None
+
+    async def _fetch_model_endpoints(
+        self,
+        session: aiohttp.ClientSession,
+        model_slug: str,
+    ) -> dict[str, Any] | None:
+        """Fetch OpenRouter's public per-model endpoint list (no auth)."""
+        url = _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE.format(slug=model_slug)
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        except Exception as exc:
+            self.logger.debug("OpenRouter endpoints fetch failed for %s: %s", model_slug, exc)
+            return None
+        if isinstance(payload, dict):
+            return payload
+        self.logger.warning(
+            "OpenRouter endpoints for %s returned invalid payload type '%s'; expected dict.",
+            model_slug,
+            type(payload).__name__,
+        )
+        return None
+
+    @timed
+    async def _build_routed_provider_overlay(
+        self,
+        session: aiohttp.ClientSession,
+        model_slugs: Iterable[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Build full provider info for routed models from the per-model endpoints API.
+
+        The frontend catalog only carries one featured endpoint per model, so the
+        provider-routing dropdowns would collapse to a single provider without this
+        overlay. Only the models named in the routing valves are fetched.
+        """
+        unique = sorted({(s or "").strip() for s in model_slugs if (s or "").strip()})
+        if len(unique) > _PROVIDER_ROUTING_OVERLAY_MAX_MODELS:
+            self.logger.warning(
+                "Provider routing valve lists %d models; only the first %d (sorted) get endpoint data.",
+                len(unique),
+                _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
+            )
+            unique = unique[:_PROVIDER_ROUTING_OVERLAY_MAX_MODELS]
+        if not unique:
+            return {}
+
+        semaphore = asyncio.Semaphore(10)
+        results: dict[str, dict[str, Any]] = {}
+
+        async def _fetch_one(slug: str) -> None:
+            async with semaphore:
+                payload = await self._fetch_model_endpoints(session, slug)
+            if payload is None:
+                return
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                return
+            endpoints = data.get("endpoints")
+            if not isinstance(endpoints, list):
+                return
+
+            providers: set[str] = set()
+            provider_names: dict[str, str] = {}
+            quantizations: set[str] = set()
+            for endpoint in endpoints:
+                if not isinstance(endpoint, dict):
+                    continue
+                tag = endpoint.get("tag")
+                if not isinstance(tag, str):
+                    continue
+                base_slug = tag.split("/", 1)[0].strip()
+                if not base_slug:
+                    continue
+                providers.add(base_slug)
+                display = endpoint.get("provider_name")
+                if base_slug not in provider_names and isinstance(display, str) and display.strip():
+                    provider_names[base_slug] = display.strip()
+                quantization = endpoint.get("quantization")
+                if isinstance(quantization, str) and quantization.strip():
+                    quantizations.add(quantization.strip())
+            if not providers:
+                return
+
+            sorted_providers = sorted(providers)
+            if len(sorted_providers) > _PROVIDER_ROUTING_MAX_PROVIDERS:
+                self.logger.warning(
+                    "Model %s reports %d providers; clamping to %d.",
+                    slug,
+                    len(sorted_providers),
+                    _PROVIDER_ROUTING_MAX_PROVIDERS,
+                )
+                sorted_providers = sorted_providers[:_PROVIDER_ROUTING_MAX_PROVIDERS]
+            short_name = data.get("name")
+            results[slug] = {
+                "providers": sorted_providers,
+                "quantizations": sorted(quantizations)[:_PROVIDER_ROUTING_MAX_PROVIDERS],
+                "short_name": short_name.strip() if isinstance(short_name, str) else "",
+                "provider_names": {
+                    s: provider_names[s] for s in sorted_providers if s in provider_names
+                },
+            }
+
+        await asyncio.gather(*(_fetch_one(slug) for slug in unique), return_exceptions=True)
+        return results
+
+    def _merge_provider_overlay(
+        self,
+        frontend_map: dict[str, dict[str, Any]],
+        overlay: dict[str, dict[str, Any]],
+        routed_slugs: Iterable[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Merge endpoint-API provider data over the frontend-derived fallback map.
+
+        Overlay data replaces providers/quantizations for routed models; display
+        names keep the frontend spelling when available so previously saved
+        dropdown selections stay valid. On fetch failure the previous cycle's
+        cached entry is retained when it is richer than the degraded frontend row.
+        """
+        merged = {slug: dict(entry) for slug, entry in frontend_map.items()}
+        failed: list[str] = []
+        for slug in sorted({(s or "").strip() for s in routed_slugs if (s or "").strip()}):
+            enriched = overlay.get(slug)
+            if enriched is None:
+                fallback = merged.get(slug)
+                cached = self._cached_provider_map.get(slug)
+                fallback_count = len((fallback or {}).get("providers") or [])
+                cached_count = len((cached or {}).get("providers") or [])
+                if cached is not None and cached_count > fallback_count:
+                    merged[slug] = dict(cached)
+                failed.append(slug)
+                continue
+
+            fallback = merged.get(slug) or {}
+            fallback_names = fallback.get("provider_names")
+            fallback_names = fallback_names if isinstance(fallback_names, dict) else {}
+            overlay_names = enriched.get("provider_names") or {}
+            providers = list(enriched.get("providers") or [])
+            provider_names: dict[str, str] = {}
+            for provider_slug in providers:
+                frontend_display = fallback_names.get(provider_slug)
+                if isinstance(frontend_display, str) and frontend_display:
+                    provider_names[provider_slug] = frontend_display
+                elif provider_slug in overlay_names:
+                    provider_names[provider_slug] = overlay_names[provider_slug]
+            short_name = fallback.get("short_name") or enriched.get("short_name") or ""
+            merged[slug] = {
+                "providers": providers,
+                "quantizations": list(enriched.get("quantizations") or []),
+                "short_name": short_name,
+                "provider_names": provider_names,
+            }
+
+        failed_set = frozenset(failed)
+        if failed:
+            message = (
+                "Provider endpoints data unavailable for %d routed model(s): %s "
+                "(dropdowns fall back to degraded catalog data; check slug spelling)"
+            )
+            if failed_set != self._provider_overlay_failed_slugs:
+                self.logger.warning(message, len(failed), ", ".join(failed))
+            else:
+                self.logger.debug(message, len(failed), ", ".join(failed))
+        self._provider_overlay_failed_slugs = failed_set
+        return merged
+
+    async def _build_provider_map_with_overlay(
+        self,
+        session: aiohttp.ClientSession,
+        frontend_data: dict[str, Any] | None,
+        admin_models_csv: str,
+        user_models_csv: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Build the provider map: frontend fallback plus endpoints-API overlay."""
+        frontend_map = self._build_model_provider_map(frontend_data)
+        routed = [
+            entry.strip()
+            for entry in f"{admin_models_csv},{user_models_csv}".split(",")
+            if entry.strip()
+        ]
+        if not routed:
+            return frontend_map
+        overlay = await self._build_routed_provider_overlay(session, routed)
+        return self._merge_provider_overlay(frontend_map, overlay, routed)
 
     @timed
     async def _build_maker_profile_image_mapping(
@@ -829,12 +1022,16 @@ class ModelCatalogManager:
                             description_mapping[slug] = desc.strip()
 
             # Build provider map for provider routing filters
-            provider_map: dict[str, dict[str, list[str]]] = {}
+            provider_map: dict[str, dict[str, Any]] = {}
             if provider_routing_enabled:
-                provider_map = self._build_model_provider_map(frontend_data)
+                provider_map = await self._build_provider_map_with_overlay(
+                    session,
+                    frontend_data,
+                    admin_routing_models,
+                    user_routing_models,
+                )
                 # Cache for immediate access in pipes()
                 self._cached_provider_map = provider_map
-                # Log what _build_model_provider_map returned
                 self.logger.info(
                     "Provider map built: %d models have provider info. Sample keys: %s",
                     len(provider_map),

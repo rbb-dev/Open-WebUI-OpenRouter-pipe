@@ -1,5 +1,8 @@
 import json
 
+import pytest
+from aioresponses import aioresponses
+
 
 FRONTEND_CATALOG_SAMPLE_JSON = r"""
 {
@@ -461,10 +464,256 @@ def test_frontend_catalog_sample_includes_variant_slugs() -> None:
         assert endpoint["model_variant_slug"] == item["slug"]
 
 
-def test_provider_map_includes_base_models_with_variant_slug(pipe_instance) -> None:
+def test_frontend_fallback_map_uses_single_featured_endpoint(pipe_instance) -> None:
+    """Pins the DEGRADED frontend-only fallback, not the desired end state.
+
+    The frontend catalog returns one row per model with a single featured
+    endpoint, so this map yields at most ONE provider per model. The full
+    provider list comes from the per-model endpoints API overlay
+    (test_overlay_widens_frontend_fallback_providers); this frontend-derived
+    map is only the fallback when that fetch fails.
+    """
     catalog_manager = pipe_instance._ensure_catalog_manager()
     provider_map = catalog_manager._build_model_provider_map(FRONTEND_CATALOG_SAMPLE)
     assert "openai/gpt-5.1" in provider_map
     assert "anthropic/claude-3.5-sonnet" in provider_map
     assert provider_map["openai/gpt-5.1"]["providers"] == ["openai/default"]
+    assert provider_map["anthropic/claude-3.5-sonnet"]["providers"] == ["amazon-bedrock"]
+
+
+ENDPOINTS_API_SAMPLE_JSON = r"""
+{
+ "data": {
+  "id": "deepseek/deepseek-v3.2",
+  "name": "DeepSeek: DeepSeek V3.2",
+  "created": 1764594642,
+  "endpoints": [
+   {
+    "name": "StreamLake | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "StreamLake",
+    "tag": "streamlake/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 128000,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Baidu | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Baidu",
+    "tag": "baidu/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 131072,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "SiliconFlow | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "SiliconFlow",
+    "tag": "siliconflow/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "DeepInfra | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "DeepInfra",
+    "tag": "deepinfra/fp4",
+    "quantization": "fp4",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "AtlasCloud | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "AtlasCloud",
+    "tag": "atlas-cloud/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Novita | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Novita",
+    "tag": "novita/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "GMICloud | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "GMICloud",
+    "tag": "gmicloud/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Venice | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Venice",
+    "tag": "venice",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 160000,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Alibaba | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Alibaba",
+    "tag": "alibaba",
+    "quantization": "unknown",
+    "status": -5,
+    "context_length": 131072,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "DigitalOcean | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "DigitalOcean",
+    "tag": "digitalocean",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Friendli | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Friendli",
+    "tag": "friendli",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Google | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Google",
+    "tag": "google-vertex",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "Phala | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "Phala",
+    "tag": "phala",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 163840,
+    "supports_implicit_caching": false
+   },
+   {
+    "name": "SambaNova | deepseek/deepseek-v3.2-20251201",
+    "model_id": "deepseek/deepseek-v3.2",
+    "provider_name": "SambaNova",
+    "tag": "sambanova",
+    "quantization": "unknown",
+    "status": 0,
+    "context_length": 32768,
+    "supports_implicit_caching": false
+   }
+  ]
+ }
+}
+"""
+
+ENDPOINTS_API_SAMPLE = json.loads(ENDPOINTS_API_SAMPLE_JSON)
+
+EXPECTED_DEEPSEEK_PROVIDER_SLUGS = [
+    "alibaba",
+    "atlas-cloud",
+    "baidu",
+    "deepinfra",
+    "digitalocean",
+    "friendli",
+    "gmicloud",
+    "google-vertex",
+    "novita",
+    "phala",
+    "sambanova",
+    "siliconflow",
+    "streamlake",
+    "venice",
+]
+
+_DEEPSEEK_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/deepseek/deepseek-v3.2/endpoints"
+
+
+@pytest.mark.asyncio
+async def test_overlay_parses_live_endpoints_shape(pipe_instance_async) -> None:
+    """The overlay builder must parse the real per-model endpoints API response.
+
+    Fixture is a trimmed copy of the live response for deepseek/deepseek-v3.2
+    (captured 2026-07-23): composite tags like "streamlake/fp8", bare tags like
+    "venice", a deranked endpoint (status=-5), and "unknown" quantizations.
+    """
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    with aioresponses() as mocked:
+        mocked.get(_DEEPSEEK_ENDPOINTS_URL, payload=ENDPOINTS_API_SAMPLE)
+        session = pipe._create_http_session()
+        try:
+            overlay = await manager._build_routed_provider_overlay(
+                session, ["deepseek/deepseek-v3.2"]
+            )
+        finally:
+            await session.close()
+
+    entry = overlay["deepseek/deepseek-v3.2"]
+    assert entry["providers"] == EXPECTED_DEEPSEEK_PROVIDER_SLUGS
+    assert entry["provider_names"]["streamlake"] == "StreamLake"
+    assert entry["provider_names"]["atlas-cloud"] == "AtlasCloud"
+    assert list(entry["provider_names"].keys()) == sorted(entry["provider_names"].keys())
+    assert entry["quantizations"] == ["fp4", "fp8", "unknown"]
+    assert entry["short_name"] == "DeepSeek: DeepSeek V3.2"
+
+
+@pytest.mark.asyncio
+async def test_overlay_widens_frontend_fallback_providers(pipe_instance_async) -> None:
+    """Valve-listed models get the FULL provider list even though the frontend
+    feed only carries one featured endpoint per model row."""
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    endpoints_payload = {
+        "data": {
+            "id": "openai/gpt-5.1",
+            "name": "OpenAI: GPT-5.1",
+            "endpoints": [
+                {"provider_name": "OpenAI", "tag": "openai", "quantization": "unknown", "status": 0},
+                {"provider_name": "Azure", "tag": "azure/eastus", "quantization": "unknown", "status": 0},
+                {"provider_name": "Together", "tag": "together/fp8", "quantization": "fp8", "status": 0},
+            ],
+        }
+    }
+    with aioresponses() as mocked:
+        mocked.get(
+            "https://openrouter.ai/api/v1/models/openai/gpt-5.1/endpoints",
+            payload=endpoints_payload,
+        )
+        session = pipe._create_http_session()
+        try:
+            provider_map = await manager._build_provider_map_with_overlay(
+                session, FRONTEND_CATALOG_SAMPLE, "openai/gpt-5.1", ""
+            )
+        finally:
+            await session.close()
+
+    assert provider_map["openai/gpt-5.1"]["providers"] == ["azure", "openai", "together"]
+    assert provider_map["openai/gpt-5.1"]["short_name"] == "GPT-5.1"
     assert provider_map["anthropic/claude-3.5-sonnet"]["providers"] == ["amazon-bedrock"]

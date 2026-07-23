@@ -3713,3 +3713,351 @@ def test_catalog_manager_uses_direct_attr_for_last_fetch(pipe_instance):
     assert "OpenRouterModelRegistry._last_fetch" in source, (
         "catalog_manager must read _last_fetch via direct attribute access."
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider routing overlay (issue #57): per-model endpoints fetch + merge
+# ---------------------------------------------------------------------------
+
+_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
+
+
+def _endpoints_payload(model_id: str, endpoints: list[dict], name: str = "") -> dict:
+    return {"data": {"id": model_id, "name": name or model_id, "endpoints": endpoints}}
+
+
+class TestProviderOverlayFetch:
+    """_fetch_model_endpoints behavior."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_model_endpoints_success(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        payload = _endpoints_payload("a/b", [{"provider_name": "A", "tag": "a"}])
+        with aioresponses() as mocked:
+            mocked.get(_ENDPOINTS_URL.format(slug="a/b"), payload=payload)
+            session = pipe._create_http_session()
+            try:
+                result = await manager._fetch_model_endpoints(session, "a/b")
+            finally:
+                await session.close()
+        assert result == payload
+
+    @pytest.mark.asyncio
+    async def test_fetch_model_endpoints_http_error_returns_none(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        with aioresponses() as mocked:
+            mocked.get(_ENDPOINTS_URL.format(slug="a/b"), status=500)
+            session = pipe._create_http_session()
+            try:
+                result = await manager._fetch_model_endpoints(session, "a/b")
+            finally:
+                await session.close()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_model_endpoints_non_dict_returns_none(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        with aioresponses() as mocked:
+            mocked.get(_ENDPOINTS_URL.format(slug="a/b"), payload=["not", "a", "dict"])
+            session = pipe._create_http_session()
+            try:
+                result = await manager._fetch_model_endpoints(session, "a/b")
+            finally:
+                await session.close()
+        assert result is None
+
+
+class TestProviderOverlayBuilder:
+    """_build_routed_provider_overlay parsing, caps, and safety."""
+
+    @pytest.mark.asyncio
+    async def test_overlay_tag_edge_cases(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        payload = _endpoints_payload(
+            "a/b",
+            [
+                {"provider_name": "Alpha", "tag": "alpha/fp8", "quantization": "fp8"},
+                {"provider_name": "Beta", "tag": "beta", "quantization": "unknown"},
+                {"provider_name": "NoTag"},
+                {"provider_name": "EmptyTag", "tag": ""},
+                {"provider_name": "IntTag", "tag": 123},
+                "not-a-dict",
+                {"provider_name": "SlashOnly", "tag": "/fp8"},
+            ],
+        )
+        with aioresponses() as mocked:
+            mocked.get(_ENDPOINTS_URL.format(slug="a/b"), payload=payload)
+            session = pipe._create_http_session()
+            try:
+                overlay = await manager._build_routed_provider_overlay(session, ["a/b"])
+            finally:
+                await session.close()
+        assert overlay["a/b"]["providers"] == ["alpha", "beta"]
+        assert overlay["a/b"]["provider_names"] == {"alpha": "Alpha", "beta": "Beta"}
+        assert overlay["a/b"]["quantizations"] == ["fp8", "unknown"]
+
+    @pytest.mark.asyncio
+    async def test_overlay_skips_corrupt_shapes(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        with aioresponses() as mocked:
+            mocked.get(
+                _ENDPOINTS_URL.format(slug="bad/list"),
+                payload={"data": {"id": "bad/list", "endpoints": "not-a-list"}},
+            )
+            mocked.get(
+                _ENDPOINTS_URL.format(slug="bad/data"),
+                payload={"data": ["not", "a", "dict"]},
+            )
+            session = pipe._create_http_session()
+            try:
+                overlay = await manager._build_routed_provider_overlay(
+                    session, ["bad/list", "bad/data"]
+                )
+            finally:
+                await session.close()
+        assert overlay == {}
+
+    @pytest.mark.asyncio
+    async def test_overlay_caps_routed_model_count(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        slugs = [f"author/model-{i:03d}" for i in range(60)]
+        fetched: list[str] = []
+
+        async def _recorder(session, slug):
+            fetched.append(slug)
+            return None
+
+        manager._fetch_model_endpoints = _recorder
+        session = pipe._create_http_session()
+        try:
+            await manager._build_routed_provider_overlay(session, slugs)
+        finally:
+            await session.close()
+        assert len(fetched) == 50
+        assert sorted(fetched) == sorted(slugs)[:50]
+
+    @pytest.mark.asyncio
+    async def test_overlay_clamps_provider_count(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        endpoints = [
+            {"provider_name": f"P{i}", "tag": f"prov-{i:04d}", "quantization": "fp8"}
+            for i in range(120)
+        ]
+        with aioresponses() as mocked:
+            mocked.get(
+                _ENDPOINTS_URL.format(slug="a/b"),
+                payload=_endpoints_payload("a/b", endpoints),
+            )
+            session = pipe._create_http_session()
+            try:
+                overlay = await manager._build_routed_provider_overlay(session, ["a/b"])
+            finally:
+                await session.close()
+        assert len(overlay["a/b"]["providers"]) == 100
+        assert overlay["a/b"]["providers"] == sorted(overlay["a/b"]["providers"])
+        assert set(overlay["a/b"]["provider_names"]) <= set(overlay["a/b"]["providers"])
+
+
+class TestProviderOverlayMerge:
+    """_merge_provider_overlay semantics and _build_provider_map_with_overlay wiring."""
+
+    def _manager(self, pipe):
+        return pipe._ensure_catalog_manager()
+
+    def test_merge_replaces_providers_and_quantizations(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        frontend_map = {
+            "a/b": {
+                "providers": ["streamlake"],
+                "quantizations": ["fp8"],
+                "short_name": "AB",
+                "provider_names": {"streamlake": "StreamLake"},
+            }
+        }
+        overlay = {
+            "a/b": {
+                "providers": ["baidu", "streamlake"],
+                "quantizations": ["fp4", "fp8"],
+                "short_name": "A: B",
+                "provider_names": {"baidu": "Baidu", "streamlake": "StreamLake"},
+            }
+        }
+        merged = manager._merge_provider_overlay(frontend_map, overlay, ["a/b"])
+        assert merged["a/b"]["providers"] == ["baidu", "streamlake"]
+        assert merged["a/b"]["quantizations"] == ["fp4", "fp8"]
+        assert merged["a/b"]["short_name"] == "AB"
+
+    def test_merge_provider_names_frontend_wins(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        frontend_map = {
+            "a/b": {
+                "providers": ["streamlake"],
+                "quantizations": [],
+                "short_name": "AB",
+                "provider_names": {"streamlake": "StreamLake Classic"},
+            }
+        }
+        overlay = {
+            "a/b": {
+                "providers": ["baidu", "streamlake"],
+                "quantizations": [],
+                "short_name": "",
+                "provider_names": {"baidu": "Baidu", "streamlake": "StreamLake"},
+            }
+        }
+        merged = manager._merge_provider_overlay(frontend_map, overlay, ["a/b"])
+        assert merged["a/b"]["provider_names"] == {
+            "baidu": "Baidu",
+            "streamlake": "StreamLake Classic",
+        }
+        assert list(merged["a/b"]["provider_names"]) == ["baidu", "streamlake"]
+
+    def test_merge_adds_models_missing_from_frontend(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        overlay = {
+            "null/model": {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": "Null Model",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+        }
+        merged = manager._merge_provider_overlay({}, overlay, ["null/model"])
+        assert merged["null/model"]["providers"] == ["alpha", "beta"]
+        assert merged["null/model"]["short_name"] == "Null Model"
+
+    def test_merge_fetch_failure_uses_last_known_good(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        manager._cached_provider_map = {
+            "a/b": {
+                "providers": ["alpha", "beta", "gamma"],
+                "quantizations": ["fp8"],
+                "short_name": "AB",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta", "gamma": "Gamma"},
+            }
+        }
+        frontend_map = {
+            "a/b": {
+                "providers": ["alpha"],
+                "quantizations": [],
+                "short_name": "AB",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        merged = manager._merge_provider_overlay(frontend_map, {}, ["a/b"])
+        assert merged["a/b"]["providers"] == ["alpha", "beta", "gamma"]
+
+    def test_merge_fetch_failure_keeps_frontend_when_no_cache(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        manager._cached_provider_map = {}
+        frontend_map = {
+            "a/b": {
+                "providers": ["alpha"],
+                "quantizations": [],
+                "short_name": "AB",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        merged = manager._merge_provider_overlay(frontend_map, {}, ["a/b"])
+        assert merged["a/b"]["providers"] == ["alpha"]
+
+    def test_merge_absent_everywhere_stays_absent(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        manager._cached_provider_map = {}
+        merged = manager._merge_provider_overlay({}, {}, ["ghost/model"])
+        assert "ghost/model" not in merged
+
+    def test_merge_failure_warning_dedupes_across_cycles(self, pipe_instance) -> None:
+        manager = self._manager(pipe_instance)
+        manager._cached_provider_map = {}
+        manager.logger = Mock()
+        manager._merge_provider_overlay({}, {}, ["ghost/model"])
+        first_warnings = manager.logger.warning.call_count
+        manager._merge_provider_overlay({}, {}, ["ghost/model"])
+        assert first_warnings >= 1
+        assert manager.logger.warning.call_count == first_warnings
+        manager._merge_provider_overlay({}, {}, ["ghost/model", "other/model"])
+        assert manager.logger.warning.call_count > first_warnings
+
+    @pytest.mark.asyncio
+    async def test_overlay_survives_frontend_outage(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        payload = _endpoints_payload(
+            "a/b",
+            [
+                {"provider_name": "Alpha", "tag": "alpha", "quantization": "fp8"},
+                {"provider_name": "Beta", "tag": "beta/fp4", "quantization": "fp4"},
+            ],
+            name="A: B",
+        )
+        with aioresponses() as mocked:
+            mocked.get(_ENDPOINTS_URL.format(slug="a/b"), payload=payload)
+            session = pipe._create_http_session()
+            try:
+                provider_map = await manager._build_provider_map_with_overlay(
+                    session, None, "a/b", ""
+                )
+            finally:
+                await session.close()
+        assert provider_map["a/b"]["providers"] == ["alpha", "beta"]
+        assert provider_map["a/b"]["short_name"] == "A: B"
+
+    @pytest.mark.asyncio
+    async def test_overlay_entries_stable_across_endpoint_order(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        endpoints = [
+            {"provider_name": "Alpha", "tag": "alpha/fp8", "quantization": "fp8"},
+            {"provider_name": "Beta", "tag": "beta", "quantization": "unknown"},
+            {"provider_name": "Gamma", "tag": "gamma/fp4", "quantization": "fp4"},
+        ]
+
+        async def _build(order: list[dict]) -> dict:
+            with aioresponses() as mocked:
+                mocked.get(
+                    _ENDPOINTS_URL.format(slug="a/b"),
+                    payload=_endpoints_payload("a/b", order),
+                )
+                session = pipe._create_http_session()
+                try:
+                    return await manager._build_routed_provider_overlay(session, ["a/b"])
+                finally:
+                    await session.close()
+
+        forward = await _build(endpoints)
+        backward = await _build(list(reversed(endpoints)))
+        assert forward == backward
+        assert FilterManager.compute_provider_routing_hash(
+            "a/b", "", forward
+        ) == FilterManager.compute_provider_routing_hash("a/b", "", backward)
+
+
+class TestProviderOverlayQuantizationClamp:
+    @pytest.mark.asyncio
+    async def test_overlay_clamps_quantization_count(self, pipe_instance_async) -> None:
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        endpoints = [
+            {"provider_name": "Alpha", "tag": "alpha", "quantization": f"q{i:04d}"}
+            for i in range(120)
+        ]
+        with aioresponses() as mocked:
+            mocked.get(
+                _ENDPOINTS_URL.format(slug="a/b"),
+                payload=_endpoints_payload("a/b", endpoints),
+            )
+            session = pipe._create_http_session()
+            try:
+                overlay = await manager._build_routed_provider_overlay(session, ["a/b"])
+            finally:
+                await session.close()
+        assert len(overlay["a/b"]["quantizations"]) == 100
+        assert overlay["a/b"]["quantizations"] == sorted(overlay["a/b"]["quantizations"])

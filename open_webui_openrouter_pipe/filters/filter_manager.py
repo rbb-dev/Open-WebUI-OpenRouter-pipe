@@ -37,6 +37,8 @@ from ..core.config import (
     _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
     _PROVIDER_ROUTING_FILTER_MARKER_VERSION,
     _PROVIDER_ROUTING_FILTER_ID_PREFIX,
+    _PROVIDER_ROUTING_MAX_PROVIDERS,
+    _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX,
     _PROVIDER_SLUG_PATTERN,
 )
 
@@ -2139,7 +2141,7 @@ class Filter:
         safe_providers = [
             p for p in providers
             if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.match(p) and len(p) <= 64
-        ]
+        ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
         # Build provider slug -> display name mapping (for dropdowns)
         prov_names = provider_names or {}
@@ -2165,24 +2167,28 @@ class Filter:
         # Build provider map code block
         provider_map_code = "{\n" + ",\n".join(provider_slug_map_entries) + "\n}" if provider_slug_map_entries else "{}"
 
-        # Build ORDER permutations - FULL permutations with ALL providers in each entry
-        # 2 providers = 2! = 2 choices, 3 providers = 3! = 6 choices
-        # Display format: "OpenAI > Azure > Together" (all providers in priority order)
+        # Build ORDER options. Full n! permutations are only safe for small n
+        # (14 providers would mean 8.7e10 synchronous iterations); above the
+        # threshold each provider gets a single linear "X first" preference.
         order_display_options: list[str] = []
         order_map_entries: list[str] = []  # For the _ORDER_MAP dict
 
         # Create mapping from display name to slug for lookups
         display_to_slug = dict(zip(provider_display_options, safe_providers))
 
-        # Generate all n! full permutations of ALL providers
-        for perm in itertools.permutations(provider_display_options):
-            # Display: "OpenAI > Azure > Together"
-            perm_disp = " > ".join(perm)
-            order_display_options.append(perm_disp)
-            # Slugs: ["openai", "azure", "together"]
-            perm_slugs = [display_to_slug[d] for d in perm]
-            slugs_literal = ", ".join(FilterManager.safe_literal_string(s) for s in perm_slugs)
-            order_map_entries.append(f'    {FilterManager.safe_literal_string(perm_disp)}: [{slugs_literal}]')
+        if len(provider_display_options) <= _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX:
+            for perm in itertools.permutations(provider_display_options):
+                perm_disp = " > ".join(perm)
+                order_display_options.append(perm_disp)
+                perm_slugs = [display_to_slug[d] for d in perm]
+                slugs_literal = ", ".join(FilterManager.safe_literal_string(s) for s in perm_slugs)
+                order_map_entries.append(f'    {FilterManager.safe_literal_string(perm_disp)}: [{slugs_literal}]')
+        else:
+            for disp in provider_display_options:
+                first_disp = f"{disp} first"
+                order_display_options.append(first_disp)
+                slug_literal = FilterManager.safe_literal_string(display_to_slug[disp])
+                order_map_entries.append(f'    {FilterManager.safe_literal_string(first_disp)}: [{slug_literal}]')
 
         # Build Literal type string for ORDER field
         order_options = [no_pref] + order_display_options
@@ -2196,7 +2202,7 @@ class Filter:
         safe_quantizations = [
             q for q in quantizations
             if isinstance(q, str) and _QUANTIZATION_PATTERN.match(q) and len(q) <= 32
-        ]
+        ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
         # Build Literal type string for QUANTIZATIONS dropdown
         quant_options = [no_pref] + safe_quantizations
@@ -2206,6 +2212,18 @@ class Filter:
         # ADMIN-only: toggle=False (always runs, user can't disable)
         # USER or BOTH: toggle=True (user can toggle per-chat)
         toggle_value = "False" if visibility == "admin" else "True"
+
+        # Stale saved values (from a previous filter generation with different
+        # dropdown options) must degrade to the sentinel instead of raising:
+        # OWUI instantiates admin Valves outside any try/except, so one stale
+        # value would otherwise fail every chat on the model.
+        stale_choice_guard = '''
+        @field_validator("ORDER", "ONLY", "IGNORE", "QUANTIZATION", mode="before")
+        @classmethod
+        def _coerce_stale_choice(cls, value: Any, info: ValidationInfo) -> Any:
+            options = get_args(cls.model_fields[info.field_name].annotation)
+            return value if value in options else _NO_PREF
+'''
 
         # Generate Valves class (for admin) if visibility is 'admin' or 'both'
         # Field order matches OpenRouter API docs: provider-selection.md
@@ -2230,7 +2248,7 @@ class Filter:
         MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
         MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
         MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
-'''
+{stale_choice_guard}'''
 
         # Generate UserValves class (for user) if visibility is 'user' or 'both'
         # Field order matches OpenRouter API docs: provider-selection.md
@@ -2255,7 +2273,7 @@ class Filter:
         MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
         MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
         MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
-'''
+{stale_choice_guard}'''
 
         # Generate init based on visibility
         init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
@@ -2280,9 +2298,9 @@ license: MIT
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from open_webui.env import SRC_LOG_LEVELS
 
 OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
@@ -2393,8 +2411,15 @@ class Filter:
         # Track slug -> filter_id mappings for attachment
         slug_to_filter_id: dict[str, str] = {}
 
-        # Check if any filters are missing (deleted by user)
-        missing_filters = {slug for slug in all_models if slug not in existing_filters}
+        # Check if any filters are missing (deleted by user). Slugs with no
+        # provider data cannot be created at all, so they are "not applicable"
+        # rather than missing; they are reconsidered when the provider map
+        # (part of the state hash) changes.
+        missing_filters = {
+            slug
+            for slug in all_models
+            if slug not in existing_filters and (provider_map.get(slug) or {}).get("providers")
+        }
 
         # If hash unchanged AND all filters exist, just return existing mappings
         if hash_unchanged and not missing_filters:
@@ -2544,13 +2569,8 @@ class Filter:
 
         # Update hash AFTER all filter work completes (prevents race condition where
         # hash is set but work failed, causing next call to incorrectly skip)
-        if created > 0 or updated > 0 or disabled > 0 or len(all_models) == 0:
-            FilterManager._provider_routing_state_hash = current_hash
-            self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
-        else:
-            self.logger.warning(
-                "No filter changes made; state hash NOT updated (will retry on next call)"
-            )
+        FilterManager._provider_routing_state_hash = current_hash
+        self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
 
         self.logger.info(
             "Returning %d provider routing filter mappings for attachment: %r",

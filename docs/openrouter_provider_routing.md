@@ -16,7 +16,7 @@ The **Provider Routing Filters** integration generates dedicated Open WebUI filt
 
 When you configure provider routing for a model, the pipe:
 
-1. **Fetches provider data** from OpenRouter's `/api/frontend/v1/catalog/models` catalog
+1. **Fetches provider data** from OpenRouter's per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`), which lists every provider serving the model
 2. **Generates a dedicated filter** for each model with human-readable dropdown options
 3. **Installs the filter** in Open WebUI's Functions database
 4. **Attaches the filter** to the model so it appears in the Integrations menu
@@ -200,23 +200,13 @@ Provider routing is **not applied** to task model requests (title generation, ta
 
 ## Provider catalog source
 
-Provider data comes from OpenRouter's `/api/frontend/v1/catalog/models` endpoint, which returns one entry per model+provider combination:
+The full provider list for each routed model comes from OpenRouter's public per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`, no auth). Each endpoint entry carries a `tag` (for example `deepinfra/fp4` or `venice`); the segment before the `/` is the provider routing slug, and OpenRouter documents that a base slug used in `order`/`only`/`ignore` matches every endpoint variant of that provider. Endpoint entries also supply the provider display name and quantization levels for the dropdowns. Only the models named in the routing valves are fetched (bounded, with a short timeout), once per metadata sync cycle.
 
-```json
-{
-  "data": [
-    {"slug": "openai/gpt-4o", "endpoint": {"provider_info": {"slug": "openai", "displayName": "OpenAI"}}},
-    {"slug": "openai/gpt-4o", "endpoint": {"provider_info": {"slug": "azure", "displayName": "Azure"}}},
-    ...
-  ]
-}
-```
-
-The pipe groups these by model slug to build the provider list for each model.
+OpenRouter's frontend catalog (`/api/frontend/v1/catalog/models`) now returns a single featured endpoint per model, so it can no longer supply the full provider list. It remains the source for model display names, and its single-endpoint data acts as a degraded fallback when the endpoints API cannot be reached — in that case the previous sync's richer data is retained where available, and a warning names the affected models.
 
 ### Variant endpoint filtering
 
-Endpoints with `model_variant_slug` set (e.g., Venice serving only `:free` variants) are **excluded** from the provider list for base models. This prevents showing providers that aren't actually available for the base model.
+In the frontend-catalog fallback, rows whose featured endpoint has a `model_variant_slug` differing from the base model (e.g. a `:free`-only endpoint) are excluded. The endpoints API path does not need this filtering: it returns the endpoints of the requested base model directly.
 
 ---
 
@@ -236,6 +226,12 @@ Filters are regenerated when:
 - Valve lists change (models added/removed from routing)
 
 The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed.
+
+When regeneration changes the dropdown options, previously saved selections that no longer
+exist in the new option list (for example an ORDER preference saved before a provider was
+added or removed) silently reset to "(no preference)" instead of breaking the filter.
+Selections that still exist keep working unchanged; only stale ones reset, so re-pick your
+preference after a provider lineup change.
 
 ### Removal
 

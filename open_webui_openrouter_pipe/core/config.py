@@ -49,6 +49,7 @@ _OPENROUTER_REFERER = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/"
 _DEFAULT_PIPE_ID = "open_webui_openrouter_pipe"
 _FUNCTION_MODULE_PREFIX = "function_"
 _OPENROUTER_FRONTEND_MODELS_URL = "https://openrouter.ai/api/frontend/v1/catalog/models"
+_OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
 _OPENROUTER_SITE_URL = "https://openrouter.ai"
 _MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
 _MAX_OPENROUTER_ID_CHARS = 128
@@ -89,6 +90,9 @@ _PROVIDER_ROUTING_FILTER_MARKER_PREFIX = "openrouter_pipe:provider_routing:"
 _PROVIDER_ROUTING_FILTER_MARKER_VERSION = "v1"
 _PROVIDER_ROUTING_FILTER_ID_PREFIX = "openrouter_provider_"
 _PROVIDER_SLUG_PATTERN = re.compile(r"^[a-z0-9-]+(?:/[a-z0-9-]+)?$")
+_PROVIDER_ROUTING_ORDER_PERMUTATION_MAX = 4
+_PROVIDER_ROUTING_MAX_PROVIDERS = 100
+_PROVIDER_ROUTING_OVERLAY_MAX_MODELS = 50
 
 _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     {

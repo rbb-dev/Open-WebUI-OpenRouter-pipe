@@ -1876,3 +1876,365 @@ class TestProviderRoutingFilter:
         module = _load_filter_from_source(source, "provider_filter_escape_test")
         filt = module.Filter()
         assert filt is not None
+
+
+# ============================================================================
+# Provider Routing ORDER bounds + stale-value healing (issue #57)
+# ============================================================================
+
+
+def _order_options_of(module) -> dict[str, list[str]]:
+    return dict(module._ORDER_MAP)
+
+
+def _literal_options(valves_cls, field: str) -> tuple:
+    from typing import get_args
+
+    return get_args(valves_cls.model_fields[field].annotation)
+
+
+def _render_with_n_providers(count: int, visibility: str = "admin") -> str:
+    providers = [f"prov-{i:02d}" for i in range(count)]
+    names = {p: f"Provider {i:02d}" for i, p in enumerate(providers)}
+    return FilterManager._render_provider_routing_filter_source(
+        model_slug="example/scale-model",
+        providers=providers,
+        quantizations=["fp8"],
+        visibility=visibility,
+        short_name="Scale Model",
+        provider_names=names,
+    )
+
+
+class TestProviderRoutingOrderBounds:
+    """ORDER dropdown generation must stay bounded (uncapped n! froze the loop)."""
+
+    def test_order_full_permutations_at_three(self):
+        module = _load_filter_from_source(
+            _render_with_n_providers(3), "order_bounds_three"
+        )
+        order_map = _order_options_of(module)
+        assert len(order_map) == 6
+        assert all(len(slugs) == 3 for slugs in order_map.values())
+
+    def test_order_full_permutations_at_four(self):
+        module = _load_filter_from_source(
+            _render_with_n_providers(4), "order_bounds_four"
+        )
+        order_map = _order_options_of(module)
+        assert len(order_map) == 24
+        assert all(len(slugs) == 4 for slugs in order_map.values())
+
+    def test_order_linear_at_five(self):
+        module = _load_filter_from_source(
+            _render_with_n_providers(5), "order_bounds_five"
+        )
+        order_map = _order_options_of(module)
+        assert len(order_map) == 5
+        assert all(len(slugs) == 1 for slugs in order_map.values())
+        assert all(label.endswith(" first") for label in order_map)
+
+    def test_order_linear_at_live_scale_fourteen(self):
+        module = _load_filter_from_source(
+            _render_with_n_providers(14), "order_bounds_fourteen"
+        )
+        order_map = _order_options_of(module)
+        assert len(order_map) == 14
+        slugs_seen = {slugs[0] for slugs in order_map.values()}
+        assert len(slugs_seen) == 14
+        options = _literal_options(module.Filter.Valves, "ORDER")
+        assert len(options) == 15
+        assert "(no preference)" in options
+
+    def test_only_ignore_keep_full_list_above_threshold(self):
+        module = _load_filter_from_source(
+            _render_with_n_providers(14), "order_bounds_only_full"
+        )
+        only_options = _literal_options(module.Filter.Valves, "ONLY")
+        assert len(only_options) == 15
+
+
+class TestProviderRoutingStaleValueHealing:
+    """Saved valve values from a previous filter generation must never raise."""
+
+    @pytest.fixture
+    def healing_module(self):
+        source = FilterManager._render_provider_routing_filter_source(
+            model_slug="example/heal-model",
+            providers=["baidu", "streamlake"],
+            quantizations=["fp8"],
+            visibility="both",
+            short_name="Heal Model",
+            provider_names={"baidu": "Baidu", "streamlake": "StreamLake"},
+        )
+        return _load_filter_from_source(source, "provider_filter_healing")
+
+    def test_admin_stale_order_coerced(self, healing_module):
+        valves = healing_module.Filter.Valves(ORDER="StreamLake")
+        assert valves.ORDER == "(no preference)"
+
+    def test_admin_stale_only_coerced(self, healing_module):
+        valves = healing_module.Filter.Valves(ONLY="Vanished Provider")
+        assert valves.ONLY == "(no preference)"
+
+    def test_user_stale_ignore_coerced(self, healing_module):
+        user_valves = healing_module.Filter.UserValves(IGNORE="Vanished Provider")
+        assert user_valves.IGNORE == "(no preference)"
+
+    def test_stale_quantization_coerced(self, healing_module):
+        valves = healing_module.Filter.Valves(QUANTIZATION="int4")
+        assert valves.QUANTIZATION == "(no preference)"
+
+    def test_non_string_value_coerced(self, healing_module):
+        valves = healing_module.Filter.Valves(ORDER=None)
+        assert valves.ORDER == "(no preference)"
+
+    def test_valid_values_pass_through(self, healing_module):
+        valves = healing_module.Filter.Valves(ONLY="StreamLake")
+        assert valves.ONLY == "StreamLake"
+
+    def test_static_literals_stay_strict(self, healing_module):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            healing_module.Filter.Valves(DATA_COLLECTION="bogus")
+
+    def test_inlet_emits_nothing_for_coerced_value(self, healing_module):
+        filt = healing_module.Filter()
+        filt.valves = healing_module.Filter.Valves(ORDER="StreamLake")
+        metadata = {}
+        filt.inlet({"messages": []}, __metadata__=metadata)
+        routing = metadata.get("openrouter_pipe", {}).get("provider", {})
+        assert "order" not in routing
+
+    def test_both_mode_user_stale_shadows_admin(self, healing_module):
+        filt = healing_module.Filter()
+        filt.valves = healing_module.Filter.Valves(ONLY="StreamLake")
+        stale_user = healing_module.Filter.UserValves(ONLY="Vanished Provider")
+        metadata = {}
+        filt.inlet(
+            {"messages": []},
+            __metadata__=metadata,
+            __user__={"valves": stale_user},
+        )
+        routing = metadata.get("openrouter_pipe", {}).get("provider", {})
+        assert "only" not in routing
+
+
+from types import SimpleNamespace
+
+
+class _FakeFunctionsTable:
+    store: dict = {}
+
+    @classmethod
+    def reset(cls):
+        cls.store = {}
+        cls.update_count = 0
+
+    @classmethod
+    async def get_functions_by_type(cls, function_type, active_only=False):
+        return list(cls.store.values())
+
+    @classmethod
+    async def get_function_by_id(cls, function_id):
+        return cls.store.get(function_id)
+
+    @classmethod
+    async def insert_new_function(cls, user_id, function_type, form):
+        obj = SimpleNamespace(
+            id=form.id,
+            name=form.name,
+            content=form.content,
+            meta=form.meta,
+            is_active=False,
+            is_global=False,
+        )
+        cls.store[form.id] = obj
+        return obj
+
+    update_count = 0
+
+    @classmethod
+    async def update_function_by_id(cls, function_id, updates):
+        cls.update_count += 1
+        obj = cls.store.get(function_id)
+        if obj is None:
+            return None
+        for key, value in dict(updates).items():
+            setattr(obj, key, value)
+        return obj
+
+
+class TestProviderRoutingEndToEndOverlay:
+    """Valve-listed model absent from the frontend map still gets a full filter."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_state(self, monkeypatch):
+        import open_webui.models.functions as functions_module
+
+        _FakeFunctionsTable.reset()
+        monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+        previous_hash = FilterManager._provider_routing_state_hash
+        FilterManager._provider_routing_state_hash = ""
+        yield
+        FilterManager._provider_routing_state_hash = previous_hash
+
+    @pytest.mark.asyncio
+    async def test_null_endpoint_model_gets_full_filter(self, pipe_instance_async):
+        pipe = pipe_instance_async
+        manager = pipe._ensure_catalog_manager()
+        frontend_data = {
+            "data": [
+                {"slug": "example/null-model", "short_name": "Null Model", "endpoint": None},
+                {
+                    "slug": "example/variant-model",
+                    "short_name": "Variant Model",
+                    "endpoint": {
+                        "model_variant_slug": "example/variant-model:free",
+                        "provider_info": {"slug": "freeprov", "displayName": "FreeProv"},
+                    },
+                },
+            ]
+        }
+        endpoints_payload = {
+            "data": {
+                "id": "example/null-model",
+                "name": "Example: Null Model",
+                "endpoints": [
+                    {"provider_name": "Alpha", "tag": "alpha", "quantization": "fp8"},
+                    {"provider_name": "Beta", "tag": "beta/fp4", "quantization": "fp4"},
+                    {"provider_name": "Gamma", "tag": "gamma", "quantization": "unknown"},
+                ],
+            }
+        }
+        from aioresponses import aioresponses
+
+        with aioresponses() as mocked:
+            mocked.get(
+                "https://openrouter.ai/api/v1/models/example/null-model/endpoints",
+                payload=endpoints_payload,
+            )
+            session = pipe._create_http_session()
+            try:
+                provider_map = await manager._build_provider_map_with_overlay(
+                    session, frontend_data, "example/null-model", ""
+                )
+            finally:
+                await session.close()
+
+        assert provider_map["example/null-model"]["providers"] == ["alpha", "beta", "gamma"]
+
+        filter_manager = pipe._ensure_filter_manager()
+        mapping = await filter_manager.ensure_provider_routing_filters(
+            "example/null-model",
+            "",
+            provider_map,
+            [],
+            "openrouter",
+        )
+        assert "example/null-model" in mapping
+        stored = _FakeFunctionsTable.store[mapping["example/null-model"]]
+        assert "Alpha" in stored.content
+        assert "Beta" in stored.content
+        assert "Gamma" in stored.content
+        assert stored.is_active is True
+
+    def test_hash_differs_between_collapsed_and_enriched_map(self):
+        collapsed = {
+            "example/null-model": {
+                "providers": ["alpha"],
+                "quantizations": [],
+                "short_name": "Null Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        enriched = {
+            "example/null-model": {
+                "providers": ["alpha", "beta", "gamma"],
+                "quantizations": ["fp4", "fp8", "unknown"],
+                "short_name": "Null Model",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta", "gamma": "Gamma"},
+            }
+        }
+        hash_collapsed = FilterManager.compute_provider_routing_hash(
+            "example/null-model", "", collapsed
+        )
+        hash_enriched = FilterManager.compute_provider_routing_hash(
+            "example/null-model", "", enriched
+        )
+        assert hash_collapsed != hash_enriched
+
+
+class TestProviderRoutingHashPersistence:
+    """The state hash must persist after a no-change pass so the early-return
+    optimization actually engages (it never persisted in steady state before)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_state(self, monkeypatch):
+        import open_webui.models.functions as functions_module
+
+        _FakeFunctionsTable.reset()
+        monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+        previous_hash = FilterManager._provider_routing_state_hash
+        FilterManager._provider_routing_state_hash = ""
+        yield
+        FilterManager._provider_routing_state_hash = previous_hash
+
+    @pytest.mark.asyncio
+    async def test_hash_persists_after_noop_pass(self, pipe_instance_async):
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        provider_map = {
+            "example/steady-model": {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": "Steady Model",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+        }
+        first = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model", "", provider_map, [], "openrouter"
+        )
+        assert "example/steady-model" in first
+        hash_after_create = FilterManager._provider_routing_state_hash
+        assert hash_after_create
+
+        second = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model", "", provider_map, [], "openrouter"
+        )
+        assert second == first
+        assert FilterManager._provider_routing_state_hash == hash_after_create
+
+        FilterManager._provider_routing_state_hash = ""
+        third = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model", "", provider_map, [], "openrouter"
+        )
+        assert third == first
+        assert FilterManager._provider_routing_state_hash == hash_after_create
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_slug_does_not_defeat_early_return(self, pipe_instance_async):
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        provider_map = {
+            "example/steady-model": {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": "Steady Model",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+        }
+        first = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model, example/typo-model", "", provider_map, [], "openrouter"
+        )
+        assert "example/steady-model" in first
+        assert "example/typo-model" not in first
+        updates_after_first = _FakeFunctionsTable.update_count
+
+        second = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model, example/typo-model", "", provider_map, [], "openrouter"
+        )
+        assert second == first
+        assert _FakeFunctionsTable.update_count == updates_after_first
+

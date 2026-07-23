@@ -371,6 +371,7 @@ What it syncs (best-effort):
 
 Data sources / egress:
 - Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and frontend-only capability signals.
+- When provider routing valves list models, fetches `https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints` (no auth) for each listed model to build the full provider list for the routing filter dropdowns.
 - Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`).
 
 Controls:

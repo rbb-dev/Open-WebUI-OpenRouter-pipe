@@ -408,8 +408,8 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 | `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Models in both lists get filters with admin defaults and user overrides. |
 
 Notes:
-- Provider routing filters are generated dynamically from OpenRouter's `/api/frontend/v1/catalog/models` catalog.
-- Each filter exposes an **ORDER dropdown** with all provider priority permutations (using human-readable provider names).
+- Provider routing filters are generated dynamically from OpenRouter's public per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`), which lists every provider serving the model; the frontend catalog is only a degraded single-provider fallback when that fetch fails.
+- Each filter exposes an **ORDER dropdown** (human-readable provider names): full priority permutations for up to 4 providers, and a linear "X first" preference per provider beyond that (full permutations would grow factorially).
 - Admin-only filters use `toggle=False` (always run, cannot be disabled per-chat).
 - User-configurable filters use `toggle=True` (can be toggled on/off per-chat).
 - Provider routing is **not applied** to task model requests (title, tags, follow-ups).
