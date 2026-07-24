@@ -20,7 +20,7 @@ import itertools
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 from ..core.timing_logger import timed
 from ..core.config import (
@@ -753,7 +753,7 @@ class FilterManager:
             .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
         )
 
-    _inner_web_tools_module_cache: dict[str, Any] = {}
+    _inner_web_tools_module_cache: ClassVar[dict[str, Any]] = {}
 
     async def collect_installed_web_tools_config(
         self, user_id: str

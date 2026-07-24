@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from .base import PluginBase, PluginContext
 
@@ -42,12 +42,12 @@ class PluginRegistry:
 
     # Class-level registry — populated at import time by @register decorator.
     # Safe across uvicorn workers (each worker is a separate process).
-    _plugin_classes: list[type[PluginBase]] = []
+    _plugin_classes: ClassVar[list[type[PluginBase]]] = []
 
     # Accumulated valve field specs from all registered plugins.
     # Populated at import time by @register. Used by build_extended_valves().
-    _pending_valve_fields: dict[str, tuple] = {}
-    _pending_user_valve_fields: dict[str, tuple] = {}
+    _pending_valve_fields: ClassVar[dict[str, tuple]] = {}
+    _pending_user_valve_fields: ClassVar[dict[str, tuple]] = {}
 
     @classmethod
     def register(cls, plugin_class: type[_PluginT]) -> type[_PluginT]:

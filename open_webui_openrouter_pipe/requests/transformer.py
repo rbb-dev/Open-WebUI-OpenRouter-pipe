@@ -1505,7 +1505,11 @@ async def transform_messages_to_input(
         else:
             last_assistant_images = []
 
-        def _append_assistant_text_chunks(text: str) -> None:
+        def _append_assistant_text_chunks(
+            text: str,
+            msg_annotations: list[Any] = msg_annotations,
+            msg_reasoning_details: list[Any] = msg_reasoning_details,
+        ) -> None:
             chunk_items: list[dict[str, Any]] = []
             for phase_chunk in split_text_by_phase_markers(text):
                 cleaned_text = phase_chunk["text"].strip()
@@ -1568,17 +1572,17 @@ async def transform_messages_to_input(
 
             for segment in segments:
                 if segment["type"] == "marker":
-                    payload = db_artifacts.get(segment["marker"])
-                    if payload is None:
+                    artifact_payload = db_artifacts.get(segment["marker"])
+                    if artifact_payload is None:
                         logger.warning("Missing artifact %s for chat_id=%s message_id=%s", segment["marker"], chat_id, msg_id)
                         continue
                     if (
-                        payload.get("type") == "reasoning"
+                        artifact_payload.get("type") == "reasoning"
                         and replayed_reasoning_refs is not None
                         and chat_id
                     ):
                         replayed_reasoning_refs.append((chat_id, segment["marker"]))
-                    item = normalize_persisted_item(payload)
+                    item = normalize_persisted_item(artifact_payload)
                     if item is not None:
                         item_type = ((item.get("type") or "").lower())
                         if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:

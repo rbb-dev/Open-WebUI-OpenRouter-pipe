@@ -114,7 +114,7 @@ def query_usage_stats(
 
         rows = (
             session.query(model)
-            .filter(model.ts >= datetime.datetime.fromtimestamp(prev_start))
+            .filter(model.ts >= datetime.datetime.fromtimestamp(prev_start, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None))
             .all()
         )
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 if TYPE_CHECKING:
     pass
@@ -34,7 +34,7 @@ class CircuitBreaker:
 
     # Class-level auth failure tracking (shared across all instances)
     _AUTH_FAILURE_TTL_SECONDS = 60
-    _AUTH_FAILURE_UNTIL: dict[str, float] = {}
+    _AUTH_FAILURE_UNTIL: ClassVar[dict[str, float]] = {}
     _AUTH_FAILURE_LOCK = threading.Lock()
 
     def __init__(self, *, threshold: int, window_seconds: float):

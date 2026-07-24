@@ -20,7 +20,7 @@ import re
 import time
 from decimal import Decimal, InvalidOperation
 from contextvars import ContextVar
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional
 
 import aiohttp
 
@@ -67,7 +67,7 @@ class ModelFamily:
         "owui_pipe_id_ctx",
         default=None,
     )
-    _DYNAMIC_SPECS: Dict[str, Dict[str, Any]] = {}
+    _DYNAMIC_SPECS: ClassVar[Dict[str, Dict[str, Any]]] = {}
 
     # -- tiny, intuitive helpers ----------------------------------------------
     @classmethod
@@ -185,9 +185,9 @@ def supports_phase_model(model_id: str) -> bool:
 class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
-    _models: list[dict[str, Any]] = []
-    _specs: Dict[str, Dict[str, Any]] = {}
-    _id_map: Dict[str, str] = {}  # normalized sanitized id -> original id
+    _models: ClassVar[list[dict[str, Any]]] = []
+    _specs: ClassVar[Dict[str, Dict[str, Any]]] = {}
+    _id_map: ClassVar[Dict[str, str]] = {}  # normalized sanitized id -> original id
     _zdr_model_ids: set[str] | None = None
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()

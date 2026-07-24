@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Awaitable
+from typing import TYPE_CHECKING, Any, Awaitable, ClassVar
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -89,16 +89,16 @@ class PluginBase:
     # Declare subscribed hooks and their priority (MUST be a class-level attribute).
     # Higher number = runs first. Omitted hooks = not dispatched.
     # on_init and on_shutdown are ALWAYS called (lifecycle, not subscription-based).
-    hooks: dict[str, int] = {}
+    hooks: ClassVar[dict[str, int]] = {}
 
     # Plugin-contributed valve fields merged into Pipe.Valves at import time.
     # Keys are field names (e.g., "PIPE_DASHBOARD_ENABLE"), values are
     # ``(type, Field(...))`` tuples compatible with ``pydantic.create_model()``.
-    plugin_valves: dict[str, tuple] = {}
+    plugin_valves: ClassVar[dict[str, tuple]] = {}
 
     # Plugin-contributed per-user valve fields merged into Pipe.UserValves.
     # Same format as ``plugin_valves`` but for user-facing settings.
-    plugin_user_valves: dict[str, tuple] = {}
+    plugin_user_valves: ClassVar[dict[str, tuple]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

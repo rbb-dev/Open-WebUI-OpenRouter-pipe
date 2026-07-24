@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
@@ -54,8 +54,8 @@ if TYPE_CHECKING:
 
 class VideoGenerationAdapter:
 
-    TERMINAL_SUCCESS = {"completed", "succeeded", "success"}
-    TERMINAL_FAILURE = {"failed", "cancelled", "canceled", "expired"}
+    TERMINAL_SUCCESS: ClassVar[set[str]] = {"completed", "succeeded", "success"}
+    TERMINAL_FAILURE: ClassVar[set[str]] = {"failed", "cancelled", "canceled", "expired"}
     JOB_MARKER_KIND = "videojob"
     MODEL_MARKER_KIND = "videomodel"
 

@@ -27,7 +27,7 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional
 
 from .utils import _sanitize_path_component
 
@@ -84,8 +84,8 @@ class SessionLogger:
     user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
-    logs: Dict[str, deque[dict[str, Any]]] = {}
-    _session_last_seen: Dict[str, float] = {}
+    logs: ClassVar[Dict[str, deque[dict[str, Any]]]] = {}
+    _session_last_seen: ClassVar[Dict[str, float]] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
@@ -154,7 +154,7 @@ class SessionLogger:
             msecs = int((created - int(created)) * 1000)
             asctime = f"{base},{msecs:03d}"
         except Exception:
-            asctime = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S,000")
+            asctime = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
         level = str(event.get("level") or "INFO")
         uid = str(event.get("user_id") or "-")
         message = event.get("message")
@@ -398,7 +398,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             msecs = int((created - int(created)) * 1000)
             return f"{base},{msecs:03d}"
         except Exception:
-            return datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S,000")
+            return datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
 
     def _format_event_as_text(event: dict[str, Any]) -> str:
         created = event.get("created")

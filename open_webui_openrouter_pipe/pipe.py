@@ -30,7 +30,7 @@ import uuid
 import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Optional, TYPE_CHECKING, cast, no_type_check
+from typing import Any, AsyncGenerator, Awaitable, Callable, ClassVar, Literal, Optional, TYPE_CHECKING, cast, no_type_check
 
 # Third-party imports
 import aiohttp
@@ -277,7 +277,7 @@ class Pipe:
     # session teardown drops *its* end of the chain the GC destroys the task
     # via GeneratorExit (context-destroying) instead of CancelledError
     # (context-preserving), which breaks ContextVar.reset() in finally blocks.
-    _active_jobs: set[asyncio.Task[None]] = set()
+    _active_jobs: ClassVar[set[asyncio.Task[None]]] = set()
     # Note: Worker-related state (_request_queue, _queue_worker_task, _queue_worker_lock,
     # _log_queue, _log_queue_loop, _log_worker_task, _log_worker_lock, _cleanup_task)
     # are now INSTANCE-level to prevent event loop contamination across tests.
@@ -1840,9 +1840,9 @@ class Pipe:
                 task.add_done_callback(_mark_done)
 
                 @timed
-                def _propagate_cancel(fut: asyncio.Future, _task: asyncio.Task = task, _job_id: str = job.request_id) -> None:
+                def _propagate_cancel(fut: asyncio.Future, _task: asyncio.Task = task, _job_id: str = job.request_id, _logger: logging.Logger = job.pipe.logger) -> None:
                     if fut.cancelled() and not _task.done():
-                        job.pipe.logger.debug("Cancelling in-flight request (request_id=%s)", _job_id)
+                        _logger.debug("Cancelling in-flight request (request_id=%s)", _job_id)
                         _task.cancel()
 
                 job.future.add_done_callback(_propagate_cancel)

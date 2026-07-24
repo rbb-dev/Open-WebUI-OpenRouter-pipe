@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -62,7 +62,7 @@ class PipeDashboardPlugin(PluginBase):
     plugin_id = "pipe-dashboard"
     plugin_name = "Pipe Dashboard"
     plugin_version = "1.0.0"
-    hooks = {
+    hooks: ClassVar[dict[str, int]] = {
         "on_models": 50,
         "on_request": 50,
         "on_emitter_wrap": 50,
@@ -70,7 +70,7 @@ class PipeDashboardPlugin(PluginBase):
         "on_request_retry": 50,
         "on_generation_complete": 50,
     }
-    plugin_valves = {
+    plugin_valves: ClassVar[dict[str, tuple]] = {
         "PIPE_DASHBOARD_ENABLE": (bool, Field(
             default=False,
             title="Enable Pipe Dashboard plugin",
@@ -142,7 +142,7 @@ class PipeDashboardPlugin(PluginBase):
             ),
         )),
     }
-    plugin_user_valves = {}
+    plugin_user_valves: ClassVar[dict[str, tuple]] = {}
 
     def __init__(self) -> None:
         super().__init__()

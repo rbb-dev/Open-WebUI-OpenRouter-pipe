@@ -313,8 +313,8 @@ class SessionTracker:
         done = float(entry.get("done") or time.time())
         started = float(entry.get("started") or done)
         return {
-            "ts": datetime.datetime.fromtimestamp(done),
-            "started_at": datetime.datetime.fromtimestamp(started),
+            "ts": datetime.datetime.fromtimestamp(done, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None),
+            "started_at": datetime.datetime.fromtimestamp(started, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None),
             "kind": entry.get("kind") or "chat",
             "user_id": entry.get("user_id") or "",
             "user_name": entry.get("user_name") or "",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, ClassVar
 
 from .context import CommandContext
 
@@ -26,7 +26,7 @@ class CommandEntry:
 class CommandRegistry:
     """Registry of Pipe Dashboard commands with longest-prefix matching."""
 
-    _commands: dict[str, CommandEntry] = {}
+    _commands: ClassVar[dict[str, CommandEntry]] = {}
 
     @classmethod
     def register(
