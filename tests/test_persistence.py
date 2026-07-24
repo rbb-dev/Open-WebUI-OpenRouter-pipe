@@ -866,6 +866,14 @@ async def test_db_fetch_resets_failure_on_success(pipe_instance, monkeypatch):
 # -----------------------------------------------------------------------------
 
 
+async def _fast_sleep(_seconds):
+    await _real_sleep(0)
+
+
+import asyncio as _asyncio_mod
+_real_sleep = _asyncio_mod.sleep
+
+
 @pytest.mark.asyncio
 async def test_redis_pubsub_listener_no_client(pipe_instance):
     """Test _redis_pubsub_listener returns early when no client (line 1202)."""
@@ -874,67 +882,170 @@ async def test_redis_pubsub_listener_no_client(pipe_instance):
     await store._redis_pubsub_listener()
 
 
+class _ResilientPubSubFake:
+    """Fake pubsub supporting both the legacy listen() and get_message() APIs.
+
+    listen() raises TimeoutError immediately (redis-py 8 idle socket timeout);
+    get_message() follows a scripted sequence, then returns None forever.
+    """
+
+    def __init__(self, script):
+        self.script = script
+        self.subscribe_count = 0
+        self.closed = 0
+
+    async def subscribe(self, _channel):
+        self.subscribe_count += 1
+
+    async def listen(self):
+        raise TimeoutError("Timeout reading from socket")
+        yield
+
+    async def get_message(self, ignore_subscribe_messages=False, timeout=None):
+        await _real_sleep(0)
+        if self.script:
+            step = self.script.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return step
+        return None
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class _ResilientRedisFake:
+    def __init__(self, script):
+        self.pubsubs: list[_ResilientPubSubFake] = []
+        self._script = script
+
+    def pubsub(self):
+        ps = _ResilientPubSubFake(self._script)
+        self.pubsubs.append(ps)
+        return ps
+
+
 @pytest.mark.asyncio
-async def test_redis_pubsub_listener_skips_non_message(pipe_instance):
-    """Test _redis_pubsub_listener skips non-message types (line 1208)."""
+async def test_redis_pubsub_listener_survives_idle_and_reconnects(pipe_instance, monkeypatch):
+    """The listener must survive redis-py 8 idle socket timeouts and reconnect
+    after transient errors instead of dying permanently (the redis-py 8.0
+    DEFAULT_SOCKET_TIMEOUT=5 regression killed the old listen() loop on the
+    first idle period)."""
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
 
-    flush_calls = []
+    monkeypatch.setattr("open_webui_openrouter_pipe.storage.persistence.asyncio.sleep", _fast_sleep, raising=False)
 
-    class _PubSub:
-        async def subscribe(self, _channel):
-            pass
-
-        async def listen(self):
-            yield {"type": "subscribe", "data": None}
-            yield {"type": "psubscribe", "data": None}
-            # Only this one should trigger flush
-            yield {"type": "message", "data": "flush"}
-
-        async def close(self):
-            pass
-
-    class _FakeRedis:
-        def pubsub(self):
-            return _PubSub()
+    flushed = asyncio.Event()
 
     async def _fake_flush():
-        flush_calls.append("flushed")
+        flushed.set()
 
-    store._redis_client = _FakeRedis()
+    script = [
+        ConnectionError("redis restarted"),
+        None,
+        {"type": "message", "data": "flush"},
+    ]
+    store._redis_client = _ResilientRedisFake(script)
+    store._redis_enabled = True
     store._flush_redis_queue = _fake_flush
 
-    await store._redis_pubsub_listener()
-    assert flush_calls == ["flushed"]
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    try:
+        await asyncio.wait_for(flushed.wait(), timeout=2)
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    total_subscribes = sum(ps.subscribe_count for ps in store._redis_client.pubsubs)
+    assert total_subscribes >= 2
+    assert all(ps.closed for ps in store._redis_client.pubsubs[:-1])
 
 
 @pytest.mark.asyncio
-async def test_redis_pubsub_listener_exception(pipe_instance, caplog):
-    """Test _redis_pubsub_listener handles exception (lines 1212-1213)."""
+async def test_redis_pubsub_listener_idle_is_not_an_error(pipe_instance, caplog):
+    """Idle None ticks from get_message must not log warnings or exit."""
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
 
-    class _PubSub:
-        async def subscribe(self, _channel):
-            pass
+    flushed = asyncio.Event()
 
-        async def listen(self):
-            raise RuntimeError("pubsub failed")
-            yield
+    async def _fake_flush():
+        flushed.set()
 
-        async def close(self):
-            pass
-
-    class _FakeRedis:
-        def pubsub(self):
-            return _PubSub()
-
-    store._redis_client = _FakeRedis()
+    script = [None, None, {"type": "subscribe", "data": None}, {"type": "message", "data": "flush"}]
+    store._redis_client = _ResilientRedisFake(script)
+    store._redis_enabled = True
+    store._flush_redis_queue = _fake_flush
 
     caplog.set_level("WARNING")
-    await store._redis_pubsub_listener()
-    assert any("pub/sub listener stopped" in rec.message for rec in caplog.records)
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    try:
+        await asyncio.wait_for(flushed.wait(), timeout=2)
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    assert not [r for r in caplog.records if "pub/sub" in r.message.lower()]
+
+
+@pytest.mark.asyncio
+async def test_redis_pubsub_listener_cancellation_exits_promptly(pipe_instance):
+    """Task cancellation must end the listener quickly (shutdown path)."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    store._redis_client = _ResilientRedisFake([])
+    store._redis_enabled = True
+
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    await asyncio.sleep(0.05)
+    assert not listener.done()
+    listener.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(listener, timeout=2)
+    assert listener.done()
+
+
+@pytest.mark.asyncio
+async def test_redis_pubsub_listener_repeat_errors_log_once(pipe_instance, caplog, monkeypatch):
+    """The same recurring failure warns once, then drops to debug."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    monkeypatch.setattr("open_webui_openrouter_pipe.storage.persistence.asyncio.sleep", _fast_sleep, raising=False)
+
+    attempts = []
+
+    class _AlwaysDownRedis:
+        def pubsub(self):
+            attempts.append(1)
+            return self
+
+        async def subscribe(self, _channel):
+            raise ConnectionError("redis down")
+
+        async def aclose(self):
+            pass
+
+    store._redis_client = _AlwaysDownRedis()
+    store._redis_enabled = True
+
+    caplog.set_level("WARNING")
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    for _ in range(100):
+        if len(attempts) >= 4:
+            break
+        await asyncio.sleep(0.01)
+    listener.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await listener
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "pub/sub" in r.message.lower()]
+    assert len(warnings) == 1
+    assert len(attempts) >= 2
 
 
 # -----------------------------------------------------------------------------
@@ -1843,3 +1954,102 @@ async def test_db_persist_drop_still_records_breaker_failure(pipe_instance, monk
         SessionLogger.user_id.reset(tok)
     assert result == []
     recorded.assert_called_once_with("u9")
+
+
+@pytest.mark.asyncio
+async def test_redis_pubsub_listener_read_flap_warns_once_no_reconnect_spam(pipe_instance, caplog, monkeypatch):
+    """A flapping connection (subscribe succeeds, read fails) must warn once and
+    must not log 'reconnected' until a read actually succeeds."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    monkeypatch.setattr("open_webui_openrouter_pipe.storage.persistence.asyncio.sleep", _fast_sleep, raising=False)
+
+    cycles = []
+
+    class _FlappyPubSub:
+        async def subscribe(self, _channel):
+            cycles.append(1)
+
+        async def get_message(self, ignore_subscribe_messages=False, timeout=None):
+            await _real_sleep(0)
+            raise ConnectionError("read failed")
+
+        async def aclose(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class _FlappyRedis:
+        def pubsub(self):
+            return _FlappyPubSub()
+
+    store._redis_client = _FlappyRedis()
+    store._redis_enabled = True
+
+    caplog.set_level("INFO")
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    for _ in range(200):
+        if len(cycles) >= 5:
+            break
+        await asyncio.sleep(0.01)
+    listener.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await listener
+
+    assert len(cycles) >= 5
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "pub/sub" in r.message.lower()]
+    infos = [r for r in caplog.records if r.levelname == "INFO" and "reconnected" in r.message.lower()]
+    assert len(warnings) == 1
+    assert infos == []
+
+
+@pytest.mark.asyncio
+async def test_redis_pubsub_listener_flag_flip_exits_without_cancel(pipe_instance):
+    """Flipping _redis_enabled off must end the listener without cancellation."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    store._redis_client = _ResilientRedisFake([])
+    store._redis_enabled = True
+
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    await asyncio.sleep(0.05)
+    assert not listener.done()
+    store._redis_enabled = False
+    await asyncio.wait_for(listener, timeout=2)
+    assert listener.done()
+
+
+@pytest.mark.asyncio
+async def test_redis_pubsub_listener_falls_back_to_close_without_aclose(pipe_instance):
+    """redis-py older than 5.0.1 has no aclose(); the finally must fall back."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    closed = []
+
+    class _LegacyPubSub:
+        async def subscribe(self, _channel):
+            pass
+
+        async def get_message(self, ignore_subscribe_messages=False, timeout=None):
+            await _real_sleep(0)
+            return None
+
+        async def close(self):
+            closed.append(1)
+
+    class _LegacyRedis:
+        def pubsub(self):
+            return _LegacyPubSub()
+
+    store._redis_client = _LegacyRedis()
+    store._redis_enabled = True
+
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    await asyncio.sleep(0.05)
+    store._redis_enabled = False
+    await asyncio.wait_for(listener, timeout=2)
+    assert closed == [1]

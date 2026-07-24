@@ -1301,22 +1301,63 @@ class ArtifactStore:
 
     @timed
     async def _redis_pubsub_listener(self) -> None:
+        """Listen for cross-worker flush wake-ups, surviving idle periods and
+        transient Redis failures.
+
+        redis-py 8.0 introduced a 5-second default socket timeout, which makes
+        a bare pubsub.listen() raise TimeoutError on the first idle stretch.
+        get_message(timeout=...) returns None on idle instead, and the
+        reconnect loop restores the subscription after real errors (Redis
+        restarts, network blips) rather than dying for the worker's lifetime.
+        The periodic timer flusher remains the independent fallback.
+        """
         if not self._redis_client:
             return
-        pubsub = self._redis_client.pubsub()
-        try:
-            await pubsub.subscribe(_REDIS_FLUSH_CHANNEL)
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                await self._flush_redis_queue()
-        except asyncio.CancelledError:  # pragma: no cover - shutdown path
-            pass
-        except Exception as exc:
-            self.logger.warning("Redis pub/sub listener stopped: %s (falling back to timer)", exc)
-        finally:
-            with contextlib.suppress(Exception):
-                await pubsub.close()
+        backoff = 1.0
+        failure_reason = ""
+        while self._redis_enabled and self._redis_client:
+            pubsub = None
+            try:
+                pubsub = self._redis_client.pubsub()
+                await pubsub.subscribe(_REDIS_FLUSH_CHANNEL)
+                while self._redis_enabled:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=5.0
+                    )
+                    if failure_reason:
+                        self.logger.info("Redis pub/sub listener reconnected")
+                        failure_reason = ""
+                        backoff = 1.0
+                    if message is None:
+                        continue
+                    if message.get("type") != "message":
+                        continue
+                    await self._flush_redis_queue()
+                return
+            except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                raise
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                if reason != failure_reason:
+                    self.logger.warning(
+                        "Redis pub/sub listener error: %s (reconnecting; timer flush continues)",
+                        reason,
+                    )
+                    failure_reason = reason
+                else:
+                    self.logger.debug("Redis pub/sub listener error repeated: %s", reason)
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                    raise
+                backoff = min(backoff * 2, 5.0)
+            finally:
+                if pubsub is not None:
+                    with contextlib.suppress(Exception):
+                        if hasattr(pubsub, "aclose"):
+                            await pubsub.aclose()
+                        else:
+                            await pubsub.close()
 
     @timed
     async def _redis_periodic_flusher(self) -> None:

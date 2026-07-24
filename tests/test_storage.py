@@ -2405,9 +2405,6 @@ async def test_redis_flush_queue_and_pubsub(pipe_instance, caplog):
         for row in persisted
     )
 
-    caplog.set_level("WARNING")
-    await pipe_instance._artifact_store._redis_pubsub_listener()
-
 
 @pytest.mark.asyncio
 async def test_redis_periodic_flusher_exits(pipe_instance, monkeypatch):
