@@ -50,6 +50,10 @@ try:
         UPLOAD_DIR as _OWUI_UPLOAD_DIR,
     )
 except Exception:
+    logging.getLogger(__name__).warning(
+        "Open WebUI config unavailable; upload-dir containment is disabled and file reads will be refused",
+        exc_info=True,
+    )
     _OWUI_STORAGE_PROVIDER = None  # type: ignore
     _OWUI_UPLOAD_DIR = None  # type: ignore
 
@@ -69,9 +73,12 @@ async def get_file_by_id(file_id: str, logger: logging.Logger) -> Optional[Any]:
         return None
     try:
         return await Files.get_file_by_id(file_id)
-    except Exception as exc:
-        logger.error("Failed to load file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("Failed to load file %s", file_id)
         return None
+
+
+_warned_storage_provider: set[bool] = set()
 
 
 def get_owui_storage() -> Optional[Any]:
@@ -81,6 +88,12 @@ def get_owui_storage() -> Optional[Any]:
 
         return Storage
     except Exception:
+        if not _warned_storage_provider:
+            _warned_storage_provider.add(True)
+            logging.getLogger(__name__).warning(
+                "Open WebUI storage provider unavailable; file attachments will fail",
+                exc_info=True,
+            )
         return None
 
 
@@ -138,6 +151,18 @@ def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
     return temp_path
 
 
+def is_linkable_chat(chat_id: Any) -> bool:
+    """True when a chat id can actually carry a chat_files link.
+
+    Temporary Chats use ``local:`` ids that exist only in the browser, so there is
+    nothing to link and a failed link there is expected, not a fault.
+    """
+    if not isinstance(chat_id, str):
+        return False
+    normalized = chat_id.strip()
+    return bool(normalized) and not normalized.startswith("local:")
+
+
 def is_real_owui_file_record(file_obj: Any) -> bool:
     """True when the record carries a real OWUI file id (so it requires authorisation)."""
     return bool(getattr(file_obj, "id", None))
@@ -162,11 +187,12 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
             has_access_to_file,
         )
     except Exception:
+        logger.warning("OWUI access-control helper unavailable; denying file read", exc_info=True)
         return False
     try:
         return bool(await has_access_to_file(str(file_id), "read", user))
     except Exception as exc:
-        logger.warning("has_access_to_file failed for %s: %s", file_id, exc)
+        logger.warning("has_access_to_file failed for %s: %s", file_id, exc, exc_info=True)
         return False
 
 
@@ -692,21 +718,30 @@ class OwuiFileGateway:
                     effective_user_id = candidate.strip()
 
             try:
-                await self.try_link_file_to_chat(
+                linked = await self.try_link_file_to_chat(
                     chat_id=chat_id,
                     message_id=message_id,
                     file_id=file_id,
                     user_id=effective_user_id,
                 )
             except Exception:
-                pass
+                linked = False
+                self.logger.warning(
+                    "Chat-link raised for file %s; the upload itself succeeded", file_id, exc_info=True
+                )
+            if not linked and is_linkable_chat(chat_id):
+                self.logger.warning(
+                    "File %s was not linked to chat %s; shared-chat viewers may not load it",
+                    file_id,
+                    chat_id,
+                )
 
             self.logger.info(
                 f"Uploaded {filename} ({len(file_data):,} bytes) to OWUI storage: /api/v1/files/{file_id}"
             )
             return file_id
-        except Exception as exc:
-            self.logger.error(f"Failed to upload {filename} to OWUI storage: {exc}")
+        except Exception:
+            self.logger.exception("Failed to upload %s to OWUI storage", filename)
             return None
 
     async def upload_to_owui_storage_from_path(
@@ -777,21 +812,30 @@ class OwuiFileGateway:
                     effective_user_id = candidate.strip()
 
             try:
-                await self.try_link_file_to_chat(
+                linked = await self.try_link_file_to_chat(
                     chat_id=chat_id,
                     message_id=message_id,
                     file_id=file_id,
                     user_id=effective_user_id,
                 )
             except Exception:
-                pass
+                linked = False
+                self.logger.warning(
+                    "Chat-link raised for file %s; the upload itself succeeded", file_id, exc_info=True
+                )
+            if not linked and is_linkable_chat(chat_id):
+                self.logger.warning(
+                    "File %s was not linked to chat %s; shared-chat viewers may not load it",
+                    file_id,
+                    chat_id,
+                )
 
             self.logger.info(
                 f"Streaming-uploaded {filename} ({size_bytes:,} bytes) to OWUI storage: /api/v1/files/{file_id}"
             )
             return file_id
-        except Exception as exc:
-            self.logger.error(f"Failed to streaming-upload {source_path} to OWUI storage: {exc}")
+        except Exception:
+            self.logger.exception("Failed to streaming-upload %s to OWUI storage", source_path)
             return None
 
     @timed
@@ -814,11 +858,9 @@ class OwuiFileGateway:
         Returns:
             True if linking succeeded, False otherwise
         """
-        if not isinstance(chat_id, str):
+        if not isinstance(chat_id, str) or not is_linkable_chat(chat_id):
             return False
         normalized_chat_id = chat_id.strip()
-        if not normalized_chat_id or normalized_chat_id.startswith("local:"):
-            return False
         if not isinstance(file_id, str) or not file_id.strip():
             return False
         if not isinstance(user_id, str):
@@ -835,32 +877,35 @@ class OwuiFileGateway:
 
         try:
             from open_webui.models.chats import Chats  # type: ignore[import-not-found]
-        except Exception:
+        except ImportError:
+            self.logger.debug("Chat-link skipped: open_webui.models.chats unavailable", exc_info=True)
             return False
 
         if not hasattr(Chats, "insert_chat_files"):
             return False
 
         try:
-            await Chats.insert_chat_files(
+            return bool(await Chats.insert_chat_files(
                 chat_id=normalized_chat_id,
                 message_id=normalized_message_id or "",
                 file_ids=[file_id.strip()],
                 user_id=normalized_user_id,
-            )
-            return True
+            ))
         except TypeError:
             try:
-                await Chats.insert_chat_files(
+                return bool(await Chats.insert_chat_files(
                     normalized_chat_id,
                     normalized_message_id or "",
                     [file_id.strip()],
                     normalized_user_id,
-                )
-                return True
+                ))
             except Exception:
+                self.logger.warning(
+                    "Chat-link failed for file %s (positional call)", file_id, exc_info=True
+                )
                 return False
         except Exception:
+            self.logger.warning("Chat-link failed for file %s", file_id, exc_info=True)
             return False
 
     async def resolve_storage_context(
@@ -929,8 +974,8 @@ class OwuiFileGateway:
                 fallback_user = await Users.get_user_by_email(
                     fallback_email,
                 )
-            except Exception as exc:  # pragma: no cover - defensive guard
-                self.logger.error("Failed to load fallback storage user: %s", exc)
+            except Exception:  # pragma: no cover - defensive guard
+                self.logger.exception("Failed to load fallback storage user")
                 return None
 
             if fallback_user is None:
@@ -965,8 +1010,8 @@ class OwuiFileGateway:
                         fallback_name,
                         fallback_email,
                     )
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    self.logger.error("Failed to create fallback storage user: %s", exc)
+                except Exception:  # pragma: no cover - defensive guard
+                    self.logger.exception("Failed to create fallback storage user")
                     return None
 
             self._storage_user_cache = fallback_user

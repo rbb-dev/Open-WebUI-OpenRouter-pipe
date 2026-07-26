@@ -2182,6 +2182,163 @@ class TestProviderRoutingHashPersistence:
         FilterManager._provider_routing_state_hash = previous_hash
 
     @pytest.mark.asyncio
+    async def test_listing_failure_aborts_without_creating_duplicates(self, pipe_instance_async, monkeypatch):
+        """A failed filter listing must abort the sync, not create duplicate filters.
+
+        Falling through with an empty list makes every routed slug look "missing",
+        so the create branch runs, the id suffix bumps to _1/_2/..., and the model is
+        repointed at the duplicate on every refresh.
+        """
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        provider_map = {
+            "example/steady-model": {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": "Steady Model",
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+        }
+        first = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model", "", provider_map, [], "openrouter"
+        )
+        assert "example/steady-model" in first
+        rows_before = dict(_FakeFunctionsTable.store)
+        hash_before = FilterManager._provider_routing_state_hash
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(_FakeFunctionsTable, "get_functions_by_type", _boom)
+        FilterManager._provider_routing_state_hash = ""
+
+        result = await filter_manager.ensure_provider_routing_filters(
+            "example/steady-model", "", provider_map, [], "openrouter"
+        )
+        assert result == {}
+        assert _FakeFunctionsTable.store == rows_before
+        assert not any(k.endswith("_1") for k in _FakeFunctionsTable.store)
+        assert FilterManager._provider_routing_state_hash != hash_before or hash_before == ""
+
+    @pytest.mark.asyncio
+    async def test_create_loop_lookup_error_propagates(self, pipe_instance_async, monkeypatch):
+        """The id-collision loop no longer nets get_function_by_id.
+
+        OWUI self-guards that call, so a raise means something genuinely unexpected
+        and must not be silently treated as "id is free".
+        """
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        provider_map = {
+            "example/collide-model": {
+                "providers": ["alpha"],
+                "quantizations": ["fp8"],
+                "short_name": "Collide Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("lookup exploded")
+
+        monkeypatch.setattr(_FakeFunctionsTable, "get_function_by_id", _boom)
+        with pytest.raises(RuntimeError, match="lookup exploded"):
+            await filter_manager.ensure_provider_routing_filters(
+                "example/collide-model", "", provider_map, [], "openrouter"
+            )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_filters_are_reaped(self, pipe_instance_async):
+        """Duplicates left by an earlier failed sync must be disabled, not ignored.
+
+        They carry the same marker, so a slug->filter dict silently kept only one
+        and the rest stayed active forever.
+        """
+        from open_webui_openrouter_pipe.core.config import (
+            _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
+        )
+
+        slug = "example/dup-model"
+        marker = f'OWUI_OPENROUTER_PIPE_MARKER = "{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{slug}:v1"\n'
+        for fid in ("openrouter_provider_example_dup_model", "openrouter_provider_example_dup_model_1"):
+            _FakeFunctionsTable.store[fid] = SimpleNamespace(
+                id=fid, name=fid, content=marker, meta=None, is_active=True, is_global=False,
+            )
+
+        provider_map = {
+            slug: {
+                "providers": ["alpha"],
+                "quantizations": ["fp8"],
+                "short_name": "Dup Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        filter_manager = pipe_instance_async._ensure_filter_manager()
+        mapping = await filter_manager.ensure_provider_routing_filters(
+            slug, "", provider_map, [], "openrouter"
+        )
+        assert mapping[slug] == "openrouter_provider_example_dup_model"
+        assert _FakeFunctionsTable.store["openrouter_provider_example_dup_model_1"].is_active is False
+
+    @pytest.mark.asyncio
+    async def test_slugless_marker_is_ignored(self, pipe_instance_async):
+        """A marker carrying only a version must not register the version as a slug."""
+        from open_webui_openrouter_pipe.core.config import (
+            _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
+        )
+
+        _FakeFunctionsTable.store["stray_filter"] = SimpleNamespace(
+            id="stray_filter",
+            name="stray",
+            content=f'OWUI_OPENROUTER_PIPE_MARKER = "{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}v1"\n',
+            meta=None,
+            is_active=True,
+            is_global=False,
+        )
+        provider_map = {
+            "example/plain-model": {
+                "providers": ["alpha"],
+                "quantizations": ["fp8"],
+                "short_name": "Plain Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        filter_manager = pipe_instance_async._ensure_filter_manager()
+        mapping = await filter_manager.ensure_provider_routing_filters(
+            "example/plain-model", "", provider_map, [], "openrouter"
+        )
+        assert "v1" not in mapping
+        assert "example/plain-model" in mapping
+
+    @pytest.mark.asyncio
+    async def test_variant_slug_marker_round_trips_without_duplicating(self, pipe_instance_async):
+        """A slug containing a colon (":free", ":nitro") must survive marker recovery.
+
+        Splitting the marker on every colon truncated the slug, so the lookup missed
+        and a fresh _1/_2/... filter was created on every single refresh.
+        """
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        slug = "example/variant-model:free"
+        provider_map = {
+            slug: {
+                "providers": ["alpha"],
+                "quantizations": ["fp8"],
+                "short_name": "Variant Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        first = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
+        assert slug in first
+        created = len(_FakeFunctionsTable.store)
+
+        FilterManager._provider_routing_state_hash = ""
+        second = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
+        assert second == first
+        assert len(_FakeFunctionsTable.store) == created
+        assert not any(k.endswith("_1") for k in _FakeFunctionsTable.store)
+
+    @pytest.mark.asyncio
     async def test_hash_persists_after_noop_pass(self, pipe_instance_async):
         pipe = pipe_instance_async
         filter_manager = pipe._ensure_filter_manager()

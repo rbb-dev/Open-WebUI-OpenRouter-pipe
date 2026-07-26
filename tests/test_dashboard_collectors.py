@@ -274,6 +274,21 @@ class TestCollectMediumStats:
         pipe._session_log_manager._worker_thread.is_alive.return_value = False
         assert collect_medium_stats(pipe)["health"]["log_worker"] == "stopped"
 
+    def test_models_collect_failure_is_logged_not_silent(self, caplog):
+        """A broken registry read must surface a warning, not a silently blank panel."""
+        import logging as _logging
+
+        pipe = _make_mock_pipe()
+        with patch(
+            "open_webui_openrouter_pipe.plugins.pipe_dashboard.runtime_metrics.collect_model_registry",
+            side_effect=RuntimeError("registry exploded"),
+        ), caplog.at_level(_logging.WARNING):
+            stats = collect_medium_stats(pipe)
+        assert stats["models"]["status"] == "unknown"
+        warnings = [r for r in caplog.records if "model-registry stats unavailable" in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+
     def _patch_registry(self, **attrs):
         """Patch OpenRouterModelRegistry with given class attributes."""
         return patch(

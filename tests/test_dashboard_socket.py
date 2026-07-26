@@ -47,10 +47,14 @@ def _reset_socket_state():
     registered = dashboard_socket._registered
     resync = dashboard_socket._resync
     get_pipe = dashboard_socket._get_pipe
+    warned = set(dashboard_socket._warned_import_sites)
+    dashboard_socket._warned_import_sites.clear()
     yield
     dashboard_socket._registered = registered
     dashboard_socket._resync = resync
     dashboard_socket._get_pipe = get_pipe
+    dashboard_socket._warned_import_sites.clear()
+    dashboard_socket._warned_import_sites.update(warned)
 
 
 def _make_mock_pipe():
@@ -277,6 +281,20 @@ class TestSocketHelpers:
         mock_sio.emit = AsyncMock(side_effect=RuntimeError("down"))
         _install_socket_stub(monkeypatch, sio=mock_sio)
         assert await dashboard_socket.emit_dashboard({"tick": 0}) is False
+
+    @pytest.mark.asyncio
+    async def test_unavailable_socket_warns_once_not_per_tick(self, monkeypatch, caplog):
+        """emit_dashboard runs on every publish tick; a permanent failure must warn once."""
+        import logging as _logging
+
+        _install_socket_stub(monkeypatch)
+        with caplog.at_level(_logging.WARNING, logger=dashboard_socket.__name__):
+            assert await dashboard_socket.emit_dashboard({"tick": 0}) is False
+            assert await dashboard_socket.emit_dashboard({"tick": 1}) is False
+            assert await dashboard_socket.emit_dashboard({"tick": 2}) is False
+        dropped = [r for r in caplog.records if "payloads are being dropped" in r.getMessage()]
+        assert len(dropped) == 1
+        assert dropped[0].exc_info is not None
 
 
 # ── Emit payload assembly ──

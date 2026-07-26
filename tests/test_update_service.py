@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sys
+import time
 import types
 from types import SimpleNamespace
 
@@ -14,6 +16,21 @@ pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import update_service as us
 
 PID = "open_webui_openrouter_pipe"
+
+
+async def _wait_for(predicate, *, timeout: float = 5.0) -> bool:
+    """Wait until *predicate* holds.
+
+    Yields real time (not bare ``sleep(0)``) so state that only settles after an
+    ``asyncio.to_thread`` hop — leader-lease renewal, lock acquisition — can land
+    regardless of host load.
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.001)
+    return True
 
 GOOD_HEADER = (
     '"""\n'
@@ -698,6 +715,23 @@ async def test_snapshot_insert_none_cleans_blob_and_aborts(svc, fake_functions, 
 
 
 @pytest.mark.asyncio
+async def test_snapshot_insert_error_cleans_blob_and_chains_cause(
+    svc, fake_functions, fake_storage, monkeypatch
+):
+    async def _boom(user_id, form, db=None):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(fake_storage.Files, "insert_new_file", staticmethod(_boom))
+    with pytest.raises(us.UpdateError) as exc:
+        await svc.snapshot_current("admin", "u1")
+    assert exc.value.code == "validation_failed"
+    assert "db exploded" in exc.value.message
+    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert any(op[0] == "del_blob" for op in fake_storage.order)
+    assert fake_storage.rows == {}
+
+
+@pytest.mark.asyncio
 async def test_snapshot_tolerates_blob_delete_failure(svc, fake_functions, fake_storage):
     for i in range(3):
         _seed_slot(fake_storage, i, sha=f"s{i}", ts=float(i + 1))
@@ -1287,8 +1321,6 @@ async def test_auto_manual_apply_clears_skip_map(svc, wired):
 
 @pytest.mark.asyncio
 async def test_auto_cancellation_after_loader_swap_still_commits(svc, wired, monkeypatch):
-    import asyncio
-
     import open_webui.utils.plugin as owp
 
     wired.functions.valves_row = _auto_valves_row()
@@ -1314,10 +1346,7 @@ async def test_auto_cancellation_after_loader_swap_still_commits(svc, wired, mon
     holder["task"] = task
     await asyncio.wait([task], timeout=5.0)
     assert task.done()
-    for _ in range(50):
-        if any("content" in u for u in wired.functions.updates):
-            break
-        await asyncio.sleep(0.01)
+    await _wait_for(lambda: any("content" in u for u in wired.functions.updates))
     assert any("content" in u for u in wired.functions.updates)
 
 
@@ -1443,8 +1472,6 @@ async def test_null_download_url_asset_treated_missing(svc, fake_functions, fake
 
 @pytest.mark.asyncio
 async def test_commit_inflight_blocks_second_apply_after_cancel(svc, wired, monkeypatch):
-    import asyncio
-
     release = asyncio.Event()
 
     async def _slow_commit(content, rev, request, actor, from_version):
@@ -1457,10 +1484,7 @@ async def test_commit_inflight_blocks_second_apply_after_cancel(svc, wired, monk
     task = asyncio.get_event_loop().create_task(
         svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if svc._commit_inflight:
-            break
+    await _wait_for(lambda: svc._commit_inflight)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert svc._commit_inflight is True
@@ -1468,17 +1492,12 @@ async def test_commit_inflight_blocks_second_apply_after_cancel(svc, wired, monk
         await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
     assert exc.value.code == "update_in_progress"
     release.set()
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if not svc._commit_inflight:
-            break
+    await _wait_for(lambda: not svc._commit_inflight)
     assert svc._commit_inflight is False
 
 
 @pytest.mark.asyncio
 async def test_commit_failure_after_cancel_recorded(svc, wired, monkeypatch):
-    import asyncio
-
     release = asyncio.Event()
 
     async def _failing_commit(content, rev, request, actor, from_version):
@@ -1490,17 +1509,11 @@ async def test_commit_failure_after_cancel_recorded(svc, wired, monkeypatch):
     task = asyncio.get_event_loop().create_task(
         svc.apply({"rev": rev}, actor="auto", actor_id="sys", request=None)
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if svc._commit_inflight:
-            break
+    await _wait_for(lambda: svc._commit_inflight)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     release.set()
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if not svc._commit_inflight:
-            break
+    await _wait_for(lambda: not svc._commit_inflight)
     assert svc._auto_last is not None
     assert svc._auto_last["code"] == "stale_rev"
 
@@ -1553,17 +1566,12 @@ async def test_cross_worker_lock_contended_blocks_before_download(svc, wired, mo
 
 @pytest.mark.asyncio
 async def test_cross_worker_lock_released_after_commit(svc, wired, monkeypatch):
-    import asyncio
-
     xlock = _FakeXLock()
     monkeypatch.setattr(us, "_distributed_lock", lambda: xlock)
     rev = wired.functions.row.updated_at
     out = await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
     assert out["ok"] is True
-    for _ in range(50):
-        if xlock.released:
-            break
-        await asyncio.sleep(0.01)
+    await _wait_for(lambda: bool(xlock.released))
     assert xlock.acquired == 1
     assert xlock.released == 1
 
@@ -1631,10 +1639,7 @@ async def test_commit_content_write_refusal_fails_update(svc, wired):
     assert exc.value.code == "validation_failed"
     assert "database rejected" in exc.value.message
     assert not hasattr(req.app.state, "FUNCTIONS")
-    for _ in range(50):
-        if not svc._commit_inflight:
-            break
-        await asyncio.sleep(0.01)
+    await _wait_for(lambda: not svc._commit_inflight)
     assert svc._commit_inflight is False
 
 
@@ -1713,10 +1718,7 @@ async def test_released_lock_client_disposed(svc, wired, monkeypatch):
         {"rev": wired.functions.row.updated_at}, actor="admin", actor_id="u1", request=_request()
     )
     assert out["ok"] is True
-    for _ in range(50):
-        if xlock.redis.closed:
-            break
-        await asyncio.sleep(0.01)
+    await _wait_for(lambda: bool(xlock.redis.closed))
     assert xlock.redis.closed == 1
     assert xlock.redis.connection_pool.disconnected == 1
 
@@ -1777,7 +1779,6 @@ def _election_env(monkeypatch, svc, store, ticks, sleeps, tick_delay=100.0, stop
     monkeypatch.setattr(svc, "_sleep", _fast_sleep)
 
 
-import asyncio  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -1867,10 +1868,7 @@ async def test_leader_steps_down_when_lease_stolen(svc, wired, monkeypatch):
 
     monkeypatch.setattr(svc, "_sleep", _sleep_steal)
     task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
-    for _ in range(200):
-        await asyncio.sleep(0)
-        if svc._auto_role == "follower":
-            break
+    await _wait_for(lambda: svc._auto_role == "follower")
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert svc._auto_role == "follower"
@@ -1904,10 +1902,7 @@ async def test_cancelled_leader_releases_lease(svc, wired, monkeypatch):
     sleeps: list = []
     _election_env(monkeypatch, svc, store, ticks, sleeps, tick_delay=10_000.0)
     task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if ticks:
-            break
+    await _wait_for(lambda: bool(ticks))
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert store.get("lease") is None
@@ -1986,10 +1981,7 @@ async def test_cancelled_leader_lease_disposed(svc, wired, monkeypatch):
 
     monkeypatch.setattr(svc, "_sleep", _fast)
     task = asyncio.get_event_loop().create_task(svc.run_auto_loop())
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if ticks:
-            break
+    await _wait_for(lambda: bool(ticks))
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert leases and any(lease.closed for lease in leases)

@@ -707,6 +707,9 @@ class TestReadSessionLogArchiveEvents:
         jsonl_content = (
             '{"ts": "2025-01-20T10:30:45.123Z", "message": "valid"}\n'
             "not valid json\n"
+            "42\n"
+            "[1, 2]\n"
+            "null\n"
             '{"ts": "2025-01-20T10:30:46.456Z", "message": "also valid"}\n'
         )
 
@@ -1075,3 +1078,37 @@ def test_assembler_thread_exits_cleanly_when_pipe_ref_nulled(pipe_instance) -> N
         manager._pipe = pipe_instance
         if manager._stop_event:
             manager._stop_event.set()
+
+
+class TestResolveMessageId:
+    """Pin resolve_message_id extraction paths (module-level function, no instance)."""
+
+    def test_non_dict_metadata_returns_empty(self):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        assert resolve_message_id(None) == ""
+        assert resolve_message_id("x") == ""
+        assert resolve_message_id(42) == ""
+
+    def test_message_id_wins_and_coerces(self):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        assert resolve_message_id({"message_id": "m-1"}) == "m-1"
+        assert resolve_message_id({"message_id": 7}) == "7"
+
+    def test_non_task_without_message_id_returns_empty(self):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        assert resolve_message_id({"task_body": {"messages": [{"id": "t-1"}]}}) == ""
+
+    def test_task_body_last_message_id(self):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        metadata = {"task": True, "task_body": {"messages": [{"id": "a"}, {"id": "b"}]}}
+        assert resolve_message_id(metadata) == "b"
+
+    def test_user_message_children_fallback(self):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        metadata = {"task": True, "user_message": {"childrenIds": ["c-1", "c-2"]}}
+        assert resolve_message_id(metadata) == "c-1"

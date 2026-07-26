@@ -77,7 +77,7 @@ def _install_open_webui_stubs() -> None:
 
         @staticmethod
         async def insert_chat_files(chat_id, message_id, file_ids, user_id, db=None):
-            return None
+            return list(file_ids) if file_ids else None
 
     class _ModelForm:
         def __init__(self, **kwargs):

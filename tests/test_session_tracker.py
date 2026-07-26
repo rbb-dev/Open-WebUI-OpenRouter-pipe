@@ -340,10 +340,29 @@ def test_plugin_live_snapshot_sweeps_and_returns_tuple():
     assert isinstance(rows, list) and isinstance(task_costs, dict)
     assert rows[0]["chat_id"] == "c1"
     assert rows[0]["cost"] == pytest.approx(0.05)
-    # a tracker that raises during sweep must never propagate — empty snapshot instead
     plugin._tracker = Mock()
     plugin._tracker.sweep.side_effect = RuntimeError("boom")
-    assert plugin._live_snapshot() == ([], {})
+    with pytest.raises(RuntimeError):
+        plugin._live_snapshot()
+
+
+def test_live_snapshot_failure_reaches_the_publisher_log(caplog):
+    """The fallback that was previously unreachable must now fire and log."""
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_publisher as dp
+
+    plugin = _make_plugin()
+    plugin._tracker = Mock()
+    plugin._tracker.sweep.side_effect = RuntimeError("boom")
+    previous = dp._pd_snapshot_getter
+    dp.set_snapshot_getter(plugin._live_snapshot)
+    try:
+        with caplog.at_level(_logging.DEBUG, logger=dp.__name__):
+            assert dp._snapshot_safe() == ([], {})
+    finally:
+        dp.set_snapshot_getter(previous)
+    assert any(r.exc_info for r in caplog.records)
 
 
 @pytest.mark.asyncio

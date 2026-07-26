@@ -27,46 +27,36 @@ from typing import Any, TYPE_CHECKING
 from ..core.timing_logger import timed
 from ..storage.persistence import _db_session
 
+logger = logging.getLogger(__name__)
+
 
 def resolve_message_id(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return ""
     try:
-        if not isinstance(metadata, dict):
+        mid = metadata.get("message_id")
+        if mid:
+            return str(mid)
+        if not metadata.get("task"):
             return ""
-        try:
-            mid = metadata.get("message_id")
-            if mid:
-                return str(mid)
-        except Exception:
-            pass
-        try:
-            if not metadata.get("task"):
-                return ""
-        except Exception:
-            return ""
-        try:
-            task_body = metadata.get("task_body") or {}
-            if isinstance(task_body, dict):
-                messages = task_body.get("messages")
-                if isinstance(messages, list) and messages:
-                    last = messages[-1]
-                    if isinstance(last, dict):
-                        candidate = last.get("id")
-                        if candidate:
-                            return str(candidate)
-        except Exception:
-            pass
-        try:
-            user_message = metadata.get("user_message") or {}
-            if isinstance(user_message, dict):
-                children = user_message.get("childrenIds")
-                if isinstance(children, list) and children:
-                    candidate = children[0]
+        task_body = metadata.get("task_body") or {}
+        if isinstance(task_body, dict):
+            messages = task_body.get("messages")
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                if isinstance(last, dict):
+                    candidate = last.get("id")
                     if candidate:
                         return str(candidate)
-        except Exception:
-            pass
+        user_message = metadata.get("user_message") or {}
+        if isinstance(user_message, dict):
+            children = user_message.get("childrenIds")
+            if isinstance(children, list) and children:
+                candidate = children[0]
+                if candidate:
+                    return str(candidate)
     except Exception:
-        pass
+        logger.debug("resolve_message_id failed to parse metadata", exc_info=True)
     return ""
 
 
@@ -232,6 +222,7 @@ class SessionLogManager:
                 except queue.Empty:
                     continue
                 except Exception:
+                    self.logger.debug("Session log writer queue.get failed", exc_info=True)
                     continue
                 if item is None:
                     with contextlib.suppress(Exception):
@@ -289,6 +280,7 @@ class SessionLogManager:
             try:
                 return stop_event.wait(timeout=max(0.0, float(seconds)))
             except Exception:
+                self.logger.debug("Session log assembler wait failed; falling back to time.sleep", exc_info=True)
                 time.sleep(max(0.0, float(seconds)))
                 return stop_event.is_set()
 
@@ -301,6 +293,7 @@ class SessionLogManager:
             try:
                 jitter = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
             except Exception:
+                self.logger.debug("Session log assembler exiting: jitter valve unavailable", exc_info=True)
                 return
             if jitter:
                 initial = random.uniform(0.0, jitter)
@@ -320,6 +313,7 @@ class SessionLogManager:
                     interval = self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
                     extra = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
                 except Exception:
+                    self.logger.debug("Session log assembler exiting: interval valves unavailable", exc_info=True)
                     break
                 delay = interval + (random.uniform(0.0, extra) if extra else 0.0)
                 if _wait(stop_event, delay):
@@ -690,7 +684,7 @@ class SessionLogManager:
                 )
                 ids = [row[0] for row in rows if row and isinstance(row[0], str)]
         except Exception as exc:
-            self.logger.debug("Stale lock cleanup skipped — %s: %s", type(exc).__name__, exc)
+            self.logger.debug("Stale lock cleanup skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return
         if ids and self._artifact_store:
             with contextlib.suppress(Exception):
@@ -725,7 +719,7 @@ class SessionLogManager:
                     out.append(key)
                 return out
         except Exception as exc:
-            self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc)
+            self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
 
     @timed
@@ -749,7 +743,7 @@ class SessionLogManager:
                     .all()
                 )
         except Exception as exc:
-            self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc)
+            self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
 
         out: list[tuple[str, str]] = []
@@ -787,7 +781,7 @@ class SessionLogManager:
                     if len(out) >= int(limit):
                         break
         except Exception as exc:
-            self.logger.debug("Stale message filtering skipped — %s: %s", type(exc).__name__, exc)
+            self.logger.debug("Stale message filtering skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
         return out
 
@@ -818,9 +812,10 @@ class SessionLogManager:
                     if line.strip():
                         try:
                             evt = json.loads(line)
+                        except (ValueError, RecursionError):
+                            continue  # Skip malformed lines (JSONDecodeError ⊂ ValueError)
+                        if isinstance(evt, dict):
                             events.append(self._convert_jsonl_to_internal(evt))
-                        except Exception:
-                            pass  # Skip malformed lines
         return events
 
     def _convert_jsonl_to_internal(self, evt: dict[str, Any]) -> dict[str, Any]:
@@ -834,7 +829,7 @@ class SessionLogManager:
                 ts_str = internal.pop("ts")
                 dt = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                 internal["created"] = dt.timestamp()
-            except Exception:
+            except (AttributeError, TypeError, ValueError, OSError, OverflowError):
                 internal["created"] = time.time()
         return internal
 
@@ -989,7 +984,7 @@ class SessionLogManager:
             created = evt.get("created")
             try:
                 return float(created) if created is not None else 0.0
-            except Exception:
+            except (TypeError, ValueError):
                 return 0.0
 
         merged_events.sort(key=_event_ts)
@@ -1122,7 +1117,8 @@ class SessionLogManager:
                         stat = path.stat()
                         if stat.st_mtime < cutoff:
                             path.unlink(missing_ok=True)  # type: ignore[arg-type]
-            except Exception:
+            except OSError:
+                self.logger.debug("Session log cleanup: archive scan failed for %s", base_dir, exc_info=True)
                 continue
 
             # Prune empty directories, including the root if it's emptied out.
@@ -1132,5 +1128,6 @@ class SessionLogManager:
                         if any(Path(dirpath).iterdir()):
                             continue
                         os.rmdir(dirpath)
-            except Exception:
+            except OSError:
+                self.logger.debug("Session log cleanup: directory prune failed for %s", base_dir, exc_info=True)
                 continue

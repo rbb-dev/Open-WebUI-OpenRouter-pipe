@@ -9308,8 +9308,13 @@ class TestFilterAutoInstallationPaths:
             pipe.shutdown()
 
     @pytest.mark.asyncio
-    async def test_web_tools_filter_get_function_by_id_exception(self):
-        """Test exception in get_function_by_id during ID collision check."""
+    async def test_web_tools_filter_get_function_by_id_error_propagates(self):
+        """A raise from get_function_by_id must surface, not be swallowed.
+
+        OWUI self-guards that call (it returns None on any error), so an exception
+        escaping it means something genuinely unexpected — the old net here was dead
+        code that would have hidden it.
+        """
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9326,8 +9331,8 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
-                result = await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
-                # Should eventually create with the base ID (after exception we retry)
+                with pytest.raises(Exception, match="DB error"):
+                    await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
         finally:
             pipe.shutdown()
 
@@ -9485,8 +9490,8 @@ class TestDirectUploadsFilterPaths:
             pipe.shutdown()
 
     @pytest.mark.asyncio
-    async def test_direct_uploads_filter_exception_get_by_id(self):
-        """Test exception in get_function_by_id (line 1557-1558)."""
+    async def test_direct_uploads_filter_get_by_id_error_propagates(self):
+        """A raise from get_function_by_id must surface (OWUI self-guards that call)."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9502,8 +9507,8 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
-                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
-                # Should continue after exception
+                with pytest.raises(Exception, match="DB error"):
+                    await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
         finally:
             pipe.shutdown()
 

@@ -10,6 +10,7 @@ Provides four collector functions at different frequencies:
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,8 @@ from .formatters import (
 if TYPE_CHECKING:
     from ...pipe import Pipe
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Identity (once)
@@ -50,7 +53,7 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
     try:
         from open_webui_openrouter_pipe import __version__
         version = __version__
-    except Exception:
+    except ImportError:
         version = "unknown"
 
     return {
@@ -168,6 +171,7 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
             "status": reg["status"],
         }
     except Exception:
+        logger.warning("Dashboard model-registry stats unavailable", exc_info=True)
         stats["models"] = {
             "loaded": 0, "text": 0, "image": 0, "video": 0, "zdr": None,
             "specs_cached": 0, "last_fetch_ago": "never",
@@ -200,7 +204,7 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
 
         log_buffers = len(SessionLogger.logs)
         log_events = sum(len(dq) for dq in SessionLogger.logs.values())
-    except Exception:
+    except (ImportError, AttributeError, RuntimeError):
         pass
 
     stats["health"] = {
@@ -227,20 +231,23 @@ def collect_system_resources() -> dict[str, Any]:
     out: dict[str, Any] = {}
     try:
         import psutil
-
-        cpu_raw: Any = psutil.cpu_percent(interval=None)
-        if isinstance(cpu_raw, (int, float)):
-            out["cpu_pct"] = float(cpu_raw)
-        memory = psutil.virtual_memory()
-        out["mem_used_pct"] = float(memory.percent)
-        out["mem_total"] = int(memory.total)
-        out["cores"] = int(psutil.cpu_count() or 0)
-    except Exception:
+    except ImportError:
         pass
+    else:
+        try:
+            cpu_raw: Any = psutil.cpu_percent(interval=None)
+            if isinstance(cpu_raw, (int, float)):
+                out["cpu_pct"] = float(cpu_raw)
+            memory = psutil.virtual_memory()
+            out["mem_used_pct"] = float(memory.percent)
+            out["mem_total"] = int(memory.total)
+            out["cores"] = int(psutil.cpu_count() or 0)
+        except (OSError, psutil.Error):
+            pass
     try:
         out["load1"] = float(os.getloadavg()[0])
         out.setdefault("cores", int(os.cpu_count() or 0))
-    except Exception:
+    except (OSError, AttributeError):
         pass
     try:
         import shutil
@@ -249,13 +256,13 @@ def collect_system_resources() -> dict[str, Any]:
             from open_webui.env import DATA_DIR
 
             data_path = str(DATA_DIR)
-        except Exception:
+        except ImportError:
             data_path = os.getcwd()
         usage = shutil.disk_usage(data_path)
         out["disk_total"] = int(usage.total)
         out["disk_free"] = int(usage.free)
         out["disk_path"] = data_path
-    except Exception:
+    except OSError:
         pass
     return out
 
@@ -275,14 +282,14 @@ def _collect_db_stats(pipe: Pipe) -> dict[str, Any]:
                 recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
                 if threshold and recent >= threshold:
                     tripped += 1
-        except Exception:
+        except (AttributeError, TypeError, ValueError, RuntimeError):
             breakers = tripped = 0
         try:
             executor = getattr(store, "_db_executor", None)
             if executor is not None:
                 pending = _safe_int(executor._work_queue.qsize())
                 workers = _safe_int(getattr(executor, "_max_workers", 0))
-        except Exception:
+        except AttributeError:
             pending = workers = 0
     return {
         "breakers_tracked": breakers,
@@ -310,6 +317,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
             try:
                 store._ensure_artifact_store(getattr(pipe, "valves", None), getattr(pipe, "id", "") or "")
             except Exception as exc:
+                logger.warning("Dashboard storage stats: artifact store unavailable", exc_info=True)
                 ensure_error = type(exc).__name__
             sf = getattr(store, "_session_factory", None)
             model = getattr(store, "_item_model", None)
@@ -341,6 +349,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
             try:
                 from ...storage.persistence import _db_session
                 from sqlalchemy import String, func
+                from sqlalchemy.exc import SQLAlchemyError
                 from sqlalchemy.sql.expression import cast
 
                 name_map = build_model_name_map()
@@ -350,7 +359,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                     try:
                         total_count = session.query(func.count(model.id)).scalar() or 0
                         storage["total_items"] = format_number(total_count)
-                    except Exception:
+                    except SQLAlchemyError:
                         pass
 
                     payload_col = getattr(model, "payload", None)
@@ -360,7 +369,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 func.sum(func.length(cast(payload_col, String)))
                             ).scalar() or 0
                             storage["total_size"] = format_bytes(total_size)
-                        except Exception:
+                        except SQLAlchemyError:
                             pass
 
                     enc_col = getattr(model, "is_encrypted", None)
@@ -369,7 +378,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                             enc_count = session.query(func.count()).filter(enc_col.is_(True)).scalar() or 0
                             pct = enc_count / total_count * 100 if total_count > 0 else 0
                             storage["encrypted_count"] = f"{format_number(enc_count)} ({pct:.0f}%)"
-                        except Exception:
+                        except SQLAlchemyError:
                             pass
 
                     type_col = getattr(model, "item_type", None)
@@ -398,7 +407,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 }
                                 for r in type_rows
                             ]
-                        except Exception:
+                        except SQLAlchemyError:
                             pass
 
                     model_col = getattr(model, "model_id", None)
@@ -431,10 +440,11 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 }
                                 for r in model_rows
                             ]
-                        except Exception:
+                        except SQLAlchemyError:
                             pass
 
             except Exception as exc:
+                logger.warning("Dashboard storage stats degraded", exc_info=True)
                 storage["state"] = "degraded"
                 storage["error"] = type(exc).__name__
 
@@ -468,7 +478,7 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                 "id": getattr(cls, "plugin_id", "?"),
                 "version": getattr(cls, "plugin_version", "?"),
             })
-    except Exception:
+    except (ImportError, AttributeError, TypeError):
         plugins = []
     if not plugins:
         pr = getattr(pipe, "_plugin_registry", None)

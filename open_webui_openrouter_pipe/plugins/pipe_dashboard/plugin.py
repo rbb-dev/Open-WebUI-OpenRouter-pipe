@@ -26,6 +26,8 @@ from .usage_store import UsageStore
 # Trigger command auto-imports so @register_command decorators fire
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401, E402
 
+logger = logging.getLogger(__name__)
+
 _PIPE_DASHBOARD_MODEL_ID = "pipe-dashboard"
 
 
@@ -38,7 +40,7 @@ def _registry_pricing(model_id: str) -> dict[str, Any] | None:
         spec = OpenRouterModelRegistry._specs.get(norm) or OpenRouterModelRegistry._specs.get(model_id) or {}
         pricing = spec.get("pricing")
         return pricing if isinstance(pricing, dict) else None
-    except Exception:
+    except (ImportError, AttributeError, TypeError):
         return None
 
 
@@ -47,7 +49,7 @@ def _registry_model_name(model_id: str) -> str:
         from .formatters import build_model_name_map, resolve_model_name
 
         return resolve_model_name(model_id, build_model_name_map())
-    except Exception:
+    except (ImportError, AttributeError, TypeError):
         return model_id
 
 
@@ -270,6 +272,10 @@ class PipeDashboardPlugin(PluginBase):
                     admin = await Users.get_super_admin_user()
                     owner_id = getattr(admin, "id", "") or ""
                 except Exception:
+                    logger.warning(
+                        "pipe-dashboard overlay: super-admin lookup failed; inserting with empty owner",
+                        exc_info=True,
+                    )
                     owner_id = ""
                 form = ModelForm(
                     id=owui_model_id,
@@ -348,6 +354,7 @@ class PipeDashboardPlugin(PluginBase):
                 event_emitter=event_emitter,
             ))
         except Exception as exc:
+            logger.warning("pipe-dashboard command %r failed", entry.name, exc_info=True)
             safe_exc = str(exc).replace("`", "'")
             result = f"## Command Error\n\n`{entry.name}` failed: {safe_exc}"
         return self.ctx.build_response(model=_PIPE_DASHBOARD_MODEL_ID, content=result)
@@ -419,7 +426,7 @@ class PipeDashboardPlugin(PluginBase):
                             and item.get("status") == "in_progress"
                         ):
                             tracker.tool_started(request_id, str(item.get("name") or "?"))
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError):
                 pass
             return result
 
@@ -428,13 +435,13 @@ class PipeDashboardPlugin(PluginBase):
     async def on_tool_result(self, tool_name: str, status: str, **kwargs: Any) -> None:
         try:
             self._tracker.tool_result(str(kwargs.get("request_id") or ""), str(status))
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             pass
 
     async def on_request_retry(self, kind: str, **kwargs: Any) -> None:
         try:
             self._tracker.retry(str(kwargs.get("request_id") or ""))
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             pass
 
     async def on_generation_complete(self, usage: Any, status: str, **kwargs: Any) -> None:
@@ -458,20 +465,17 @@ class PipeDashboardPlugin(PluginBase):
             self._usage_store.start_purge_task(self._retention_days)
             self._usage_store.record(self._tracker.db_row(entry))
         except Exception:
-            logging.getLogger(__name__).debug("usage persist failed", exc_info=True)
+            logger.debug("usage persist failed", exc_info=True)
 
     def _retention_days(self) -> int:
         try:
             return int(getattr(self.ctx.valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30))
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return 30
 
     def _live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float]]:
-        try:
-            self._tracker.sweep()
-            return self._tracker.live_snapshot()
-        except Exception:
-            return [], {}
+        self._tracker.sweep()
+        return self._tracker.live_snapshot()
 
     def on_shutdown(self, **kwargs: Any) -> Any:
         pending: list[Any] = []
@@ -497,10 +501,11 @@ class PipeDashboardPlugin(PluginBase):
                     self._usage_store.join_writer()
                     joined_inline = True
         except Exception:
+            logger.warning("pipe-dashboard usage-store shutdown failed", exc_info=True)
             if writer_running and not joined_inline:
                 try:
                     self._usage_store.join_writer()
-                except Exception:
+                except (AttributeError, RuntimeError):
                     pass
         if not pending:
             return None

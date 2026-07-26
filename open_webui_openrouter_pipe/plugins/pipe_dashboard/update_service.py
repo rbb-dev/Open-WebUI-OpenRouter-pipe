@@ -14,7 +14,7 @@ import hashlib
 import logging
 import sys
 import time
-from typing import Any, NoReturn
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def _client_ssl() -> Any:
         from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL
 
         return AIOHTTP_CLIENT_SESSION_SSL
-    except Exception:
+    except ImportError:
         return True
 
 
@@ -243,7 +243,7 @@ class UpdateService:
             from open_webui_openrouter_pipe import __version__
 
             return str(__version__)
-        except Exception:
+        except ImportError:
             return "0.0.0"
 
     def detect_mode(self, content: str | None = None) -> dict[str, Any]:
@@ -278,7 +278,7 @@ class UpdateService:
 
         try:
             return datetime.fromisoformat(str(published).replace("Z", "+00:00")).timestamp()
-        except Exception:
+        except (TypeError, ValueError, OverflowError, OSError):
             return None
 
     @staticmethod
@@ -500,7 +500,11 @@ class UpdateService:
         if required:
             try:
                 from open_webui.env import VERSION as owui_version
-            except Exception:
+            except ImportError:
+                logger.debug(
+                    "update: OWUI compatibility gate skipped (open_webui.env.VERSION unavailable)",
+                    exc_info=True,
+                )
                 owui_version = ""
             if owui_version and self._version_gt(required, str(owui_version)):
                 raise UpdateError(
@@ -586,6 +590,7 @@ class UpdateService:
                 if name:
                     names[actor] = name
             except Exception:
+                logger.debug("update: actor-name lookup failed for %s", actor, exc_info=True)
                 continue
         return names
 
@@ -610,13 +615,15 @@ class UpdateService:
         try:
             await asyncio.to_thread(storage.delete_file, path)
         except Exception:
-            logger.warning("update: snapshot blob delete failed for %s", path)
+            logger.warning("update: snapshot blob delete failed for %s", path, exc_info=True)
 
     async def _delete_record(self, record: dict[str, Any], storage: Any) -> bool:
         try:
             deleted = await _files_model().delete_file_by_id(record["file_id"])
         except Exception:
-            logger.warning("update: snapshot record delete failed for %s", record["file_id"])
+            logger.warning(
+                "update: snapshot record delete failed for %s", record["file_id"], exc_info=True
+            )
             return False
         if not deleted:
             logger.warning("update: snapshot record delete refused for %s", record["file_id"])
@@ -701,14 +708,13 @@ class UpdateService:
             "slot": slot,
         }
 
-        async def _abort_insert(reason: str, cause: Exception | None = None) -> NoReturn:
+        async def _cleanup_failed_insert() -> None:
             await self._delete_blob_path(storage, path)
             await self._delete_blob_path(storage, deferred_blob)
             if rotation is not None:
                 logger.warning(
                     "update: rotation lost snapshot %s after insert failure", rotation["file_id"]
                 )
-            raise UpdateError("validation_failed", reason) from cause
 
         try:
             record = await _files_model().insert_new_file(
@@ -729,9 +735,13 @@ class UpdateService:
                 ),
             )
         except Exception as exc:
-            await _abort_insert(f"snapshot record insert failed: {exc}", exc)
+            await _cleanup_failed_insert()
+            raise UpdateError(
+                "validation_failed", f"snapshot record insert failed: {exc}"
+            ) from exc
         if record is None or not getattr(record, "id", None):
-            await _abort_insert("snapshot record insert was rejected")
+            await _cleanup_failed_insert()
+            raise UpdateError("validation_failed", "snapshot record insert was rejected")
 
         keep = int(getattr(self._valves(), "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
         survivors = records + [
@@ -763,7 +773,7 @@ class UpdateService:
         finally:
             try:
                 await asyncio.to_thread(Path(local_path).unlink)
-            except Exception:
+            except OSError:
                 pass
 
     # ── rev chain + commit ───────────────────────────────────────────────────
@@ -797,13 +807,13 @@ class UpdateService:
         try:
             client.close()
         except Exception:
-            pass
+            logger.debug("update: redis client close failed", exc_info=True)
         pool = getattr(client, "connection_pool", None)
         if pool is not None:
             try:
                 pool.disconnect()
             except Exception:
-                pass
+                logger.debug("update: redis pool disconnect failed", exc_info=True)
 
     @staticmethod
     async def _acquire_cross_worker() -> Any | None:
@@ -878,8 +888,10 @@ class UpdateService:
             if xlock is not None:
                 try:
                     loop.create_task(self._release_cross_worker(xlock))
-                except Exception:
-                    logger.warning("update: cross-worker lock release scheduling failed")
+                except RuntimeError:
+                    logger.warning(
+                        "update: cross-worker lock release scheduling failed", exc_info=True
+                    )
             try:
                 exc = fut.exception()
             except asyncio.CancelledError:
@@ -1037,6 +1049,9 @@ class UpdateService:
         try:
             stored = await self._functions().get_function_valves_by_id(self._pipe().id)
         except Exception:
+            logger.warning(
+                "update: stored valve read failed; falling back to in-memory valves", exc_info=True
+            )
             stored = None
         if isinstance(stored, dict):
             for key in self._UPDATE_VALVE_KEYS:
@@ -1052,6 +1067,9 @@ class UpdateService:
             admin = await Users.get_super_admin_user()
             return str(getattr(admin, "id", "") or "") or "system"
         except Exception:
+            logger.warning(
+                "update: super-admin lookup failed; snapshot owner defaults to system", exc_info=True
+            )
             return "system"
 
     def _next_backoff(self, exc: UpdateError | None = None) -> float:
@@ -1144,6 +1162,7 @@ class UpdateService:
         try:
             return lease.redis.get(lease.lock_name) == lease.lock_id
         except Exception:
+            logger.debug("update: leader-status check failed", exc_info=True)
             return False
 
     def _renew_leader(self, lease: Any) -> bool:
@@ -1196,13 +1215,13 @@ class UpdateService:
                     try:
                         released.release_lock()
                     except Exception:
-                        pass
+                        logger.warning("update: leader lease release failed", exc_info=True)
                     self._dispose_lock(released)
         except asyncio.CancelledError:
             if lease is not None:
                 try:
                     lease.release_lock()
                 except Exception:
-                    pass
+                    logger.debug("update: leader lease release on cancel failed", exc_info=True)
                 self._dispose_lock(lease)
             return

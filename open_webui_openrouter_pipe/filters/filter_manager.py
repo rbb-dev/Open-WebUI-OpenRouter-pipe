@@ -196,8 +196,17 @@ class FilterManager:
         """Convert model slug to safe filter ID component.
 
         Example: 'openai/gpt-4o' -> 'openai_gpt_4o'
+
+        The colon matters: variant slugs ('deepseek/deepseek-v3.2:free') would
+        otherwise produce an id that fails OWUI's own ``id.isidentifier()`` check
+        on its function-create route.
         """
-        return model_slug.replace("/", "_").replace("-", "_").replace(".", "_")
+        return (
+            model_slug.replace("/", "_")
+            .replace("-", "_")
+            .replace(".", "_")
+            .replace(":", "_")
+        )
 
     @staticmethod
     def validate_filter_source(source: str) -> tuple[bool, str | None]:
@@ -249,8 +258,7 @@ class FilterManager:
             else:
                 error_msg = str(e)
             return False, error_msg
-        except Exception as e:
-            # Catch any other parsing errors
+        except (RecursionError, MemoryError, ValueError) as e:
             return False, f"Parse error: {str(e)}"
 
     # =========================================================================
@@ -284,12 +292,17 @@ class FilterManager:
         """
         try:
             from open_webui.models.functions import Functions  # type: ignore
-        except Exception:
+        except ImportError:
             return None
 
         try:
             filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
+            self.logger.warning(
+                "Cannot enumerate OWUI filter functions; %s will not be installed or updated",
+                log_label,
+                exc_info=True,
+            )
             return None
 
         candidates = [f for f in filters if matches_candidate(getattr(f, "content", ""))]
@@ -313,11 +326,7 @@ class FilterManager:
             candidate_id = preferred_id
             suffix = 0
             while True:
-                existing = None
-                try:
-                    existing = await Functions.get_function_by_id(candidate_id)
-                except Exception:
-                    existing = None
+                existing = await Functions.get_function_by_id(candidate_id)
                 if existing is None:
                     break
                 suffix += 1
@@ -327,7 +336,7 @@ class FilterManager:
 
             try:
                 from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
-            except Exception:
+            except ImportError:
                 return None
 
             meta_obj = FunctionMeta(**desired_meta)
@@ -764,7 +773,7 @@ class FilterManager:
         try:
             row = await Functions.get_function_by_id(function_id)
         except Exception as exc:
-            self.logger.debug("Web tools filter lookup failed: %s", exc)
+            self.logger.debug("Web tools filter lookup failed: %s", exc, exc_info=True)
             return None
         if row is None or not getattr(row, "is_active", False):
             return None
@@ -784,8 +793,12 @@ class FilterManager:
                 sys.modules[module_name] = module
                 exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)
             except Exception as exc:
+                self.logger.warning(
+                    "Installed web tools filter failed to load for fusion inner calls: %s",
+                    exc,
+                    exc_info=True,
+                )
                 sys.modules.pop(module_name, None)
-                self.logger.warning("Installed web tools filter failed to load for fusion inner calls: %s", exc)
                 return None
             module_ns = module.__dict__
             self._inner_web_tools_module_cache.clear()
@@ -804,7 +817,9 @@ class FilterManager:
             metadata: dict[str, Any] = {}
             instance.inlet({"model": "fusion-inner"}, __metadata__=metadata, __user__={"valves": user_valves})
         except Exception as exc:
-            self.logger.warning("Installed web tools filter inlet failed for fusion inner calls: %s", exc)
+            self.logger.warning(
+                "Installed web tools filter inlet failed for fusion inner calls: %s", exc, exc_info=True
+            )
             return None
         pipe_meta = metadata.get(_PIPE_METADATA_KEY)
         if not isinstance(pipe_meta, dict):
@@ -1116,7 +1131,7 @@ class Filter:
             try:
                 if not ModelFamily.supports("video_generation", model_id):
                     continue
-            except Exception:
+            except (AttributeError, TypeError):
                 continue
             spec = OpenRouterModelRegistry.spec(model_id)
             video_model = spec.get("video_model") if isinstance(spec, dict) else None
@@ -1264,7 +1279,7 @@ class Filter:
             try:
                 if not ModelFamily.supports("image_output", model_id):
                     continue
-            except Exception:
+            except (AttributeError, TypeError):
                 continue
 
             original_id = model.get("original_id")
@@ -1275,7 +1290,7 @@ class Filter:
                 try:
                     generic_id = await self._ensure_single_image_filter_function_id("generic")
                 except Exception as exc:
-                    self.logger.debug("Generic image filter install failed: %s", exc)
+                    self.logger.warning("Generic image filter install failed: %s", exc, exc_info=True)
                     generic_id = ""
             if generic_id:
                 ids.append(generic_id)
@@ -1285,7 +1300,7 @@ class Filter:
                     try:
                         gemini_id = await self._ensure_single_image_filter_function_id("gemini")
                     except Exception as exc:
-                        self.logger.debug("Gemini image filter install failed: %s", exc)
+                        self.logger.warning("Gemini image filter install failed: %s", exc, exc_info=True)
                         gemini_id = ""
                 if gemini_id:
                     ids.append(gemini_id)
@@ -1295,7 +1310,7 @@ class Filter:
                     try:
                         sourceful_id = await self._ensure_single_image_filter_function_id("sourceful")
                     except Exception as exc:
-                        self.logger.debug("Sourceful image filter install failed: %s", exc)
+                        self.logger.warning("Sourceful image filter install failed: %s", exc, exc_info=True)
                         sourceful_id = ""
                 if sourceful_id:
                     ids.append(sourceful_id)
@@ -1305,7 +1320,7 @@ class Filter:
                     try:
                         sourceful_v25_id = await self._ensure_single_image_filter_function_id("sourceful_v25")
                     except Exception as exc:
-                        self.logger.debug("Sourceful V2.5 image filter install failed: %s", exc)
+                        self.logger.warning("Sourceful V2.5 image filter install failed: %s", exc, exc_info=True)
                         sourceful_v25_id = ""
                 if sourceful_v25_id:
                     ids.append(sourceful_v25_id)
@@ -1315,7 +1330,7 @@ class Filter:
                     try:
                         recraft_id = await self._ensure_single_image_filter_function_id("recraft")
                     except Exception as exc:
-                        self.logger.debug("Recraft image filter install failed: %s", exc)
+                        self.logger.warning("Recraft image filter install failed: %s", exc, exc_info=True)
                         recraft_id = ""
                 if recraft_id:
                     ids.append(recraft_id)
@@ -1325,7 +1340,7 @@ class Filter:
                     try:
                         recraft_v3_id = await self._ensure_single_image_filter_function_id("recraft_v3")
                     except Exception as exc:
-                        self.logger.debug("Recraft V3 image filter install failed: %s", exc)
+                        self.logger.warning("Recraft V3 image filter install failed: %s", exc, exc_info=True)
                         recraft_v3_id = ""
                 if recraft_v3_id:
                     ids.append(recraft_v3_id)
@@ -1335,7 +1350,7 @@ class Filter:
                     try:
                         grok_id = await self._ensure_single_image_filter_function_id("grok")
                     except Exception as exc:
-                        self.logger.debug("Grok Imagine image filter install failed: %s", exc)
+                        self.logger.warning("Grok Imagine image filter install failed: %s", exc, exc_info=True)
                         grok_id = ""
                 if grok_id:
                     ids.append(grok_id)
@@ -2351,7 +2366,7 @@ class Filter:
         """
         try:
             from open_webui.models.functions import Functions, FunctionForm, FunctionMeta
-        except Exception:
+        except ImportError:
             return {}
 
         # Parse model lists
@@ -2388,9 +2403,13 @@ class Filter:
         try:
             all_filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
-            all_filters = []
+            self.logger.exception(
+                "Cannot enumerate OWUI filter functions; aborting provider routing sync "
+                "to avoid creating duplicate filters"
+            )
+            return {}
 
-        existing_filters: dict[str, Any] = {}  # model_slug -> filter object
+        filters_by_slug: dict[str, list[Any]] = {}  # model_slug -> every filter carrying it
         for f in all_filters:
             content = getattr(f, "content", "") or ""
             if _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in content:
@@ -2400,13 +2419,32 @@ class Filter:
                         # Format: OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:provider_routing:slug:v1"
                         try:
                             marker_val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            parts = marker_val.split(":")
-                            if len(parts) >= 4 and parts[0] == _PIPE_METADATA_KEY and parts[1] == "provider_routing":
-                                slug = parts[2]
-                                existing_filters[slug] = f
-                        except Exception:
-                            pass
+                            parts = marker_val.split(":", 2)
+                            if (
+                                len(parts) == 3
+                                and parts[0] == _PIPE_METADATA_KEY
+                                and parts[1] == "provider_routing"
+                                and ":" in parts[2]
+                            ):
+                                slug = parts[2].rsplit(":", 1)[0]
+                                if slug:
+                                    filters_by_slug.setdefault(slug, []).append(f)
+                        except IndexError:
+                            self.logger.debug(
+                                "Ignoring malformed provider routing marker in filter %s",
+                                getattr(f, "id", "?"),
+                            )
                         break
+
+        existing_filters: dict[str, Any] = {}
+        orphan_filters: list[Any] = []
+        for slug, found in filters_by_slug.items():
+            canonical_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{self.sanitize_model_for_filter_id(slug)}"
+            canonical = next(
+                (f for f in found if getattr(f, "id", "") == canonical_id), found[0]
+            )
+            existing_filters[slug] = canonical
+            orphan_filters.extend(f for f in found if f is not canonical)
 
         # Track slug -> filter_id mappings for attachment
         slug_to_filter_id: dict[str, str] = {}
@@ -2523,10 +2561,7 @@ class Filter:
                 candidate_id = filter_id
                 suffix = 0
                 while True:
-                    try:
-                        existing_func = await Functions.get_function_by_id(candidate_id)
-                    except Exception:
-                        existing_func = None
+                    existing_func = await Functions.get_function_by_id(candidate_id)
                     if existing_func is None:
                         break
                     suffix += 1
@@ -2551,8 +2586,14 @@ class Filter:
                         # Track for attachment
                         slug_to_filter_id[slug] = candidate_id
 
-        # Disable filters for models no longer in the lists
         disabled = 0
+        for orphan in orphan_filters:
+            orphan_id = getattr(orphan, "id", "")
+            if orphan_id:
+                await Functions.update_function_by_id(orphan_id, {"is_active": False})
+                disabled += 1
+                self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
+
         for slug, existing in existing_filters.items():
             if slug not in all_models:
                 existing_id = getattr(existing, "id", "")

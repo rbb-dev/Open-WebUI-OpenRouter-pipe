@@ -984,6 +984,40 @@ class TestTryLinkFileToChat:
     """Tests for linking files to chat in OWUI database."""
 
     @pytest.mark.asyncio
+    async def test_returns_false_when_owui_declines_the_link(self, pipe_instance_async, monkeypatch):
+        """OWUI returns None (it does not raise) when the file is not linkable.
+
+        Reporting True regardless left a failed link unobservable at every layer.
+        """
+        import open_webui.models.chats as owui_chats
+
+        monkeypatch.setattr(
+            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False
+        )
+        result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
+            chat_id="chat-123",
+            message_id="msg-1",
+            file_id="file-1",
+            user_id="user-1",
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_owui_links(self, pipe_instance_async, monkeypatch):
+        import open_webui.models.chats as owui_chats
+
+        monkeypatch.setattr(
+            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=["file-1"]), raising=False
+        )
+        result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
+            chat_id="chat-123",
+            message_id="msg-1",
+            file_id="file-1",
+            user_id="user-1",
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
     async def test_returns_false_for_non_string_chat_id(self, pipe_instance_async):
         """Should return False for non-string chat_id."""
         result = await pipe_instance_async._file_gateway.try_link_file_to_chat(

@@ -362,7 +362,7 @@ class ArtifactStore:
             if isinstance(candidate, str) and candidate.strip():
                 schema = candidate.strip()
                 details["schema_source"] = "owui_db.Base.metadata.schema"
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError):
             schema = None
 
         if schema is None:
@@ -374,7 +374,7 @@ class ArtifactStore:
                 if isinstance(candidate, str) and candidate.strip():
                     schema = candidate.strip()
                     details["schema_source"] = "owui_db.metadata_obj.schema"
-            except Exception:
+            except (AttributeError, TypeError, RuntimeError):
                 schema = None
 
         if schema is None:
@@ -387,7 +387,7 @@ class ArtifactStore:
                 if isinstance(candidate, str) and candidate.strip():
                     schema = candidate.strip()
                     details["schema_source"] = "open_webui.env.DATABASE_SCHEMA"
-            except Exception:
+            except (ImportError, AttributeError, TypeError):
                 schema = None
 
         if engine is None:
@@ -440,6 +440,7 @@ class ArtifactStore:
                     details.get("engine_source", "unknown"),
                     details.get("schema_source", "unknown"),
                     schema or "",
+                    exc_info=True,
                 )
 
         if not engine:
@@ -507,9 +508,10 @@ class ArtifactStore:
         table_exists = True
         try:
             table_exists = sa_inspect(engine).has_table(table_name, schema=schema_name)
-        except SQLAlchemyError:
-            table_exists = True
-        except Exception:  # pragma: no cover - defensive; inspector uses plugins
+        except Exception:
+            self.logger.debug(
+                "Table existence probe failed for %s; assuming present", table_name, exc_info=True
+            )
             table_exists = True
 
         if not self._create_table_with_race_guard(item_model.__table__, engine, table_name):
@@ -543,8 +545,8 @@ class ArtifactStore:
                         pool_workers += DATABASE_POOL_MAX_OVERFLOW
                 except (ImportError, ModuleNotFoundError):
                     pass
-            except Exception as exc:
-                self.logger.debug("Failed to read DB pool size from engine, using default: %s", exc)
+            except Exception:
+                self.logger.debug("Failed to read DB pool size from engine, using default", exc_info=True)
             self._db_executor = ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="responses-db")
             self.logger.debug("DB thread pool: max_workers=%d (pool type: %s)", pool_workers, type(engine.pool).__name__)
         self.logger.debug("Artifact table ready: %s", table_name)
@@ -598,12 +600,16 @@ class ArtifactStore:
                     if self._is_table_exists_error(retry_exc):
                         self.logger.debug("Table %s already exists (concurrent create)", table_name)
                         return True
-                    self.logger.warning("Artifact persistence disabled (table init failed after index cleanup): %s", retry_exc)
+                    self.logger.warning(
+                        "Artifact persistence disabled (table init failed after index cleanup): %s",
+                        retry_exc,
+                        exc_info=True,
+                    )
                     return False
             if self._is_table_exists_error(exc):
                 self.logger.debug("Table %s already exists (concurrent create)", table_name)
                 return True
-            self.logger.warning("Artifact persistence disabled (table init failed): %s", exc)
+            self.logger.warning("Artifact persistence disabled (table init failed): %s", exc, exc_info=True)
             return False
 
     @timed
@@ -969,7 +975,8 @@ class ArtifactStore:
         if payload is not None and not isinstance(payload, str):
             try:
                 payload = json.dumps(payload)
-            except Exception:
+            except (TypeError, ValueError, RecursionError):
+                self.logger.debug("Lock payload could not be serialized", exc_info=True)
                 return False
 
         values = {
@@ -1342,6 +1349,7 @@ class ArtifactStore:
                     self.logger.warning(
                         "Redis pub/sub listener error: %s (reconnecting; timer flush continues)",
                         reason,
+                        exc_info=True,
                     )
                     failure_reason = reason
                 else:
@@ -1461,7 +1469,12 @@ class ArtifactStore:
                     await self._redis_requeue_entries(raw_entries)
                     self.logger.debug("Re-queued %d artifact(s) back to Redis pending queue after DB failure", len(raw_entries))
                 except Exception as requeue_exc:  # pragma: no cover - defensive
-                    self.logger.critical("Failed to re-queue %d artifact(s) after DB failure: %s", len(raw_entries), requeue_exc)
+                    self.logger.critical(
+                        "Failed to re-queue %d artifact(s) after DB failure: %s",
+                        len(raw_entries),
+                        requeue_exc,
+                        exc_info=True,
+                    )
         finally:
             if lock_acquired and self._redis_client:
                 release_script = (
@@ -1480,7 +1493,7 @@ class ArtifactStore:
                     )
                     try:
                         released_int = int(released)
-                    except Exception:
+                    except (TypeError, ValueError):
                         released_int = None
                     if released_int != 1:
                         self.logger.warning(
@@ -1522,7 +1535,9 @@ class ArtifactStore:
             self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
             return [row["id"] for row in rows]
         except Exception as exc:
-            self.logger.warning("Redis enqueue failed, falling back to direct DB write: %s", exc)
+            self.logger.warning(
+                "Redis enqueue failed, falling back to direct DB write: %s", exc, exc_info=True
+            )
             return await self._db_persist_direct(rows)
 
     @timed
@@ -1615,7 +1630,7 @@ class ArtifactStore:
             except asyncio.CancelledError:  # pragma: no cover - shutdown
                 break
             except Exception as exc:
-                self.logger.warning("Artifact cleanup failed: %s", exc)
+                self.logger.warning("Artifact cleanup failed: %s", exc, exc_info=True)
             interval_hours = self.valves.ARTIFACT_CLEANUP_INTERVAL_HOURS
             interval_seconds = interval_hours * 3600
             jitter = min(600.0, interval_seconds * 0.25)

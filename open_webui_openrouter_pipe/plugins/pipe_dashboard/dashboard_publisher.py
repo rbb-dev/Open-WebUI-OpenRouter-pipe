@@ -104,15 +104,18 @@ def _worker_health(pipe: Any) -> dict[str, int]:
     http = getattr(pipe, "_http_session", None)
     try:
         http_ok = 1 if (http is not None and not http.closed) else 0
-    except Exception:
+    except AttributeError:
         http_ok = 0
     rss = 0
     try:
         import psutil
-
-        rss = int(psutil.Process().memory_info().rss)
-    except Exception:
-        rss = 0
+    except ImportError:
+        pass
+    else:
+        try:
+            rss = int(psutil.Process().memory_info().rss)
+        except (OSError, psutil.Error):
+            rss = 0
     return {
         "init": 1 if getattr(pipe, "_initialized", False) else 0,
         "wf": 1 if getattr(pipe, "_warmup_failed", False) else 0,
@@ -319,7 +322,7 @@ def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
         if isinstance(health, dict):
             try:
                 workers_rss += int(health.get("rss") or 0)
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 pass
 
     return {
@@ -375,7 +378,7 @@ async def _set_active_flag(client: Any, namespace: str, *, wake: bool) -> None:
         try:
             await client.publish(f"{namespace}:dashboard:wake", "wake")
         except Exception:
-            pass
+            logger.debug("Failed to publish dashboard wake", exc_info=True)
 
 
 async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> None:
@@ -401,6 +404,7 @@ async def _redis_alive(pipe: Any) -> bool:
             result = await asyncio.wait_for(result, timeout=0.25)
         return bool(result)
     except Exception:
+        logger.debug("Redis liveness probe failed", exc_info=True)
         return False
 
 
@@ -595,6 +599,7 @@ async def run_dashboard_publisher(
             try:
                 is_active = await client.exists(active_key)
             except Exception:
+                logger.debug("Dashboard active-flag probe failed", exc_info=True)
                 await asyncio.sleep(_PD_POLL_INTERVAL)
                 continue
 
@@ -608,6 +613,7 @@ async def run_dashboard_publisher(
                         if msg and msg.get("type") == "message":
                             continue
                     except Exception:
+                        logger.debug("Dashboard wake listener failed; will resubscribe", exc_info=True)
                         pubsub = None
                         await asyncio.sleep(_PD_POLL_INTERVAL)
                 else:
@@ -625,10 +631,10 @@ async def run_dashboard_publisher(
                 await pubsub.unsubscribe(wake_channel)
                 await pubsub.close()
             except Exception:
-                pass
+                logger.debug("Dashboard wake listener teardown failed", exc_info=True)
         try:
             client, enabled = get_redis()
             if enabled and client is not None:
                 await client.delete(worker_key)
         except Exception:
-            pass
+            logger.debug("Dashboard worker-key cleanup failed (pid=%d)", pid, exc_info=True)

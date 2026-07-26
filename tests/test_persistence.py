@@ -238,19 +238,27 @@ def _sqlite_engine():
 
 
 def test_discover_schema_from_base_metadata_raises(pipe_instance):
-    """Test exception handling in Base.metadata.schema discovery (lines 351-352)."""
-    class _DB:
-        class Base:
-            @property
-            def metadata(self):
-                raise RuntimeError("metadata access failed")
+    """A raising Base.metadata descriptor must degrade to schema=None, not propagate.
 
-    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
+    `Base` must be an INSTANCE: the production code does `getattr(owui_db, "Base")`
+    then `getattr(base, "metadata")`, and `getattr` on a class returns the property
+    object without ever invoking the getter — so a nested class here would never
+    enter the handler under test.
+    """
+    class _RaisingBase:
+        @property
+        def metadata(self):
+            raise RuntimeError("metadata access failed")
+
+    class _DB:
+        Base = _RaisingBase()
+
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB())
     assert schema is None
 
 
 def test_discover_schema_from_metadata_obj_raises(pipe_instance):
-    """Test exception handling in metadata_obj.schema discovery (lines 363-364)."""
+    """A raising metadata_obj descriptor must degrade to schema=None (instance, not class)."""
     class _DB:
         Base = None
 
@@ -258,7 +266,7 @@ def test_discover_schema_from_metadata_obj_raises(pipe_instance):
         def metadata_obj(self):
             raise RuntimeError("metadata_obj access failed")
 
-    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB)
+    engine, schema, details = pipe_instance._artifact_store._discover_owui_engine_and_schema(_DB())
     assert schema is None
 
 
