@@ -8587,10 +8587,10 @@ class TestBuildToolOutput:
             pipe.shutdown()
 
     def test_build_tool_output_with_failed_status(self):
-        """Test building tool output with failed status.
+        """A failed call must not be reported to the model as a successful one.
 
-        Note: The tool output builder normalizes non-standard statuses to "completed"
-        for OpenRouter Responses API compatibility.
+        OpenRouter's ToolCallStatus enum is {in_progress, completed, incomplete}, so
+        "failed" cannot go on the wire; "incomplete" is the honest member of that set.
         """
         pipe = Pipe()
 
@@ -8599,8 +8599,7 @@ class TestBuildToolOutput:
 
             output = pipe._ensure_tool_executor()._build_tool_output(call, "Error message", status="failed")
 
-            # Status is normalized to "completed" for API compatibility
-            assert output["status"] == "completed"
+            assert output["status"] == "incomplete"
             assert output["output"] == "Error message"
         finally:
             pipe.shutdown()

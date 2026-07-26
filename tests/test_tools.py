@@ -80,7 +80,7 @@ async def test_execute_function_calls_with_context_missing_tool_name():
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
-            assert outputs[0]["status"] == "completed"  # normalized from "failed"
+            assert outputs[0]["status"] == "incomplete"  # normalized from "failed"
             assert "Tool call missing name" in outputs[0]["output"]
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -810,8 +810,43 @@ async def test_notify_tool_breaker_success():
 
 
 @pytest.mark.asyncio
+async def test_no_failure_status_is_reported_to_the_model_as_completed():
+    """Every non-success status the executor produces must stay out of "completed".
+
+    OpenRouter's ToolCallStatus enum is {in_progress, completed, incomplete}, so a
+    failure cannot be sent verbatim -- but reporting it as "completed" tells the model
+    a call succeeded when it did not.
+    """
+    pipe = Pipe()
+    try:
+        executor = pipe._ensure_tool_executor()
+        for status in ("failed", "skipped", "cancelled", "timeout", "invalid_status"):
+            output = executor._build_tool_output(
+                {"call_id": "c"}, "boom", status=status
+            )
+            assert output["status"] in {"in_progress", "completed", "incomplete"}, status
+            assert output["status"] != "completed", (
+                f"{status!r} was reported to the model as a successful call"
+            )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_tool_status_is_preserved():
+    """A genuinely completed call must still report completed."""
+    pipe = Pipe()
+    try:
+        executor = pipe._ensure_tool_executor()
+        output = executor._build_tool_output({"call_id": "c"}, "ok", status="completed")
+        assert output["status"] == "completed"
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
 async def test_build_tool_output_status_normalization():
-    """Test that invalid statuses are normalized to 'completed'."""
+    """Test that statuses outside the OpenRouter enum are normalized to 'incomplete'."""
     pipe = Pipe()
     try:
         executor = pipe._ensure_tool_executor()
@@ -823,7 +858,7 @@ async def test_build_tool_output_status_normalization():
             status="invalid_status",
         )
 
-        assert output["status"] == "completed"
+        assert output["status"] == "incomplete"
         assert output["call_id"] == "test-call"
         assert output["output"] == "Test output"
         assert output["type"] == "function_call_output"

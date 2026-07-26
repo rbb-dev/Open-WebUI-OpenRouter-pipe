@@ -1826,7 +1826,7 @@ def test_tool_output_clamps_failed_status(pipe_instance):
         status="failed",
     )
     assert output["type"] == "function_call_output"
-    assert output["status"] == "completed"
+    assert output["status"] == "incomplete"
 
 
 def test_select_openrouter_http_referer_defaults_without_override():

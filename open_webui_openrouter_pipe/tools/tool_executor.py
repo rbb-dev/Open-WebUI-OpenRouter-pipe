@@ -588,7 +588,7 @@ class ToolExecutor:
         # for tool items in `input`. Encode failures in the output payload and keep status in
         # the accepted enum for compatibility.
         allowed_statuses = {"completed", "incomplete", "in_progress"}
-        normalized_status = status if status in allowed_statuses else "completed"
+        normalized_status = status if status in allowed_statuses else "incomplete"
         result: dict[str, Any] = {
             "type": "function_call_output",
             "id": generate_item_id(),
