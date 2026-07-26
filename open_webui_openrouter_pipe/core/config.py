@@ -1994,7 +1994,6 @@ class UserValves(BaseModel):
                 stripped = val.strip()
                 lowered = stripped.lower()
                 if lowered == "inherit":
-                    normalized[key] = None
                     continue
             normalized[key] = val
         return normalized

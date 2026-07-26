@@ -242,6 +242,33 @@ async def test_config_set_conflict_returns_fresh_and_skips_write(fake_functions)
 
 
 @pytest.mark.asyncio
+async def test_config_set_treats_an_unreadable_rev_as_a_conflict(fake_functions, caplog):
+    """A rev the server cannot read must block the write, not wave it through."""
+    import logging as _logging
+
+    pipe = _config_pipe()
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    original = fake_functions.get_function_by_id
+    fake_functions.get_function_by_id = _boom
+    try:
+        with caplog.at_level(_logging.WARNING):
+            result = await actions.ACTIONS["config_set"].handler(
+                pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": 1000}
+            )
+    finally:
+        fake_functions.get_function_by_id = original
+
+    assert result["conflict"] is True, result
+    assert fake_functions.saved is None, "the write proceeded without a rev check"
+    assert any(
+        "concurrent-edit protection is unavailable" in m for m in caplog.messages
+    ), caplog.messages
+
+
+@pytest.mark.asyncio
 async def test_config_set_invalid_value_raises_before_write(fake_functions):
     pipe = _config_pipe()
     with pytest.raises(Exception):
@@ -350,6 +377,10 @@ class _FakeUpdateService:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self.raise_error: Exception | None = None
+        self.row_valves = {}
+
+    async def _row_valves(self):
+        return dict(self.row_valves)
 
     async def check(self, *, force=False):
         self.calls.append(("check", {"force": force}))
@@ -377,6 +408,7 @@ class _FakeUpdateService:
 
 
 def _update_pipe(svc, enabled=True):
+    svc.row_valves = {"PIPE_DASHBOARD_UPDATE_ENABLE": enabled}
     valves = SimpleNamespace(PIPE_DASHBOARD_UPDATE_ENABLE=enabled)
     plugin = SimpleNamespace(plugin_id="pipe-dashboard", update_service=svc)
     registry = SimpleNamespace(_plugins=[plugin])
@@ -432,6 +464,7 @@ async def test_update_gate_uses_row_valves_over_ctx(update_env):
 
 @pytest.mark.asyncio
 async def test_update_check_disabled_short_circuits(update_env):
+    update_env.svc.row_valves = {"PIPE_DASHBOARD_UPDATE_ENABLE": False}
     update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = False
     status, payload = await actions.dispatch_action(
         update_env.pipe, _user(), "update_check", {}, request=_req()
@@ -439,6 +472,30 @@ async def test_update_check_disabled_short_circuits(update_env):
     assert status == 200
     assert payload["result"] == {"enabled": False}
     assert update_env.svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_gate_denies_when_the_persisted_valve_is_unreadable(update_env, caplog):
+    """An operator's disable must not be overridden by an in-memory True on a read failure."""
+    import logging as _logging
+
+    async def _boom():
+        raise RuntimeError("database unavailable")
+
+    update_env.svc._row_valves = _boom
+    update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = True
+
+    with caplog.at_level(_logging.WARNING):
+        status, payload = await actions.dispatch_action(
+            update_env.pipe, _user(), "update_check", {}, request=_req()
+        )
+
+    assert status == 200
+    assert payload["result"] == {"enabled": False}, payload
+    assert update_env.svc.calls == [], "an update action ran behind an unverifiable gate"
+    assert any(
+        "refusing update actions" in m for m in caplog.messages
+    ), caplog.messages
 
 
 @pytest.mark.asyncio
@@ -458,6 +515,7 @@ async def test_update_writes_require_admin(update_env):
 
 @pytest.mark.asyncio
 async def test_update_writes_disabled_gate(update_env):
+    update_env.svc.row_valves = {"PIPE_DASHBOARD_UPDATE_ENABLE": False}
     update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = False
     for name, args in (
         ("update_apply", {"rev": 1}),

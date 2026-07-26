@@ -71,27 +71,37 @@ class TestEncryptedStr:
 class TestUserValveInheritNormalization:
     """Tests for the 'inherit' string normalization in UserValves validator."""
 
-    def test_user_valve_inherit_converted_to_none(self) -> None:
-        """String 'inherit' is converted to None by _normalize_inherit (lines 1453-1454).
+    def test_user_valve_inherit_falls_back_to_the_global_value(self) -> None:
+        """'inherit' leaves the field unset so the global valve wins at merge time."""
+        user_valves = Pipe.UserValves(REASONING_EFFORT="inherit")
 
-        The validator converts 'inherit' to None before Pydantic validates types.
-        For Literal fields, this causes a validation error because None isn't accepted,
-        but this test verifies the validator code path is executed.
-        """
-        # The error message mentions input_value=None proves the validator ran
-        with pytest.raises(ValidationError) as exc_info:
-            Pipe.UserValves(REASONING_EFFORT="inherit")
-
-        # Confirm the validator converted "inherit" to None
-        assert "input_type=NoneType" in str(exc_info.value)
+        assert "REASONING_EFFORT" not in user_valves.model_fields_set
+        assert user_valves.REASONING_EFFORT == Pipe.UserValves().REASONING_EFFORT
 
     def test_user_valve_inherit_case_insensitive(self) -> None:
-        """'INHERIT', 'Inherit', '  inherit  ' all normalize to None."""
+        """'INHERIT', 'Inherit', '  inherit  ' are all treated as unset."""
         for value in ["INHERIT", "Inherit", "  inherit  "]:
-            with pytest.raises(ValidationError) as exc_info:
-                Pipe.UserValves(REASONING_EFFORT=value)
-            # All variants should be converted to None
-            assert "input_type=NoneType" in str(exc_info.value)
+            user_valves = Pipe.UserValves(REASONING_EFFORT=value)
+            assert "REASONING_EFFORT" not in user_valves.model_fields_set, value
+
+    def test_user_valve_inherit_does_not_discard_sibling_settings(self) -> None:
+        """An inherited field must not invalidate the rest of the user's valves."""
+        user_valves = Pipe.UserValves(REASONING_EFFORT="inherit", REQUEST_ZDR=True)
+
+        assert user_valves.REQUEST_ZDR is True
+        assert "REQUEST_ZDR" in user_valves.model_fields_set
+
+    def test_user_valve_inherit_preserves_the_global_through_merge(self) -> None:
+        """The documented contract: an inherited field keeps the admin's global value."""
+        pipe = Pipe()
+        try:
+            pipe.valves.REASONING_EFFORT = "high"
+            merged = pipe._merge_valves(
+                pipe.valves, Pipe.UserValves(REASONING_EFFORT="inherit")
+            )
+            assert merged.REASONING_EFFORT == "high"
+        finally:
+            pipe.shutdown()
 
 
 class TestValveNumericBounds:

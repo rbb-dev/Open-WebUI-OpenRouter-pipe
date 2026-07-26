@@ -181,6 +181,11 @@ async def _current_config_rev(pipe: Any) -> Any:
         function = await Functions.get_function_by_id(getattr(pipe, "id", ""))
         return getattr(function, "updated_at", None)
     except Exception:
+        logger.warning(
+            "pipe_dashboard: could not read the stored config revision; "
+            "concurrent-edit protection is unavailable for this call",
+            exc_info=True,
+        )
         return None
 
 
@@ -228,7 +233,7 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
-    if client_rev is not None and current_rev is not None and client_rev != current_rev:
+    if client_rev is not None and (current_rev is None or client_rev != current_rev):
         effective = await _effective_valves(pipe)
         stale = _config_snapshot(effective)
         stale["conflict"] = True
@@ -259,13 +264,20 @@ def _update_service_of(pipe: Any) -> Any:
 async def _update_enabled(pipe: Any) -> bool:
     """Gate on the PERSISTED valve, not the in-memory copy (which lags on idle workers)."""
     svc = _update_service_of(pipe)
-    if svc is not None:
-        try:
-            valves = await svc._row_valves()
-            return bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True))
-        except Exception:
-            pass
-    return bool(getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True))
+    if svc is None:
+        return bool(
+            getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True)
+        )
+    try:
+        valves = await svc._row_valves()
+        return bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True))
+    except Exception:
+        logger.warning(
+            "pipe_dashboard: cannot read the persisted PIPE_DASHBOARD_UPDATE_ENABLE valve; "
+            "refusing update actions until it can be confirmed",
+            exc_info=True,
+        )
+        return False
 
 
 async def _run_update_call(coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
