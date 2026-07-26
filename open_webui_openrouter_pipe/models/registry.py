@@ -274,7 +274,7 @@ class OpenRouterModelRegistry:
                 payload = await resp.json()
         except Exception as exc:
             cls._zdr_model_ids = None
-            logger.error("Failed to load OpenRouter model catalog: %s", exc)
+            logger.exception("Failed to load OpenRouter model catalog: %s", exc)
             raise
 
         data = payload.get("data") or []
@@ -288,7 +288,9 @@ class OpenRouterModelRegistry:
                 http_referer=http_referer,
             )
         except Exception as exc:
-            logger.warning("Failed to load OpenRouter ZDR endpoint list: %s", exc)
+            logger.warning(
+                "Failed to load OpenRouter ZDR endpoint list: %s", exc, exc_info=True
+            )
         raw_specs: Dict[str, Dict[str, Any]] = {}
         models: list[dict[str, Any]] = []
         id_map: Dict[str, str] = {}

@@ -73,7 +73,7 @@ async def read_model_response_content(response: Any) -> str:
                 continue
             try:
                 chunk_str = chunk.decode("utf-8")
-            except Exception:
+            except UnicodeDecodeError:
                 chunk_str = chunk.decode("utf-8", errors="ignore")
             buffer += chunk_str
             while "\n" in buffer:

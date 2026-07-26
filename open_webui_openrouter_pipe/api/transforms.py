@@ -45,6 +45,8 @@ from ..requests.transformer import transform_messages_to_input
 # Pydantic Body Classes
 # -----------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
 class CompletionsBody(BaseModel):
     """
     Represents the body of a completions request to OpenAI completions API.
@@ -1472,6 +1474,7 @@ def _model_params_to_dict(params: Any) -> dict[str, Any]:
             dumped = model_dump()
             return dict(dumped) if isinstance(dumped, dict) else {}
         except Exception:
+            logger.debug("Could not dump request params", exc_info=True)
             return {}
     return {}
 

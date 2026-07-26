@@ -289,7 +289,9 @@ class ErrorFormatter:
                     done=True,
                 )
             except Exception as exc_emit:
-                self.logger.error("[%s] Failed to emit OpenRouter error report: %s", error_id, exc_emit)
+                self.logger.exception(
+                    "[%s] Failed to emit OpenRouter error report", error_id
+                )
 
     # ======================================================================
     # Status Formatting

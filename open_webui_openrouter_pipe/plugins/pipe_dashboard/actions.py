@@ -130,6 +130,7 @@ async def dispatch_action(
         else:
             result = await entry.handler(pipe, user, args)
     except Exception:
+        logger.exception("pipe_dashboard action %s failed", name)
         _audit(user, name, "error", client_ip, args=args if write else None)
         return 500, {"error": "action failed"}
     _audit(user, name, "ok", client_ip, args=args if write else None)
@@ -196,6 +197,11 @@ async def _effective_valves(pipe: Any) -> Any:
 
         stored = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
     except Exception:
+        logger.warning(
+            "pipe_dashboard: stored valve read failed; the config view is showing "
+            "in-memory values instead of the persisted ones",
+            exc_info=True,
+        )
         return pipe.valves
     valves_cls = type(pipe.valves)
     if not stored:
@@ -203,6 +209,11 @@ async def _effective_valves(pipe: Any) -> Any:
     try:
         return valves_cls(**{k: v for k, v in stored.items() if v is not None})
     except Exception:
+        logger.warning(
+            "pipe_dashboard: the persisted valve set does not validate against the "
+            "current schema; the config view is showing in-memory values instead",
+            exc_info=True,
+        )
         return pipe.valves
 
 

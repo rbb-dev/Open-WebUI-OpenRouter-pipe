@@ -582,7 +582,7 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            pipe.logger.error(f"Failed to process base64 image: {exc}")
+                            pipe.logger.exception("Failed to process base64 image: %s", exc)
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to save base64 image: {exc}",
@@ -607,7 +607,7 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            pipe.logger.error(f"Failed to download remote image {url}: {exc}")
+                            pipe.logger.exception("Failed to download remote image %s: %s", url, exc)
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to download image: {exc}",
@@ -648,7 +648,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.error(f"Error in _to_input_image: {exc}")
+                    pipe.logger.exception("Error in _to_input_image: %s", exc)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Image processing error: {exc}",
@@ -801,7 +801,7 @@ async def transform_messages_to_input(
                                         file_url = None
                                         file_data = None  # Clear base64; store via OWUI id instead.
                             except Exception as exc:
-                                pipe.logger.error(f"Failed to process base64 file: {exc}")
+                                pipe.logger.exception("Failed to process base64 file: %s", exc)
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file: {exc}",
@@ -848,7 +848,7 @@ async def transform_messages_to_input(
                                             )
                                     file_data = None  # Clear, use URL instead
                             except Exception as exc:
-                                pipe.logger.error(f"Failed to download remote file: {exc}")
+                                pipe.logger.exception("Failed to download remote file: %s", exc)
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file: {exc}",
@@ -876,7 +876,7 @@ async def transform_messages_to_input(
                                         file_id = stored_id
                                         file_url = None
                             except Exception as exc:
-                                pipe.logger.error(f"Failed to process base64 file_url: {exc}")
+                                pipe.logger.exception("Failed to process base64 file_url: %s", exc)
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file URL: {exc}",
@@ -916,7 +916,7 @@ async def transform_messages_to_input(
                                                 level="warning",
                                             )
                             except Exception as exc:
-                                pipe.logger.error(f"Failed to download remote file_url: {exc}")
+                                pipe.logger.exception("Failed to download remote file_url: %s", exc)
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file URL: {exc}",
@@ -971,7 +971,7 @@ async def transform_messages_to_input(
                     return result
 
                 except Exception as exc:
-                    pipe.logger.error(f"Error in _to_input_file: {exc}")
+                    pipe.logger.exception("Error in _to_input_file: %s", exc)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"File processing error: {exc}",
@@ -1202,7 +1202,7 @@ async def transform_messages_to_input(
                     return _empty_audio_block()
 
                 except Exception as exc:
-                    pipe.logger.error(f"Error in _to_input_audio: {exc}")
+                    pipe.logger.exception("Error in _to_input_audio: %s", exc)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Audio processing error: {exc}",
@@ -1351,7 +1351,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.error(f"Error in _to_input_video: {exc}")
+                    pipe.logger.exception("Error in _to_input_video: %s", exc)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Video processing error: {exc}",
@@ -1442,7 +1442,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.error(f"Failed to transform block type '{block_type}': {exc}")
+                    pipe.logger.exception("Failed to transform block type '%s': %s", block_type, exc)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Block transformation error for '{block_type}': {exc}",
@@ -1468,7 +1468,7 @@ async def transform_messages_to_input(
                     except RequiredInternalFileError:
                         raise
                     except Exception as exc:
-                        pipe.logger.error("Failed to reuse assistant image: %s", exc)
+                        pipe.logger.exception("Failed to reuse assistant image: %s", exc)
                 if fallback_blocks:
                     pipe.logger.debug(
                         "Rehydrating %d assistant-generated image(s) due to empty user attachments (selection_mode=%s, limit=%d).",

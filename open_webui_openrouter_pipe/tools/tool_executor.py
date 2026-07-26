@@ -190,10 +190,12 @@ class ToolExecutor:
                     return output_text, files, embeds
                 except Exception as proc_exc:
                     # OpenWebUI's function failed - fall back to simple conversion
-                    self.logger.debug(
-                        "process_tool_result failed for '%s', falling back to str(): %s",
+                    self.logger.warning(
+                        "Open WebUI could not process the result of '%s'; the model will "
+                        "receive a plain string rendering of the raw payload instead: %s",
                         tool_name,
                         proc_exc,
+                        exc_info=True,
                     )
                     # Continue to fallback below
 
@@ -208,10 +210,17 @@ class ToolExecutor:
                 "Unexpected error processing result for '%s': %s",
                 tool_name,
                 exc,
+                exc_info=True,
             )
             try:
                 output_text = "" if raw_result is None else str(raw_result)
             except Exception:
+                self.logger.warning(
+                    "Tool result for '%s' is not stringifiable; the model will receive a "
+                    "placeholder instead of the result",
+                    tool_name,
+                    exc_info=True,
+                )
                 output_text = f"[Tool result could not be serialized: {type(raw_result).__name__}]"
             return output_text, [], []
 
@@ -298,7 +307,12 @@ class ToolExecutor:
                 if raw_args_value is None:
                     raw_args_value = "{}"
                 args = self._parse_tool_arguments(raw_args_value)
-            except Exception as exc:
+            except (RecursionError, ValueError) as exc:
+                self.logger.warning(
+                    "Model sent unusable arguments for tool '%s'",
+                    call.get("name"),
+                    exc_info=True,
+                )
                 breaker_only_skips = False
                 await _append_and_notify(call, self._build_tool_output(
                     call, f"Invalid arguments: {exc}", status="failed",
@@ -424,12 +438,23 @@ class ToolExecutor:
                         if isinstance(openapi, dict):
                             try:
                                 from open_webui.utils.tools import convert_openapi_to_tool_payload  # type: ignore
-                            except Exception:
+                            except ImportError:
+                                self.logger.warning(
+                                    "Open WebUI's OpenAPI tool converter is unavailable; "
+                                    "direct tool servers cannot be advertised to the model",
+                                    exc_info=True,
+                                )
                                 convert_openapi_to_tool_payload = None  # type: ignore[assignment]
                             if callable(convert_openapi_to_tool_payload):
                                 try:
                                     specs = convert_openapi_to_tool_payload(openapi)  # type: ignore[misc]
                                 except Exception:
+                                    self.logger.warning(
+                                        "OpenAPI to tool conversion failed for direct tool "
+                                        "server %d; its tools will not be offered to the model",
+                                        server_idx,
+                                        exc_info=True,
+                                    )
                                     specs = []
                     if not isinstance(specs, list) or not specs:
                         continue
@@ -448,14 +473,11 @@ class ToolExecutor:
                                 continue
 
                             allowed_params: set[str] = set()
-                            try:
-                                parameters = spec.get("parameters")
-                                if isinstance(parameters, dict):
-                                    props = parameters.get("properties")
-                                    if isinstance(props, dict):
-                                        allowed_params = {k for k in props.keys() if isinstance(k, str)}
-                            except Exception:
-                                allowed_params = set()
+                            parameters = spec.get("parameters")
+                            if isinstance(parameters, dict):
+                                props = parameters.get("properties")
+                                if isinstance(props, dict):
+                                    allowed_params = {k for k in props.keys() if isinstance(k, str)}
 
                             spec_payload = dict(spec)
                             spec_payload["name"] = name
@@ -470,17 +492,8 @@ class ToolExecutor:
                                 **kwargs,
                             ) -> Any:
                                 try:
-                                    filtered: dict[str, Any] = {}
-                                    try:
-                                        filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
-                                    except Exception:
-                                        filtered = {}
-
-                                    session_id = None
-                                    try:
-                                        session_id = _metadata.get("session_id")
-                                    except Exception:
-                                        session_id = None
+                                    filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
+                                    session_id = _metadata.get("session_id")
 
                                     payload = {
                                         "type": "execute:tool",
@@ -531,6 +544,11 @@ class ToolExecutor:
                         and (valves.TOOL_EXECUTION_MODE != "Open-WebUI"),
                     )
                 except Exception:
+                    self.logger.warning(
+                        "Direct tool spec transform failed; the model will be offered no "
+                        "direct tools this request",
+                        exc_info=True,
+                    )
                     direct_tool_specs = []
             return direct_registry, direct_tool_specs
         except Exception:

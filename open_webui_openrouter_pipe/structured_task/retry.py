@@ -55,8 +55,8 @@ async def call_with_candidates(
                     "structured_task request payload: %s",
                     json.dumps(log_redact(form_data), ensure_ascii=False, default=str),
                 )
-            except Exception:
-                pass
+            except (RecursionError, TypeError, ValueError):
+                logger.debug("structured_task payload could not be logged", exc_info=True)
         try:
             response = await asyncio.wait_for(invoke(form_data), timeout=timeout_s)
             params = await read_task_model_response_json(response)
@@ -67,7 +67,7 @@ async def call_with_candidates(
             raise
         except Exception as exc:
             logger.warning(
-                "structured_task candidate '%s' failed: %s", model_id, exc
+                "structured_task candidate '%s' failed: %s", model_id, exc, exc_info=True
             )
             last_error = exc
             continue

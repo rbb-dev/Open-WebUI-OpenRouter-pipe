@@ -7,7 +7,10 @@ write-formula, and the ``{user, admin}`` role gate via ``get_verified_user``.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _PD_MODEL_SUFFIX = "pipe-dashboard"
 
@@ -45,6 +48,7 @@ async def resolve_user(user_id: str | None) -> Any | None:
     try:
         return await _owui().Users.get_user_by_id(user_id)
     except Exception:
+        logger.debug("pipe_dashboard: could not resolve user %s", user_id, exc_info=True)
         return None
 
 
@@ -54,6 +58,7 @@ def resolve_socket_user_id(sid: str) -> str | None:
 
         return get_user_id_from_session_pool(sid)
     except Exception:
+        logger.debug("pipe_dashboard: no user for socket %s", sid, exc_info=True)
         return None
 
 
@@ -80,6 +85,13 @@ async def _authorized(user: Any, pipe: Any, permission: str) -> bool:
             user_id=user.id, resource_type="model", resource_id=mid, permission="write",
         )
     except Exception:
+        logger.debug(
+            "pipe_dashboard: %s access denied or undeterminable for user %s on %s",
+            permission,
+            getattr(user, "id", None),
+            mid,
+            exc_info=True,
+        )
         return False
 
 

@@ -66,7 +66,7 @@ def estimate_serialized_chars(value: Any) -> int:
     """Estimate payload size by serialized character count."""
     try:
         return len(json.dumps(value, ensure_ascii=False))
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         return len(str(value))
 
 

@@ -72,12 +72,18 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
         try:
             return await resp.text()
         except Exception as exc:
+            logger.warning(
+                "Could not read the body of an OpenRouter error response; the failure "
+                "detail is lost",
+                exc_info=True,
+            )
             return f"<<failed to read body: {exc}>>"
 
     try:
         try:
             text = await resp.text()
         except Exception as exc:
+            logger.debug("could not read the error response body", exc_info=True)
             text = f"<<failed to read body: {exc}>>"
         payload = {
             "status": getattr(resp, "status", None),
@@ -92,6 +98,7 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
         try:
             return await resp.text()
         except Exception as exc:
+            logger.debug("could not read the error response body", exc_info=True)
             return f"<<failed to read body: {exc}>>"
 
 
@@ -100,7 +107,7 @@ def _extract_error_message_from_body(body: str, *, max_length: int = 1000) -> st
         return ""
     try:
         payload = json.loads(body)
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         return body.strip()[:max_length]
     if isinstance(payload, dict):
         err = payload.get("error")

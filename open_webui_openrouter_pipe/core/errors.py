@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, TypeVar
 
+import asyncio
 import httpx
 
 from .config import (
@@ -62,7 +63,7 @@ class _RetryWait:
         if retry_state.outcome is not None:
             try:
                 exc = retry_state.outcome.exception()
-            except Exception:
+            except (asyncio.CancelledError, TypeError):
                 exc = None
         if isinstance(exc, _RetryableHTTPStatusError):
             retry_after = exc.retry_after

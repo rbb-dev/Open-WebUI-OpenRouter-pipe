@@ -13,6 +13,8 @@ those names keep using the Open WebUI extractor at the call site.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 from typing import Any
@@ -21,6 +23,8 @@ from urllib.parse import urlparse
 BUILTIN_CITATION_TOOLS = frozenset(
     {"search_web", "fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files"}
 )
+
+logger = logging.getLogger(__name__)
 
 _MAX_INPUT_CHARS = 1_000_000
 _MAX_SOURCES = 15
@@ -64,7 +68,7 @@ def _valid_url(value: Any) -> str:
             return ""
     try:
         parsed = urlparse(candidate)
-    except Exception:
+    except ValueError:
         return ""
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return ""
@@ -178,7 +182,7 @@ def harvest_tool_citations(tool_result: Any) -> list[tuple[str, str, str]]:
         parsed: Any = None
         try:
             parsed = json.loads(tool_result)
-        except Exception:
+        except (RecursionError, TypeError, ValueError):
             parse_failed = True
         raw = _harvest_labeled(tool_result) if parse_failed else _harvest_json(parsed)
         deduped: list[tuple[str, str, str]] = []
@@ -191,5 +195,6 @@ def harvest_tool_citations(tool_result: Any) -> list[tuple[str, str, str]]:
             if len(deduped) >= _MAX_SOURCES:
                 break
         return deduped
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
+        logger.debug("citation harvest failed; no sources will be attached", exc_info=True)
         return []

@@ -27,7 +27,8 @@ class VideoPersistence:
             return None
         try:
             from open_webui.models.chats import Chats  # type: ignore[import-not-found]
-        except Exception:
+        except ImportError:
+            self.logger.debug("Open WebUI chats model unavailable", exc_info=True)
             return None
         getter = cast(Any, getattr(Chats, "get_message_by_id_and_message_id", None))
         if not callable(getter):
@@ -38,6 +39,12 @@ class VideoPersistence:
             try:
                 return await _await_if_needed(getter(chat_id=chat_id, message_id=message_id))
             except Exception:
+                self.logger.debug(
+                    "Could not load message %s of chat %s", message_id, chat_id, exc_info=True
+                )
                 return None
         except Exception:
+            self.logger.debug(
+                "Could not load message %s of chat %s", message_id, chat_id, exc_info=True
+            )
             return None

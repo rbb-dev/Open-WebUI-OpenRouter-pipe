@@ -68,6 +68,12 @@ def _discover_plugins() -> None:
         try:
             names = lister()
         except Exception:
+            logger.warning(
+                "plugin discovery: bundle finder %r could not list its modules; any "
+                "plugins it carries will not load",
+                type(finder).__name__,
+                exc_info=True,
+            )
             continue
         if not isinstance(names, (list, tuple, set, frozenset)):
             continue

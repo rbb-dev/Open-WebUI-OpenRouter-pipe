@@ -890,7 +890,7 @@ class Pipe:
                     )
         except ValueError as exc:
             refresh_error = exc
-            self.logger.error("OpenRouter configuration error: %s", exc)
+            self.logger.exception("OpenRouter configuration error: %s", exc)
         except Exception as exc:
             refresh_error = exc
             self.logger.warning("OpenRouter catalog refresh failed: %s", exc, exc_info=True)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import copy
 import time
@@ -20,6 +22,11 @@ USAGE_RANGES: dict[str, tuple[int, int]] = {
 _UQ_MEMO: dict[tuple[str, bool, int], tuple[float, dict[str, Any]]] = {}
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
+
+
+logger = logging.getLogger(__name__)
+
+_warned_row_timestamps: set[bool] = set()
 
 
 def _new_acc() -> dict[str, float]:
@@ -127,7 +134,14 @@ def query_usage_stats(
     for r in rows:
         try:
             ts = r.ts.timestamp()
-        except Exception:
+        except (AttributeError, OSError, OverflowError, ValueError):
+            if not _warned_row_timestamps:
+                _warned_row_timestamps.add(True)
+                logger.warning(
+                    "usage query: a stored row has an unusable timestamp and is being "
+                    "excluded; reported totals will be short",
+                    exc_info=True,
+                )
             continue
         is_task = (r.kind or "chat") == "task"
         if is_task and not include_tasks:
@@ -207,7 +221,12 @@ def query_usage_stats(
     since = None
     try:
         since = int(min_ts.timestamp()) if min_ts is not None else None
-    except Exception:
+    except (AttributeError, OSError, OverflowError, ValueError):
+        logger.warning(
+            "usage query: could not derive the earliest retained timestamp; "
+            "previous-period comparison is unavailable",
+            exc_info=True,
+        )
         since = None
     have_prev = since is not None and since <= int(prev_start)
 
@@ -260,6 +279,7 @@ def _warm_usage_store(store: Any, usage_store: Any, valves: Any, pipe_id: str) -
         usage_store.ensure(store)
         return None
     except Exception as exc:
+        logger.warning("usage store is unavailable", exc_info=True)
         return type(exc).__name__
 
 

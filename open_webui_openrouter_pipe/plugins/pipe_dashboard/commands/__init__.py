@@ -19,8 +19,11 @@ try:
             importlib.import_module(_name)
         except Exception:
             logger.debug("Failed to import command module %s", _name, exc_info=True)
-except Exception:
-    pass  # Bundled mode
+except (AttributeError, NameError, TypeError):
+    logger.debug(
+        "command auto-discovery unavailable; relying on the explicit imports below",
+        exc_info=True,
+    )
 
 del importlib, pkgutil
 

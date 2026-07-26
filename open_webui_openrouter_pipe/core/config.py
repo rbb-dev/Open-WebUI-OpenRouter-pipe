@@ -33,9 +33,11 @@ try:
     from open_webui.utils.headers import (
         include_user_info_headers as _owui_include_user_info_headers,
     )
-except Exception:
+except ImportError:
     _owui_env = None
     _owui_include_user_info_headers = None
+
+logger = logging.getLogger(__name__)
 
 LOGGER = logging.getLogger("open_webui_openrouter_pipe")
 
@@ -2090,6 +2092,11 @@ def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = No
             name = getattr(_owui_env, "FORWARD_SESSION_INFO_HEADER_CHAT_ID", "X-OpenWebUI-Chat-Id")
             headers[name] = str(chat_id)
     except Exception:
+        logger.warning(
+            "Could not attach Open WebUI session info headers; the request will be "
+            "sent without them",
+            exc_info=True,
+        )
         return headers
     return headers
 

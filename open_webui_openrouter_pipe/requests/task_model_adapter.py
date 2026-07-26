@@ -179,7 +179,9 @@ class TaskModelAdapter:
                                 kind="task",
                             )
                         except Exception as exc:  # pragma: no cover - guard against Redis-side issues
-                            self.logger.debug("Task cost snapshot failed: %s", exc)
+                            self.logger.debug(
+                                "Task cost snapshot failed: %s", exc, exc_info=True
+                            )
 
                 message = self._extract_task_output_text(response).strip()
                 if message:

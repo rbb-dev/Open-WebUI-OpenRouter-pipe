@@ -65,11 +65,16 @@ async def bearer_user(request: Request) -> Any:
     try:
         from open_webui.models.users import Users
         from open_webui.utils.auth import decode_token, is_valid_token
-    except Exception:
+    except ImportError:
+        logger.warning(
+            "pipe_dashboard: Open WebUI auth helpers are unavailable; denying the request",
+            exc_info=True,
+        )
         raise HTTPException(status_code=401)
     try:
         data = decode_token(token)
     except Exception:
+        logger.debug("pipe_dashboard: bearer token rejected", exc_info=True)
         data = None
     if not data or not data.get("id"):
         raise HTTPException(status_code=401)
@@ -143,7 +148,8 @@ def get_owui_app() -> Any | None:
         from open_webui.main import app
 
         return app
-    except Exception:
+    except ImportError:
+        logger.debug("pipe_dashboard: Open WebUI app is not importable", exc_info=True)
         return None
 
 

@@ -6,6 +6,7 @@ This module handles the main request processing logic after transformation.
 from __future__ import annotations
 
 import base64
+import binascii
 import inspect
 import json
 import logging
@@ -345,11 +346,7 @@ class RequestOrchestrator:
                 """
                 if not data:
                     return b""
-                try:
-                    wanted = int(byte_count)
-                except Exception:
-                    wanted = 96
-                wanted = max(1, min(wanted, 4096))
+                wanted = max(1, min(byte_count, 4096))
                 needed = ((wanted + 2) // 3) * 4
                 prefix = data[:needed]
                 if not prefix:
@@ -362,10 +359,10 @@ class RequestOrchestrator:
                 prefix = prefix + ("=" * pad)
                 try:
                     decoded = base64.b64decode(prefix, validate=True)
-                except Exception:
+                except binascii.Error:
                     try:
                         decoded = base64.b64decode(prefix, validate=False)
-                    except Exception:
+                    except binascii.Error:
                         return b""
                 return decoded[:wanted]
 
@@ -480,7 +477,19 @@ class RequestOrchestrator:
             try:
                 user_model = await get_user_by_id(user_id, self.logger)
             except Exception:  # pragma: no cover - defensive guard
+                self.logger.warning(
+                    "Could not resolve user %s; uploads in this request will be stored "
+                    "under the fallback account",
+                    user_id,
+                    exc_info=True,
+                )
                 user_model = None
+            if user_model is None:
+                self.logger.warning(
+                    "User %s did not resolve; uploads in this request will be stored "
+                    "under the fallback account",
+                    user_id,
+                )
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
@@ -540,6 +549,9 @@ class RequestOrchestrator:
             try:
                 await _inject_direct_uploads_into_messages(body, direct_uploads)
             except Exception as exc:
+                self.logger.warning(
+                    "Direct uploads could not be injected into the request", exc_info=True
+                )
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.DIRECT_UPLOAD_FAILURE_TEMPLATE,
@@ -675,7 +687,12 @@ class RequestOrchestrator:
             try:
                 user_valves = self._pipe.UserValves.model_validate(user_valves_raw)
                 user_requests_zdr = user_valves.REQUEST_ZDR
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
+                self.logger.warning(
+                    "Could not read the user's Zero Data Retention preference; "
+                    "proceeding without it",
+                    exc_info=True,
+                )
                 user_requests_zdr = False
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
         if enforce_zdr:
@@ -898,7 +915,11 @@ class RequestOrchestrator:
             try:
                 tools_registry = await tools_registry
             except Exception as exc:
-                self.logger.warning("Tool registry unavailable; continuing without tools: %s", exc)
+                self.logger.warning(
+                    "Tool registry unavailable; continuing without tools: %s",
+                    exc,
+                    exc_info=True,
+                )
                 await self._pipe._event_emitter_handler._emit_notification(
                     __event_emitter__,
                     "Tool registry unavailable; continuing without tools.",
@@ -917,6 +938,11 @@ class RequestOrchestrator:
                 event_emitter=__event_emitter__,
             )
         except Exception:
+            self.logger.warning(
+                "Direct tool server registry unavailable; the model will be offered no "
+                "direct tools this request",
+                exc_info=True,
+            )
             direct_registry = {}
 
         merged_extra_tools: list[dict[str, Any]] = []
@@ -925,9 +951,10 @@ class RequestOrchestrator:
             if isinstance(upstream_extra, list):
                 merged_extra_tools.extend([t for t in upstream_extra if isinstance(t, dict)])
         except Exception:
-            merged_extra_tools = []
-        if not merged_extra_tools:
-            merged_extra_tools = []
+            self.logger.warning(
+                "Could not read extra tools from the request body; continuing without them",
+                exc_info=True,
+            )
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         incoming_tools_raw = body.get("tools")
@@ -1203,7 +1230,11 @@ class RequestOrchestrator:
                                             }
                                         )
                                     except Exception as emit_error:
-                                        self.logger.debug("Failed to emit status update: %s", emit_error)
+                                        self.logger.debug(
+                                            "Failed to emit status update: %s",
+                                            emit_error,
+                                            exc_info=True,
+                                        )
 
                                 if not isinstance(responses_body.reasoning, dict):
                                     responses_body.reasoning = {}

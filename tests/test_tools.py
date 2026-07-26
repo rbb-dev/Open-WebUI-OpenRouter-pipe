@@ -1654,10 +1654,14 @@ async def test_build_direct_tool_server_metadata_get_fails():
 
         key = list(registry.keys())[0]
         callable_fn = registry[key]["callable"]
+
         result = await callable_fn()
 
-        # session_id should be None due to exception handling
-        assert call_received["session_id"] is None
+        assert call_received["session_id"] == "not_called", (
+            "the tool call was dispatched without a usable session id; Open WebUI "
+            "cannot route it, so the call burns the full tool timeout"
+        )
+        assert "error" in str(result).lower(), result
     finally:
         await pipe.close()
 
@@ -1705,17 +1709,11 @@ async def test_build_direct_tool_server_bad_properties_keys():
             event_emitter=AsyncMock(),
         )
 
-        # The callable should still be created
-        assert len(registry) == 1
-        key = list(registry.keys())[0]
-        callable_fn = registry[key]["callable"]
-
-        # Call with params - due to allowed_params extraction failing,
-        # all params should be filtered (allowed_params = set())
-        await callable_fn(x="test_value", y="another")
-
-        # params should be empty dict because allowed_params extraction failed
-        assert call_received["params"] == {}
+        assert registry == {}, (
+            "a tool whose parameters could not be read was advertised to the model; "
+            "it would be invoked with no arguments and still look successful"
+        )
+        assert call_received["params"] == "not_called"
     finally:
         await pipe.close()
 
@@ -1752,8 +1750,9 @@ async def test_build_direct_tool_server_spec_params_access_fails():
             event_emitter=AsyncMock(),
         )
 
-        # Should still create the tool with empty allowed_params
-        assert len(registry) == 1
+        assert registry == {}, (
+            "a tool whose parameters could not be read was advertised to the model"
+        )
     finally:
         await pipe.close()
 

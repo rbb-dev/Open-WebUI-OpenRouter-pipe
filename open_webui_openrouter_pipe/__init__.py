@@ -15,10 +15,14 @@ during simple imports like `from open_webui_openrouter_pipe import Pipe`.
 from typing import TYPE_CHECKING, Any
 
 try:
-    from importlib.metadata import version as _get_version
-    __version__ = _get_version("open-webui-openrouter-pipe")
-except Exception:
+    from importlib.metadata import PackageNotFoundError, version as _get_version
+except ImportError:
     __version__ = "2.7.3"  # Fallback if not installed as package
+else:
+    try:
+        __version__ = _get_version("open-webui-openrouter-pipe")
+    except PackageNotFoundError:
+        __version__ = "2.7.3"  # Fallback if not installed as package
 
 # -----------------------------------------------------------------------------
 # Type hints only (no runtime import)

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import html as _html
 import time
 from typing import Any, Sequence
+
+
+logger = logging.getLogger(__name__)
 
 
 def _escape_pipe(text: str) -> str:
@@ -153,8 +158,8 @@ def build_model_name_map() -> dict[str, str]:
                 mid = m.get(key)
                 if mid:
                     id_to_name[mid] = name
-    except Exception:
-        pass
+    except (AttributeError, TypeError):
+        logger.debug("model id->name map build failed", exc_info=True)
     return id_to_name
 
 

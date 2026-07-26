@@ -246,7 +246,6 @@ class VideoGenerationAdapter:
                             )
                             self._intent_failure_notified_chats.add(chat_key_f)
                         else:
-                            self._intent_failure_notified_chats.add(chat_key_f)
                             try:
                                 await event_emitter({
                                     "type": "notification",
@@ -258,6 +257,7 @@ class VideoGenerationAdapter:
                                         ),
                                     },
                                 })
+                                self._intent_failure_notified_chats.add(chat_key_f)
                                 self.logger.info(
                                     "first-failure toast emitted (chat_key=%s)",
                                     chat_key_f,
@@ -265,7 +265,7 @@ class VideoGenerationAdapter:
                             except Exception as exc:
                                 self.logger.warning(
                                     "first-failure toast emission raised "
-                                    "(suppressed): %s", exc,
+                                    "(suppressed): %s", exc, exc_info=True,
                                 )
                     # Clarification short-circuit: emit the question, return.
                     if (
@@ -330,7 +330,7 @@ class VideoGenerationAdapter:
                     raise
                 except Exception as exc:
                     self.logger.warning(
-                        "video_intent classifier failed (degrade-open): %s", exc
+                        "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
                     )
                     self._intent_record_failure()
                     chat_key = chat_id if isinstance(chat_id, str) else ""
@@ -457,6 +457,7 @@ class VideoGenerationAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self.logger.exception("Video generation request failed (job_id=%s)", job_id)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             await self._emit_status(event_emitter, "Video generation failed.", done=True)
@@ -649,6 +650,7 @@ class VideoGenerationAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
             failed = True
             elapsed = max(0.0, time.monotonic() - started_at)
             reason = str(exc) or exc.__class__.__name__
@@ -1264,8 +1266,8 @@ class VideoGenerationAdapter:
                     getattr(valves, "VIDEO_INTENT_LOG_DECISIONS", False)
                 ),
             )
-        except Exception as exc:
-            self.logger.debug("emit_telemetry_log raised (suppressed): %s", exc)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.logger.debug("emit_telemetry_log raised (suppressed): %s", exc, exc_info=True)
 
     def _apply_uploaded_attachment_retargeting(
         self,
@@ -1463,13 +1465,13 @@ class VideoGenerationAdapter:
                     else:
                         thumb_urls.append("")
                 except Exception as exc:
-                    self.logger.debug("thumbnail generation failed: %s", exc)
+                    self.logger.debug("thumbnail generation failed: %s", exc, exc_info=True)
                     thumb_urls.append("")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.logger.warning(
-                    "_materialise_frame_plan entry failed (degrade-open): %s", exc
+                    "_materialise_frame_plan entry failed (degrade-open): %s", exc, exc_info=True
                 )
                 intent.downgrades.append("materialise_failed")
                 thumb_urls.append("")
@@ -1546,7 +1548,13 @@ class VideoGenerationAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.logger.debug("resolve owui file %s failed: %s", file_id, exc)
+            self.logger.warning(
+                "Could not read the referenced video file %s; the generation will "
+                "proceed without it: %s",
+                file_id,
+                exc,
+                exc_info=True,
+            )
             return None
 
     def _extract_provider_options(self, response_provider: Any, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -1711,7 +1719,12 @@ class VideoGenerationAdapter:
                 valves=valves,
                 stream_duration=elapsed,
             )
-        except Exception:
+        except (AttributeError, IndexError, TypeError, ValueError):
+            self.logger.warning(
+                "Could not render the final video usage status; falling back to a "
+                "plain duration line",
+                exc_info=True,
+            )
             return f"Video generated in {elapsed:.1f}s"
 
     @staticmethod
@@ -1787,7 +1800,7 @@ class VideoGenerationAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.logger.debug("Video generation event emit failed: %s", exc)
+            self.logger.debug("Video generation event emit failed: %s", exc, exc_info=True)
 
     def _resolve_api_key(self, valves: Any) -> str:
         api_key, api_key_error = self._pipe._resolve_openrouter_api_key(valves)

@@ -263,7 +263,11 @@ class UsageStore:
             try:
                 days = int(fn())
             except Exception:
-                days = 30
+                logger.warning(
+                    "usage store: retention-days valve is unreadable; falling back to %d days",
+                    days,
+                    exc_info=True,
+                )
         days = max(1, days)
         return datetime.datetime.now() - datetime.timedelta(days=days)
 
@@ -357,6 +361,7 @@ class UsageStore:
                         ).scalar()
                         info["approx_bytes"] = int(size) if size is not None else None
                 except Exception:
+                    logger.debug("usage table size query failed", exc_info=True)
                     info["approx_bytes"] = None
         except Exception:
             logger.debug("usage table info failed", exc_info=True)
@@ -381,7 +386,7 @@ class UsageStore:
         self._stop_event.set()
         try:
             self._queue.put_nowait(None)
-        except Exception:
+        except queue.Full:
             pass
         task = self._purge_task
         self._purge_task = None

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import re
 import hashlib
 import hmac
@@ -30,6 +31,8 @@ from .config import (
 )
 
 # Generic type variable for _await_if_needed
+logger = logging.getLogger(__name__)
+
 _T = TypeVar("_T")
 
 # -----------------------------------------------------------------------------
@@ -168,7 +171,7 @@ def _pretty_json(value: Any) -> str:
         return text.strip()
     try:
         return json.dumps(value, indent=2, ensure_ascii=False)
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         return str(value)
 
 
@@ -182,7 +185,7 @@ def _safe_json_loads(payload: Optional[str]) -> Any:
         return None
     try:
         return json.loads(payload)
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         return None
 
 
@@ -437,6 +440,7 @@ def _get_open_webui_config_module() -> Any | None:
     try:
         import open_webui.config as ow_config  # type: ignore
     except Exception:
+        logger.debug("Open WebUI config module unavailable", exc_info=True)
         return None
     _OPEN_WEBUI_CONFIG_MODULE = ow_config
     return ow_config

@@ -145,7 +145,7 @@ def _strictify_schema(schema):
         canonical = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         cached = _strictify_schema_cached(canonical)
         return json.loads(cached)
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         LOGGER.warning("Failed to strictify tool schema; sending it unmodified", exc_info=True)
         return schema
 

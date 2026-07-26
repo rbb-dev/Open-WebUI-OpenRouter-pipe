@@ -9,16 +9,28 @@ delegate to these functions.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 PROCESS_START = time.monotonic()
+
+_warned_collectors: set[str] = set()
 
 
 def _safe_int(value: Any) -> int:
     try:
         return int(value)
-    except Exception:
+    except (OverflowError, TypeError, ValueError):
+        if "safe_int" not in _warned_collectors:
+            _warned_collectors.add("safe_int")
+            logger.warning(
+                "pipe_dashboard: a collected metric was not an integer; reporting 0 "
+                "for it until this is fixed",
+                exc_info=True,
+            )
         return 0
 
 
@@ -26,7 +38,31 @@ def _waiter_count(sem: Any) -> int:
     try:
         waiters = getattr(sem, "_waiters", None)
         return len(waiters) if waiters is not None else 0
-    except Exception:
+    except (AttributeError, TypeError):
+        if "waiter_count" not in _warned_collectors:
+            _warned_collectors.add("waiter_count")
+            logger.warning(
+                "pipe_dashboard: cannot read semaphore waiters; the dashboard will "
+                "report an empty wait queue",
+                exc_info=True,
+            )
+        return 0
+
+
+def _semaphore_active(sem: Any, limit: int) -> int:
+    """Live usage of a semaphore, or 0 when its internals cannot be read."""
+    if sem is None or not limit:
+        return 0
+    try:
+        return max(0, limit - int(sem._value))
+    except (AttributeError, TypeError, ValueError):
+        if "semaphore_active" not in _warned_collectors:
+            _warned_collectors.add("semaphore_active")
+            logger.warning(
+                "pipe_dashboard: cannot read semaphore usage; the dashboard will "
+                "report 0 active for it",
+                exc_info=True,
+            )
         return 0
 
 
@@ -44,9 +80,9 @@ def collect_concurrency(pipe: Any) -> dict[str, int]:
         valves = getattr(pipe, "valves", None)
         tool_limit = getattr(valves, "MAX_PARALLEL_TOOLS_GLOBAL", 0) or 0
     return {
-        "active_requests": max(0, sem_limit - sem._value) if sem else 0,
+        "active_requests": _semaphore_active(sem, sem_limit),
         "max_requests": sem_limit,
-        "active_tools": max(0, tool_limit - tool_sem._value) if tool_sem else 0,
+        "active_tools": _semaphore_active(tool_sem, tool_limit),
         "max_tools": tool_limit,
     }
 
@@ -73,16 +109,18 @@ def collect_video_pool(pipe: Any) -> dict[str, int]:
     """Read the video-generation concurrency pool (limit + live usage)."""
     limit = _safe_int(getattr(pipe, "_video_global_limit", 0))
     sem = getattr(pipe, "_video_global_semaphore", None)
-    active = 0
     if sem is not None and limit:
-        try:
-            active = max(0, limit - int(sem._value))
-        except Exception:
-            active = 0
+        active = _semaphore_active(sem, limit)
     else:
         try:
             active = len(getattr(pipe, "_video_active_tasks", {}) or {})
-        except Exception:
+        except TypeError:
+            if "video_active" not in _warned_collectors:
+                _warned_collectors.add("video_active")
+                logger.warning(
+                    "pipe_dashboard: cannot count active video tasks; reporting 0",
+                    exc_info=True,
+                )
             active = 0
     return {"active": active, "max": limit}
 
@@ -138,12 +176,20 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     auth_active = 0
     try:
         from ...core.circuit_breaker import CircuitBreaker
+        counted = 0
         with CircuitBreaker._AUTH_FAILURE_LOCK:
             for until in CircuitBreaker._AUTH_FAILURE_UNTIL.values():
                 if now < until:
-                    auth_active += 1
-    except Exception:
-        pass  # Only lose auth failure count
+                    counted += 1
+        auth_active = counted
+    except (AttributeError, ImportError, RuntimeError, TypeError):
+        if "auth_failures" not in _warned_collectors:
+            _warned_collectors.add("auth_failures")
+            logger.warning(
+                "pipe_dashboard: cannot read active auth failures; the dashboard will "
+                "report 0 for them",
+                exc_info=True,
+            )
 
     return {
         "tracked_users": tracked,

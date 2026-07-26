@@ -110,4 +110,6 @@ async def maybe_dump_costs_snapshot(
             pipe._redis_client.set(key, json.dumps(payload, default=str), ex=ttl)
         )
     except Exception as exc:  # pragma: no cover - Redis failures logged, not fatal
-        pipe.logger.debug("Cost snapshot write failed for user=%s: %s", user_id, exc)
+        pipe.logger.debug(
+            "Cost snapshot write failed for user=%s: %s", user_id, exc, exc_info=True
+        )

@@ -59,6 +59,7 @@ class SessionTracker:
         self._recent: list[dict[str, Any]] = []
         self._pricing_fn = pricing_fn
         self._name_fn = name_fn
+        self._warned_name_fn = False
         self._pid = os.getpid()
         self.on_finalize: Callable[[dict[str, Any]], None] | None = None
 
@@ -123,6 +124,13 @@ class SessionTracker:
         try:
             return str(fn(model_id) or model_id)
         except Exception:
+            if not self._warned_name_fn:
+                self._warned_name_fn = True
+                logger.warning(
+                    "pipe_dashboard: model-name resolver failed; sessions will show raw "
+                    "model ids",
+                    exc_info=True,
+                )
             return model_id
 
     def mark_streaming(self, request_id: str) -> None:

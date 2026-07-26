@@ -200,6 +200,7 @@ class MultimodalHandler:
         self._artifact_store = artifact_store
         self._emit_status_callback = emit_status_callback
         self._file_gateway: Optional["OwuiFileGateway"] = file_gateway
+        self._warned_missing_imaging: set[str] = set()
 
     def set_http_session(self, session: Optional[aiohttp.ClientSession]) -> None:
         """Set or clear the HTTP session for remote downloads."""
@@ -397,7 +398,7 @@ class MultimodalHandler:
 
         except Exception as exc:
             elapsed = time.perf_counter() - start_time
-            self.logger.error(
+            self.logger.exception(
                 f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
             )
             return None
@@ -548,7 +549,7 @@ class MultimodalHandler:
                     }
         except Exception as exc:
             elapsed = time.perf_counter() - start_time
-            self.logger.error(
+            self.logger.exception(
                 f"Failed streaming download of {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
             )
             return None
@@ -731,8 +732,8 @@ class MultimodalHandler:
                 except (socket.gaierror, UnicodeError):
                     self.logger.warning(f"DNS resolution failed for: {host}")
                     return None
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    self.logger.error(f"Unexpected DNS error for {host}: {exc}")
+                except (OSError, TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+                    self.logger.exception("Unexpected DNS error for %s: %s", host, exc)
                     return None
 
                 for _, _, _, _, sockaddr in addrinfo:
@@ -773,7 +774,7 @@ class MultimodalHandler:
 
         except Exception as exc:
             # Defensive: treat validation errors as unsafe
-            self.logger.error(f"URL safety validation failed for {url}: {exc}")
+            self.logger.exception("URL safety validation failed for %s: %s", url, exc)
             return None
 
     def _build_pinned_request(
@@ -933,7 +934,9 @@ class MultimodalHandler:
                     return None
                 content_type = resp.headers.get("Content-Type")
         except Exception as exc:
-            self.logger.debug("Failed to download model icon (url=%s): %s", url, exc)
+            self.logger.debug(
+                "Failed to download model icon (url=%s): %s", url, exc, exc_info=True
+            )
             return None
 
         mime = _guess_image_mime_type(url, content_type, data)
@@ -948,7 +951,14 @@ class MultimodalHandler:
             try:
                 import cairosvg  # type: ignore[import-not-found]
             except Exception as exc:
-                self.logger.debug("CairoSVG unavailable; skipping SVG model icon (url=%s): %s", url, exc)
+                if "cairosvg" not in self._warned_missing_imaging:
+                    self._warned_missing_imaging.add("cairosvg")
+                    self.logger.warning(
+                        "CairoSVG is not installed, so no SVG model icon can be converted "
+                        "while UPDATE_MODEL_IMAGES is enabled: %s",
+                        exc,
+                        exc_info=True,
+                    )
                 return None
 
             try:
@@ -958,7 +968,9 @@ class MultimodalHandler:
                     output_height=250,
                 )
             except Exception as exc:
-                self.logger.debug("Failed to rasterize SVG model icon (url=%s): %s", url, exc)
+                self.logger.debug(
+                    "Failed to rasterize SVG model icon (url=%s): %s", url, exc, exc_info=True
+                )
                 return None
 
             if not isinstance(png_bytes, (bytes, bytearray)):
@@ -985,7 +997,14 @@ class MultimodalHandler:
         try:
             from PIL import Image
         except Exception as exc:
-            self.logger.debug("Pillow unavailable; skipping model icon conversion (url=%s): %s", url, exc)
+            if "pillow" not in self._warned_missing_imaging:
+                self._warned_missing_imaging.add("pillow")
+                self.logger.warning(
+                    "Pillow is not installed, so no model icon can be converted while "
+                    "UPDATE_MODEL_IMAGES is enabled: %s",
+                    exc,
+                    exc_info=True,
+                )
             return None
 
         try:
@@ -997,7 +1016,9 @@ class MultimodalHandler:
                 image.save(output, format="PNG")
                 png_bytes = output.getvalue()
         except Exception as exc:
-            self.logger.debug("Failed to convert model icon to PNG (url=%s): %s", url, exc)
+            self.logger.debug(
+                "Failed to convert model icon to PNG (url=%s): %s", url, exc, exc_info=True
+            )
             return None
 
         if not isinstance(png_bytes, (bytes, bytearray)):
@@ -1045,7 +1066,9 @@ class MultimodalHandler:
                 resp.raise_for_status()
                 html = await resp.text()
         except Exception as exc:
-            self.logger.debug("OpenRouter maker page fetch failed (maker=%s): %s", maker_id, exc)
+            self.logger.debug(
+                "OpenRouter maker page fetch failed (maker=%s): %s", maker_id, exc, exc_info=True
+            )
             return None
 
         # Protect against bad HTML responses that might crash downstream parsing.
@@ -1106,6 +1129,8 @@ class MultimodalHandler:
             ...     print(f"MIME: {result['mime_type']}")
             ...     print(f"Size: {len(result['data'])} bytes")
         """
+        if self._file_gateway is None:
+            raise RuntimeError("File gateway is not configured for data URL validation")
         try:
             if not data_url or not data_url.startswith("data:"):
                 return None
@@ -1121,8 +1146,6 @@ class MultimodalHandler:
 
             b64_data = parts[1]
 
-            if self._file_gateway is None:
-                raise RuntimeError("File gateway is not configured for data URL validation")
             if not self._file_gateway.validate_base64_size(b64_data):
                 return None
 
@@ -1133,6 +1156,6 @@ class MultimodalHandler:
                 "mime_type": mime_type,
                 "b64": b64_data
             }
-        except Exception as exc:
-            self.logger.error(f"Failed to parse data URL: {exc}")
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.logger.exception("Failed to parse data URL: %s", exc)
             return None

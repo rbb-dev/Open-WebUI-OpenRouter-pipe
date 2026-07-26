@@ -324,7 +324,7 @@ class ChatCompletionsAdapter:
                                     break
                                 try:
                                     chunk_obj = json.loads(data_blob.decode("utf-8"))
-                                except Exception:
+                                except (RecursionError, UnicodeDecodeError, ValueError):
                                     continue
                                 # First decoded event: the yields and accumulator
                                 # updates below make a retry unsafe (it would
@@ -720,6 +720,10 @@ class ChatCompletionsAdapter:
                     try:
                         data = await resp.json()
                     except Exception:
+                        self.logger.debug(
+                            "OpenRouter response was not decodable JSON; falling back to text",
+                            exc_info=True,
+                        )
                         text = await resp.text()
                         try:
                             data = json.loads(text)

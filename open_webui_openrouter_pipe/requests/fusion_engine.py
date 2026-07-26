@@ -351,7 +351,7 @@ def parse_analysis(text: str) -> dict[str, Any] | None:
         return None
     try:
         obj = json.loads(stripped[start:end + 1])
-    except Exception:
+    except (RecursionError, TypeError, ValueError):
         return None
     if not isinstance(obj, dict) or set(obj) != ANALYSIS_KEYS:
         return None
@@ -458,6 +458,11 @@ async def run_internal_fusion(
             invocation.user_id
         )
     except Exception:
+        pipe.logger.warning(
+            "Could not read the installed web tools configuration; fusion inner calls "
+            "will run without them",
+            exc_info=True,
+        )
         web_tools_config = None
     item_id = f"st_fusion_internal_{uuid.uuid4().hex[:12]}"
     total_usage: dict[str, Any] = {}

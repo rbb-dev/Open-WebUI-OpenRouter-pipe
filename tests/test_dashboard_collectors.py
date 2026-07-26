@@ -880,3 +880,54 @@ class TestValveFallbackConcurrency:
         payload = _collect_worker_payload(pipe)
         assert payload["c"]["mr"] == 50
         assert payload["c"]["mt"] == 10
+
+
+def test_unreadable_semaphore_does_not_blank_the_whole_fast_tier(pipe_instance, caplog):
+    """A bad semaphore must cost one metric, not every panel on the dashboard."""
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.runtime_metrics import (
+        collect_fast_stats,
+    )
+
+    _collectors._warned_collectors.clear()
+    pipe = pipe_instance
+
+    class _Hostile:
+        @property
+        def _value(self):
+            raise AttributeError("semaphore internals moved")
+
+    pipe._global_semaphore = _Hostile()
+    pipe._semaphore_limit = 4
+
+    with caplog.at_level(_logging.WARNING):
+        stats = collect_fast_stats(pipe)
+
+    assert stats, "the entire fast tier was lost to one unreadable semaphore"
+    assert "queues" in stats and "sessions" in stats, stats
+    assert stats["concurrency"]["active_requests"] == 0
+    assert stats["concurrency"]["max_requests"] == 4
+    assert any("cannot read semaphore usage" in m for m in caplog.messages), caplog.messages
+
+
+def test_collector_failures_warn_only_once(pipe_instance, caplog):
+    """The collectors run every couple of seconds; the warning must not flood."""
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+
+    _collectors._warned_collectors.clear()
+
+    class _Hostile:
+        @property
+        def _value(self):
+            raise AttributeError("semaphore internals moved")
+
+    with caplog.at_level(_logging.WARNING):
+        for _ in range(5):
+            _collectors._semaphore_active(_Hostile(), 4)
+
+    hits = [m for m in caplog.messages if "cannot read semaphore usage" in m]
+    assert len(hits) == 1, hits

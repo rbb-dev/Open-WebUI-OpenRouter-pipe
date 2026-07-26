@@ -241,10 +241,9 @@ class ResponsesAdapter:
                                     producer_exc,
                                 )
                             else:
-                                self.logger.error(
+                                self.logger.exception(
                                     "Producer encountered error while streaming from OpenRouter: %s",
                                     producer_exc,
-                                    exc_info=True,
                                 )
                             if breaker_key:
                                 self._pipe._circuit_breaker.record_failure(breaker_key)
@@ -297,7 +296,9 @@ class ResponsesAdapter:
                         try:
                             event = json.loads(data.decode("utf-8"))
                         except Exception as exc:
-                            self.logger.warning("Chunk parse failed (seq=%s): %s", seq, exc)
+                            self.logger.warning(
+                                "Chunk parse failed (seq=%s): %s", seq, exc, exc_info=True
+                            )
                             await event_queue.put((seq, None))
                             continue
                         if not worker_first_event_queued:

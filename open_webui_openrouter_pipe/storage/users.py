@@ -37,5 +37,5 @@ async def get_user_by_id(user_id: str, logger: logging.Logger) -> Optional[Any]:
     try:
         return await Users.get_user_by_id(user_id)
     except Exception as exc:
-        logger.error(f"Failed to load user {user_id}: {exc}")
+        logger.exception("Failed to load user %s", user_id)
         return None

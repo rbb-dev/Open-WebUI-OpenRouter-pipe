@@ -36,6 +36,8 @@ from .video_intent_prompts import (
 # Marker tags for the hidden intent-disclosure block
 # -----------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
 INTENT_BLOCK_START = "intent_block_start"
 INTENT_BLOCK_END = "intent_block_end"
 INTENT_MODE = "intent_mode"
@@ -850,7 +852,9 @@ async def resolve_intent(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.warning("video_intent classifier failed (degrade-open): %s", exc)
+        logger.warning(
+            "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
+        )
         fallback.classifier_failed = True
         fallback.failure_reason = f"{type(exc).__name__}: {exc}"
         return fallback
@@ -1040,7 +1044,12 @@ def render_intent_disclosure_block(
         lines.append("")
         lines.append(_serialize_kind_marker(INTENT_BLOCK_END, "1"))
         return "\n".join(lines) + "\n"
-    except Exception:
+    except (AttributeError, IndexError, TypeError, ValueError):
+        logger.warning(
+            "Could not render the video intent disclosure; the user will not be told "
+            "what the classifier changed",
+            exc_info=True,
+        )
         return ""
 
 
