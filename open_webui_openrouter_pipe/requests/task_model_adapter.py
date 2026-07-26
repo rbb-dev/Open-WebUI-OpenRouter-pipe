@@ -210,7 +210,7 @@ class TaskModelAdapter:
                     attempt,
                     attempts,
                     exc,
-                    exc_info=self.logger.isEnabledFor(logging.DEBUG) and (not is_auth_failure),
+                    exc_info=True and (not is_auth_failure),
                 )
                 if is_auth_failure:
                     break
@@ -222,7 +222,7 @@ class TaskModelAdapter:
         error_message = (
             f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
         )
-        self.logger.error(error_message, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+        self.logger.exception(error_message)
         await self._pipe._dispatch_plugin_event(
             "dispatch_on_generation_complete",
             None,

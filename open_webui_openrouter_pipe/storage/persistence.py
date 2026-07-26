@@ -730,7 +730,7 @@ class ArtifactStore:
         try:
             compressed = lz4frame.compress(serialized)
         except Exception as exc:  # pragma: no cover - depends on native lib
-            self.logger.warning("LZ4 compression failed; disabling compression for the remainder of this process: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            self.logger.warning("LZ4 compression failed; disabling compression for the remainder of this process: %s", exc, exc_info=True)
             self._compression_enabled = False
             return serialized, False
         if not compressed or len(compressed) >= len(serialized):
@@ -1053,14 +1053,12 @@ class ArtifactStore:
             if self._redis_enabled:
                 return await self._redis_enqueue_rows(rows)
             return await self._db_persist_direct(rows, user_id=user_id)
-        except Exception as exc:
+        except Exception:
             self._record_db_failure(user_id)
-            self.logger.error(
-                "Artifact persist failed, dropping %d row(s) (types=%s): %s",
+            self.logger.exception(
+                "Artifact persist failed, dropping %d row(s) (types=%s)",
                 len(rows),
                 sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
-                exc,
-                exc_info=True,
             )
             return []
 
@@ -1155,7 +1153,7 @@ class ArtifactStore:
                             message_id or "",
                             len(touched_ids),
                             exc,
-                            exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                            exc_info=True,
                         )
             except Exception as exc:
                 self.logger.debug(
@@ -1163,7 +1161,7 @@ class ArtifactStore:
                     chat_id,
                     message_id or "",
                     exc,
-                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                    exc_info=True,
                 )
 
         results: dict[str, dict] = {}
@@ -1178,7 +1176,7 @@ class ArtifactStore:
                 try:
                     payload = self._decrypt_payload(ciphertext or "")
                 except Exception as exc:
-                    self.logger.warning("Failed to decrypt artifact %s: %s", row.id, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    self.logger.warning("Failed to decrypt artifact %s: %s", row.id, exc, exc_info=True)
                     continue
             if isinstance(payload, dict):
                 results[row.id] = payload
@@ -1247,7 +1245,7 @@ class ArtifactStore:
             cached.update(fetched)
         except Exception as exc:
             self._record_db_failure(user_id)
-            self.logger.warning("Artifact fetch failed: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
         return cached
 
     @timed
@@ -1300,7 +1298,7 @@ class ArtifactStore:
                 try:
                     await _await_if_needed(self._redis_client.delete(*keys))
                 except Exception as exc:
-                    self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=True)
 
     # -----------------------------------------------------------------------------
     # 4. REDIS CACHE (8 methods)
@@ -1388,9 +1386,9 @@ class ArtifactStore:
 
                 await self._flush_redis_queue()
                 consecutive_failures = 0
-            except Exception as exc:
+            except Exception:
                 consecutive_failures += 1
-                self.logger.error("Periodic flush failed (%d consecutive failures): %s", consecutive_failures, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                self.logger.exception("Periodic flush failed (%d consecutive failures)", consecutive_failures)
                 if consecutive_failures == failure_limit:
                     self.logger.critical("🚨 Redis flush has failed %d times consecutively; write-behind is backing off and will resume when writes succeed (new writes fall back to direct DB meanwhile).", failure_limit)
 
@@ -1463,8 +1461,8 @@ class ArtifactStore:
             try:
                 await self._db_persist_direct(rows)
                 self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
-            except Exception as exc:
-                self.logger.error("❌ DB flush failed! %d artifacts could not be persisted: %s", len(rows), exc, exc_info=True)
+            except Exception:
+                self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
                 try:
                     await self._redis_requeue_entries(raw_entries)
                     self.logger.debug("Re-queued %d artifact(s) back to Redis pending queue after DB failure", len(raw_entries))
@@ -1503,7 +1501,7 @@ class ArtifactStore:
                         )
                 except Exception:
                     # Redis errors during lock release are non-fatal - continue pipe operation
-                    self.logger.debug("Failed to release Redis flush lock", exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    self.logger.debug("Failed to release Redis flush lock", exc_info=True)
 
     def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
         if not (chat_id and row_id):
@@ -1554,7 +1552,7 @@ class ArtifactStore:
                 pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
             await _await_if_needed(pipe.execute())
         except Exception as exc:
-            self.logger.warning("Redis cache write failed (best-effort): %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            self.logger.warning("Redis cache write failed (best-effort): %s", exc, exc_info=True)
 
     @timed
     async def _redis_requeue_entries(self, entries: list[str]) -> None:
@@ -1587,7 +1585,7 @@ class ArtifactStore:
         try:
             values = await _await_if_needed(self._redis_client.mget(keys))
         except Exception as exc:
-            self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=True)
             return {}
         cached: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
@@ -1612,7 +1610,7 @@ class ArtifactStore:
                 try:
                     payload = self._decrypt_payload(ciphertext)
                 except Exception as exc:
-                    self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+                    self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=True)
                     continue
             if isinstance(payload, dict):
                 cached[item_id] = payload
@@ -1705,7 +1703,7 @@ class ArtifactStore:
             except Exception:
                 self.logger.debug(
                     "Failed to shutdown DB executor cleanly",
-                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                    exc_info=True,
                 )
 
 
