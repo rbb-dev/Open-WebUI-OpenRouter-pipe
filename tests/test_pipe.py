@@ -9197,16 +9197,139 @@ class TestTimingLogConfiguration2:
             object.__setattr__(self, "ENABLE_TIMING_LOG", True)
             object.__setattr__(self, "TIMING_LOG_FILE", invalid_path)
 
-        # Mock configure_timing_file to return False
         with patch.object(Valves, "__init__", patched_init):
-            with patch.object(timing_logger, "configure_timing_file", return_value=False):
+            with patch.object(
+                timing_logger, "configure_timing_file", return_value=False
+            ) as configure_mock:
                 with caplog.at_level(logging.WARNING):
                     pipe = Pipe()
                     try:
-                        # The warning should be in log
-                        assert any("Failed to open timing log file" in msg for msg in caplog.messages)
+                        configure_mock.assert_called_once_with(invalid_path)
+                        assert any(
+                            "Failed to open timing log file" in msg for msg in caplog.messages
+                        )
                     finally:
                         pipe.shutdown()
+
+    def test_timing_log_startup_reopens_the_file(self, tmp_path):
+        """A fresh pipe load must re-open the log, not reuse a stale handle."""
+        from open_webui_openrouter_pipe.core import timing_logger
+
+        Pipe._timing_file_warned_path = None
+        log_file = tmp_path / "timing.jsonl"
+        timing_logger.configure_timing_file(str(log_file))
+        first_handle = timing_logger._timing_file_handle
+        assert first_handle is not None
+        try:
+            from open_webui_openrouter_pipe.core.config import Valves
+
+            original_init = Valves.__init__
+
+            def patched_init(self, **data):
+                original_init(self, **data)
+                object.__setattr__(self, "ENABLE_TIMING_LOG", True)
+                object.__setattr__(self, "TIMING_LOG_FILE", str(log_file))
+
+            with patch.object(Valves, "__init__", patched_init):
+                pipe = Pipe()
+                try:
+                    assert timing_logger._timing_file_handle is not first_handle, (
+                        "constructing a Pipe reused the existing handle; an externally "
+                        "rotated log would be written through the orphaned inode"
+                    )
+                finally:
+                    pipe.shutdown()
+        finally:
+            timing_logger.close_timing_file()
+
+    def test_timing_log_runtime_path_reuses_an_open_handle(self, tmp_path):
+        """The per-request path must not churn the file handle."""
+        from open_webui_openrouter_pipe.core import timing_logger
+
+        Pipe._timing_file_warned_path = None
+        log_file = tmp_path / "timing.jsonl"
+        timing_logger.configure_timing_file(str(log_file))
+        first_handle = timing_logger._timing_file_handle
+        try:
+            pipe = Pipe()
+            try:
+                pipe.valves.ENABLE_TIMING_LOG = True
+                pipe.valves.TIMING_LOG_FILE = str(log_file)
+                assert pipe._maybe_configure_timing_file() is True
+                assert timing_logger._timing_file_handle is first_handle
+            finally:
+                pipe.shutdown()
+        finally:
+            timing_logger.close_timing_file()
+
+    def test_timing_log_runtime_failure_warns_once_per_path(self, caplog):
+        """A valve flipped on at runtime must report an unwritable timing path, once."""
+        from open_webui_openrouter_pipe.core import timing_logger
+
+        Pipe._timing_file_warned_path = None
+        pipe = Pipe()
+        try:
+            pipe.valves.ENABLE_TIMING_LOG = True
+            pipe.valves.TIMING_LOG_FILE = "/nonexistent_dir_xyz123/timing.jsonl"
+            with patch.object(
+                timing_logger, "ensure_timing_file_configured", return_value=False
+            ):
+                with caplog.at_level(logging.WARNING):
+                    assert pipe._maybe_configure_timing_file() is False
+                    assert pipe._maybe_configure_timing_file() is False
+                    assert pipe._maybe_configure_timing_file() is False
+            warnings = [
+                m for m in caplog.messages if "Failed to open timing log file" in m
+            ]
+            assert len(warnings) == 1, warnings
+            assert "/nonexistent_dir_xyz123/timing.jsonl" in warnings[0]
+        finally:
+            pipe.shutdown()
+
+    def test_timing_log_runtime_recovery_rearms_the_warning(self, caplog):
+        """Once the path becomes writable again, a later outage warns afresh."""
+        from open_webui_openrouter_pipe.core import timing_logger
+
+        Pipe._timing_file_warned_path = None
+        pipe = Pipe()
+        try:
+            pipe.valves.ENABLE_TIMING_LOG = True
+            pipe.valves.TIMING_LOG_FILE = "/nonexistent_dir_xyz123/timing.jsonl"
+            with caplog.at_level(logging.WARNING):
+                with patch.object(
+                    timing_logger, "ensure_timing_file_configured", return_value=False
+                ):
+                    assert pipe._maybe_configure_timing_file() is False
+                with patch.object(
+                    timing_logger, "ensure_timing_file_configured", return_value=True
+                ):
+                    assert pipe._maybe_configure_timing_file() is True
+                    assert Pipe._timing_file_warned_path is None
+                with patch.object(
+                    timing_logger, "ensure_timing_file_configured", return_value=False
+                ):
+                    assert pipe._maybe_configure_timing_file() is False
+            warnings = [
+                m for m in caplog.messages if "Failed to open timing log file" in m
+            ]
+            assert len(warnings) == 2, warnings
+        finally:
+            pipe.shutdown()
+
+    def test_timing_log_disabled_never_touches_the_file(self):
+        """With the valve off the helper must not attempt to open anything."""
+        from open_webui_openrouter_pipe.core import timing_logger
+
+        pipe = Pipe()
+        try:
+            pipe.valves.ENABLE_TIMING_LOG = False
+            with patch.object(
+                timing_logger, "ensure_timing_file_configured"
+            ) as ensure_mock:
+                assert pipe._maybe_configure_timing_file() is False
+            ensure_mock.assert_not_called()
+        finally:
+            pipe.shutdown()
 
 
 class TestFilterAutoInstallationPaths:

@@ -111,6 +111,7 @@ class VideoGenerationAdapter:
 
         message_lock = await self._acquire_message_lock(key)
         global_semaphore: asyncio.Semaphore | None = None
+        global_slot_acquired = False
         user_slot_acquired = False
         lifecycle_transferred = False
         job_id = ""
@@ -143,6 +144,7 @@ class VideoGenerationAdapter:
                     return content
                 global_semaphore = self._ensure_global_semaphore(valves)
                 await global_semaphore.acquire()
+                global_slot_acquired = True
                 job_id = resume_job_id
                 await self._add_user_active_job(user_id, job_id)
                 await self._emit_status(event_emitter, "Resuming video generation job...", done=False, progress=5)
@@ -170,9 +172,9 @@ class VideoGenerationAdapter:
                     started_at=time.monotonic(),
                     intent_disclosure_block=resumed_disclosure,
                 )
+                lifecycle_transferred = True
                 async with self._pipe._video_active_tasks_dict_lock:
                     self._pipe._video_active_tasks[key] = bg_task
-                lifecycle_transferred = True
                 result = await asyncio.shield(bg_task)
                 await self._emit_completion(event_emitter, result.content, usage=result.usage)
                 return result.content
@@ -365,6 +367,7 @@ class VideoGenerationAdapter:
 
             global_semaphore = self._ensure_global_semaphore(valves)
             await global_semaphore.acquire()
+            global_slot_acquired = True
 
             video_meta = self._extract_video_metadata(metadata)
             frame_images = await self._encode_frame_images(
@@ -441,9 +444,9 @@ class VideoGenerationAdapter:
                 started_at=time.monotonic(),
                 intent_disclosure_block=intent_disclosure_block,
             )
+            lifecycle_transferred = True
             async with self._pipe._video_active_tasks_dict_lock:
                 self._pipe._video_active_tasks[key] = bg_task
-            lifecycle_transferred = True
 
             try:
                 result = await asyncio.shield(bg_task)
@@ -461,9 +464,8 @@ class VideoGenerationAdapter:
             return content
         finally:
             if not lifecycle_transferred:
-                if global_semaphore is not None:
-                    with contextlib.suppress(ValueError):
-                        global_semaphore.release()
+                if global_slot_acquired and global_semaphore is not None:
+                    global_semaphore.release()
                 if user_slot_acquired:
                     await self._release_user_slot(user_id, job_id)
                 if message_lock is not None:
@@ -681,9 +683,8 @@ class VideoGenerationAdapter:
                 if current is asyncio.current_task():
                     self._pipe._video_active_tasks.pop(key, None)
             await self._release_user_slot(user_id, job_id)
-            with contextlib.suppress(ValueError):
-                global_semaphore.release()
             await self._release_message_lock(key, message_lock)
+            global_semaphore.release()
 
     async def _poll_until_terminal(
         self,

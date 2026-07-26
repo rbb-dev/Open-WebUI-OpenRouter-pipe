@@ -335,3 +335,85 @@ async def test_transform_preserves_system_and_developer_message_text_exactly(pip
             {"type": "input_text", "text": "  raw\n"},
         ],
     }
+
+
+def test_transform_survives_a_non_dict_content_block():
+    """A truthy non-dict content part must not abort the whole request."""
+    messages = [
+        {
+            "role": "user",
+            "content": ["a bare string part", {"type": "text", "text": "a real block"}],
+        }
+    ]
+
+    result = _run_transform(messages, {})
+
+    texts = [
+        part.get("text")
+        for item in result
+        if isinstance(item, dict)
+        for part in (item.get("content") or [])
+        if isinstance(part, dict)
+    ]
+    assert "a bare string part" in texts, result
+    assert "a real block" in texts, result
+
+
+def test_transform_drops_unrenderable_content_block_without_aborting():
+    """A non-dict, non-str part is dropped; the rest of the message still transforms."""
+    messages = [
+        {
+            "role": "user",
+            "content": [12345, {"type": "text", "text": "kept"}],
+        }
+    ]
+
+    result = _run_transform(messages, {})
+
+    parts = [
+        part
+        for item in result
+        if isinstance(item, dict)
+        for part in (item.get("content") or [])
+    ]
+    assert all(isinstance(part, dict) for part in parts), (
+        f"a raw non-dict block reached the outbound payload: {parts!r}"
+    )
+    assert 12345 not in parts, f"the unrenderable block was forwarded verbatim: {parts!r}"
+    assert [p.get("text") for p in parts] == ["kept"], parts
+
+
+def test_transform_preserves_a_dict_shaped_user_content():
+    """A dict `content` must yield the user's text, not the dict's keys."""
+    messages = [
+        {"role": "user", "content": {"type": "text", "text": "the real user question"}}
+    ]
+
+    result = _run_transform(messages, {})
+
+    texts = [
+        part.get("text")
+        for item in result
+        if isinstance(item, dict)
+        for part in (item.get("content") or [])
+        if isinstance(part, dict)
+    ]
+    assert texts == ["the real user question"], (
+        f"the user's question was replaced by the container's keys: {texts!r}"
+    )
+
+
+def test_transform_drops_a_set_shaped_user_content():
+    """A set `content` carries no usable text and must not leak its members."""
+    messages = [{"role": "user", "content": {"a-set-member"}}]
+
+    result = _run_transform(messages, {})
+
+    texts = [
+        part.get("text")
+        for item in result
+        if isinstance(item, dict)
+        for part in (item.get("content") or [])
+        if isinstance(part, dict)
+    ]
+    assert "a-set-member" not in texts, f"set members leaked into the payload: {texts!r}"

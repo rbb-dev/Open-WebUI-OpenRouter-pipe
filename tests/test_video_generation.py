@@ -998,6 +998,156 @@ async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_video_adapter_does_not_release_an_unacquired_global_slot(monkeypatch):
+    """Cancelling while queued on the global semaphore must not mint a extra permit."""
+    Pipe._video_global_semaphore = None
+    Pipe._video_global_limit = 0
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence("")
+
+    semaphore = adapter._ensure_global_semaphore(pipe.valves)
+    await semaphore.acquire()
+
+    try:
+        await _assert_no_phantom_permit(adapter, pipe, semaphore)
+    finally:
+        Pipe._video_global_semaphore = None
+        Pipe._video_global_limit = 0
+
+
+async def _assert_no_phantom_permit(adapter, pipe, semaphore):
+    task = asyncio.create_task(
+        adapter.generate(
+            body={"messages": [{"role": "user", "content": "make a video"}]},
+            responses_body=SimpleNamespace(provider={}),
+            valves=pipe.valves,
+            session=object(),
+            event_emitter=None,
+            metadata={"chat_id": "chat-9", "message_id": "msg-9", "user_id": "user-9"},
+            user={"id": "user-9"},
+            request=None,
+            user_obj={"id": "user-9"},
+            normalized_model_id="openai.sora-2-pro",
+            api_model_id="openai/sora-2-pro",
+        )
+    )
+    for _ in range(200):
+        await asyncio.sleep(0)
+        if semaphore._waiters:
+            break
+    assert semaphore._waiters, "request never queued on the global semaphore"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    semaphore.release()
+
+    await asyncio.wait_for(semaphore.acquire(), timeout=0.5)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(monkeypatch):
+    """A cancel after the lifecycle task exists must not release its permit twice."""
+    Pipe._video_global_semaphore = None
+    Pipe._video_global_limit = 0
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1
+        adapter = pipe._ensure_video_generation_adapter()
+        cast(Any, adapter)._persistence = _MemoryPersistence("")
+        semaphore = adapter._ensure_global_semaphore(pipe.valves)
+        assert semaphore._value == 1
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def submit(self, _payload):
+                return {"id": "job-mid-handoff", "status": "queued"}
+
+            async def status(self, _job_id):
+                await asyncio.sleep(3600)
+
+        monkeypatch.setattr(
+            "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient",
+            FakeClient,
+        )
+
+        reached_handoff = asyncio.Event()
+        created: list[Any] = []
+        real_create = adapter._create_lifecycle_task
+
+        def spy_create(**kwargs):
+            bg = real_create(**kwargs)
+            created.append(bg)
+            return bg
+
+        monkeypatch.setattr(adapter, "_create_lifecycle_task", spy_create)
+
+        real_lock = pipe._video_active_tasks_dict_lock
+
+        class _StallAfterHandoff:
+            async def __aenter__(self):
+                if created:
+                    reached_handoff.set()
+                    await asyncio.Event().wait()
+                return await real_lock.__aenter__()
+
+            async def __aexit__(self, *exc):
+                return await real_lock.__aexit__(*exc)
+
+        monkeypatch.setattr(
+            pipe, "_video_active_tasks_dict_lock", _StallAfterHandoff()
+        )
+
+        task = asyncio.create_task(
+            adapter.generate(
+                body={"messages": [{"role": "user", "content": "make a video"}]},
+                responses_body=SimpleNamespace(provider={}),
+                valves=pipe.valves,
+                session=object(),
+                event_emitter=None,
+                metadata={"chat_id": "chat-h", "message_id": "msg-h", "user_id": "user-h"},
+                user={"id": "user-h"},
+                request=None,
+                user_obj={"id": "user-h"},
+                normalized_model_id="openai.sora-2-pro",
+                api_model_id="openai/sora-2-pro",
+            )
+        )
+        await asyncio.wait_for(reached_handoff.wait(), timeout=5)
+        assert created, "lifecycle task was never created"
+        assert semaphore._value == 0, "the permit should be held at this point"
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+        assert semaphore._value == 0, (
+            f"global video semaphore inflated to {semaphore._value}: generate() released a "
+            "permit already owned by the still-running lifecycle task"
+        )
+    finally:
+        for bg in created:
+            bg.cancel()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        Pipe._video_global_semaphore = None
+        Pipe._video_global_limit = 0
+        await pipe.close()
+
+
+@pytest.mark.asyncio
 async def test_video_adapter_waiter_uses_active_task_before_user_cap():
     pipe = Pipe()
     pipe.valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER = 1

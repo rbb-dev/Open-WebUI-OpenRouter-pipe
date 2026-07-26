@@ -89,7 +89,7 @@ def _format_iso_utc(wall_ts: float) -> str:
     try:
         dt = datetime.datetime.fromtimestamp(wall_ts, tz=datetime.timezone.utc)
         return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    except Exception:
+    except (OSError, OverflowError, TypeError, ValueError):
         return datetime.datetime.now(datetime.timezone.utc).isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
@@ -125,7 +125,7 @@ def _record_event(event: TimingEvent) -> None:
                 line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 _timing_file_handle.write(line + "\n")
                 _timing_file_handle.flush()  # Ensure immediate write
-            except Exception:
+            except (OSError, RecursionError, TypeError, ValueError):
                 pass  # Silently ignore write errors to avoid disrupting request flow
 
     # Also store in per-request buffer for potential session log integration
@@ -164,7 +164,7 @@ def configure_timing_file(file_path: str) -> bool:
         if _timing_file_handle is not None:
             try:
                 _timing_file_handle.close()
-            except Exception:
+            except OSError:
                 pass
             _timing_file_handle = None
 
@@ -176,7 +176,7 @@ def configure_timing_file(file_path: str) -> bool:
             _timing_file_handle = open(path, "a", encoding="utf-8")
             _timing_file_path = path
             return True
-        except Exception:
+        except (OSError, TypeError, ValueError):
             _timing_file_path = None
             _timing_file_handle = None
             return False
@@ -193,7 +193,7 @@ def close_timing_file() -> None:
         if _timing_file_handle is not None:
             try:
                 _timing_file_handle.close()
-            except Exception:
+            except OSError:
                 pass
             _timing_file_handle = None
             _timing_file_path = None
@@ -227,7 +227,7 @@ def ensure_timing_file_configured(file_path: str) -> bool:
             # Path changed, close old file
             try:
                 _timing_file_handle.close()
-            except Exception:
+            except OSError:
                 pass
             _timing_file_handle = None
 
@@ -300,7 +300,7 @@ def format_timing_jsonl(request_id: str) -> str:
     for evt in events:
         try:
             lines.append(json.dumps(evt, ensure_ascii=False, separators=(",", ":")))
-        except Exception:
+        except (RecursionError, TypeError, ValueError):
             # Skip malformed events
             pass
     result = "\n".join(lines)

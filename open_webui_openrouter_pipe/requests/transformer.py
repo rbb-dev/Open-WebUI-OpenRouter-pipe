@@ -449,6 +449,19 @@ async def transform_messages_to_input(
             if isinstance(content_blocks, str):
                 cleaned = _sanitize_free_text(content_blocks)
                 content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
+            elif isinstance(content_blocks, dict):
+                text_val = content_blocks.get("text")
+                if not isinstance(text_val, str):
+                    text_val = content_blocks.get("content")
+                cleaned = _sanitize_free_text(text_val) if isinstance(text_val, str) else ""
+                content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
+            elif not isinstance(content_blocks, list):
+                pipe.logger.warning(
+                    "Ignoring user message %s: content is %s, expected a string, list or dict",
+                    msg_id,
+                    type(content_blocks).__name__,
+                )
+                content_blocks = []
 
             async def _to_input_image(block: dict, *, required: bool = True, msg_id: Optional[str] = msg_id) -> Optional[dict[str, Any]]:
                 """Convert Open WebUI image block into Responses format.
@@ -1373,6 +1386,20 @@ async def transform_messages_to_input(
 
             for block in content_blocks:
                 if not block:
+                    continue
+                if not isinstance(block, dict):
+                    if isinstance(block, str):
+                        cleaned = _sanitize_free_text(block)
+                        if cleaned:
+                            converted_blocks.append({"type": "input_text", "text": cleaned})
+                        continue
+                    pipe.logger.warning(
+                        "Dropping unsupported %s content block at index %d of the %s message %s",
+                        type(block).__name__,
+                        idx,
+                        role,
+                        msg_id,
+                    )
                     continue
                 raw_block_type = block.get("type")
                 block_type = raw_block_type if isinstance(raw_block_type, str) else ""

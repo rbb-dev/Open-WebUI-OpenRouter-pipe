@@ -733,7 +733,9 @@ class ModelCatalogManager:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:
-            self.logger.debug("OpenRouter frontend catalog fetch failed: %s", exc)
+            self.logger.warning(
+                "OpenRouter frontend catalog fetch failed: %s", exc, exc_info=True
+            )
             return None
 
         # Protect against corrupt or malicious JSON from remote source.
@@ -758,7 +760,9 @@ class ModelCatalogManager:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:
-            self.logger.debug("OpenRouter endpoints fetch failed for %s: %s", model_slug, exc)
+            self.logger.debug(
+                "OpenRouter endpoints fetch failed for %s: %s", model_slug, exc, exc_info=True
+            )
             return None
         if isinstance(payload, dict):
             return payload
@@ -1008,7 +1012,7 @@ class ModelCatalogManager:
 
             # Log frontend catalog fetch result for debugging
             if frontend_data is None:
-                self.logger.warning("Frontend catalog fetch returned None")
+                self.logger.debug("Frontend catalog fetch returned None")
             elif isinstance(frontend_data, dict):
                 data_items = frontend_data.get("data")
                 if isinstance(data_items, list):
@@ -1133,7 +1137,9 @@ class ModelCatalogManager:
                         enable_search_models=valves.ENABLE_SEARCH_MODELS,
                     )
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Web Tools filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Web Tools filter ensure failed: %s", exc, exc_info=True
+                    )
                     web_tools_filter_function_id = None
 
             image_gen_filter_function_id: str | None = None
@@ -1141,7 +1147,9 @@ class ModelCatalogManager:
                 try:
                     image_gen_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Image Gen filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Image Gen filter ensure failed: %s", exc, exc_info=True
+                    )
                     image_gen_filter_function_id = None
 
             video_gen_filter_function_ids: dict[str, str] = {}
@@ -1154,7 +1162,9 @@ class ModelCatalogManager:
                         await self._pipe._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(models)
                     )
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Video Gen filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Video Gen filter ensure failed: %s", exc, exc_info=True
+                    )
                     video_gen_filter_function_ids = {}
 
             image_filter_function_ids: dict[str, list[str]] = {}
@@ -1167,7 +1177,9 @@ class ModelCatalogManager:
                         await self._pipe._ensure_filter_manager().ensure_openrouter_image_filter_function_ids(models)
                     )
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Image filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
+                    )
                     image_filter_function_ids = {}
 
             fusion_filter_function_id: str | None = None
@@ -1179,7 +1191,9 @@ class ModelCatalogManager:
                         await self._pipe._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
                     )
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Fusion filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Fusion filter ensure failed: %s", exc, exc_info=True
+                    )
                     fusion_filter_function_id = None
 
             direct_uploads_filter_function_id: str | None = None
@@ -1190,7 +1204,9 @@ class ModelCatalogManager:
                 try:
                     direct_uploads_filter_function_id = await self._pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
                 except Exception as exc:
-                    self.logger.debug("OpenRouter Direct Uploads filter ensure failed: %s", exc)
+                    self.logger.warning(
+                        "OpenRouter Direct Uploads filter ensure failed: %s", exc, exc_info=True
+                    )
                     direct_uploads_filter_function_id = None
 
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER:
@@ -1223,7 +1239,7 @@ class ModelCatalogManager:
                                     or ModelFamily.supports("audio_input", model_id)
                                     or ModelFamily.supports("video_input", model_id)
                                 )
-                            except Exception:
+                            except (AttributeError, TypeError):
                                 supported = False
                             if supported:
                                 supported_models += 1
@@ -1247,7 +1263,7 @@ class ModelCatalogManager:
                         if isinstance(model_id, str) and model_id:
                             try:
                                 supported = bool(ModelFamily.supports("video_generation", model_id))
-                            except Exception:
+                            except (AttributeError, TypeError):
                                 supported = False
                             if supported:
                                 supported_models += 1
@@ -1307,7 +1323,14 @@ class ModelCatalogManager:
                     f.id for f in _all_filter_functions if f.id.startswith("openrouter_")
                 )
             except Exception as exc:
-                self.logger.debug("Failed to fetch valid filter IDs for stale pruning: %s", exc)
+                self.logger.warning(
+                    "Failed to fetch valid filter IDs for stale pruning; stale openrouter_* "
+                    "filter references will not be cleaned this cycle: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+            sync_failures: list[str] = []
 
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
@@ -1322,7 +1345,7 @@ class ModelCatalogManager:
                 def _safe_supports(feature: str) -> bool:
                     try:
                         return bool(ModelFamily.supports(feature, openrouter_id))
-                    except Exception:
+                    except (AttributeError, TypeError):
                         return False
 
                 pipe_capabilities = {
@@ -1519,13 +1542,35 @@ class ModelCatalogManager:
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
                         )
                     except Exception as exc:
+                        sync_failures.append(openwebui_model_id)
                         self.logger.debug(
                             "Model metadata sync failed (model=%s): %s",
                             openwebui_model_id,
                             exc,
+                            exc_info=True,
                         )
 
-            await asyncio.gather(*(_apply(model) for model in models), return_exceptions=True)
+            apply_results = await asyncio.gather(
+                *(_apply(model) for model in models), return_exceptions=True
+            )
+            for model, outcome in zip(models, apply_results):
+                if isinstance(outcome, BaseException):
+                    model_ref = model.get("id") if isinstance(model, dict) else None
+                    sync_failures.append(str(model_ref or "<unknown>"))
+                    self.logger.debug(
+                        "Model metadata apply failed before the sync call (model=%s)",
+                        model_ref,
+                        exc_info=outcome,
+                    )
+            if sync_failures:
+                self.logger.warning(
+                    "Model metadata sync failed for %d/%d model(s); their capabilities, "
+                    "descriptions and filter attachments are unchanged. First failures: %s. "
+                    "Enable DEBUG logging for per-model tracebacks.",
+                    len(sync_failures),
+                    len(models),
+                    ", ".join(sync_failures[:5]),
+                )
         finally:
             with contextlib.suppress(Exception):
                 await session.close()

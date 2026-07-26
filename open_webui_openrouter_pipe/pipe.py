@@ -62,7 +62,7 @@ except ImportError:
     aioredis = None  # type: ignore
 
 # Timing instrumentation
-from .core.timing_logger import timed, timing_mark, configure_timing_file
+from .core.timing_logger import timed, timing_mark
 from .storage.persistence import _RedisClient, _detect_redis_config
 
 # Optional pyzipper support for session log encryption
@@ -268,6 +268,7 @@ class Pipe:
     _tool_global_limit: int = 0
     _video_global_semaphore: asyncio.Semaphore | None = None
     _video_global_limit: int = 0
+    _timing_file_warned_path: str | None = None
     _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
         "openrouter_tool_context",
         default=None,
@@ -433,12 +434,8 @@ class Pipe:
         self._maybe_start_log_worker()
 
         # Configure timing file if enabled
-        if self.valves.ENABLE_TIMING_LOG:
-            file_path = self.valves.TIMING_LOG_FILE
-            if configure_timing_file(file_path):
-                self.logger.info("Timing log enabled: %s", file_path)
-            else:
-                self.logger.warning("Failed to open timing log file: %s", file_path)
+        if self._maybe_configure_timing_file(reopen=True):
+            self.logger.info("Timing log enabled: %s", self.valves.TIMING_LOG_FILE)
 
         self._maybe_start_startup_checks()
 
@@ -584,6 +581,35 @@ class Pipe:
             prev_start_task.cancel()
         self._log_worker_start_task = loop.create_task(_ensure_worker(), name="openrouter-log-worker-start")
         self._log_worker_start_task.add_done_callback(_consume_background_task_exception)
+
+    def _maybe_configure_timing_file(self, *, reopen: bool = False) -> bool:
+        """Open the timing log file when ENABLE_TIMING_LOG is on, warning once per bad path.
+
+        ``reopen`` forces a close and re-open, which is what a fresh pipe load needs so an
+        externally rotated or deleted log file is not written to through a stale handle.
+        """
+        if not self.valves.ENABLE_TIMING_LOG:
+            Pipe._timing_file_warned_path = None
+            return False
+
+        from .core.timing_logger import (
+            configure_timing_file,
+            ensure_timing_file_configured,
+        )
+
+        timing_path = self.valves.TIMING_LOG_FILE
+        opener = configure_timing_file if reopen else ensure_timing_file_configured
+        if opener(timing_path):
+            Pipe._timing_file_warned_path = None
+            return True
+        if Pipe._timing_file_warned_path != timing_path:
+            Pipe._timing_file_warned_path = timing_path
+            self.logger.warning(
+                "Failed to open timing log file: %s. ENABLE_TIMING_LOG is on but no timing "
+                "data will be recorded until TIMING_LOG_FILE points at a writable path.",
+                timing_path,
+            )
+        return False
 
     @timed
     def _maybe_start_redis(self) -> None:
@@ -1116,11 +1142,10 @@ class Pipe:
 
         try:
             # Set up timing context at the very start to capture full request flow
-            from .core.timing_logger import set_timing_context, timing_mark, ensure_timing_file_configured
+            from .core.timing_logger import set_timing_context, timing_mark
             _early_request_id = secrets.token_hex(8)
             # Ensure timing file is configured when enabled (handles runtime valve changes)
-            if self.valves.ENABLE_TIMING_LOG:
-                ensure_timing_file_configured(self.valves.TIMING_LOG_FILE)
+            self._maybe_configure_timing_file()
             set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
             timing_mark("pipe_entry")
 
