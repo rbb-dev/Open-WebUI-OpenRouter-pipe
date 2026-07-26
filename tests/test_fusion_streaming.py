@@ -1133,3 +1133,40 @@ class TestStageFeedbackStreaming:
         fev = self._fusion_events(emitted)
         done = [e for e in fev if e.get("type") == "response.output_text.done"]
         assert done and done[-1].get("reasoning", "").startswith("s")
+
+
+@pytest.mark.asyncio
+async def test_fusion_snapshot_read_failure_does_not_clobber_embeds(monkeypatch, pipe_instance_async):
+    """A transient DB error while reading existing embeds must abort the
+    snapshot persist entirely — falling through to the upsert would replace
+    the message's embeds array and destroy every non-fusion embed."""
+    import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(FUSION_EVENTS))
+
+    upserts: list = []
+
+    class _FailingReadChats:
+        @staticmethod
+        async def get_message_by_id_and_message_id(*_a, **_k):
+            raise RuntimeError("transient db error")
+
+        @staticmethod
+        async def upsert_message_to_chat_by_id_and_message_id(_chat_id, _message_id, payload, *_a, **_k):
+            upserts.append(payload)
+            return None
+
+    monkeypatch.setattr(sc, "Chats", _FailingReadChats)
+
+    body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
+
+    async def emitter(_event):
+        return None
+
+    await pipe_instance_async._streaming_handler._run_streaming_loop(
+        body, pipe_instance_async.valves, emitter,
+        metadata={"chat_id": "c1", "message_id": "m1"}, tools={},
+        session=cast(Any, object()), user_id="u", fusion_live_enabled=True,
+    )
+
+    assert upserts == [], "snapshot upsert ran despite embed read failure (would clobber embeds)"

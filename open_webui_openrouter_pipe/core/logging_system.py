@@ -58,6 +58,20 @@ class _SessionLogArchiveJob:
     log_events: list[dict[str, Any]]
 
 
+def _safe_message(record: logging.LogRecord) -> str:
+    """Message text for a record whose ``getMessage()`` failed.
+
+    Never invokes user ``__str__``/``__repr__``: a hostile message object would
+    raise again out of the fallback and drop the record from the buffer entirely.
+    """
+    msg = getattr(record, "msg", "")
+    if isinstance(msg, str):
+        return msg
+    if msg is None:
+        return ""
+    return object.__repr__(msg)
+
+
 # -----------------------------------------------------------------------------
 # SessionLogger Class
 # -----------------------------------------------------------------------------
@@ -110,8 +124,8 @@ class SessionLogger:
         """Return a structured session log event extracted from a LogRecord."""
         try:
             message = record.getMessage()
-        except Exception:
-            message = str(getattr(record, "msg", "") or "")
+        except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band fallback
+            message = _safe_message(record)
 
         event_type = cls._classify_event_type(message)
 
@@ -135,8 +149,8 @@ class SessionLogger:
                 event["exception"] = {"text": str(exc_text)}
             elif exc_info:
                 event["exception"] = {"text": "".join(traceback.format_exception(*exc_info))}
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band sentinel
+            event["exception"] = {"text": "<<failed to format exception>>"}
 
         event["message"] = message
         return event
@@ -147,21 +161,21 @@ class SessionLogger:
         created_raw = event.get("created")
         try:
             created = float(created_raw) if created_raw is not None else time.time()
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             created = time.time()
         try:
             base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
             msecs = int((created - int(created)) * 1000)
             asctime = f"{base},{msecs:03d}"
-        except Exception:
+        except (ValueError, OverflowError, OSError):
             asctime = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
         level = str(event.get("level") or "INFO")
         uid = str(event.get("user_id") or "-")
         message = event.get("message")
         try:
             message_str = str(message) if message is not None else ""
-        except Exception:
-            message_str = ""
+        except Exception:  # noqa: BLE001 - str-coercion guard in render helper; sentinel fallback
+            message_str = "<<unrenderable message>>"
         return f"{asctime} [{level}] [user={uid}] {message_str}"
 
     @classmethod
@@ -199,7 +213,7 @@ class SessionLogger:
                 if rid:
                     with cls._state_lock:
                         cls._session_last_seen[rid] = time.time()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
                 # Logging must never break request handling.
                 pass
             return True
@@ -261,13 +275,13 @@ class SessionLogger:
                     console_line = cls._console_formatter.format(record)
                     sys.stdout.write(console_line + "\n")
                     sys.stdout.flush()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - stdout is the failing surface; capture continues below
                     pass
             request_id = getattr(record, "request_id", None)
             if request_id:
                 try:
                     event = cls._build_event(record)
-                except Exception:
+                except Exception:  # noqa: BLE001 - capture path: self-log recurses; fallback event preserves record
                     event = {
                         "created": time.time(),
                         "level": str(getattr(record, "levelname", "INFO") or "INFO"),
@@ -279,19 +293,16 @@ class SessionLogger:
                         "module": str(getattr(record, "module", "") or ""),
                         "func": str(getattr(record, "funcName", "") or ""),
                         "lineno": int(getattr(record, "lineno", 0) or 0),
-                        "message": str(getattr(record, "msg", "") or ""),
+                        "message": _safe_message(record),
                     }
                 with cls._state_lock:
                     buffer = cls.logs.get(request_id)
                     if buffer is None or buffer.maxlen != cls.SESSION_LOG_MAX_LINES:
                         buffer = deque(maxlen=cls.SESSION_LOG_MAX_LINES)
                         cls.logs[request_id] = buffer
-                    try:
-                        buffer.append(event)
-                        cls._session_last_seen[request_id] = time.time()
-                    except Exception:
-                        pass
-        except Exception:
+                    buffer.append(event)
+                    cls._session_last_seen[request_id] = time.time()
+        except Exception:  # noqa: BLE001 - never raise from logging hooks
             # Never raise from logging hooks.
             return
 
@@ -344,7 +355,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except OSError as exc:
+        sys.stderr.write(f"session log archive: mkdir {out_dir} failed: {exc}\n")
         return
 
     compression_map = {
@@ -365,7 +377,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             if isinstance(rid, str) and rid.strip():
                 ids.add(rid.strip())
         request_ids = sorted(ids)
-    except Exception:
+    except TypeError:
+        sys.stderr.write("session log archive: request-id enrichment skipped (log_events not iterable)\n")
         request_ids = []
 
     meta = {
@@ -397,29 +410,29 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
             msecs = int((created - int(created)) * 1000)
             return f"{base},{msecs:03d}"
-        except Exception:
+        except (ValueError, OverflowError, OSError):
             return datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
 
     def _format_event_as_text(event: dict[str, Any]) -> str:
         created = event.get("created")
         try:
             created_val = float(created) if created is not None else time.time()
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             created_val = time.time()
         level = str(event.get("level") or "INFO")
         uid = str(event.get("user_id") or job.user_id or "-")
         message = event.get("message")
         try:
             message_str = str(message) if message is not None else ""
-        except Exception:
-            message_str = ""
+        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
+            message_str = "<<unrenderable message>>"
         return f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
 
     def _format_iso_utc(created: float) -> str:
         try:
             ts = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
             return ts.replace("+00:00", "Z")
-        except Exception:
+        except (ValueError, OverflowError, OSError):
             ts = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
             return ts.replace("+00:00", "Z")
 
@@ -428,8 +441,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             return raw
         try:
             msg = str(raw)
-        except Exception:
-            msg = ""
+        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
+            msg = "<<unrenderable event>>"
         return {
             "created": time.time(),
             "level": "INFO",
@@ -448,7 +461,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         created_raw = event.get("created")
         try:
             created_val = float(created_raw) if created_raw is not None else time.time()
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             created_val = time.time()
 
         exception_block = event.get("exception")
@@ -476,8 +489,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         message = event.get("message")
         try:
             record_out["message"] = str(message) if message is not None else ""
-        except Exception:
-            record_out["message"] = ""
+        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
+            record_out["message"] = "<<unrenderable message>>"
         return record_out
 
     logs_payload = ""
@@ -487,7 +500,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             logs_payload = "\n".join([line.rstrip("\n") for line in text_lines])
             if logs_payload and not logs_payload.endswith("\n"):
                 logs_payload += "\n"
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - logs.txt build net; surfaced via stderr; logging avoided in archive writer
+            sys.stderr.write(f"session log archive: logs.txt build failed: {exc}\n")
             logs_payload = ""
 
     jsonl_payload = ""
@@ -499,13 +513,14 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
                 record_out = _build_jsonl_record(evt)
                 try:
                     jsonl_lines.append(json.dumps(record_out, ensure_ascii=False, separators=(",", ":")))
-                except Exception:
+                except (TypeError, ValueError, RecursionError):
                     fallback = {"ts": record_out.get("ts"), "level": record_out.get("level"), "message": "<<failed to encode log record>>"}
                     jsonl_lines.append(json.dumps(fallback, ensure_ascii=False, separators=(",", ":")))
             jsonl_payload = "\n".join(jsonl_lines)
             if jsonl_payload and not jsonl_payload.endswith("\n"):
                 jsonl_payload += "\n"
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - logs.jsonl build net; surfaced via stderr; logging avoided in archive writer
+            sys.stderr.write(f"session log archive: logs.jsonl build failed: {exc}\n")
             jsonl_payload = ""
 
     zip_kwargs: dict[str, Any] = {
@@ -527,13 +542,15 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
                 zf.writestr("logs.txt", logs_payload)
             if write_jsonl:
                 zf.writestr("logs.jsonl", jsonl_payload)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - zip write net; mixed pyzipper error types; surfaced via stderr
+        sys.stderr.write(f"session log archive: zip write {tmp_path} failed: {exc}\n")
         with contextlib.suppress(Exception):
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         return
 
     try:
         os.replace(tmp_path, out_path)
-    except Exception:
+    except OSError as exc:
+        sys.stderr.write(f"session log archive: publish {out_path} failed: {exc}\n")
         with contextlib.suppress(Exception):
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]

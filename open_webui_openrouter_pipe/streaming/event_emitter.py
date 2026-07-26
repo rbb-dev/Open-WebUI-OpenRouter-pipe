@@ -167,8 +167,8 @@ class EventEmitterHandler:
                         "done": done
                     }
                 })
-            except Exception as exc:
-                self.logger.error("Failed to emit status: %s", exc)
+            except Exception:
+                self.logger.exception("Failed to emit status")
 
 
 
@@ -201,8 +201,8 @@ class EventEmitterHandler:
                         },
                     }
                 )
-            except Exception as exc:
-                self.logger.error("Failed to emit error event: %s", exc)
+            except Exception:
+                self.logger.exception("Failed to emit error event")
 
         # 2) Optionally dump the collected logs to the backend logger
         if show_error_log_citation:
@@ -214,6 +214,7 @@ class EventEmitterHandler:
                     try:
                         rendered = "\n".join(SessionLogger.format_event_as_text(e) for e in logs if isinstance(e, dict))
                     except Exception:
+                        self.logger.debug("Failed to render collected error logs", exc_info=True)
                         rendered = ""
                     if rendered:
                         self.logger.debug("Error logs for request %s:\n%s", request_id, rendered)
@@ -262,8 +263,8 @@ class EventEmitterHandler:
 
         try:
             markdown = _render_error_template(template, enriched_variables)
-        except Exception as e:
-            self.logger.error(f"[{error_id}] Template rendering failed: {e}")
+        except Exception:
+            self.logger.exception("[%s] Template rendering failed", error_id)
             markdown = (
                 f"### ⚠️ Error\n\n"
                 f"An error occurred, but we couldn't format the error message properly.\n\n"
@@ -280,8 +281,8 @@ class EventEmitterHandler:
                 "type": "chat:completion",
                 "data": {"done": True}
             })
-        except Exception as e:
-            self.logger.error(f"[{error_id}] Failed to emit error message: {e}")
+        except Exception:
+            self.logger.exception("[%s] Failed to emit error message", error_id)
 
 
 
@@ -354,8 +355,8 @@ class EventEmitterHandler:
                     },
                 }
             )
-        except Exception as exc:
-            self.logger.error("Failed to emit citation: %s", exc)
+        except Exception:
+            self.logger.exception("Failed to emit citation")
 
 
     async def _emit_files(
@@ -386,7 +387,7 @@ class EventEmitterHandler:
                 "data": {"files": files},
             })
         except Exception as exc:
-            self.logger.debug("Failed to emit files event: %s", exc)
+            self.logger.debug("Failed to emit files event: %s", exc, exc_info=True)
 
 
     async def _emit_embeds(
@@ -426,7 +427,7 @@ class EventEmitterHandler:
                 "data": data,
             })
         except Exception as exc:
-            self.logger.debug("Failed to emit embeds event: %s", exc)
+            self.logger.debug("Failed to emit embeds event: %s", exc, exc_info=True)
 
 
     async def _emit_completion(
@@ -461,8 +462,8 @@ class EventEmitterHandler:
                     }
                 }
             )
-        except Exception as exc:
-            self.logger.error("Failed to emit completion: %s", exc)
+        except Exception:
+            self.logger.exception("Failed to emit completion")
 
 
     async def _emit_notification(
@@ -483,8 +484,8 @@ class EventEmitterHandler:
             await event_emitter(
                 {"type": "notification", "data": {"type": level, "content": content}}
             )
-        except Exception as exc:
-            self.logger.error("Failed to emit notification: %s", exc)
+        except Exception:
+            self.logger.exception("Failed to emit notification")
 
 
     def _wrap_safe_event_emitter(
@@ -502,7 +503,7 @@ class EventEmitterHandler:
             except Exception as exc:  # pragma: no cover - emitter transport errors
                 evt_type = event.get("type") if isinstance(event, dict) else None
                 suffix = f" ({evt_type})" if evt_type else ""
-                self.logger.warning("Event emitter failure%s: %s", suffix, exc)
+                self.logger.warning("Event emitter failure%s: %s", suffix, exc, exc_info=True)
 
         return _guarded
 
@@ -517,6 +518,7 @@ class EventEmitterHandler:
         except asyncio.QueueFull:
             return
         except Exception:
+            self.logger.debug("Dropped middleware stream item after unexpected enqueue error", exc_info=True)
             return
 
 
@@ -666,7 +668,7 @@ class EventEmitterHandler:
                     self.logger.debug(
                         "Failed to emit tool_calls chunk (request_id=%s)",
                         job.request_id,
-                        exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                        exc_info=True,
                     )
                 return
 

@@ -653,7 +653,7 @@ class Pipe:
             if store is not None:
                 store._redis_enabled = False
                 store._redis_client = None
-            self.logger.warning("Redis cache disabled (%s)", exc)
+            self.logger.warning("Redis cache disabled (%s)", exc, exc_info=True)
             return
 
         self._redis_client = client
@@ -867,7 +867,7 @@ class Pipe:
             self.logger.error("OpenRouter configuration error: %s", exc)
         except Exception as exc:
             refresh_error = exc
-            self.logger.warning("OpenRouter catalog refresh failed: %s", exc)
+            self.logger.warning("OpenRouter catalog refresh failed: %s", exc, exc_info=True)
         finally:
             await session.close()
 
@@ -887,7 +887,7 @@ class Pipe:
                     await _Funcs.update_function_by_id("openrouter_search", {"is_active": False})
                     self.logger.info("Disabled old OpenRouter Search filter (replaced by OpenRouter Web Tools)")
         except Exception:
-            pass
+            self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
 
         all_web_tools_disabled = not (
             self.valves.ENABLE_WEB_SEARCH
@@ -908,7 +908,7 @@ class Pipe:
                     enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
                 )
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
         elif all_web_tools_disabled:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -917,12 +917,12 @@ class Pipe:
                     await _Funcs.update_function_by_id("openrouter_web_tools", {"is_active": False})
                     self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
             except Exception:
-                pass
+                self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
         if self.valves.ENABLE_OPENROUTER_FUSION and self.valves.AUTO_INSTALL_FUSION_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_FUSION_FILTER failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_OPENROUTER_FUSION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -931,12 +931,12 @@ class Pipe:
                     await _Funcs.update_function_by_id("openrouter_fusion", {"is_active": False})
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
-                pass
+                self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -945,12 +945,12 @@ class Pipe:
                     await _Funcs.update_function_by_id("openrouter_image_gen", {"is_active": False})
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
-                pass
+                self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
         if self.valves.AUTO_INSTALL_VIDEO_FILTERS and self.valves.ENABLE_VIDEO_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(available_models)
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_VIDEO_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -959,7 +959,7 @@ class Pipe:
                     await _Funcs.update_function_by_id("openrouter_video_gen", {"is_active": False})
                     self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
             except Exception:
-                pass
+                self.logger.debug("Disabling OpenRouter Video Generation filter failed", exc_info=True)
         try:
             from open_webui.models.functions import Functions as _Funcs
             legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
@@ -969,12 +969,12 @@ class Pipe:
                     "Removed legacy generic OpenRouter Video Generation filter row 'openrouter_video_openrouter_video'"
                 )
         except Exception as exc:
-            self.logger.debug("Legacy video filter cleanup failed: %s", exc)
+            self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc)
+                self.logger.debug("AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc, exc_info=True)
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
         selected_models = self._apply_model_filters(selected_models, self.valves)
@@ -996,7 +996,7 @@ class Pipe:
                         self.id,
                     )
             except Exception as exc:
-                self.logger.debug("Provider routing filter creation failed: %s", exc)
+                self.logger.debug("Provider routing filter creation failed: %s", exc, exc_info=True)
 
         # One-time cleanup of stale openrouter_* filter IDs in model metadata.
         # Must run inside pipes() — before OWUI's get_all_models() reads model
@@ -1011,7 +1011,7 @@ class Pipe:
                         "Pruned stale openrouter_* filter IDs from %d model(s) on startup.", count
                     )
             except Exception as exc:
-                self.logger.debug("Startup stale filter ID pruning failed: %s", exc)
+                self.logger.debug("Startup stale filter ID pruning failed: %s", exc, exc_info=True)
 
         self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
             selected_models,
@@ -1248,8 +1248,8 @@ class Pipe:
                     )
                 SessionLogger.cleanup()
                 return "Server busy (503)"
-        except Exception as exc:
-            self.logger.error("Pre-enqueue setup failed: %s", exc)
+        except Exception:
+            self.logger.exception("Pre-enqueue setup failed")
             if safe_event_emitter:
                 try:
                     await self._ensure_error_formatter()._emit_error(
@@ -1300,7 +1300,7 @@ class Pipe:
             self.logger.debug("Pipe request cancelled by caller (request_id=%s)", job.request_id)
             raise
         except Exception as exc:  # pragma: no cover - defensive top-level guard
-            self.logger.error("Pipe request failed (request_id=%s): %s", job.request_id, exc)
+            self.logger.exception("Pipe request failed (request_id=%s)", job.request_id)
             if safe_event_emitter:
                 await self._ensure_error_formatter()._emit_error(
                     safe_event_emitter,
@@ -1345,7 +1345,7 @@ class Pipe:
             try:
                 await self._redis_client.close()
             except Exception as e:
-                self.logger.debug(f"Failed to close Redis client: {e}")
+                self.logger.debug(f"Failed to close Redis client: {e}", exc_info=True)
             finally:
                 self._redis_client = None
 
@@ -1423,6 +1423,7 @@ class Pipe:
                     self.logger.debug("Close scheduling skipped: loop already closed")
                 return
         except Exception:
+            self.logger.debug("Close scheduling skipped: loop state check failed", exc_info=True)
             return
         if target is running:
             try:
@@ -1482,7 +1483,7 @@ class Pipe:
             worker.cancel()
             try:
                 worker_loop = worker.get_loop()
-            except Exception:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
                 worker_loop = None
             if worker_loop is None or worker_loop is asyncio.get_running_loop():
                 with contextlib.suppress(asyncio.CancelledError):
@@ -1507,7 +1508,7 @@ class Pipe:
             worker.cancel()
             try:
                 worker_loop = worker.get_loop()
-            except Exception:  # pragma: no cover - defensive for older asyncio implementations
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
                 worker_loop = None
             if worker_loop is None or worker_loop is asyncio.get_running_loop():
                 try:
@@ -1532,7 +1533,7 @@ class Pipe:
             if owned_loop is not None and getattr(SessionLogger, "_main_loop", None) is owned_loop:
                 SessionLogger.set_main_loop(None)
         except Exception:
-            pass
+            self.logger.debug("Releasing global log queue/loop references failed", exc_info=True)
 
     @timed
     async def _stop_video_tasks(self) -> None:
@@ -1695,7 +1696,7 @@ class Pipe:
             self._startup_checks_complete = True
             self._startup_checks_pending = False
         except Exception as exc:  # pragma: no cover - depends on IO
-            self.logger.warning("OpenRouter warmup failed: %s", exc)
+            self.logger.warning("OpenRouter warmup failed: %s", exc, exc_info=True)
             self._warmup_failed = True
             self._startup_checks_complete = False
             self._startup_checks_pending = True
@@ -1731,7 +1732,7 @@ class Pipe:
             if self._queue_worker_task is not None and not self._queue_worker_task.done():
                 try:
                     worker_loop = self._queue_worker_task.get_loop()
-                except Exception:  # pragma: no cover - defensive for older asyncio implementations
+                except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
                     worker_loop = None
                 if worker_loop is not None and worker_loop is not current_loop:
                     # The worker task belongs to a different event loop (common in test runners).
@@ -1745,7 +1746,7 @@ class Pipe:
             if self._request_queue is not None:
                 try:
                     queue_loop = self._request_queue._get_loop()  # type: ignore[attr-defined]
-                except Exception:
+                except (RuntimeError, AttributeError):
                     queue_loop = getattr(self._request_queue, "_loop", None)
                 if queue_loop is not None and queue_loop is not current_loop:
                     self.logger.debug(
@@ -1964,6 +1965,7 @@ class Pipe:
                 )
             raise
         except Exception as exc:
+            self.logger.exception("Request job failed (request_id=%s)", job.request_id)
             self._circuit_breaker.record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
                 self._event_emitter_handler._try_put_middleware_stream_nowait(
@@ -2234,6 +2236,7 @@ class Pipe:
             try:
                 markdown = _render_error_template(template, enriched_variables)
             except Exception:
+                self.logger.debug("Auth error template rendering failed; using fallback", exc_info=True)
                 markdown = (
                     "### 🔐 Authentication Failed\n\n"
                     f"{api_key_error}\n\n"
@@ -2297,9 +2300,9 @@ class Pipe:
                     show_error_message=True,
                     done=True,
                 )
-                self.logger.error("OpenRouter model catalog unavailable: %s", exc)
+                self.logger.exception("OpenRouter model catalog unavailable")
                 return ""
-            self.logger.warning("OpenRouter catalog refresh failed (%s). Serving %d cached model(s).", exc, len(available_models))
+            self.logger.warning("OpenRouter catalog refresh failed (%s). Serving %d cached model(s).", exc, len(available_models), exc_info=True)
         else:
             available_models = OpenRouterModelRegistry.list_models()
         catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
@@ -2408,6 +2411,7 @@ class Pipe:
                     raw_bytes = await e.response.aread()
                     body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
                 except Exception:
+                    self.logger.debug("Failed to read HTTP error response body", exc_info=True)
                     body_text = None
             extra_meta: dict[str, Any] = {}
             if e.response is not None:
@@ -2445,6 +2449,7 @@ class Pipe:
 
         # Generic catch-all
         except Exception as e:
+            self.logger.exception("Unexpected error in _handle_pipe_call request processing")
             await self._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.INTERNAL_ERROR_TEMPLATE,
@@ -2677,7 +2682,7 @@ class Pipe:
         except Exception:
             self.logger.debug(
                 "Tool shutdown encountered error; cancelling workers.",
-                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                exc_info=True,
             )
         finally:
             # Always cancel remaining workers and wait, even under
@@ -2861,7 +2866,7 @@ class Pipe:
                         await self._event_emitter_handler._emit_files(context.event_emitter, files)
                         timing_mark(f"tool_run:{tool_name}:files_emitted")
                     except Exception as emit_exc:
-                        self.logger.debug("Failed to emit files for '%s': %s", tool_name, emit_exc)
+                        self.logger.debug("Failed to emit files for '%s': %s", tool_name, emit_exc, exc_info=True)
 
                 # Emit embeds if any were extracted
                 if embeds and context.event_emitter:
@@ -2869,12 +2874,12 @@ class Pipe:
                         await self._event_emitter_handler._emit_embeds(context.event_emitter, embeds)
                         timing_mark(f"tool_run:{tool_name}:embeds_emitted")
                     except Exception as emit_exc:
-                        self.logger.debug("Failed to emit embeds for '%s': %s", tool_name, emit_exc)
+                        self.logger.debug("Failed to emit embeds for '%s': %s", tool_name, emit_exc, exc_info=True)
 
                 return text, files, embeds
             except Exception as proc_exc:
                 # Safety net - never crash, just return stringified result
-                self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc)
+                self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc, exc_info=True)
                 return _fallback_tool_text(raw_result), [], []
 
         try:
@@ -3570,4 +3575,4 @@ try:
     if _ExtendedUserValves is not UserValves:
         Pipe.UserValves = _ExtendedUserValves  # type: ignore[misc]
 except Exception:
-    pass
+    logging.getLogger(__name__).warning("Plugin valve field merge failed; using base Valves/UserValves", exc_info=True)

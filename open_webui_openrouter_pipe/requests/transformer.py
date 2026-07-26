@@ -450,7 +450,7 @@ async def transform_messages_to_input(
                 cleaned = _sanitize_free_text(content_blocks)
                 content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
 
-            async def _to_input_image(block: dict, *, required: bool = True) -> Optional[dict[str, Any]]:
+            async def _to_input_image(block: dict, *, required: bool = True, msg_id: Optional[str] = msg_id) -> Optional[dict[str, Any]]:
                 """Convert Open WebUI image block into Responses format.
 
                 When ``required`` is True (current-user message attachments), a
@@ -643,7 +643,7 @@ async def transform_messages_to_input(
                     )
                     return None
 
-            async def _to_input_file(block: dict) -> dict:
+            async def _to_input_file(block: dict, *, msg_id: Optional[str] = msg_id) -> dict:
                 """Convert Open WebUI file blocks into Responses API format.
 
                 Handles file content blocks from multiple sources, downloading remote files

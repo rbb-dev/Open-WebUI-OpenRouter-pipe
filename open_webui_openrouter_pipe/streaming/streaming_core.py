@@ -624,7 +624,7 @@ class StreamingHandler:
                 try:
                     await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                 except Exception as exc:
-                    self.logger.debug("Failed to emit fusion source citation: %s", exc)
+                    self.logger.debug("Failed to emit fusion source citation: %s", exc, exc_info=True)
                 emitted_citations.append(citation)
 
         async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
@@ -1033,8 +1033,8 @@ class StreamingHandler:
             pending_items.clear()
             try:
                 ulids = await self._pipe._artifact_store._db_persist(rows)
-            except Exception as exc:  # pragma: no cover - DB errors handled later
-                self.logger.error("Failed to persist response artifacts (%s): %s", reason, exc, exc_info=self.logger.isEnabledFor(logging.DEBUG))
+            except Exception:  # pragma: no cover - DB errors handled later
+                self.logger.exception("Failed to persist response artifacts (%s)", reason)
                 if event_emitter:
                     await event_emitter(
                         {
@@ -1163,7 +1163,7 @@ class StreamingHandler:
                 try:
                     await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                 except Exception as exc:
-                    self.logger.debug("Failed to emit annotation citation (final): %s", exc)
+                    self.logger.debug("Failed to emit annotation citation (final): %s", exc, exc_info=True)
                 emitted_citations.append(citation)
 
         request_started_at = perf_counter()
@@ -1568,7 +1568,7 @@ class StreamingHandler:
                             self.logger.warning(
                                 "Failed to stream tool-call arguments: %s",
                                 exc,
-                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                exc_info=True,
                             )
                         continue
 
@@ -1639,7 +1639,7 @@ class StreamingHandler:
                             try:
                                 await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
                             except Exception as exc:
-                                self.logger.debug("Failed to emit annotation citation: %s", exc)
+                                self.logger.debug("Failed to emit annotation citation: %s", exc, exc_info=True)
                             emitted_citations.append(citation)
 
                         continue
@@ -1947,12 +1947,10 @@ class StreamingHandler:
                                             val = item.get(blob_key)
                                             if isinstance(val, str) and len(val) > 1024:
                                                 item[blob_key] = "[image persisted to storage]"
-                                    except Exception as exc:
-                                        self.logger.error(
-                                            "Failed to process generated image for item '%s': %s",
+                                    except Exception:
+                                        self.logger.exception(
+                                            "Failed to process generated image for item '%s'",
                                             item_id or "<unknown>",
-                                            exc,
-                                            exc_info=self.logger.isEnabledFor(logging.DEBUG),
                                         )
                                         await self._pipe._event_emitter_handler._emit_status(
                                             event_emitter,
@@ -2166,6 +2164,7 @@ class StreamingHandler:
                         try:
                             notice = _render_error_template(valves.STREAM_INTERRUPTED_TEMPLATE, template_vars)
                         except Exception:
+                            self.logger.debug("Custom STREAM_INTERRUPTED_TEMPLATE failed to render; using default", exc_info=True)
                             notice = _render_error_template(DEFAULT_STREAM_INTERRUPTED_TEMPLATE, template_vars)
                         if notice and not fusion_inner_call:
                             delta = f"\n\n{notice}" if assistant_message else notice
@@ -2482,7 +2481,7 @@ class StreamingHandler:
                             self.logger.warning(
                                 "Tool pass-through failed while building tool_calls payload: %s",
                                 exc,
-                                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                exc_info=True,
                             )
 
                         if not body.stream:
@@ -2539,7 +2538,7 @@ class StreamingHandler:
                                 self.logger.warning(
                                     "Failed to build non-streaming tool_calls response: %s",
                                     exc,
-                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    exc_info=True,
                                 )
                                 _record_outcome()
                                 return assistant_message
@@ -2596,7 +2595,7 @@ class StreamingHandler:
                                             arguments=args_text,
                                         )
                                 except Exception as exc:
-                                    self.logger.warning("Failed to emit in-progress tool cards: %s", exc)
+                                    self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
 
                             # Set up per-tool completion callback for incremental card emission.
                             _tool_ctx = self._pipe._TOOL_CONTEXT.get()
@@ -2626,7 +2625,7 @@ class StreamingHandler:
                                 self.logger.warning(
                                     "Tool execution failed; continuing loop with model-visible error outputs: %s",
                                     exc,
-                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    exc_info=True,
                                 )
                                 function_outputs = []
                                 for call in call_items:
@@ -2678,7 +2677,7 @@ class StreamingHandler:
                                         embeds=output.get("embeds") or None,
                                     )
                             except Exception as exc:
-                                self.logger.warning("Failed to emit completed tool cards: %s", exc)
+                                self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
 
                         # Extract citations from successful tool results.
                         collected_sources: list[dict[str, Any]] = []
@@ -2745,7 +2744,7 @@ class StreamingHandler:
                                     "Failed to extract citations from tool=%s: %s",
                                     tool_name,
                                     exc,
-                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    exc_info=True,
                                 )
 
                         # RAG-style source context injection for non-native function calling.
@@ -2800,7 +2799,7 @@ class StreamingHandler:
                                 self.logger.debug(
                                     "Failed to apply source context: %s",
                                     exc,
-                                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                                    exc_info=True,
                                 )
 
                         if persist_tools_enabled:
@@ -2955,6 +2954,7 @@ class StreamingHandler:
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
             session_log_reason = str(e)
+            self.logger.exception("Unexpected error in streaming loop")
             # Detect server errors (e.g. aiohttp.ClientResponseError with 5xx status)
             exc_status = getattr(e, "status", None)
             if isinstance(exc_status, int) and exc_status >= 500:
@@ -2981,8 +2981,8 @@ class StreamingHandler:
                 for reasoning_key in list(reasoning_display):
                     try:
                         await _emit_reasoning_item(reasoning_key)
-                    except Exception as exc:
-                        self.logger.error("Failed to emit trailing reasoning item: %s", exc)
+                    except Exception:
+                        self.logger.exception("Failed to emit trailing reasoning item")
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
@@ -3050,8 +3050,8 @@ class StreamingHandler:
                                 },
                             }
                         )
-                    except Exception as exc:
-                        self.logger.error("Failed to emit final status in finally: %s", exc)
+                    except Exception:
+                        self.logger.exception("Failed to emit final status in finally")
 
             resolved_chat_id = str(metadata.get("chat_id") or "")
             from ..logging.session_log_manager import resolve_message_id
@@ -3172,18 +3172,15 @@ class StreamingHandler:
 
                         async def _persist_fusion_snapshot() -> None:
                             _kept: list[object] = []
-                            try:
-                                _existing = await Chats.get_message_by_id_and_message_id(
-                                    resolved_chat_id, resolved_message_id
-                                )
-                                _raw = (_existing or {}).get("embeds")
-                                if isinstance(_raw, list):
-                                    _kept = [
-                                        e for e in _raw
-                                        if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
-                                    ]
-                            except Exception:
-                                _kept = []
+                            _existing = await Chats.get_message_by_id_and_message_id(
+                                resolved_chat_id, resolved_message_id
+                            )
+                            _raw = (_existing or {}).get("embeds")
+                            if isinstance(_raw, list):
+                                _kept = [
+                                    e for e in _raw
+                                    if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
+                                ]
                             _kept.append(_fusion_html)
                             _payload: dict[str, object] = {"embeds": _kept}
                             if _content:
@@ -3196,7 +3193,7 @@ class StreamingHandler:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    self.logger.debug("Failed to persist terminal fusion snapshot", exc_info=True)
+                    self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
 
             if not was_cancelled:
                 await _flush_pending("finalize")
@@ -3249,6 +3246,7 @@ class StreamingHandler:
                         self.logger.warning(
                             "Failed to persist %s for chat_id=%s message_id=%s: %s",
                             log_label, chat_id, message_id, exc,
+                            exc_info=True,
                         )
                         await self._pipe._event_emitter_handler._emit_notification(
                             event_emitter,

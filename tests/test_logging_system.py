@@ -1522,8 +1522,7 @@ class TestBuildEventExceptionInTraceback:
         with patch("traceback.format_exception", side_effect=RuntimeError("format failed")):
             event = SessionLogger._build_event(record)
 
-        # Exception field should not be present (handled gracefully)
-        assert "exception" not in event or event.get("exception") is None
+        assert event.get("exception") == {"text": "<<failed to format exception>>"}
 
 
 class TestArchiveEdgeCases:
@@ -1767,3 +1766,75 @@ class TestEmitHandler:
         with patch.object(SessionLogger, "_enqueue") as mock_enqueue:
             handler.emit(record)
             mock_enqueue.assert_called_once_with(record)
+
+
+def test_process_record_survives_stdout_write_failure(monkeypatch):
+    """Console echo failure must not break capture: the event still lands in
+    the buffer (panel condition for the silent stdout swallow)."""
+    import sys as _sys
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    record = logging.LogRecord(
+        name="test", level=logging.INFO, pathname=__file__, lineno=1,
+        msg="hello capture", args=(), exc_info=None,
+    )
+    record.session_id = "sess-stdout-fail"
+    record.request_id = "req-stdout-fail"
+    record.user_id = "u1"
+    record.session_log_level = logging.DEBUG
+
+    def _boom(*_a, **_k):
+        raise OSError("stdout closed")
+
+    monkeypatch.setattr(_sys.stdout, "write", _boom, raising=True)
+    SessionLogger.process_record(record)
+    monkeypatch.undo()
+
+    events = list(SessionLogger.logs.get("req-stdout-fail") or [])
+    SessionLogger.logs.pop("req-stdout-fail", None)
+    SessionLogger._session_last_seen.pop("req-stdout-fail", None)
+    assert any(e.get("message") == "hello capture" for e in events)
+
+
+def test_archive_renders_sentinel_for_unrenderable_message(tmp_path):
+    """A message whose str() raises must degrade to a visible sentinel in the
+    archive, never a silently blank field (panel condition covering the
+    str-coercion guards)."""
+    from open_webui_openrouter_pipe.core.logging_system import write_session_log_archive
+
+    class _Unrenderable:
+        def __str__(self):
+            raise RuntimeError("nope")
+
+    from open_webui_openrouter_pipe.core.logging_system import _SessionLogArchiveJob
+
+    job = _SessionLogArchiveJob(
+        base_dir=str(tmp_path),
+        zip_password=b"pw",
+        zip_compression="stored",
+        zip_compresslevel=None,
+        user_id="u-sent",
+        session_id="s-sent",
+        chat_id="c-sent",
+        message_id="m-sent",
+        request_id="r-sent",
+        created_at=1700000000.0,
+        log_format="text",
+        log_events=[
+            {"created": 1700000000.0, "level": "INFO", "message": _Unrenderable()},
+            {"created": 1700000001.0, "level": "INFO", "message": "fine"},
+        ],
+    )
+
+    write_session_log_archive(job)
+
+    import pyzipper
+
+    zpath = tmp_path / "u-sent" / "c-sent" / "m-sent.zip"
+    assert zpath.exists()
+    with pyzipper.AESZipFile(zpath) as zf:
+        zf.setpassword(b"pw")
+        jsonl = zf.read("logs.jsonl").decode()
+    assert "<<unrenderable message>>" in jsonl
+    assert "fine" in jsonl
