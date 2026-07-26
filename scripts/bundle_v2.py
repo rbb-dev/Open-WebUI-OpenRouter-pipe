@@ -1272,6 +1272,47 @@ def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = Fa
 # Step 8: Validation
 # ---------------------------------------------------------------------------
 
+def _is_idempotent_definition(node: ast.AST) -> bool:
+    """Only assignments whose value is a `logging.getLogger(...)` call are safe to re-execute in one namespace."""
+    if not isinstance(node, ast.Assign):
+        return False
+    value = node.value
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "getLogger"
+        and isinstance(value.func.value, ast.Name)
+        and value.func.value.id == "logging"
+    )
+
+
+def _definitions_textually_identical(
+    name: str,
+    origins: list[str],
+    mods_by_short: dict[str, "ModuleInfo"],
+) -> bool:
+    """True when every top-level definition of *name* across *origins* is idempotent and textually identical."""
+    texts: set[str] = set()
+    for origin in origins:
+        mod = mods_by_short[origin]
+        for node in ast.iter_child_nodes(mod.tree):
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name != name:
+                    continue
+            elif isinstance(node, ast.Assign):
+                if not any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+                    continue
+            else:
+                continue
+            if not _is_idempotent_definition(node):
+                return False
+            segment = ast.get_source_segment(mod.raw_source, node)
+            if not segment:
+                return False
+            texts.add(segment)
+    return len(texts) == 1
+
+
 def validate_output(source: str, output_path: Path) -> bool:
     """Validate the generated bundle."""
     errors: list[str] = []
@@ -1350,10 +1391,23 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
 
     # Name collision detection: warn about top-level names defined in multiple modules
     name_origins: dict[str, list[str]] = defaultdict(list)
+    mods_by_short: dict[str, ModuleInfo] = {}
     for mod in ordered:
+        short = mod.dotted_name.removeprefix(PACKAGE_NAME + ".")
+        mods_by_short[short] = mod
         for name in mod.top_level_names:
-            name_origins[name].append(mod.dotted_name.removeprefix(PACKAGE_NAME + "."))
+            name_origins[name].append(short)
     collisions = {n: origins for n, origins in name_origins.items() if len(origins) > 1}
+    benign = {
+        name: origins
+        for name, origins in collisions.items()
+        if _definitions_textually_identical(name, origins, mods_by_short)
+    }
+    for name in benign:
+        collisions.pop(name)
+    if benign:
+        summary = ", ".join(f"{name} x{len(benign[name])}" for name in sorted(benign))
+        print(f"Identical redefinitions (benign): {summary}")
     if collisions:
         print(f"WARNING: {len(collisions)} name collision(s) detected:", file=sys.stderr)
         for name, origins in sorted(collisions.items()):
