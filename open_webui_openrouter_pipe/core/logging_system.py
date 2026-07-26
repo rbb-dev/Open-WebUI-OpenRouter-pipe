@@ -218,9 +218,8 @@ class SessionLogger:
                 pass
             return True
 
-        logger.addFilter(filter)
-
         async_handler = logging.Handler()
+        async_handler.addFilter(filter)
 
         def _emit(record: logging.LogRecord) -> None:
             cls._enqueue(record)

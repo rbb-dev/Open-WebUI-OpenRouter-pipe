@@ -367,8 +367,9 @@ class TestGetLogger:
                 exc_info=None,
             )
             # Apply the filter
-            for f in logger.filters:
-                f(record)
+            for handler in logger.handlers:
+                for f in handler.filters:
+                    f(record)
 
             assert getattr(record, "session_id", None) == "sid-filter-test"
             assert getattr(record, "request_id", None) == "rid-filter-test"
@@ -1477,8 +1478,9 @@ class TestFilterContextUpdates:
                 )
 
                 # Apply filters
-                for f in logger.filters:
-                    f(record)
+                for handler in logger.handlers:
+                    for f in handler.filters:
+                        f(record)
 
                 # Check that last_seen was updated
                 assert "rid-last-seen-test" in SessionLogger._session_last_seen
@@ -1838,3 +1840,28 @@ def test_archive_renders_sentinel_for_unrenderable_message(tmp_path):
         jsonl = zf.read("logs.jsonl").decode()
     assert "<<unrenderable message>>" in jsonl
     assert "fine" in jsonl
+
+
+class TestGetLoggerRootCapture:
+    """Capture wired at the package root must receive sibling-module records."""
+
+    def test_child_module_record_reaches_capture_buffers(self) -> None:
+        root_name = "open_webui_openrouter_pipe"
+        rid = "req-root-capture-pin"
+        saved_queue = SessionLogger.log_queue
+        SessionLogger.set_log_queue(None)
+        token = SessionLogger.request_id.set(rid)
+        try:
+            SessionLogger.get_logger(root_name)
+            child = logging.getLogger(root_name + ".plugins.pipe_dashboard.update_service")
+            child.warning("root-capture-pin marker")
+            events = SessionLogger.logs.get(rid)
+            assert events, "child-module record was not captured under the active request"
+            assert any("root-capture-pin marker" in str(e.get("message", "")) for e in events)
+        finally:
+            SessionLogger.request_id.reset(token)
+            SessionLogger.set_log_queue(saved_queue)
+            SessionLogger.logs.pop(rid, None)
+            wired = logging.getLogger(root_name)
+            wired.handlers.clear()
+            wired.filters.clear()

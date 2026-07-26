@@ -307,7 +307,7 @@ class Pipe:
         # Core pipe identity and configuration
         self.type = "manifold"
         self.valves = self.Valves()
-        self.logger = SessionLogger.get_logger(__name__)
+        self.logger = SessionLogger.get_logger(__name__.split(".")[0])
 
         # Instance variables that will be lazy-initialized
         self._http_session: Optional[aiohttp.ClientSession] = None

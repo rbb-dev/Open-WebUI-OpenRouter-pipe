@@ -77,6 +77,15 @@ class TestPipeInitializationAndLifecycle:
         finally:
             pipe.shutdown()
 
+    def test_pipe_logger_wired_to_package_root(self):
+        """Capture attaches at the root of Pipe's own package so module loggers propagate into it."""
+        pipe = Pipe()
+        try:
+            assert pipe.logger.name == Pipe.__module__.split(".")[0]
+            assert any(handler.filters for handler in pipe.logger.handlers)
+        finally:
+            pipe.shutdown()
+
     def test_pipe_del_triggers_shutdown(self):
         """Test that __del__ properly cleans up resources."""
         pipe = Pipe()
