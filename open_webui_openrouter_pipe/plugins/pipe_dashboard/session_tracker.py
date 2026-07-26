@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Any, Callable
 
-_st_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _ST_ACTIVE_CAP = 30
 _ST_RECENT_CAP = 300
@@ -42,7 +42,7 @@ def _usage_numbers(usage: Any) -> dict[str, float]:
         numbers["cost"] = float(usage.get("cost") or 0.0)
         numbers["discount"] = float(usage.get("cache_discount") or 0.0)
     except Exception:
-        _st_log.debug("usage parse failed", exc_info=True)
+        logger.debug("usage parse failed", exc_info=True)
     return numbers
 
 
@@ -194,7 +194,7 @@ class SessionTracker:
             try:
                 callback(row)
             except Exception:
-                _st_log.debug("finalize callback failed", exc_info=True)
+                logger.debug("finalize callback failed", exc_info=True)
 
     def _cache_savings(self, entry: dict[str, Any]) -> float:
         discount = float(entry.get("discount") or 0.0)
@@ -210,7 +210,7 @@ class SessionTracker:
             if prompt_rate > cache_rate > 0:
                 return cached * (prompt_rate - cache_rate)
         except Exception:
-            _st_log.debug("cache savings compute failed", exc_info=True)
+            logger.debug("cache savings compute failed", exc_info=True)
         return 0.0
 
     def _fold_task_into_parent(self, entry: dict[str, Any]) -> None:

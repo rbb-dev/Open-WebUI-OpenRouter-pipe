@@ -11,14 +11,14 @@ import importlib
 import logging
 import pkgutil
 
-_pd_cmd_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
     for _finder, _name, _ispkg in pkgutil.iter_modules(__path__, __name__ + "."):
         try:
             importlib.import_module(_name)
         except Exception:
-            _pd_cmd_logger.debug("Failed to import command module %s", _name, exc_info=True)
+            logger.debug("Failed to import command module %s", _name, exc_info=True)
 except Exception:
     pass  # Bundled mode
 

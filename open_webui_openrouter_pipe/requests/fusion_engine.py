@@ -25,7 +25,7 @@ from ..structured_task.schema import build_response_format, downgrade_strict_for
 from ..tools.tool_executor import _ToolExecutionContext
 
 
-_fusion_engine_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _render_captured_files(files: list[dict[str, Any]]) -> str:
@@ -255,7 +255,7 @@ async def run_fusion_member(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        _fusion_engine_log.warning("fusion member %s failed", model, exc_info=True)
+        logger.warning("fusion member %s failed", model, exc_info=True)
         return FusionMemberResult(
             model=model, content="", usage=collector.usage,
             failed=True, fail_reason=_member_failure_reason(exc),
@@ -480,7 +480,7 @@ async def run_internal_fusion(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _fusion_engine_log.warning("fusion member %s failed", member_model, exc_info=True)
+            logger.warning("fusion member %s failed", member_model, exc_info=True)
             res = FusionMemberResult(
                 model=member_model, content="", usage=None,
                 failed=True, fail_reason=_member_failure_reason(exc),
@@ -549,7 +549,7 @@ async def run_internal_fusion(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    _fusion_engine_log.warning(
+                    logger.warning(
                         "fusion member %s failed", plan.judge_model, exc_info=True
                     )
                     res = FusionMemberResult(
@@ -649,7 +649,7 @@ async def run_internal_fusion(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    _fusion_engine_log.warning(
+                    logger.warning(
                         "fusion member %s failed", plan.synthesis_model, exc_info=True
                     )
                     res = FusionMemberResult(

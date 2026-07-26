@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from .actions import ACTIONS, _audit, dispatch_action
 from .authz import can_view
 
-_pd_http_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _ACTION_PATH = "/api/pipe/dashboard/action"
 _registered_paths: set[str] = set()
@@ -100,7 +100,7 @@ async def _resolve_fresh(request: Any, fid: str) -> tuple[Any, Any] | None:
             return None
         return dispatch, fresh_pipe
     except Exception:
-        _pd_http_log.warning("pipe_dashboard action-route reconcile failed", exc_info=True)
+        logger.warning("pipe_dashboard action-route reconcile failed", exc_info=True)
         return None
 
 
@@ -170,7 +170,7 @@ def register_action_route() -> bool:
             app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
             ensure_route_before_spa(app)
         except Exception:
-            _pd_http_log.debug("action route registration failed", exc_info=True)
+            logger.debug("action route registration failed", exc_info=True)
             return False
         _registered_paths.add(_ACTION_PATH)
         return True

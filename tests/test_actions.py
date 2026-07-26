@@ -127,8 +127,8 @@ async def test_write_args_audited_read_args_omitted(monkeypatch):
 
 def test_audit_routine_ok_is_debug_anomaly_is_warning(monkeypatch):
     calls = []
-    monkeypatch.setattr(actions._pd_actions_log, "debug", lambda *a, **k: calls.append("debug"))
-    monkeypatch.setattr(actions._pd_actions_log, "warning", lambda *a, **k: calls.append("warning"))
+    monkeypatch.setattr(actions.logger, "debug", lambda *a, **k: calls.append("debug"))
+    monkeypatch.setattr(actions.logger, "warning", lambda *a, **k: calls.append("warning"))
     actions._audit(SimpleNamespace(id="u"), "usage_stats", "ok", "1.2.3.4")
     actions._audit(SimpleNamespace(id="u"), "usage_stats", "forbidden", "1.2.3.4")
     assert calls == ["debug", "warning"]

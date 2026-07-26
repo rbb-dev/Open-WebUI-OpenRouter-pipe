@@ -47,7 +47,7 @@ from .runtime_metrics import (
     collect_slow_stats,
 )
 
-_pd_pub_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _pd_snapshot_getter: Any = None
 
@@ -65,7 +65,7 @@ def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float]]:
         rows, tc = getter()
         return (rows if isinstance(rows, list) else []), (tc if isinstance(tc, dict) else {})
     except Exception:
-        _pd_pub_log.debug("live snapshot failed", exc_info=True)
+        logger.debug("live snapshot failed", exc_info=True)
         return [], {}
 
 
@@ -362,7 +362,7 @@ async def _read_redis_workers(client: Any, namespace: str) -> list[dict[str, Any
                 continue
         return payloads
     except Exception:
-        _pd_pub_log.debug("Redis worker read failed", exc_info=True)
+        logger.debug("Redis worker read failed", exc_info=True)
         return None
 
 
@@ -370,7 +370,7 @@ async def _set_active_flag(client: Any, namespace: str, *, wake: bool) -> None:
     try:
         await client.set(f"{namespace}:dashboard:active", "1", ex=_PD_ACTIVE_FLAG_TTL)
     except Exception:
-        _pd_pub_log.debug("Failed to set stats active flag", exc_info=True)
+        logger.debug("Failed to set stats active flag", exc_info=True)
     if wake:
         try:
             await client.publish(f"{namespace}:dashboard:wake", "wake")
@@ -387,7 +387,7 @@ async def _write_own_slice(client: Any, worker_key: str, pipe: Any) -> None:
             ex=_PD_KEY_TTL,
         )
     except Exception:
-        _pd_pub_log.debug("Dashboard publish failed (pid=%d)", os.getpid(), exc_info=True)
+        logger.debug("Dashboard publish failed (pid=%d)", os.getpid(), exc_info=True)
 
 
 async def _redis_alive(pipe: Any) -> bool:
@@ -408,7 +408,7 @@ def _collect_fast_safe(pipe: Any) -> dict[str, Any]:
     try:
         return collect_fast_stats(pipe)
     except Exception:
-        _pd_pub_log.debug("Fast stats collect error", exc_info=True)
+        logger.debug("Fast stats collect error", exc_info=True)
         return {}
 
 
@@ -447,7 +447,7 @@ async def _build_emit_payload(
             try:
                 worker_payloads.append(expand_worker_payload(_collect_worker_payload(pipe)))
             except Exception:
-                _pd_pub_log.debug("Local worker payload collect error", exc_info=True)
+                logger.debug("Local worker payload collect error", exc_info=True)
         if not degraded:
             agg_state["workers"] = list(worker_payloads)
         if worker_payloads:
@@ -479,11 +479,11 @@ async def _build_emit_payload(
         try:
             payload.update(collect_identity(pipe, worker_count=worker_count))
         except Exception:
-            _pd_pub_log.debug("Identity collect error", exc_info=True)
+            logger.debug("Identity collect error", exc_info=True)
         try:
             payload.update(collect_medium_stats(pipe))
         except Exception:
-            _pd_pub_log.debug("Medium stats collect error", exc_info=True)
+            logger.debug("Medium stats collect error", exc_info=True)
         health = payload.get("health")
         if isinstance(health, dict):
             health["redis_connected"] = await _redis_alive(pipe)
@@ -497,7 +497,7 @@ async def _build_emit_payload(
                 slow_state["cache"] = collect_slow_stats(pipe)
                 slow_state["at"] = now
             except Exception:
-                _pd_pub_log.debug("Slow stats collect error", exc_info=True)
+                logger.debug("Slow stats collect error", exc_info=True)
         cached = slow_state.get("cache")
         if cached:
             payload.update(cached)
@@ -529,7 +529,7 @@ async def run_dashboard_publisher(
 
     await asyncio.sleep(2.0)
 
-    _pd_pub_log.debug("Dashboard publisher started (pid=%d, ns=%s)", pid, namespace)
+    logger.debug("Dashboard publisher started (pid=%d, ns=%s)", pid, namespace)
 
     pubsub = None
     tick = 0
@@ -548,7 +548,7 @@ async def run_dashboard_publisher(
                     pubsub = client.pubsub()
                     await pubsub.subscribe(wake_channel)
                 except Exception:
-                    _pd_pub_log.debug("Pub/sub subscribe failed", exc_info=True)
+                    logger.debug("Pub/sub subscribe failed", exc_info=True)
                     pubsub = None
 
             if pipe is None:
@@ -576,12 +576,12 @@ async def run_dashboard_publisher(
                     )
                     await emit_dashboard(payload)
                 except Exception:
-                    _pd_pub_log.debug("Dashboard emit iteration failed", exc_info=True)
+                    logger.debug("Dashboard emit iteration failed", exc_info=True)
                 if tick % _PD_REAUTH_EVERY == 0:
                     try:
                         await reauthorize_local_viewers()
                     except Exception:
-                        _pd_pub_log.debug("viewer re-auth failed", exc_info=True)
+                        logger.debug("viewer re-auth failed", exc_info=True)
                 tick += 1
                 await asyncio.sleep(_PD_PUBLISH_INTERVAL)
                 continue
@@ -618,7 +618,7 @@ async def run_dashboard_publisher(
             await asyncio.sleep(_PD_PUBLISH_INTERVAL)
 
     except asyncio.CancelledError:
-        _pd_pub_log.debug("Dashboard publisher cancelled (pid=%d)", pid)
+        logger.debug("Dashboard publisher cancelled (pid=%d)", pid)
     finally:
         if pubsub is not None:
             try:

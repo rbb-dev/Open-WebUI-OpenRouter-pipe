@@ -17,7 +17,7 @@ from .config_service import describe_valves, drift, json_safe, merge_for_save
 from .dashboard_socket import emit_config_changed
 from .update_service import UpdateError
 
-_pd_actions_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _PD_ACTION_MIN_INTERVAL = 1.0
 _rate_state: dict[tuple[str, str], float] = {}
@@ -93,7 +93,7 @@ def _scrub(value: Any, limit: int = 200) -> str:
 
 def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None) -> None:
     uid = getattr(user, "id", None)
-    level = _pd_actions_log.debug if outcome == "ok" else _pd_actions_log.warning
+    level = logger.debug if outcome == "ok" else logger.warning
     level(
         "pipe_dashboard action user=%s action=%s outcome=%s ip=%s args=%s",
         _scrub(uid), _scrub(name), outcome, _scrub(client_ip),

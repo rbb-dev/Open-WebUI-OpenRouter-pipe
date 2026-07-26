@@ -14,7 +14,7 @@ from typing import Any
 
 from .authz import can_view, resolve_socket_user_id, resolve_user
 
-_pd_sock_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 VIEWERS_ROOM = "pipe_dashboard_viewers"
 DASHBOARD_EVENT = "openrouter:pipe_dashboard"
@@ -44,7 +44,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
 
         await sio.enter_room(sid, VIEWERS_ROOM)
     except Exception:
-        _pd_sock_log.debug("pipe_dashboard sub failed for sid=%s", sid, exc_info=True)
+        logger.debug("pipe_dashboard sub failed for sid=%s", sid, exc_info=True)
         return
     _resync = True
 
@@ -58,7 +58,7 @@ async def emit_config_changed(rev: Any) -> bool:
         await sio.emit(CONFIG_EVENT, {"rev": rev}, room=VIEWERS_ROOM)
         return True
     except Exception:
-        _pd_sock_log.debug("pipe_dashboard config emit failed", exc_info=True)
+        logger.debug("pipe_dashboard config emit failed", exc_info=True)
         return False
 
 
@@ -93,7 +93,7 @@ class _ValveEventSink:
             _pending_emits.add(task)
             task.add_done_callback(_pending_emits.discard)
         except RuntimeError:
-            _pd_sock_log.debug("pipe_dashboard valve event: no running loop")
+            logger.debug("pipe_dashboard valve event: no running loop")
 
 
 _valve_sink = _ValveEventSink()
@@ -109,7 +109,7 @@ def register_valve_event_sink() -> bool:
         EVENT_SINKS.append(_valve_sink)
         return True
     except Exception:
-        _pd_sock_log.debug("pipe_dashboard valve sink registration failed", exc_info=True)
+        logger.debug("pipe_dashboard valve sink registration failed", exc_info=True)
         return False
 
 
@@ -127,7 +127,7 @@ def register_socket_handler(get_pipe: Any = None) -> bool:
     try:
         sio.on(SUB_EVENT, _pipe_dashboard_sub)
     except Exception:
-        _pd_sock_log.debug("pipe_dashboard socket handler registration failed", exc_info=True)
+        logger.debug("pipe_dashboard socket handler registration failed", exc_info=True)
         return False
     _registered = True
     return True
@@ -161,7 +161,7 @@ async def emit_dashboard(payload: dict[str, Any]) -> bool:
         await sio.emit(DASHBOARD_EVENT, payload, room=VIEWERS_ROOM, ignore_queue=True)
         return True
     except Exception:
-        _pd_sock_log.debug("pipe_dashboard emit failed", exc_info=True)
+        logger.debug("pipe_dashboard emit failed", exc_info=True)
         return False
 
 

@@ -23,7 +23,7 @@ from typing import Any, Callable
 from ...core.utils import _stable_crockford_id
 from ...storage.persistence import _db_session, generate_item_id
 
-_us_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _US_BATCH_MAX = 50
 _US_QUEUE_MAX = 1000
@@ -147,7 +147,7 @@ class UsageStore:
             self._signature = signature
             return True
         except Exception:
-            _us_log.debug("usage store ensure failed", exc_info=True)
+            logger.debug("usage store ensure failed", exc_info=True)
             return False
 
     def record(self, row: dict[str, Any]) -> None:
@@ -168,7 +168,7 @@ class UsageStore:
                 pass
             self._dropped += 1
             if self._dropped % _US_DROP_WARN_EVERY == 1:
-                _us_log.warning("usage queue overloaded; %d rows dropped so far", self._dropped)
+                logger.warning("usage queue overloaded; %d rows dropped so far", self._dropped)
 
     def _start_thread(self) -> None:
         thread = self._thread
@@ -202,7 +202,7 @@ class UsageStore:
                 try:
                     self._persist_sync(batch)
                 except Exception:
-                    _us_log.debug("usage batch persist failed", exc_info=True)
+                    logger.debug("usage batch persist failed", exc_info=True)
             if self._stop_event.is_set() and self._queue.qsize() == 0:
                 break
 
@@ -243,7 +243,7 @@ class UsageStore:
             except asyncio.CancelledError:
                 break
             except Exception:
-                _us_log.debug("usage purge iteration failed", exc_info=True)
+                logger.debug("usage purge iteration failed", exc_info=True)
 
     async def _run_purge_once(self) -> None:
         store = self._store
@@ -291,7 +291,7 @@ class UsageStore:
                 try:
                     store._delete_artifacts_sync([lock_id])
                 except Exception:
-                    _us_log.debug("purge lock release failed", exc_info=True)
+                    logger.debug("purge lock release failed", exc_info=True)
 
     def _acquire_purge_lock(self, store: Any, item_model: Any, lock_id: str) -> bool:
         try:
@@ -308,7 +308,7 @@ class UsageStore:
             }
             return bool(store._try_acquire_lock_sync(lock_row))
         except Exception:
-            _us_log.debug("purge lock acquire failed; proceeding unlocked", exc_info=True)
+            logger.debug("purge lock acquire failed; proceeding unlocked", exc_info=True)
             return True
 
     def _reap_stale_lock(self, store: Any, item_model: Any, lock_id: str) -> None:
@@ -324,7 +324,7 @@ class UsageStore:
                 ).delete(synchronize_session=False)
                 session.commit()
         except Exception:
-            _us_log.debug("purge lock reap failed", exc_info=True)
+            logger.debug("purge lock reap failed", exc_info=True)
 
     def _table_info_sync(self) -> dict[str, Any]:
         """Record count + approximate on-disk size for the usage table."""
@@ -359,7 +359,7 @@ class UsageStore:
                 except Exception:
                     info["approx_bytes"] = None
         except Exception:
-            _us_log.debug("usage table info failed", exc_info=True)
+            logger.debug("usage table info failed", exc_info=True)
         return info
 
     async def table_info(self) -> dict[str, Any]:
@@ -396,7 +396,7 @@ class UsageStore:
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
             if thread.is_alive():
-                _us_log.warning(
+                logger.warning(
                     "usage writer did not drain within %.1fs; %d rows may be lost",
                     timeout, self._queue.qsize(),
                 )

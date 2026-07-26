@@ -14,7 +14,7 @@ _PluginT = TypeVar("_PluginT", bound=PluginBase)
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
-_pr_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Per-plugin timeout for async dispatch calls (seconds).
 # A hung plugin will be cancelled after this duration instead of blocking the request.
@@ -78,7 +78,7 @@ class PluginRegistry:
                 while field_name in target:
                     field_name = f"{original}_{n}"
                     n += 1
-                _pr_logger.warning(
+                logger.warning(
                     "Plugin '%s' %s field '%s' renamed to '%s' (name collision)",
                     plugin_class.plugin_id, attr_name, original, field_name,
                 )
@@ -138,18 +138,18 @@ class PluginRegistry:
                 # Warn on duplicate plugin_id (copy-paste error detection)
                 existing_ids = {p.plugin_id for p in self._plugins}
                 if instance.plugin_id and instance.plugin_id in existing_ids:
-                    _pr_logger.warning(
+                    logger.warning(
                         "Duplicate plugin_id '%s' — plugin '%s' shares ID with an existing plugin",
                         instance.plugin_id, cls.__name__,
                     )
                 self._plugins.append(instance)
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' v%s initialized",
                     instance.plugin_id or cls.__name__,
                     instance.plugin_version,
                 )
             except Exception:
-                _pr_logger.warning(
+                logger.warning(
                     "Plugin '%s' failed to initialize",
                     getattr(cls, "plugin_id", cls.__name__),
                     exc_info=True,
@@ -179,7 +179,7 @@ class PluginRegistry:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_models failed", plugin.plugin_id, exc_info=True,
                 )
 
@@ -216,12 +216,12 @@ class PluginRegistry:
                 if plugin_result is not None:
                     result = plugin_result
             except asyncio.TimeoutError:
-                _pr_logger.warning(
+                logger.warning(
                     "Plugin '%s' on_request timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,
                 )
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_request failed", plugin.plugin_id, exc_info=True,
                 )
         return result
@@ -252,12 +252,12 @@ class PluginRegistry:
                 # Re-read model from body after each plugin (plugins may remap)
                 model = str(body.get("model", model))
             except asyncio.TimeoutError:
-                _pr_logger.warning(
+                logger.warning(
                     "Plugin '%s' on_request_transform timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,
                 )
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_request_transform failed",
                     plugin.plugin_id,
                     exc_info=True,
@@ -296,12 +296,12 @@ class PluginRegistry:
                     current = result
                     changed = True
             except asyncio.TimeoutError:
-                _pr_logger.warning(
+                logger.warning(
                     "Plugin '%s' on_emitter_wrap timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,
                 )
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_emitter_wrap failed",
                     plugin.plugin_id,
                     exc_info=True,
@@ -317,7 +317,7 @@ class PluginRegistry:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_tool_result failed", plugin.plugin_id, exc_info=True,
                 )
 
@@ -329,7 +329,7 @@ class PluginRegistry:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_request_retry failed", plugin.plugin_id, exc_info=True,
                 )
 
@@ -346,7 +346,7 @@ class PluginRegistry:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_generation_complete failed",
                     plugin.plugin_id,
                     exc_info=True,
@@ -364,7 +364,7 @@ class PluginRegistry:
             try:
                 result = plugin.on_shutdown()
             except Exception:
-                _pr_logger.debug(
+                logger.debug(
                     "Plugin '%s' on_shutdown failed", plugin.plugin_id, exc_info=True,
                 )
                 continue

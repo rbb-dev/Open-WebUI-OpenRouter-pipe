@@ -16,7 +16,7 @@ import sys
 import time
 from typing import Any, NoReturn
 
-_pd_update_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 FUNCTION_ID = "open_webui_openrouter_pipe"
 DEFAULT_REPO = "rbb-dev/Open-WebUI-OpenRouter-pipe"
@@ -90,7 +90,7 @@ def _distributed_lock(
             redis_cluster=bool(WEBSOCKET_REDIS_CLUSTER),
         )
     except Exception:
-        _pd_update_log.warning("update: cross-worker lock unavailable", exc_info=True)
+        logger.warning("update: cross-worker lock unavailable", exc_info=True)
         return None
 
 
@@ -106,7 +106,7 @@ async def _materialize_snapshot(record: Any) -> Any:
     return await materialize_owui_file_to_temp(
         record,
         user=None,
-        logger=_pd_update_log,
+        logger=logger,
         max_bytes=_PD_UPDATE_SIZE_CAP,
         allow_unknown_size=True,
         require_auth=False,
@@ -394,7 +394,7 @@ class UpdateService:
         try:
             records = await self._snapshot_records()
         except Exception:
-            _pd_update_log.warning("update: snapshot slot read failed", exc_info=True)
+            logger.warning("update: snapshot slot read failed", exc_info=True)
             records = []
 
         auto_success = None
@@ -528,7 +528,7 @@ class UpdateService:
             try:
                 await self._functions().update_function_by_id(pipe_id, {"is_active": True})
             except Exception:
-                _pd_update_log.warning("update: is_active repair failed", exc_info=True)
+                logger.warning("update: is_active repair failed", exc_info=True)
             raise UpdateError("exec_failed", str(exc)) from exc
         return instance, dict(frontmatter or {}), content
 
@@ -610,16 +610,16 @@ class UpdateService:
         try:
             await asyncio.to_thread(storage.delete_file, path)
         except Exception:
-            _pd_update_log.warning("update: snapshot blob delete failed for %s", path)
+            logger.warning("update: snapshot blob delete failed for %s", path)
 
     async def _delete_record(self, record: dict[str, Any], storage: Any) -> bool:
         try:
             deleted = await _files_model().delete_file_by_id(record["file_id"])
         except Exception:
-            _pd_update_log.warning("update: snapshot record delete failed for %s", record["file_id"])
+            logger.warning("update: snapshot record delete failed for %s", record["file_id"])
             return False
         if not deleted:
-            _pd_update_log.warning("update: snapshot record delete refused for %s", record["file_id"])
+            logger.warning("update: snapshot record delete refused for %s", record["file_id"])
             return False
         await self._delete_blob_path(storage, record.get("path"))
         return True
@@ -705,7 +705,7 @@ class UpdateService:
             await self._delete_blob_path(storage, path)
             await self._delete_blob_path(storage, deferred_blob)
             if rotation is not None:
-                _pd_update_log.warning(
+                logger.warning(
                     "update: rotation lost snapshot %s after insert failure", rotation["file_id"]
                 )
             raise UpdateError("validation_failed", reason) from cause
@@ -823,7 +823,7 @@ class UpdateService:
         try:
             await asyncio.to_thread(lock.release_lock)
         except Exception:
-            _pd_update_log.warning("update: cross-worker lock release failed", exc_info=True)
+            logger.warning("update: cross-worker lock release failed", exc_info=True)
         UpdateService._dispose_lock(lock)
 
     async def _commit(
@@ -842,7 +842,7 @@ class UpdateService:
             )
         merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
         if merged is None:
-            _pd_update_log.warning(
+            logger.warning(
                 "update: manifest merge was refused (cosmetic); content is persisted"
             )
         if request is not None:
@@ -851,7 +851,7 @@ class UpdateService:
             owp.get_functions_cache(request)[pipe_id] = instance
             owp.get_function_contents_cache(request)[pipe_id] = final
         to_version = str(frontmatter.get("version", "") or "")
-        _pd_update_log.info(
+        logger.info(
             "update: applied actor=%s from=%s to=%s sha256=%s",
             actor,
             from_version,
@@ -879,20 +879,20 @@ class UpdateService:
                 try:
                     loop.create_task(self._release_cross_worker(xlock))
                 except Exception:
-                    _pd_update_log.warning("update: cross-worker lock release scheduling failed")
+                    logger.warning("update: cross-worker lock release scheduling failed")
             try:
                 exc = fut.exception()
             except asyncio.CancelledError:
                 return
             if exc is None:
-                _pd_update_log.info("update: commit completed (actor=%s)", actor)
+                logger.info("update: commit completed (actor=%s)", actor)
             else:
                 self._auto_last = {
                     "code": getattr(exc, "code", "internal"),
                     "ts": _now(),
                     "message": str(exc),
                 }
-                _pd_update_log.warning("update: commit failed: %s", exc)
+                logger.warning("update: commit failed: %s", exc)
 
         commit.add_done_callback(_settle)
         try:
@@ -1122,7 +1122,7 @@ class UpdateService:
                 if exc.code in _TRANSIENT_CODES:
                     return self._next_backoff(exc)
                 self._auto_skip[version] = {"code": exc.code, "ts": _now()}
-                _pd_update_log.warning(
+                logger.warning(
                     "update: auto-apply paused for %s on this worker after %s", version, exc.code
                 )
                 return interval
@@ -1132,7 +1132,7 @@ class UpdateService:
             self._auto_last = {"code": exc.code, "ts": _now(), "message": exc.message}
             return self._next_backoff(exc)
         except Exception:
-            _pd_update_log.warning("update: auto tick failed", exc_info=True)
+            logger.warning("update: auto tick failed", exc_info=True)
             return interval
 
     @staticmethod
@@ -1152,7 +1152,7 @@ class UpdateService:
                 return False
             return bool(lease.renew_lock())
         except Exception:
-            _pd_update_log.warning("update: leader lease renewal failed", exc_info=True)
+            logger.warning("update: leader lease renewal failed", exc_info=True)
             return False
 
     async def _lead(self, lease: Any | None) -> None:
@@ -1165,7 +1165,7 @@ class UpdateService:
                 remaining -= step
                 if lease is not None and not await asyncio.to_thread(self._renew_leader, lease):
                     self._auto_role = "follower"
-                    _pd_update_log.warning("update: leader lease lost — stepping down")
+                    logger.warning("update: leader lease lost — stepping down")
                     return
 
     async def run_auto_loop(self) -> None:
@@ -1188,7 +1188,7 @@ class UpdateService:
                     await self._sleep(_PD_UPDATE_FOLLOWER_POLL_S)
                     continue
                 self._auto_role = "leader"
-                _pd_update_log.info("update: this worker is the update leader")
+                logger.info("update: this worker is the update leader")
                 try:
                     await self._lead(lease)
                 finally:

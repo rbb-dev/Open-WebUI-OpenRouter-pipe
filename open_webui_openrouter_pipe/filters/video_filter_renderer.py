@@ -10,7 +10,7 @@ from typing import Any
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import _clean_str
 
-_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
@@ -210,7 +210,7 @@ def render_video_filter_source(
     spec = build_video_filter_spec(model_id, video_model, admin_valves=admin_valves)
     unhandled = sorted(set(spec.allowed_params) - _HANDLED_PASSTHROUGH_PARAMS)
     if unhandled:
-        _logger.warning(
+        logger.warning(
             "Video filter renderer has no handler for passthrough parameter(s) %s on model %r — "
             "they will be silently dropped from outbound requests. Add a branch in "
             "_render_user_valves_fields and _render_param_lines, plus a `_KNOB_GATE` entry in video_help.py.",

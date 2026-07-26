@@ -26,7 +26,7 @@ from .registry import PluginRegistry
 
 __all__ = ["PluginBase", "PluginContext", "PluginRegistry"]
 
-_plugins_init_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Infrastructure — the framework itself, never a plugin.
 _PLUGINS_EXCLUDED = frozenset({"base", "registry", "_utils"})
@@ -36,7 +36,7 @@ def _import_plugin_module(name: str) -> None:
     try:
         importlib.import_module(name)
     except Exception:
-        _plugins_init_logger.debug("Failed to import plugin module %s", name, exc_info=True)
+        logger.debug("Failed to import plugin module %s", name, exc_info=True)
 
 
 def _discover_plugins() -> None:
@@ -57,7 +57,7 @@ def _discover_plugins() -> None:
                 seen.add(mod.name)
     except Exception:
         # Bundled mode: __path__ may be empty; the manifest branch handles it.
-        _plugins_init_logger.debug("pkgutil plugin discovery unavailable", exc_info=True)
+        logger.debug("pkgutil plugin discovery unavailable", exc_info=True)
 
     # 2) Bundle mode — ask any bundle finder for its module manifest and import
     #    the top-level plugin packages it lists. Fully generic; no plugin names.
