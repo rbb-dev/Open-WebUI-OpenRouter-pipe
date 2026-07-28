@@ -7,7 +7,7 @@ tool call items to ensure consistent format.
 
 import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import _filter_replayable_input_items
 from ..core.context_budget import apply_replay_tool_output_budget
@@ -19,8 +19,8 @@ _ORPHAN_STUB_OUTPUT = (
 )
 
 if TYPE_CHECKING:
-    from ..pipe import Pipe
     from ..api.transforms import ResponsesBody
+    from ..pipe import Pipe
 
 
 def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
@@ -84,10 +84,13 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
     for idx, item in enumerate(items):
         if idx in drop_idx:
             continue
-        if isinstance(item, dict) and isinstance(item.get("reasoning_details"), list):
-            if any(_detail_unsigned_text(d) for d in item["reasoning_details"]):
-                changed = True
-                item = {k: v for k, v in item.items() if k != "reasoning_details"}
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("reasoning_details"), list)
+            and any(_detail_unsigned_text(d) for d in item["reasoning_details"])
+        ):
+            changed = True
+            item = {k: v for k, v in item.items() if k != "reasoning_details"}
         out.append(item)
     return out if changed else items
 

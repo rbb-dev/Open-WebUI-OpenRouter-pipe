@@ -7,11 +7,11 @@ This module provides API integration with OpenRouter:
 
 from __future__ import annotations
 
-from .transforms import ResponsesBody, CompletionsBody
+from .transforms import CompletionsBody, ResponsesBody
 
 # Gateway adapters are accessed via api.gateway subpackage
 
 __all__ = [
-    "ResponsesBody",
     "CompletionsBody",
+    "ResponsesBody",
 ]

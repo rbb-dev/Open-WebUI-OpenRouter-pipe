@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
-from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
 from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
-from ..storage.persistence import generate_item_id
-from ..models.registry import normalize_model_id_dotted
+from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
 from ..core.timing_logger import timed
+from ..models.registry import normalize_model_id_dotted
+from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -30,7 +31,7 @@ class NonStreamingAdapter:
     """
 
     @timed
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize NonStreamingAdapter.
 
         Args:
@@ -48,9 +49,9 @@ class NonStreamingAdapter:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:

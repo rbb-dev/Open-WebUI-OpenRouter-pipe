@@ -215,7 +215,7 @@ class PluginRegistry:
                 )
                 if plugin_result is not None:
                     result = plugin_result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "Plugin '%s' on_request timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,
@@ -251,7 +251,7 @@ class PluginRegistry:
                 )
                 # Re-read model from body after each plugin (plugins may remap)
                 model = str(body.get("model", model))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "Plugin '%s' on_request_transform timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,
@@ -295,7 +295,7 @@ class PluginRegistry:
                 if result is not None:
                     current = result
                     changed = True
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "Plugin '%s' on_emitter_wrap timed out after %.0fs",
                     plugin.plugin_id, _PR_DISPATCH_TIMEOUT,

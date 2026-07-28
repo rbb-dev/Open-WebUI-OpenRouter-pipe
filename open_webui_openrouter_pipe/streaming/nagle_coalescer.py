@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +45,23 @@ class NagleCoalescer:
     """
 
     __slots__ = (
-        "text_buffer", "text_template", "text_length",
-        "reasoning_buffer", "reasoning_template", "reasoning_item_id",
-        "reasoning_length", "min_flush_chars",
+        "min_flush_chars",
+        "reasoning_buffer",
+        "reasoning_item_id",
+        "reasoning_length",
+        "reasoning_template",
+        "text_buffer",
+        "text_length",
+        "text_template",
     )
 
     def __init__(self, min_flush_chars: int = 1) -> None:
         self.text_buffer: list[str] = []
-        self.text_template: Optional[dict[str, Any]] = None
+        self.text_template: dict[str, Any] | None = None
         self.text_length: int = 0
         self.reasoning_buffer: list[str] = []
-        self.reasoning_template: Optional[dict[str, Any]] = None
-        self.reasoning_item_id: Optional[str] = None
+        self.reasoning_template: dict[str, Any] | None = None
+        self.reasoning_item_id: str | None = None
         self.reasoning_length: int = 0
         self.min_flush_chars: int = max(1, min_flush_chars)
 
@@ -67,7 +73,7 @@ class NagleCoalescer:
 
     # -- flush helpers ------------------------------------------------------
 
-    def flush_text(self, force: bool = True) -> Optional[dict[str, Any]]:
+    def flush_text(self, force: bool = True) -> dict[str, Any] | None:
         if not self.text_buffer:
             return None
         if not force and self.text_length < self.min_flush_chars:
@@ -80,7 +86,7 @@ class NagleCoalescer:
         self.text_length = 0
         return base
 
-    def flush_reasoning(self, force: bool = True) -> Optional[dict[str, Any]]:
+    def flush_reasoning(self, force: bool = True) -> dict[str, Any] | None:
         if not self.reasoning_buffer:
             return None
         if not force and self.reasoning_length < self.min_flush_chars:
@@ -218,7 +224,7 @@ async def nagle_coalesce_stream(
                     event = await asyncio.wait_for(
                         queue.get(), timeout=timeout,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     timed_out = True
                     event = None
             else:

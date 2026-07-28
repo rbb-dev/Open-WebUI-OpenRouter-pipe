@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
-
 import html as _html
+import logging
 import time
-from typing import Any, Sequence
-
+from collections.abc import Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +225,7 @@ def format_datetime(dt: Any) -> str:
     return str(dt)[:16]
 
 
-def format_number(n: int | float) -> str:
+def format_number(n: float) -> str:
     """Format a number with comma separators.
 
     >>> format_number(1234567)

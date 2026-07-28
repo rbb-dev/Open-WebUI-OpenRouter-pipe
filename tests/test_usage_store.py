@@ -44,7 +44,7 @@ def _make_store_host() -> Any:
 
 
 def _row(**over: Any) -> dict[str, Any]:
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.UTC)
     base: dict[str, Any] = {
         "ts": now,
         "started_at": now,
@@ -164,8 +164,8 @@ def test_purge_deletes_only_older_than_cutoff():
     host = _make_store_host()
     usage = UsageStore()
     assert usage.ensure(host)
-    old = _row(ts=datetime.datetime.now() - datetime.timedelta(days=40), chat_id="old")
-    new = _row(ts=datetime.datetime.now(), chat_id="new")
+    old = _row(ts=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=40), chat_id="old")
+    new = _row(ts=datetime.datetime.now(datetime.UTC), chat_id="new")
     usage._persist_sync([old, new])
     assert _count_rows(usage) == 2
     usage._retention_days_fn = lambda: 30
@@ -180,10 +180,10 @@ def test_purge_skips_when_lock_held():
     host = _make_store_host()
     usage = UsageStore()
     assert usage.ensure(host)
-    usage._persist_sync([_row(ts=datetime.datetime.now() - datetime.timedelta(days=40))])
+    usage._persist_sync([_row(ts=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=40))])
     host._item_model = object()
     usage._acquire_purge_lock = lambda store, item_model, lock_id: False
-    usage._purge_sync(datetime.datetime.now())
+    usage._purge_sync(datetime.datetime.now(datetime.UTC))
     assert _count_rows(usage) == 1
 
 
@@ -195,7 +195,7 @@ def test_purge_releases_lock_after_delete():
     host._try_acquire_lock_sync = Mock(return_value=True)
     host._delete_artifacts_sync = Mock()
     usage._reap_stale_lock = lambda *a, **k: None
-    usage._purge_sync(datetime.datetime.now())
+    usage._purge_sync(datetime.datetime.now(datetime.UTC))
     assert host._try_acquire_lock_sync.called
     assert host._delete_artifacts_sync.called
 
@@ -204,7 +204,7 @@ def test_retention_read_live_and_clamped():
     usage = UsageStore()
     usage._retention_days_fn = lambda: 0
     cutoff = usage._purge_cutoff()
-    assert cutoff <= datetime.datetime.now() - datetime.timedelta(days=1) + datetime.timedelta(seconds=5)
+    assert cutoff <= datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1) + datetime.timedelta(seconds=5)
     usage._retention_days_fn = lambda: (_ for _ in ()).throw(RuntimeError())
     assert usage._purge_cutoff() is not None
 

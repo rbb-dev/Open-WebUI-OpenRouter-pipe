@@ -22,7 +22,7 @@ import random
 import threading
 import time
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..core.timing_logger import timed
 from ..storage.persistence import _db_session
@@ -89,8 +89,8 @@ class SessionLogManager:
     def __init__(
         self,
         logger: logging.Logger,
-        pipe: "Pipe",
-        artifact_store: "ArtifactStore | None" = None,
+        pipe: Pipe,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         """Initialize the session log manager.
 
@@ -103,7 +103,7 @@ class SessionLogManager:
 
         self.logger = logger
         self._pipe = pipe
-        self._artifact_store: "ArtifactStore | None" = artifact_store
+        self._artifact_store: ArtifactStore | None = artifact_store
 
         # Worker thread state
         self._queue: queue.Queue[_SessionLogArchiveJob] | None = None
@@ -119,7 +119,7 @@ class SessionLogManager:
         self._dirs: set[str] = set()
         self._warning_emitted = False
 
-    def set_artifact_store(self, artifact_store: "ArtifactStore") -> None:
+    def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
         self._artifact_store = artifact_store
 
@@ -134,7 +134,7 @@ class SessionLogManager:
         return self._pipe.valves
 
     @property
-    def queue(self) -> "queue.Queue | None":
+    def queue(self) -> queue.Queue | None:
         """Access the archive job queue (for tests)."""
         return self._queue
 
@@ -248,9 +248,8 @@ class SessionLogManager:
                 except Exception:
                     self.logger.debug("Session log cleanup failed", exc_info=True)
                 interval = 3600
-                with contextlib.suppress(Exception):
-                    with self._lock:
-                        interval = self._cleanup_interval_seconds
+                with contextlib.suppress(Exception), self._lock:
+                    interval = self._cleanup_interval_seconds
                 if stop_event.wait(timeout=max(0.0, float(interval))):
                     break
 
@@ -380,11 +379,10 @@ class SessionLogManager:
         if zip_compression in {"stored", "lzma"}:
             zip_compresslevel = None
 
-        with contextlib.suppress(Exception):
-            with self._lock:
-                self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
-                self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
-                self._dirs.add(base_dir)
+        with contextlib.suppress(Exception), self._lock:
+            self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
+            self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
+            self._dirs.add(base_dir)
 
         return base_dir, password.encode("utf-8"), zip_compression, zip_compresslevel
 
@@ -440,11 +438,10 @@ class SessionLogManager:
         if zip_compression in {"stored", "lzma"}:
             zip_compresslevel = None
 
-        with contextlib.suppress(Exception):
-            with self._lock:
-                self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
-                self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
-                self._dirs.add(base_dir)
+        with contextlib.suppress(Exception), self._lock:
+            self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
+            self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
+            self._dirs.add(base_dir)
 
         if self._queue is None:
             self._queue = queue.Queue(maxsize=500)
@@ -497,8 +494,11 @@ class SessionLogManager:
         The assembler thread merges all segments for a (chat_id, message_id) into a
         single `<SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip`.
         """
+        from ..core.logging_system import (
+            _SessionLogArchiveJob,
+            write_session_log_archive,
+        )
         from ..storage.persistence import generate_item_id
-        from ..core.logging_system import _SessionLogArchiveJob, write_session_log_archive
 
         if not valves.SESSION_LOG_STORE_ENABLED:
             if self.logger.isEnabledFor(logging.DEBUG):
@@ -827,7 +827,7 @@ class SessionLogManager:
         if "ts" in internal and "created" not in internal:
             try:
                 ts_str = internal.pop("ts")
-                dt = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                dt = datetime.datetime.fromisoformat(ts_str)
                 internal["created"] = dt.timestamp()
             except (AttributeError, TypeError, ValueError, OSError, OverflowError):
                 internal["created"] = time.time()
@@ -857,7 +857,7 @@ class SessionLogManager:
             created_raw = evt.get("created", 0)
             try:
                 created_key: Any = datetime.datetime.fromtimestamp(
-                    float(created_raw), tz=datetime.timezone.utc
+                    float(created_raw), tz=datetime.UTC
                 ).isoformat(timespec="milliseconds")
             except (TypeError, ValueError, OSError, OverflowError):
                 created_key = created_raw
@@ -887,8 +887,8 @@ class SessionLogManager:
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
     ) -> bool:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
-        from ..core.utils import _stable_crockford_id, _sanitize_path_component
         from ..core.logging_system import _SessionLogArchiveJob
+        from ..core.utils import _sanitize_path_component, _stable_crockford_id
 
         if not (chat_id and message_id):
             return False

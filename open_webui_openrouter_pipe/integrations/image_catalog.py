@@ -8,7 +8,6 @@ already live in the chat catalog).
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
@@ -55,7 +54,7 @@ async def ensure_image_catalog_loaded(
 
     try:
         models = await client.list_models()
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+    except (TimeoutError, aiohttp.ClientError, OSError) as exc:
         OpenRouterModelRegistry.record_image_attempt()
         logger.warning(
             "Image catalog fetch failed (/models?output_modalities=image): %s — chat catalog kept, image-only models will not appear.",

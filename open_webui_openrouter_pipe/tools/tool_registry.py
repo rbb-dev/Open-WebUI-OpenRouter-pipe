@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from ..core.timing_logger import timed
 
 # Import ModelFamily for function calling support check
 from ..models.registry import ModelFamily
 
 # Import tool schema functions
 from .tool_schema import _strictify_schema
-from ..core.timing_logger import timed
 
 # Import runtime dependencies
 if TYPE_CHECKING:
@@ -39,15 +40,16 @@ else:
 
 from ..core.config import LOGGER
 
+
 @timed
 def build_tools(
-    responses_body: "ResponsesBody",
-    valves: "Pipe.Valves",
-    __tools__: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+    responses_body: ResponsesBody,
+    valves: Pipe.Valves,
+    __tools__: dict[str, Any] | list[dict[str, Any]] | None = None,
     *,
-    features: Optional[Dict[str, Any]] = None,
-    extra_tools: Optional[List[Dict[str, Any]]] = None,
-) -> List[Dict[str, Any]]:
+    features: dict[str, Any] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """
     Build the OpenAI Responses-API tool spec list for this request.
 
@@ -68,7 +70,7 @@ def build_tools(
     if (not owui_tool_passthrough) and (not ModelFamily.supports("function_calling", responses_body.model)):
         return []
 
-    tools: List[Dict[str, Any]] = []
+    tools: list[dict[str, Any]] = []
 
     # 2) Baseline: Open WebUI registry tools -> OpenAI tool specs
     if isinstance(__tools__, dict) and __tools__:
@@ -88,7 +90,7 @@ def build_tools(
     return _dedupe_tools(tools)
 
 
-def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """(Internal) Deduplicate a tool list with simple, stable identity keys.
 
     Identity:
@@ -105,7 +107,7 @@ def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
     """
     if not tools:
         return []
-    canonical: Dict[tuple, Dict[str, Any]] = {}
+    canonical: dict[tuple, dict[str, Any]] = {}
     for t in tools:
         if not isinstance(t, dict):
             continue
@@ -118,7 +120,7 @@ def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
     return list(canonical.values())
 
 
-def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Optional[dict[str, Any]]:
+def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> dict[str, Any] | None:
     """Return a normalized Responses-style function tool spec, or None when invalid."""
     if not isinstance(tool, dict):
         return None
@@ -137,7 +139,7 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> Op
     return spec
 
 
-def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: bool) -> Optional[dict[str, Any]]:
+def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: bool) -> dict[str, Any] | None:
     """Return a Responses-style function tool spec from an OWUI tool registry entry."""
     if not isinstance(tool_cfg, dict):
         return None
@@ -348,7 +350,7 @@ def _build_collision_safe_tool_specs_and_registry(
         exposed_name = origin_name if not needs_rename else f"{prefix}{origin_name}"
         if exposed_name in used_names:
             digest = hashlib.sha1(
-                f"{c['origin_source']}::{c.get('origin_key')}::{origin_name}".encode("utf-8")
+                f"{c['origin_source']}::{c.get('origin_key')}::{origin_name}".encode()
             ).hexdigest()[:8]
             exposed_name = f"{exposed_name}__{digest}"
         used_names.add(exposed_name)

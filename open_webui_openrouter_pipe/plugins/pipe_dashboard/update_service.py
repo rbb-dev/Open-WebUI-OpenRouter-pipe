@@ -277,7 +277,7 @@ class UpdateService:
         from datetime import datetime
 
         try:
-            return datetime.fromisoformat(str(published).replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(str(published)).timestamp()
         except (TypeError, ValueError, OverflowError, OSError):
             return None
 
@@ -305,7 +305,7 @@ class UpdateService:
                 "browser_download_url": asset.get("browser_download_url"),
             }
 
-        version = tag[1:] if tag.startswith("v") else tag
+        version = tag.removeprefix("v")
         return {
             "version": version,
             "tag": tag,
@@ -336,7 +336,7 @@ class UpdateService:
                 if reset:
                     break
             err = UpdateError("rate_limited", "")
-            setattr(err, "reset", reset)
+            setattr(err, "reset", reset)  # noqa: B010 - dynamic attribute not declared on UpdateError
             raise err
         raise UpdateError("offline", f"GitHub returned HTTP {status}")
 
@@ -720,18 +720,12 @@ class UpdateService:
             record = await _files_model().insert_new_file(
                 owner_id,
                 FileForm(
-                    **{
-                        "id": ids[slot],
-                        "filename": filename,
-                        "path": path,
-                        "data": {},
-                        "meta": {
+                    id=ids[slot], filename=filename, path=path, data={}, meta={
                             "name": filename,
                             "content_type": "text/x-python",
                             "size": len(data),
                             "update_snapshot": entry,
-                        },
-                    }
+                        }
                 ),
             )
         except Exception as exc:
@@ -907,10 +901,7 @@ class UpdateService:
                 logger.warning("update: commit failed: %s", exc)
 
         commit.add_done_callback(_settle)
-        try:
-            return await asyncio.shield(commit)
-        except asyncio.CancelledError:
-            raise
+        return await asyncio.shield(commit)
 
     # ── apply / restore / snapshot_delete ────────────────────────────────────
 
@@ -934,7 +925,7 @@ class UpdateService:
                     err = snap.get("last_check_error") or {}
                     raised = UpdateError(str(err.get("code") or "offline"), str(err.get("message") or ""))
                     if err.get("reset"):
-                        setattr(raised, "reset", str(err["reset"]))
+                        setattr(raised, "reset", str(err["reset"]))  # noqa: B010 - dynamic attribute not declared on UpdateError
                     raise raised
                 if actor == "auto":
                     compressed = bool(mode["compressed"])
@@ -1109,7 +1100,7 @@ class UpdateService:
                         str(check_error.get("message") or ""),
                     )
                     if check_error.get("reset"):
-                        setattr(err, "reset", str(check_error["reset"]))
+                        setattr(err, "reset", str(check_error["reset"]))  # noqa: B010 - dynamic attribute not declared on UpdateError
                     self._auto_last = {"code": err.code, "ts": _now(), "message": err.message}
                     return self._next_backoff(err)
                 return interval

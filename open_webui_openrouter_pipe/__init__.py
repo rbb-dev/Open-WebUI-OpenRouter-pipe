@@ -15,7 +15,8 @@ during simple imports like `from open_webui_openrouter_pipe import Pipe`.
 from typing import TYPE_CHECKING, Any
 
 try:
-    from importlib.metadata import PackageNotFoundError, version as _get_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _get_version
 except ImportError:
     __version__ = "2.7.3"  # Fallback if not installed as package
 else:
@@ -29,103 +30,107 @@ else:
 # -----------------------------------------------------------------------------
 
 if TYPE_CHECKING:
-    from .pipe import Pipe, _PipeJob
-    from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
+    from .api.transforms import (
+        CompletionsBody,
+        ResponsesBody,
+        _apply_disable_native_websearch_to_payload,
+        _apply_identifier_valves_to_payload,
+        _apply_model_fallback_to_payload,
+        _apply_openrouter_trace_to_payload,
+        _apply_provider_routing_params_to_payload,
+        _filter_openrouter_request,
+        _responses_payload_to_chat_completions_payload,
+        _strip_disable_model_settings_params,
+    )
     from .core.config import (
-        Valves,
-        UserValves,
-        EncryptedStr,
-        _PIPE_RUNTIME_ID,
         _OPENROUTER_REFERER,
-        DEFAULT_OPENROUTER_ERROR_TEMPLATE,
-        DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
-        DEFAULT_RATE_LIMIT_TEMPLATE,
+        _PIPE_RUNTIME_ID,
         DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
-        _detect_runtime_pipe_id,
+        DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
+        DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+        DEFAULT_RATE_LIMIT_TEMPLATE,
         LOGGER,
+        EncryptedStr,
+        UserValves,
+        Valves,
+        _detect_runtime_pipe_id,
         _select_openrouter_http_referer,
     )
     from .core.errors import (
         OpenRouterAPIError,
         StatusMessages,
         _build_error_template_values,
-        _unwrap_config_value,
-        _retry_after_seconds,
+        _build_openrouter_api_error,
         _classify_retryable_http_error,
         _extract_openrouter_error_details,
-        _resolve_error_model_context,
-        _build_openrouter_api_error,
         _read_rag_file_constraints,
+        _resolve_error_model_context,
+        _retry_after_seconds,
+        _unwrap_config_value,
+    )
+    from .core.logging_system import (
+        SessionLogger,
+        _SessionLogArchiveJob,
+        write_session_log_archive,
     )
     from .core.utils import (
-        _get_open_webui_config_module,
         _OPEN_WEBUI_CONFIG_MODULE,
-        _safe_json_loads,
-        _extract_feature_flags,
-        _render_error_template,
-        _sanitize_path_component,
-        _pretty_json,
-        _template_value_present,
-        _normalize_optional_str,
-        merge_usage_stats,
-        wrap_code_block,
-        _serialize_marker,
-        contains_marker,
-        split_text_by_markers,
-        _coerce_positive_int,
         _coerce_bool,
-        _normalize_string_list,
+        _coerce_positive_int,
+        _extract_feature_flags,
         _extract_marker_ulid,
+        _get_open_webui_config_module,
         _iter_marker_spans,
-    )
-    from .api.transforms import (
-        ResponsesBody,
-        CompletionsBody,
-        _apply_disable_native_websearch_to_payload,
-        _apply_identifier_valves_to_payload,
-        _responses_payload_to_chat_completions_payload,
-        _filter_openrouter_request,
-        _strip_disable_model_settings_params,
-        _apply_model_fallback_to_payload,
-        _apply_openrouter_trace_to_payload,
-        _apply_provider_routing_params_to_payload,
+        _normalize_optional_str,
+        _normalize_string_list,
+        _pretty_json,
+        _render_error_template,
+        _safe_json_loads,
+        _sanitize_path_component,
+        _serialize_marker,
+        _template_value_present,
+        contains_marker,
+        merge_usage_stats,
+        split_text_by_markers,
+        wrap_code_block,
     )
     from .models.registry import (
-        OpenRouterModelRegistry,
         ModelFamily,
+        OpenRouterModelRegistry,
         sanitize_model_id,
     )
-    from .requests.debug import _debug_print_request, _debug_print_error_response
-    from .storage.persistence import (
-        normalize_persisted_item,
-        ArtifactStore,
-        generate_item_id,
-        _PAYLOAD_FLAG_LZ4,
-        _PAYLOAD_FLAG_PLAIN,
-        _sanitize_table_fragment,
-        ULID_LENGTH,
-        _ENCRYPTED_PAYLOAD_VERSION,
-    )
+    from .pipe import Pipe, _PipeJob
+    from .requests import NonStreamingAdapter, TaskModelAdapter
+    from .requests.debug import _debug_print_error_response, _debug_print_request
     from .storage.multimodal import (
         MultimodalHandler,
-        _guess_image_mime_type,
         _extract_openrouter_og_image,
+        _guess_image_mime_type,
     )
     from .storage.owui_files import (
         extract_internal_file_id,
         is_internal_file_url,
     )
-    from .tools.tool_schema import _classify_function_call_artifacts, _strictify_schema
+    from .storage.persistence import (
+        _ENCRYPTED_PAYLOAD_VERSION,
+        _PAYLOAD_FLAG_LZ4,
+        _PAYLOAD_FLAG_PLAIN,
+        ULID_LENGTH,
+        ArtifactStore,
+        _sanitize_table_fragment,
+        generate_item_id,
+        normalize_persisted_item,
+    )
+    from .streaming.event_emitter import EventEmitterHandler
+    from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
+    from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
     from .tools.tool_registry import (
+        _dedupe_tools,
         _responses_spec_from_owui_tool_cfg,
         build_tools,
-        _dedupe_tools,
     )
-    from .streaming.streaming_core import _wrap_event_emitter, StreamingHandler
-    from .streaming.event_emitter import EventEmitterHandler
-    from .requests import NonStreamingAdapter, TaskModelAdapter
-    from .core.logging_system import SessionLogger, _SessionLogArchiveJob, write_session_log_archive
+    from .tools.tool_schema import _classify_function_call_artifacts, _strictify_schema
 
     # Open WebUI / FastAPI re-exports are resolved lazily at runtime via __getattr__.
     # Define them for type checkers so __all__ is consistent without importing heavy deps.
@@ -138,118 +143,107 @@ if TYPE_CHECKING:
 # -----------------------------------------------------------------------------
 
 __all__ = [
-    # Version
-    "__version__",
-
-    # Main classes
-    "Pipe",
-    "Valves",
-    "UserValves",
-    "EncryptedStr",
-    "_PIPE_RUNTIME_ID",
-    "_OPENROUTER_REFERER",
-    "DEFAULT_OPENROUTER_ERROR_TEMPLATE",
-    "DEFAULT_NETWORK_TIMEOUT_TEMPLATE",
-    "DEFAULT_RATE_LIMIT_TEMPLATE",
     "DEFAULT_AUTHENTICATION_ERROR_TEMPLATE",
     "DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE",
-    "_detect_runtime_pipe_id",
+    "DEFAULT_NETWORK_TIMEOUT_TEMPLATE",
+    "DEFAULT_OPENROUTER_ERROR_TEMPLATE",
+    "DEFAULT_RATE_LIMIT_TEMPLATE",
     "LOGGER",
-
-    # Data transforms
-    "ResponsesBody",
-    "CompletionsBody",
-    "_apply_disable_native_websearch_to_payload",
-    "_apply_identifier_valves_to_payload",
-    "_responses_payload_to_chat_completions_payload",
-
-    # Error handling
-    "OpenRouterAPIError",
-    "StatusMessages",
-    "_build_error_template_values",
-    "_get_open_webui_config_module",
-    "_unwrap_config_value",
-    "_retry_after_seconds",
-    "_classify_retryable_http_error",
-    "_extract_openrouter_error_details",
-    "_resolve_error_model_context",
-    "_build_openrouter_api_error",
-    "_OPEN_WEBUI_CONFIG_MODULE",
-
-    # Model registry
-    "OpenRouterModelRegistry",
-    "ModelFamily",
-    "sanitize_model_id",
-    "_debug_print_error_response",
-
-    # Open WebUI components
-    "upload_file_handler",
-    "run_in_threadpool",
-
-    # Helper functions
-    "_strictify_schema",
-    "_safe_json_loads",
-    "_filter_openrouter_request",
-    "_strip_disable_model_settings_params",
-    "_apply_model_fallback_to_payload",
-    "_apply_openrouter_trace_to_payload",
-    "_apply_provider_routing_params_to_payload",
-    "_extract_feature_flags",
-    "_classify_function_call_artifacts",
-    "_render_error_template",
-    "normalize_persisted_item",
-    "_sanitize_path_component",
-    "_pretty_json",
-    "_select_openrouter_http_referer",
-    "_template_value_present",
-    "_debug_print_request",
-    "_normalize_optional_str",
-    "extract_internal_file_id",
-    "_wrap_event_emitter",
-    "merge_usage_stats",
-    "wrap_code_block",
-    "_read_rag_file_constraints",
-    "_responses_spec_from_owui_tool_cfg",
-
-    # Tool subsystem
-    "build_tools",
-    "_dedupe_tools",
-
-    # Domain subsystems
-    "ArtifactStore",
-    "generate_item_id",
-    "_PAYLOAD_FLAG_LZ4",
-    "_PAYLOAD_FLAG_PLAIN",
-    "_sanitize_table_fragment",
     "ULID_LENGTH",
     "_ENCRYPTED_PAYLOAD_VERSION",
-    "MultimodalHandler",
-    "_guess_image_mime_type",
-    "_extract_openrouter_og_image",
-    "is_internal_file_url",
-    "StreamingHandler",
+    "_OPENROUTER_REFERER",
+    "_OPEN_WEBUI_CONFIG_MODULE",
+    "_PAYLOAD_FLAG_LZ4",
+    "_PAYLOAD_FLAG_PLAIN",
+    "_PIPE_RUNTIME_ID",
+    # Domain subsystems
+    "ArtifactStore",
+    "CompletionsBody",
+    "EncryptedStr",
     "EventEmitterHandler",
+    "ModelFamily",
+    "MultimodalHandler",
     "NonStreamingAdapter",
+    # Error handling
+    "OpenRouterAPIError",
+    # Model registry
+    "OpenRouterModelRegistry",
+    # Main classes
+    "Pipe",
+    # Data transforms
+    "ResponsesBody",
+    # Logging
+    "SessionLogger",
+    "StatusMessages",
+    "StreamingHandler",
     "TaskModelAdapter",
-
-    # Utility functions
-    "_serialize_marker",
-    "contains_marker",
-    "split_text_by_markers",
-    "_coerce_positive_int",
-    "_coerce_bool",
-    "_normalize_string_list",
-    "_extract_marker_ulid",
-    "_iter_marker_spans",
-
+    "UserValves",
+    "Valves",
     # Internal (for testing)
     "_PipeJob",
     "_QueuedToolCall",
-    "_ToolExecutionContext",
-
-    # Logging
-    "SessionLogger",
     "_SessionLogArchiveJob",
+    "_ToolExecutionContext",
+    # Version
+    "__version__",
+    "_apply_disable_native_websearch_to_payload",
+    "_apply_identifier_valves_to_payload",
+    "_apply_model_fallback_to_payload",
+    "_apply_openrouter_trace_to_payload",
+    "_apply_provider_routing_params_to_payload",
+    "_build_error_template_values",
+    "_build_openrouter_api_error",
+    "_classify_function_call_artifacts",
+    "_classify_retryable_http_error",
+    "_coerce_bool",
+    "_coerce_positive_int",
+    "_debug_print_error_response",
+    "_debug_print_request",
+    "_dedupe_tools",
+    "_detect_runtime_pipe_id",
+    "_extract_feature_flags",
+    "_extract_marker_ulid",
+    "_extract_openrouter_error_details",
+    "_extract_openrouter_og_image",
+    "_filter_openrouter_request",
+    "_get_open_webui_config_module",
+    "_guess_image_mime_type",
+    "_iter_marker_spans",
+    "_normalize_optional_str",
+    "_normalize_string_list",
+    "_pretty_json",
+    "_read_rag_file_constraints",
+    "_render_error_template",
+    "_resolve_error_model_context",
+    "_responses_payload_to_chat_completions_payload",
+    "_responses_spec_from_owui_tool_cfg",
+    "_retry_after_seconds",
+    "_safe_json_loads",
+    "_sanitize_path_component",
+    "_sanitize_table_fragment",
+    "_select_openrouter_http_referer",
+    # Utility functions
+    "_serialize_marker",
+    # Helper functions
+    "_strictify_schema",
+    "_strip_disable_model_settings_params",
+    "_template_value_present",
+    "_unwrap_config_value",
+    "_wrap_event_emitter",
+    # Tool subsystem
+    "build_tools",
+    "contains_marker",
+    "extract_internal_file_id",
+    "generate_item_id",
+    "is_internal_file_url",
+    "merge_usage_stats",
+    "normalize_persisted_item",
+    "run_in_threadpool",
+    "sanitize_model_id",
+    "split_text_by_markers",
+    # Open WebUI components
+    "upload_file_handler",
+    "wrap_code_block",
     "write_session_log_archive",
 ]
 

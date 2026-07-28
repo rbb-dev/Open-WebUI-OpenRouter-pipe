@@ -18,15 +18,15 @@ import fnmatch
 import logging
 import re
 import time
-from decimal import Decimal, InvalidOperation
 from contextvars import ContextVar
-from typing import Any, ClassVar, Dict, Optional
+from decimal import Decimal, InvalidOperation
+from typing import Any, ClassVar
 
 import aiohttp
 
-from ..core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER
-from .blocklists import is_direct_upload_blocklisted
+from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUTER_TITLE
 from ..core.timing_logger import timed
+from .blocklists import is_direct_upload_blocklisted
 
 # Lazy imports to avoid circular dependencies (see requests/__init__.py chain).
 
@@ -63,11 +63,11 @@ class ModelFamily:
     """
 
     _DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
-    _PIPE_ID: ContextVar[Optional[str]] = ContextVar(
+    _PIPE_ID: ContextVar[str | None] = ContextVar(
         "owui_pipe_id_ctx",
         default=None,
     )
-    _DYNAMIC_SPECS: ClassVar[Dict[str, Dict[str, Any]]] = {}
+    _DYNAMIC_SPECS: ClassVar[dict[str, dict[str, Any]]] = {}
 
     # -- tiny, intuitive helpers ----------------------------------------------
     @classmethod
@@ -91,8 +91,7 @@ class ModelFamily:
         pipe_id = cls._PIPE_ID.get()
         if pipe_id:
             pref = f"{pipe_id}."
-            if m.startswith(pref):
-                m = m[len(pref):]
+            m = m.removeprefix(pref)
 
         base = cls._DATE_RE.sub("", m.lower())
 
@@ -113,7 +112,7 @@ class ModelFamily:
         return frozenset(spec.get("features", set()))
 
     @classmethod
-    def max_completion_tokens(cls, model_id: str) -> Optional[int]:
+    def max_completion_tokens(cls, model_id: str) -> int | None:
         """Return max completion tokens reported by the provider, if any."""
         spec = cls._lookup_spec(model_id)
         return spec.get("max_completion_tokens")
@@ -143,18 +142,18 @@ class ModelFamily:
         return frozenset()
 
     @classmethod
-    def set_dynamic_specs(cls, specs: Dict[str, Dict[str, Any]] | None) -> None:
+    def set_dynamic_specs(cls, specs: dict[str, dict[str, Any]] | None) -> None:
         """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
         cls._DYNAMIC_SPECS = specs or {}
 
     @classmethod
-    def _lookup_spec(cls, model_id: str) -> Dict[str, Any]:
+    def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
         norm = cls.base_model(model_id)
         return cls._DYNAMIC_SPECS.get(norm) or {}
 
     @classmethod
-    def display_name(cls, model_id: str) -> Optional[str]:
+    def display_name(cls, model_id: str) -> str | None:
         """Return the OpenRouter catalog display name for ``model_id`` if cached."""
         spec = cls._lookup_spec(model_id)
         full = spec.get("full_model") if isinstance(spec, dict) else None
@@ -186,8 +185,8 @@ class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
     _models: ClassVar[list[dict[str, Any]]] = []
-    _specs: ClassVar[Dict[str, Dict[str, Any]]] = {}
-    _id_map: ClassVar[Dict[str, str]] = {}  # normalized sanitized id -> original id
+    _specs: ClassVar[dict[str, dict[str, Any]]] = {}
+    _id_map: ClassVar[dict[str, str]] = {}  # normalized sanitized id -> original id
     _zdr_model_ids: set[str] | None = None
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
@@ -256,7 +255,7 @@ class OpenRouterModelRegistry:
     ) -> None:
         """Fetch and cache the OpenRouter catalog."""
         # Lazy imports to avoid circular dependencies (via requests/__init__.py)
-        from ..requests.debug import _debug_print_request, _debug_print_error_response
+        from ..requests.debug import _debug_print_error_response, _debug_print_request
 
         url = base_url.rstrip("/") + "/models"
         headers = {
@@ -272,9 +271,9 @@ class OpenRouterModelRegistry:
                     await _debug_print_error_response(resp, logger=logger)
                 resp.raise_for_status()
                 payload = await resp.json()
-        except Exception as exc:
+        except Exception:
             cls._zdr_model_ids = None
-            logger.exception("Failed to load OpenRouter model catalog: %s", exc)
+            logger.exception("Failed to load OpenRouter model catalog")
             raise
 
         data = payload.get("data") or []
@@ -291,9 +290,9 @@ class OpenRouterModelRegistry:
             logger.warning(
                 "Failed to load OpenRouter ZDR endpoint list: %s", exc, exc_info=True
             )
-        raw_specs: Dict[str, Dict[str, Any]] = {}
+        raw_specs: dict[str, dict[str, Any]] = {}
         models: list[dict[str, Any]] = []
-        id_map: Dict[str, str] = {}
+        id_map: dict[str, str] = {}
 
         for item in data:
             original_id = item.get("id")
@@ -320,7 +319,7 @@ class OpenRouterModelRegistry:
 
         # Finalize specs shared with ModelFamily (features + max completion tokens).
         # Now we keep the FULL model object plus derived features for fast lookups
-        specs: Dict[str, Dict[str, Any]] = {}
+        specs: dict[str, dict[str, Any]] = {}
         for norm_id, full_model in raw_specs.items():
             supported_parameters = set(full_model.get("supported_parameters") or [])
             architecture = full_model.get("architecture") or {}
@@ -348,7 +347,7 @@ class OpenRouterModelRegistry:
                 pricing,
             )
 
-            max_completion_tokens: Optional[int] = None
+            max_completion_tokens: int | None = None
             top_provider = full_model.get("top_provider")
             if isinstance(top_provider, dict):
                 max_completion_tokens = top_provider.get("max_completion_tokens")
@@ -452,8 +451,8 @@ class OpenRouterModelRegistry:
     @staticmethod
     def _derive_features(
         supported_parameters: set[str],
-        architecture: Dict[str, Any],
-        pricing: Dict[str, Any],
+        architecture: dict[str, Any],
+        pricing: dict[str, Any],
     ) -> set[str]:
         """Translate OpenRouter metadata into capability flags.
 
@@ -498,7 +497,7 @@ class OpenRouterModelRegistry:
         return features
 
     @staticmethod
-    def _coerce_pricing_number(value: Any) -> Optional[Decimal]:
+    def _coerce_pricing_number(value: Any) -> Decimal | None:
         """Return a numeric pricing value when possible."""
         if value is None:
             return None
@@ -530,7 +529,7 @@ class OpenRouterModelRegistry:
         return None
 
     @staticmethod
-    def _supports_web_search(pricing: Dict[str, Any]) -> bool:
+    def _supports_web_search(pricing: dict[str, Any]) -> bool:
         """Return True when the provider exposes paid web-search support."""
         value = pricing.get("web_search")
         amount = OpenRouterModelRegistry._coerce_pricing_number(value)
@@ -540,8 +539,8 @@ class OpenRouterModelRegistry:
 
     @staticmethod
     def _derive_capabilities(
-        architecture: Dict[str, Any],
-        pricing: Dict[str, Any],
+        architecture: dict[str, Any],
+        pricing: dict[str, Any],
     ) -> dict[str, bool]:
         """Translate metadata into Open WebUI capability checkboxes."""
 
@@ -815,7 +814,7 @@ class OpenRouterModelRegistry:
                 continue
 
             arch_raw = item.get("architecture")
-            architecture: Dict[str, Any] = arch_raw if isinstance(arch_raw, dict) else {}
+            architecture: dict[str, Any] = arch_raw if isinstance(arch_raw, dict) else {}
             input_modalities = architecture.get("input_modalities") or []
             output_modalities = architecture.get("output_modalities") or []
             accepts_image_input = "image" in input_modalities
@@ -880,7 +879,7 @@ class OpenRouterModelRegistry:
             cls._last_image_fetch = time.time()
 
     @classmethod
-    def api_model_id(cls, model_id: str) -> Optional[str]:
+    def api_model_id(cls, model_id: str) -> str | None:
         """Map sanitized Open WebUI ids back to provider ids, preserving variant/preset suffix.
 
         Examples:
@@ -929,7 +928,7 @@ class OpenRouterModelRegistry:
         return provider_id
 
     @classmethod
-    def spec(cls, model_id: str) -> Dict[str, Any]:
+    def spec(cls, model_id: str) -> dict[str, Any]:
         """Return the cached spec for ``model_id`` (or an empty dict)."""
         norm = ModelFamily.base_model(model_id)
         return cls._specs.get(norm) or {}
@@ -971,7 +970,7 @@ class OpenRouterModelRegistry:
         http_referer: str | None = None,
     ) -> set[str]:
         """Fetch OpenRouter ZDR endpoints and return normalized model ids."""
-        from ..requests.debug import _debug_print_request, _debug_print_error_response
+        from ..requests.debug import _debug_print_error_response, _debug_print_request
 
         url = base_url.rstrip("/") + "/endpoints/zdr"
         headers = {
@@ -1053,14 +1052,14 @@ def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
 _GEMINI_25_RE = re.compile(r"~?google[./]gemini-2\.5(-|\Z)")
 
 
-def _classify_gemini_thinking_family(normalized_model_id: str) -> Optional[str]:
+def _classify_gemini_thinking_family(normalized_model_id: str) -> str | None:
     """Return the Gemini thinking family for the provided normalized model id."""
     if _GEMINI_25_RE.match((normalized_model_id or "").lower()):
         return "gemini-2.5"
     return None
 
 
-def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> Optional[int]:
+def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> int | None:
     """Scale the configured Gemini 2.5 thinking budget from the requested effort."""
     if base_budget <= 0:
         return 0 if base_budget == 0 else None

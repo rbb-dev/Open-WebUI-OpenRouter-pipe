@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, ClassVar
+from typing import ClassVar
 
 from .context import CommandContext
 
@@ -75,10 +76,11 @@ class CommandRegistry:
         best_len = 0
 
         for cmd_name, entry in cls._commands.items():
-            if normalized == cmd_name or normalized.startswith(cmd_name + " "):
-                if len(cmd_name) > best_len:
-                    best_entry = entry
-                    best_len = len(cmd_name)
+            if (
+                normalized == cmd_name or normalized.startswith(cmd_name + " ")
+            ) and len(cmd_name) > best_len:
+                best_entry = entry
+                best_len = len(cmd_name)
 
         if best_entry is None:
             return None, ""

@@ -46,8 +46,7 @@ def resolve_task_model_candidates(
     if primary:
         candidates.append(primary)
 
-    if fallback == "other_task_model":
-        if other and other not in candidates:
-            candidates.append(other)
+    if fallback == "other_task_model" and other and other not in candidates:
+        candidates.append(other)
 
     return candidates

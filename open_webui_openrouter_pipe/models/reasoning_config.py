@@ -9,16 +9,16 @@ This module handles:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
 import logging
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..pipe import Pipe
     from ..api.transforms import ResponsesBody
+    from ..pipe import Pipe
 
-from .registry import ModelFamily
 from ..core.errors import OpenRouterAPIError
 from ..integrations.anthropic import _is_anthropic_model_id
+from .registry import ModelFamily
 
 # Valve effort value that triggers verbosity: "max" for Claude models.
 _XHIGH_EFFORT = "xhigh"
@@ -35,7 +35,7 @@ class ReasoningConfigManager:
     - Detects reasoning errors and determines if retry is appropriate
     """
 
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize the ReasoningConfigManager.
 
         Args:
@@ -46,7 +46,7 @@ class ReasoningConfigManager:
         self.logger = logger
         self.valves = pipe.valves
 
-    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
+    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Automatically request reasoning traces when supported and enabled."""
         if not valves.ENABLE_REASONING:
             return
@@ -55,7 +55,7 @@ class ReasoningConfigManager:
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         summary_mode = valves.REASONING_SUMMARY_MODE
-        requested_summary: Optional[str] = None
+        requested_summary: str | None = None
         if summary_mode != "disabled":
             requested_summary = summary_mode
 
@@ -72,14 +72,14 @@ class ReasoningConfigManager:
             cfg.setdefault("enabled", True)
             responses_body.reasoning = cfg or None
             if getattr(responses_body, "include_reasoning", None) is not None:
-                setattr(responses_body, "include_reasoning", None)
+                responses_body.include_reasoning = None
         elif supports_legacy_only:
             responses_body.reasoning = None
             desired = target_effort not in {"none", ""}
-            setattr(responses_body, "include_reasoning", desired)
+            responses_body.include_reasoning = desired
         else:
             responses_body.reasoning = None
-            setattr(responses_body, "include_reasoning", False)
+            responses_body.include_reasoning = False
 
 
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
@@ -102,17 +102,17 @@ class ReasoningConfigManager:
             cfg.setdefault("enabled", True)
             responses_body.reasoning = cfg
             if getattr(responses_body, "include_reasoning", None) is not None:
-                setattr(responses_body, "include_reasoning", None)
+                responses_body.include_reasoning = None
         elif supports_legacy_only:
             responses_body.reasoning = None
             desired = target_effort not in {"none", "minimal"}
-            setattr(responses_body, "include_reasoning", desired)
+            responses_body.include_reasoning = desired
         else:
             responses_body.reasoning = None
-            setattr(responses_body, "include_reasoning", False)
+            responses_body.include_reasoning = False
 
 
-    def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: "Pipe.Valves") -> None:
+    def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Translate reasoning preferences into Vertex thinking_config for Gemini models."""
         # Lazy import to avoid circular dependency
         from .registry import (
@@ -142,7 +142,7 @@ class ReasoningConfigManager:
         reasoning_requested = bool(include_flag) or (reasoning_cfg and enabled and not exclude)
         if not reasoning_requested:
             responses_body.thinking_config = None
-            setattr(responses_body, "include_reasoning", False)
+            responses_body.include_reasoning = False
             return
 
         thinking_config: dict[str, Any] = {"include_thoughts": True}
@@ -153,15 +153,15 @@ class ReasoningConfigManager:
         # is contradictory and the provider rejects it, so disable here.
         if not budget:
             responses_body.thinking_config = None
-            setattr(responses_body, "include_reasoning", False)
+            responses_body.include_reasoning = False
             return
         thinking_config["thinking_budget"] = budget
 
         responses_body.thinking_config = thinking_config
         responses_body.reasoning = None
-        setattr(responses_body, "include_reasoning", None)
+        responses_body.include_reasoning = None
 
-    def _apply_anthropic_verbosity(self, responses_body: "ResponsesBody", valves: "Pipe.Valves") -> None:
+    def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Map xhigh effort to verbosity: "max" for Claude Opus/Sonnet models.
 
         OpenRouter's ``verbosity`` parameter maps to Anthropic's
@@ -224,7 +224,7 @@ class ReasoningConfigManager:
                 continue
             lowered = message.lower()
             if any(trigger in lowered for trigger in trigger_phrases):
-                setattr(responses_body, "include_reasoning", False)
+                responses_body.include_reasoning = False
                 responses_body.reasoning = None
                 responses_body.thinking_config = None
                 self.logger.info(

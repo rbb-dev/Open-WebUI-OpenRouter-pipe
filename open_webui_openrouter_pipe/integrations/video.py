@@ -8,8 +8,9 @@ import re
 import shutil
 import tempfile
 import time
+from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
@@ -59,7 +60,7 @@ class VideoGenerationAdapter:
     JOB_MARKER_KIND = "videojob"
     MODEL_MARKER_KIND = "videomodel"
 
-    def __init__(self, *, pipe: "Pipe", logger: logging.Logger) -> None:
+    def __init__(self, *, pipe: Pipe, logger: logging.Logger) -> None:
         self._pipe = pipe
         self.logger = logger
         self._persistence = VideoPersistence(logger=logger)
@@ -75,7 +76,7 @@ class VideoGenerationAdapter:
         responses_body: Any,
         valves: Any,
         session: Any,
-        event_emitter: "EventEmitter | None",
+        event_emitter: EventEmitter | None,
         metadata: dict[str, Any],
         user: dict[str, Any],
         request: Any,
@@ -190,7 +191,7 @@ class VideoGenerationAdapter:
                 return content
 
             video_meta_pre = self._extract_video_metadata(metadata)
-            intent_result: "VideoIntentResult | None" = None
+            intent_result: VideoIntentResult | None = None
             intent_disclosure_block = ""
 
             if self._intent_classifier_should_run(
@@ -448,10 +449,7 @@ class VideoGenerationAdapter:
             async with self._pipe._video_active_tasks_dict_lock:
                 self._pipe._video_active_tasks[key] = bg_task
 
-            try:
-                result = await asyncio.shield(bg_task)
-            except asyncio.CancelledError:
-                raise
+            result = await asyncio.shield(bg_task)
             await self._emit_completion(event_emitter, result.content, usage=result.usage)
             return result.content
         except asyncio.CancelledError:
@@ -480,7 +478,7 @@ class VideoGenerationAdapter:
         api_model_id: str,
         normalized_model_id: str,
         valves: Any,
-        event_emitter: "EventEmitter | None",
+        event_emitter: EventEmitter | None,
         user: dict[str, Any],
         user_obj: Any,
         chat_id: str,
@@ -491,7 +489,7 @@ class VideoGenerationAdapter:
         message_lock: asyncio.Lock,
         started_at: float,
         intent_disclosure_block: str = "",
-    ) -> "asyncio.Task[VideoLifecycleResult]":
+    ) -> asyncio.Task[VideoLifecycleResult]:
         task: asyncio.Task[VideoLifecycleResult] = asyncio.create_task(
             self._run_lifecycle_after_submit(
                 key=key,
@@ -524,7 +522,7 @@ class VideoGenerationAdapter:
         api_model_id: str,
         normalized_model_id: str,
         valves: Any,
-        event_emitter: "EventEmitter | None",
+        event_emitter: EventEmitter | None,
         user: dict[str, Any],
         user_obj: Any,
         chat_id: str,
@@ -693,7 +691,7 @@ class VideoGenerationAdapter:
         client: OpenRouterVideoClient,
         job_id: str,
         valves: Any,
-        event_emitter: "EventEmitter | None",
+        event_emitter: EventEmitter | None,
     ) -> dict[str, Any]:
         initial_delay = float(valves.VIDEO_INITIAL_POLL_DELAY_SECONDS)
         if initial_delay > 0:
@@ -746,8 +744,8 @@ class VideoGenerationAdapter:
 
     async def _await_existing_task(
         self,
-        task: "asyncio.Task[VideoLifecycleResult]",
-        event_emitter: "EventEmitter | None",
+        task: asyncio.Task[VideoLifecycleResult],
+        event_emitter: EventEmitter | None,
     ) -> str:
         await self._emit_status(event_emitter, "Waiting for active video generation job...", done=False)
         result = await asyncio.shield(task)
@@ -755,7 +753,7 @@ class VideoGenerationAdapter:
         await self._emit_completion(event_emitter, result.content, usage=result.usage)
         return result.content
 
-    async def _get_active_task(self, key: tuple[str, str]) -> "asyncio.Task[VideoLifecycleResult] | None":
+    async def _get_active_task(self, key: tuple[str, str]) -> asyncio.Task[VideoLifecycleResult] | None:
         async with self._pipe._video_active_tasks_dict_lock:
             task = self._pipe._video_active_tasks.get(key)
             if task is not None and task.done():
@@ -1181,7 +1179,7 @@ class VideoGenerationAdapter:
         prompt: str,
         body: dict[str, Any],
         video_meta: dict[str, Any],
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         chat_id: str = "",
         user_id: str = "",
     ) -> bool:
@@ -1205,26 +1203,26 @@ class VideoGenerationAdapter:
             messages = body.get("messages") if isinstance(body, dict) else None
             if isinstance(messages, list) and len(messages) <= 1:
                 has_attachments = bool(
-                    (isinstance(video_meta, dict) and (
+                    isinstance(video_meta, dict) and (
                         video_meta.get("frame_images")
                         or video_meta.get("video_attachments")
-                    ))
+                    )
                 )
                 if not has_attachments:
                     return False
         cap_chat = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0)
-        if cap_chat > 0 and chat_id:
-            if self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat:
-                return False
+        if (
+            cap_chat > 0 and chat_id
+            and self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat
+        ):
+            return False
         cap_day = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0)
         if cap_day > 0 and user_id:
-            from datetime import datetime, timezone
-            day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            from datetime import datetime
+            day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
             if self._intent_call_counts_per_user_day.get((user_id, day), 0) >= cap_day:
                 return False
-        if time.time() < self._intent_breaker_until_ts:
-            return False
-        return True
+        return not time.time() < self._intent_breaker_until_ts
 
     def _intent_record_call(self, chat_id: str, user_id: str) -> None:
         """Increment the per-chat / per-user-day counters after a classifier call."""
@@ -1233,8 +1231,8 @@ class VideoGenerationAdapter:
                 self._intent_call_counts_per_chat.get(chat_id, 0) + 1
             )
         if user_id:
-            from datetime import datetime, timezone
-            day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+            from datetime import datetime
+            day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
             self._intent_call_counts_per_user_day[(user_id, day)] = (
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )
@@ -1245,7 +1243,7 @@ class VideoGenerationAdapter:
 
     def _emit_intent_telemetry(
         self,
-        intent: "VideoIntentResult",
+        intent: VideoIntentResult,
         *,
         valves: Any,
         chat_id: Any,
@@ -1271,7 +1269,7 @@ class VideoGenerationAdapter:
 
     def _apply_uploaded_attachment_retargeting(
         self,
-        intent: "VideoIntentResult",
+        intent: VideoIntentResult,
         video_meta: dict[str, Any],
     ) -> None:
         """Apply classifier `uploaded_attachment` retargeting to existing
@@ -1323,7 +1321,7 @@ class VideoGenerationAdapter:
     async def _materialise_frame_plan(
         self,
         *,
-        intent: "VideoIntentResult",
+        intent: VideoIntentResult,
         video_meta: dict[str, Any],
         request: Any,
         user_obj: Any,
@@ -1480,9 +1478,9 @@ class VideoGenerationAdapter:
 
     async def _resolve_prior_video_file_id(
         self,
-        entry: "FramePlanEntry",
+        entry: FramePlanEntry,
         *,
-        intent: "VideoIntentResult",
+        intent: VideoIntentResult,
         user_obj: Any,
     ) -> str:
         del user_obj
@@ -1513,7 +1511,7 @@ class VideoGenerationAdapter:
         file_id: str,
         request: Any,
         user_obj: Any,
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """Materialise a prior-video file to a private temp for best-effort frame extraction.
 
         Authorises and routes the read through the OWUI Storage gateway (any
@@ -1750,7 +1748,7 @@ class VideoGenerationAdapter:
 
     async def _emit_status(
         self,
-        emitter: "EventEmitter | None",
+        emitter: EventEmitter | None,
         description: str,
         *,
         done: bool,
@@ -1769,7 +1767,7 @@ class VideoGenerationAdapter:
 
     async def _emit_completion(
         self,
-        emitter: "EventEmitter | None",
+        emitter: EventEmitter | None,
         content: str,
         *,
         usage: dict[str, Any] | None = None,
@@ -1792,7 +1790,7 @@ class VideoGenerationAdapter:
             },
         )
 
-    async def _safe_emit(self, emitter: "EventEmitter | None", event: dict[str, Any]) -> None:
+    async def _safe_emit(self, emitter: EventEmitter | None, event: dict[str, Any]) -> None:
         if emitter is None:
             return
         try:

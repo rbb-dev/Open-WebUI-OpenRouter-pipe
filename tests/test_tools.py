@@ -1687,6 +1687,9 @@ async def test_build_direct_tool_server_bad_properties_keys():
             def items(self):
                 raise RuntimeError("Intentional failure")
 
+            def __iter__(self):
+                raise RuntimeError("Intentional failure")
+
         registry, specs = executor._build_direct_tool_server_registry(
             {
                 "session_id": "sess-1",

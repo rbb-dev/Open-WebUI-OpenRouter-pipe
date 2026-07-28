@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Optional
 
 # Default reasoning status emission thresholds.
 REASONING_STATUS_PUNCTUATION = (".", "!", "?", ":", "\n")
@@ -26,7 +25,7 @@ class ReasoningStatusThrottle:
         self._buffer: str = ""
         self._last_emit: float | None = None
 
-    def feed(self, delta: str, *, force: bool = False) -> Optional[str]:
+    def feed(self, delta: str, *, force: bool = False) -> str | None:
         """Append *delta* to the buffer and return text to emit, or ``None``."""
         if not isinstance(delta, str):
             return None
@@ -37,15 +36,14 @@ class ReasoningStatusThrottle:
         should_emit = force
         now = perf_counter()
         if not should_emit:
-            if delta.rstrip().endswith(REASONING_STATUS_PUNCTUATION):
-                should_emit = True
-            elif len(text) >= REASONING_STATUS_MAX_CHARS:
+            if delta.rstrip().endswith(REASONING_STATUS_PUNCTUATION) or len(text) >= REASONING_STATUS_MAX_CHARS:
                 should_emit = True
             else:
                 elapsed = None if self._last_emit is None else (now - self._last_emit)
-                if len(text) >= REASONING_STATUS_MIN_CHARS:
-                    if elapsed is None or elapsed >= REASONING_STATUS_IDLE_SECONDS:
-                        should_emit = True
+                if len(text) >= REASONING_STATUS_MIN_CHARS and (
+                    elapsed is None or elapsed >= REASONING_STATUS_IDLE_SECONDS
+                ):
+                    should_emit = True
         if not should_emit:
             return None
         self._buffer = ""

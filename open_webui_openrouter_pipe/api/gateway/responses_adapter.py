@@ -10,29 +10,40 @@ import contextlib
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer, _apply_owui_forward_user_headers
+from ...core.config import (
+    _OPENROUTER_CATEGORIES,
+    _OPENROUTER_TITLE,
+    _apply_owui_forward_user_headers,
+    _select_openrouter_http_referer,
+)
 from ...core.errors import OpenRouterAPIError, _build_openrouter_api_error
+from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
-from ...streaming.nagle_coalescer import NagleCoalescer, _MAX_DRAIN_PER_CYCLE
+from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
     _debug_print_response,
 )
-from ...core.logging_system import SessionLogger
-from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
+from ...streaming.nagle_coalescer import _MAX_DRAIN_PER_CYCLE, NagleCoalescer
 
 if TYPE_CHECKING:
     from ...pipe import Pipe
 
 
-def _should_retry_stream(emitted_any: bool, exc: Optional[BaseException]) -> bool:
+def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
     """Decide whether a streaming attempt may be retried.
 
     Retry is only safe BEFORE any event has reached the consumer. Once output
@@ -50,7 +61,7 @@ class ResponsesAdapter:
     """Adapter for OpenRouter /responses API endpoint."""
 
     @timed
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize ResponsesAdapter.
 
         Args:
@@ -68,9 +79,9 @@ class ResponsesAdapter:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         workers: int = 4,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         nagle_min_chars: int = 1,
@@ -113,8 +124,8 @@ class ResponsesAdapter:
         workers = max(1, min(int(workers or 1), 8))
         chunk_queue_size = max(0, int(chunk_queue_maxsize))
         event_queue_size = max(0, int(event_queue_maxsize))
-        chunk_queue: asyncio.Queue[tuple[Optional[int], bytes]] = asyncio.Queue(maxsize=chunk_queue_size)
-        event_queue: asyncio.Queue[tuple[Optional[int], Optional[dict[str, Any]]]] = asyncio.Queue(maxsize=event_queue_size)
+        chunk_queue: asyncio.Queue[tuple[int | None, bytes]] = asyncio.Queue(maxsize=chunk_queue_size)
+        event_queue: asyncio.Queue[tuple[int | None, dict[str, Any] | None]] = asyncio.Queue(maxsize=event_queue_size)
         chunk_sentinel = (None, b"")
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
@@ -242,8 +253,7 @@ class ResponsesAdapter:
                                 )
                             else:
                                 self.logger.exception(
-                                    "Producer encountered error while streaming from OpenRouter: %s",
-                                    producer_exc,
+                                    "Producer encountered error while streaming from OpenRouter"
                                 )
                             if breaker_key:
                                 self._pipe._circuit_breaker.record_failure(breaker_key)
@@ -336,7 +346,7 @@ class ResponsesAdapter:
                 if timeout is not None:
                     try:
                         seq, event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         timed_out = True
                 else:
                     seq, event = await event_queue.get()
@@ -458,10 +468,10 @@ class ResponsesAdapter:
         base_url: str,
         *,
         valves: Pipe.Valves | None = None,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
         chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES

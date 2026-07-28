@@ -15,13 +15,13 @@ from .image_conversion import composite_on_white, normalise_mime
 from .thumbnail import Thumbnail, make_thumbnail
 
 __all__ = [
-    "composite_on_white",
-    "normalise_mime",
     "ExtractedFrame",
     "FrameExtractionError",
-    "VideoMetadata",
-    "extract_frame",
-    "probe_video",
     "Thumbnail",
+    "VideoMetadata",
+    "composite_on_white",
+    "extract_frame",
     "make_thumbnail",
+    "normalise_mime",
+    "probe_video",
 ]

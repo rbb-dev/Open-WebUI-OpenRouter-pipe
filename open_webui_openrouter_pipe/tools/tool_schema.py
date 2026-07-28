@@ -14,7 +14,8 @@ from __future__ import annotations
 import copy
 import json
 from functools import lru_cache
-from typing import Any, Dict
+from typing import Any
+
 from ..core.config import LOGGER
 
 _STRICT_SCHEMA_CACHE_SIZE = 128
@@ -38,8 +39,8 @@ _STRICT_UNSUPPORTED_KEYS = (
 
 
 def _inline_allof(
-    node: Dict[str, Any],
-    defs_lookup: Dict[str, Any],
+    node: dict[str, Any],
+    defs_lookup: dict[str, Any],
     resolve_budget: list[int],
 ) -> None:
     for _ in range(8):
@@ -50,8 +51,8 @@ def _inline_allof(
 
 
 def _inline_allof_once(
-    node: Dict[str, Any],
-    defs_lookup: Dict[str, Any],
+    node: dict[str, Any],
+    defs_lookup: dict[str, Any],
     resolve_budget: list[int],
 ) -> None:
     branches = node.get("allOf")
@@ -72,7 +73,7 @@ def _inline_allof_once(
         node.clear()
         node.update(replacement)
         return
-    resolved_branches: list[Dict[str, Any]] = []
+    resolved_branches: list[dict[str, Any]] = []
     for branch in dict_branches:
         if "$ref" not in branch:
             resolved_branches.append(branch)
@@ -85,9 +86,9 @@ def _inline_allof_once(
         inlined = copy.deepcopy(target)
         inlined.update({key: value for key, value in branch.items() if key != "$ref"})
         resolved_branches.append(inlined)
-    merged_props: Dict[str, Any] = {}
+    merged_props: dict[str, Any] = {}
     merged_required: list[str] = []
-    extras: Dict[str, Any] = {}
+    extras: dict[str, Any] = {}
     for branch in resolved_branches:
         for key, value in branch.items():
             if key == "properties" and isinstance(value, dict):
@@ -150,7 +151,7 @@ def _strictify_schema(schema):
         return schema
 
 
-def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
     """
     Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
 
@@ -171,7 +172,7 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
         or (isinstance(root_t, list) and "object" in root_t)
         or "properties" in schema
     ):
-        hoisted: Dict[str, Any] = {}
+        hoisted: dict[str, Any] = {}
         for defs_key in ("$defs", "definitions"):
             defs = schema.get(defs_key)
             if isinstance(defs, dict):
@@ -184,7 +185,7 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
             **hoisted,
         }
 
-    defs_lookup: Dict[str, Any] = {}
+    defs_lookup: dict[str, Any] = {}
     for defs_key in ("$defs", "definitions"):
         defs = schema.get(defs_key)
         if isinstance(defs, dict):
@@ -329,7 +330,7 @@ def _strictify_schema_impl(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _classify_function_call_artifacts(
-    artifacts: Dict[str, Dict[str, Any]]
+    artifacts: dict[str, dict[str, Any]]
 ) -> tuple[set[str], set[str], set[str]]:
     """
     Inspect persisted artifacts and return three identifier sets:

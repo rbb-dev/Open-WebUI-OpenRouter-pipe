@@ -4,7 +4,12 @@ from typing import Any
 
 import aiohttp
 
-from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUTER_TITLE, _apply_owui_forward_user_headers
+from ..core.config import (
+    _OPENROUTER_CATEGORIES,
+    _OPENROUTER_REFERER,
+    _OPENROUTER_TITLE,
+    _apply_owui_forward_user_headers,
+)
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,

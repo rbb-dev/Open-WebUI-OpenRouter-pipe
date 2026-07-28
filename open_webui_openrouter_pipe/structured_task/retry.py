@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .client import read_task_model_response_json
 from .logging import safe_log_payload
@@ -61,7 +62,7 @@ async def call_with_candidates(
             response = await asyncio.wait_for(invoke(form_data), timeout=timeout_s)
             params = await read_task_model_response_json(response)
             if not isinstance(params, dict):
-                raise RuntimeError("task_model_invalid_schema")
+                raise RuntimeError("task_model_invalid_schema")  # noqa: TRY004 - sentinel consumed by the retry loop
             return params
         except asyncio.CancelledError:
             raise

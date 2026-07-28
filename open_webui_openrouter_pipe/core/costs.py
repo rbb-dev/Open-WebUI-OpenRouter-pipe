@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from ..storage.persistence import _sanitize_table_fragment
 from .timing_logger import timed
 from .utils import _await_if_needed
-from ..storage.persistence import _sanitize_table_fragment
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -21,17 +21,17 @@ if TYPE_CHECKING:
 
 @timed
 async def maybe_dump_costs_snapshot(
-    pipe: "Pipe",
-    valves: "Pipe.Valves",
+    pipe: Pipe,
+    valves: Pipe.Valves,
     *,
     user_id: str,
-    model_id: Optional[str],
+    model_id: str | None,
     usage: dict[str, Any] | None,
-    user_obj: Optional[Any] = None,
-    pipe_id: Optional[str] = None,
-    chat_id: Optional[str] = None,
-    message_id: Optional[str] = None,
-    kind: Optional[str] = None,
+    user_obj: Any | None = None,
+    pipe_id: str | None = None,
+    chat_id: str | None = None,
+    message_id: str | None = None,
+    kind: str | None = None,
 ) -> None:
     """Push usage snapshots to Redis when enabled, namespaced per pipe.
 
@@ -51,7 +51,7 @@ async def maybe_dump_costs_snapshot(
     if not user_id:
         return
 
-    def _user_field(obj: Any, field: str) -> Optional[str]:
+    def _user_field(obj: Any, field: str) -> str | None:
         if obj is None:
             return None
         if isinstance(obj, dict):

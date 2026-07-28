@@ -7,7 +7,7 @@ and other Anthropic-specific features when routing through OpenRouter.
 from __future__ import annotations
 
 import re
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -26,7 +26,7 @@ def _maybe_apply_anthropic_prompt_caching(
     input_items: list[dict[str, Any]],
     *,
     model_id: str,
-    valves: "Pipe.Valves",
+    valves: Pipe.Valves,
     tools: list[dict[str, Any]] | None = None,
 ) -> None:
     """Apply Anthropic prompt caching to input items and optionally tools.
@@ -68,9 +68,11 @@ def _maybe_apply_anthropic_prompt_caching(
             existing_cc = tool.get("cache_control")
             if existing_cc is None:
                 tool["cache_control"] = dict(cache_control_payload)
-            elif isinstance(existing_cc, dict):
-                if cache_control_payload.get("ttl") and "ttl" not in existing_cc:
-                    existing_cc["ttl"] = cache_control_payload["ttl"]
+            elif (
+                isinstance(existing_cc, dict)
+                and cache_control_payload.get("ttl") and "ttl" not in existing_cc
+            ):
+                existing_cc["ttl"] = cache_control_payload["ttl"]
             break
 
     system_message_indices: list[int] = []
@@ -115,16 +117,18 @@ def _maybe_apply_anthropic_prompt_caching(
             existing_cc = block.get("cache_control")
             if existing_cc is None:
                 block["cache_control"] = dict(cache_control_payload)
-            elif isinstance(existing_cc, dict):
-                if cache_control_payload.get("ttl") and "ttl" not in existing_cc:
-                    existing_cc["ttl"] = cache_control_payload["ttl"]
+            elif (
+                isinstance(existing_cc, dict)
+                and cache_control_payload.get("ttl") and "ttl" not in existing_cc
+            ):
+                existing_cc["ttl"] = cache_control_payload["ttl"]
             break
 
 
 def _maybe_apply_responses_toplevel_cache_control(
     request_body: dict[str, Any],
     *,
-    valves: "Pipe.Valves",
+    valves: Pipe.Valves,
 ) -> None:
     """Enable Claude prompt caching on /responses via a single top-level cache_control.
 

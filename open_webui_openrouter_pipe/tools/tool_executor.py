@@ -13,23 +13,27 @@ import contextlib
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
-from ..storage.persistence import generate_item_id
 from ..api.transforms import ResponsesBody
 from ..core.timing_logger import timed, timing_mark
+from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
-    from ..pipe import Pipe
     from starlette.requests import Request
+
+    from ..pipe import Pipe
 
 from ..streaming.event_emitter import EventEmitter
 
 # Import process_tool_result from OpenWebUI (>= 0.7.0)
 # Falls back to None if not available - we handle gracefully
 try:
-    from open_webui.utils.middleware import process_tool_result as _owui_process_tool_result
+    from open_webui.utils.middleware import (
+        process_tool_result as _owui_process_tool_result,
+    )
 except ImportError:
     _owui_process_tool_result = None  # type: ignore[assignment]
 
@@ -59,24 +63,24 @@ class _ToolExecutionContext:
     batch_timeout: float | None
     idle_timeout: float | None
     user_id: str
-    event_emitter: "EventEmitter | None"
+    event_emitter: EventEmitter | None
     batch_cap: int
     # Phase 3: Add request/user/metadata for process_tool_result() integration
-    request: "Request | None" = None
+    request: Request | None = None
     user: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
     request_id: str = ""
     fusion_inner: bool = False
     tool_call_budget: int | None = None
     workers: list[asyncio.Task] = field(default_factory=list)
-    timeout_error: Optional[str] = None
+    timeout_error: str | None = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
 
 
 class ToolExecutor:
     """Orchestrates tool execution and direct tool server integration."""
 
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize tool executor.
 
         Args:
@@ -126,7 +130,7 @@ class ToolExecutor:
             # non-objects here so the caller's handler turns it into a clean
             # tool error instead of a TypeError that poisons the whole batch.
             if not isinstance(parsed, dict):
-                raise ValueError(
+                raise ValueError(  # noqa: TRY004 - the caller catches ValueError to build a clean tool error
                     f"Tool arguments must be a JSON object, got {type(parsed).__name__}"
                 )
             return parsed
@@ -138,7 +142,7 @@ class ToolExecutor:
         tool_name: str,
         tool_type: str,
         raw_result: Any,
-        context: "_ToolExecutionContext | None",
+        context: _ToolExecutionContext | None,
         *,
         is_direct_tool: bool = False,
     ) -> tuple[str, list[dict[str, Any]], list[str]]:
@@ -365,7 +369,7 @@ class ToolExecutor:
                     result = await asyncio.wait_for(future, timeout=context.idle_timeout)
                 else:
                     result = await future
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 tool_name = call.get("name")
                 idle_secs = context.idle_timeout if context else None
                 message = (
@@ -402,9 +406,9 @@ class ToolExecutor:
         self,
         __metadata__: dict[str, Any],
         *,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
         event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None,
-        event_emitter: "EventEmitter | None",
+        event_emitter: EventEmitter | None,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         """Return OWUI-style "direct tool server" entries (callables + tool specs).
 
@@ -437,7 +441,9 @@ class ToolExecutor:
                         openapi = server.get("openapi")
                         if isinstance(openapi, dict):
                             try:
-                                from open_webui.utils.tools import convert_openapi_to_tool_payload  # type: ignore
+                                from open_webui.utils.tools import (
+                                    convert_openapi_to_tool_payload,  # type: ignore
+                                )
                             except ImportError:
                                 self.logger.warning(
                                     "Open WebUI's OpenAPI tool converter is unavailable; "
@@ -477,18 +483,18 @@ class ToolExecutor:
                             if isinstance(parameters, dict):
                                 props = parameters.get("properties")
                                 if isinstance(props, dict):
-                                    allowed_params = {k for k in props.keys() if isinstance(k, str)}
+                                    allowed_params = {k for k in props if isinstance(k, str)}
 
                             spec_payload = dict(spec)
                             spec_payload["name"] = name
 
-                            async def _direct_tool_callable(  # noqa: ANN001 - tool kwargs are dynamic
+                            async def _direct_tool_callable(
                                 _allowed_params: set[str] = allowed_params,
                                 _tool_name: str = name,
                                 _server_payload: dict[str, Any] = server_payload,
                                 _metadata: dict[str, Any] = __metadata__,
                                 _event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None = event_call,
-                                _event_emitter: "EventEmitter | None" = event_emitter,
+                                _event_emitter: EventEmitter | None = event_emitter,
                                 **kwargs,
                             ) -> Any:
                                 try:
@@ -557,7 +563,7 @@ class ToolExecutor:
 
     async def _notify_tool_breaker(
         self,
-        context: "_ToolExecutionContext",
+        context: _ToolExecutionContext,
         tool_type: str,
         tool_name: str | None,
     ) -> None:
@@ -643,7 +649,7 @@ class ToolExecutor:
                             if idle_timeout is None
                             else await asyncio.wait_for(get_coro, timeout=idle_timeout)
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         message = (
                             f"Tool queue idle for {idle_timeout:.0f}s; cancelling pending work."
                             if idle_timeout
@@ -712,9 +718,7 @@ class ToolExecutor:
         candidate_id = candidate.call.get("call_id")
         if first_id and self._args_reference_call(candidate.args, first_id):
             return False
-        if candidate_id and self._args_reference_call(first.args, candidate_id):
-            return False
-        return True
+        return not (candidate_id and self._args_reference_call(first.args, candidate_id))
 
     def _args_reference_call(self, args: Any, call_id: str) -> bool:
         """Check if args contain a reference to another call_id."""

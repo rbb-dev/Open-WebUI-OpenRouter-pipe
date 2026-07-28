@@ -30,7 +30,7 @@ def normalise_model_content(value: Any) -> str:
         return "".join(parts)
     if isinstance(value, dict):
         for key in ("text", "content"):
-            if key in value and value[key]:
+            if value.get(key):
                 return str(value[key])
     return str(value) if value is not None else ""
 

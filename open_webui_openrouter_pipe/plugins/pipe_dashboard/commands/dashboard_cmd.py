@@ -18,9 +18,15 @@ from typing import Any
 from .._socketio_client import SOCKETIO_UMD
 from ..command_registry import register_command
 from ..config_tab_assets import CONFIG_TAB_CSS, CONFIG_TAB_JS
-from ..update_tab_assets import UPDATE_TAB_CSS, UPDATE_TAB_JS
 from ..context import CommandContext
-from ..dashboard_socket import CONFIG_EVENT, DENIED_EVENT, DASHBOARD_EVENT, SUB_EVENT, register_socket_handler
+from ..dashboard_socket import (
+    CONFIG_EVENT,
+    DASHBOARD_EVENT,
+    DENIED_EVENT,
+    SUB_EVENT,
+    register_socket_handler,
+)
+from ..update_tab_assets import UPDATE_TAB_CSS, UPDATE_TAB_JS
 
 
 def _safe(val: Any) -> str:

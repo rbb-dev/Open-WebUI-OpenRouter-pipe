@@ -8,14 +8,16 @@ and final status description formatting with usage metrics.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
+
 from ..core.timing_logger import timed
 
 # Use deferred import to avoid circular dependency
 if TYPE_CHECKING:
     from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
     from ..pipe import Pipe
-    from ..streaming.event_emitter import EventEmitterHandler, EventEmitter
+    from ..streaming.event_emitter import EventEmitter, EventEmitterHandler
 
 from .errors import _resolve_error_model_context
 from .utils import _pretty_json
@@ -51,8 +53,8 @@ class ErrorFormatter:
 
     def __init__(
         self,
-        pipe: "Pipe",
-        event_emitter_handler: "EventEmitterHandler",
+        pipe: Pipe,
+        event_emitter_handler: EventEmitterHandler,
         logger: logging.Logger,
     ):
         self._pipe = pipe
@@ -66,7 +68,7 @@ class ErrorFormatter:
 
     async def _emit_error(
         self,
-        event_emitter: Optional["EventEmitter"],
+        event_emitter: EventEmitter | None,
         error_obj: Exception | str,
         *,
         show_error_message: bool = True,
@@ -85,7 +87,7 @@ class ErrorFormatter:
 
     async def _emit_templated_error(
         self,
-        event_emitter: Optional["EventEmitter"],
+        event_emitter: EventEmitter | None,
         *,
         template: str,
         variables: dict[str, Any],
@@ -111,7 +113,7 @@ class ErrorFormatter:
     # Template Selection
     # ======================================================================
 
-    def _select_openrouter_template(self, status: Optional[int]) -> str:
+    def _select_openrouter_template(self, status: int | None) -> str:
         """Return the appropriate template based on the HTTP status."""
         if status == 401:
             return self.valves.AUTHENTICATION_ERROR_TEMPLATE
@@ -135,8 +137,8 @@ class ErrorFormatter:
         self,
         event: dict[str, Any],
         *,
-        requested_model: Optional[str],
-    ) -> "OpenRouterAPIError":
+        requested_model: str | None,
+    ) -> OpenRouterAPIError:
         """Normalize SSE error events into an OpenRouterAPIError."""
         # Runtime import to avoid circular dependency
         from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
@@ -205,8 +207,8 @@ class ErrorFormatter:
     def _extract_streaming_error_event(
         self,
         event: dict[str, Any] | None,
-        requested_model: Optional[str],
-    ) -> Optional["OpenRouterAPIError"]:
+        requested_model: str | None,
+    ) -> OpenRouterAPIError | None:
         """Return an OpenRouterAPIError for SSE error payloads, if present."""
         if not isinstance(event, dict):
             return None
@@ -217,9 +219,11 @@ class ErrorFormatter:
         error_raw = event_data.get("error")
         error_block = error_raw if isinstance(error_raw, dict) else None
         has_error = error_block is not None
-        if isinstance(response_block, dict):
-            if response_block.get("status") == "failed" or isinstance(response_block.get("error"), dict):
-                has_error = True
+        if isinstance(response_block, dict) and (
+            response_block.get("status") == "failed"
+            or isinstance(response_block.get("error"), dict)
+        ):
+            has_error = True
         if event_type in {"response.failed", "response.error", "error"}:
             has_error = True
         if not has_error:
@@ -233,13 +237,13 @@ class ErrorFormatter:
     @timed
     async def _report_openrouter_error(
         self,
-        exc: "OpenRouterAPIError",
+        exc: OpenRouterAPIError,
         *,
         event_emitter: EventEmitter | None,
-        normalized_model_id: Optional[str],
-        api_model_id: Optional[str],
-        usage: Optional[dict[str, Any]] = None,
-        template: Optional[str] = None,
+        normalized_model_id: str | None,
+        api_model_id: str | None,
+        usage: dict[str, Any] | None = None,
+        template: str | None = None,
     ) -> None:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
         if getattr(exc, "status", None) in {401, 403}:
@@ -288,7 +292,7 @@ class ErrorFormatter:
                     usage=usage or None,
                     done=True,
                 )
-            except Exception as exc_emit:
+            except Exception:
                 self.logger.exception(
                     "[%s] Failed to emit OpenRouter error report", error_id
                 )
@@ -301,9 +305,9 @@ class ErrorFormatter:
         self,
         *,
         elapsed: float,
-        total_usage: Dict[str, Any],
-        valves: "Pipe.Valves",
-        stream_duration: Optional[float] = None,
+        total_usage: dict[str, Any],
+        valves: Pipe.Valves,
+        stream_duration: float | None = None,
     ) -> str:
         """Return the final status line respecting valve + available metrics.
 
@@ -332,7 +336,7 @@ class ErrorFormatter:
             time_segment = f"{icon_time} {elapsed:.2f}s"
         else:
             time_segment = f"Time: {elapsed:.2f}s"
-        tokens_for_tps: Optional[int] = None
+        tokens_for_tps: int | None = None
         segments: list[str] = []
 
         cost = usage.get("cost")
@@ -346,7 +350,7 @@ class ErrorFormatter:
             else:
                 segments.append(f"Cost ${cost_str}")
 
-        def _to_int(value: Any) -> Optional[int]:
+        def _to_int(value: Any) -> int | None:
             """Best-effort conversion to ``int`` for usage counters."""
             if isinstance(value, bool):
                 return int(value)

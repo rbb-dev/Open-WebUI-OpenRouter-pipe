@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from ..api.transforms import (
+    _apply_identifier_valves_to_payload,
+    _filter_openrouter_request,
+)
 from ..core.config import EncryptedStr
-from ..core.errors import OpenRouterAPIError
-from ..api.transforms import _apply_identifier_valves_to_payload, _filter_openrouter_request
-from ..models.registry import OpenRouterModelRegistry, ModelFamily
-from ..core.timing_logger import timed
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
+from ..core.timing_logger import timed
+from ..models.registry import ModelFamily, OpenRouterModelRegistry
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -31,7 +34,7 @@ class TaskModelAdapter:
     and extracts plain text output from the response.
     """
 
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize TaskModelAdapter.
 
         Args:
@@ -42,7 +45,7 @@ class TaskModelAdapter:
         self.logger = logger
 
     @staticmethod
-    def _extract_task_output_text(response: Dict[str, Any]) -> str:
+    def _extract_task_output_text(response: dict[str, Any]) -> str:
         """Normalize Responses API payloads into plain text string for task models."""
         if not isinstance(response, dict):
             return ""
@@ -90,16 +93,16 @@ class TaskModelAdapter:
     @timed
     async def _run_task_model_request(
         self,
-        body: Dict[str, Any],
-        valves: "Pipe.Valves",
+        body: dict[str, Any],
+        valves: Pipe.Valves,
         *,
         session: aiohttp.ClientSession | None = None,
         task_context: Any = None,
-        owui_metadata: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
-        user_obj: Optional[Any] = None,
-        pipe_id: Optional[str] = None,
-        snapshot_model_id: Optional[str] = None,
+        owui_metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        user_obj: Any | None = None,
+        pipe_id: str | None = None,
+        snapshot_model_id: str | None = None,
     ) -> str:
         """Process a housekeeping task model request via the Responses API.
 
@@ -141,7 +144,7 @@ class TaskModelAdapter:
 
         attempts = 2
         delay_seconds = 0.2  # keep retries snappy; task models run in latency-sensitive contexts
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         if session is None:
             raise RuntimeError("HTTP session is required for task model requests")

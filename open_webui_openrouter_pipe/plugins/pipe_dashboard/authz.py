@@ -23,13 +23,13 @@ def model_id(pipe: Any) -> str | None:
 def _owui() -> Any:
     from types import SimpleNamespace
 
+    from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
+    from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL
     from open_webui.models.access_grants import AccessGrants
     from open_webui.models.models import Models
     from open_webui.models.users import Users
     from open_webui.utils.access_control import check_model_access
     from open_webui.utils.auth import get_verified_user
-    from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
-    from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL
 
     return SimpleNamespace(
         Users=Users,

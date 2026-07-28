@@ -7,7 +7,7 @@ wrapping Open WebUI's Users model with async database operations.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ..core.timing_logger import timed
 
@@ -19,7 +19,7 @@ except ImportError:
 
 
 @timed
-async def get_user_by_id(user_id: str, logger: logging.Logger) -> Optional[Any]:
+async def get_user_by_id(user_id: str, logger: logging.Logger) -> Any | None:
     """Fetch user record from database for file upload operations.
 
     Args:
@@ -36,6 +36,6 @@ async def get_user_by_id(user_id: str, logger: logging.Logger) -> Optional[Any]:
         return None
     try:
         return await Users.get_user_by_id(user_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to load user %s", user_id)
         return None

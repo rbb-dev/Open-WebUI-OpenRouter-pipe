@@ -14,10 +14,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING, ClassVar, Optional
-
-if TYPE_CHECKING:
-    pass
+from typing import ClassVar
 
 
 class CircuitBreaker:
@@ -193,7 +190,7 @@ class CircuitBreaker:
     # --------------------------------------------------------------------------
 
     @classmethod
-    def note_auth_failure(cls, scope_key: str, *, ttl_seconds: Optional[int] = None) -> None:
+    def note_auth_failure(cls, scope_key: str, *, ttl_seconds: int | None = None) -> None:
         """Record an authentication failure.
 
         This is a class-level method that tracks auth failures across all

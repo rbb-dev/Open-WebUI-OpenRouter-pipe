@@ -17,8 +17,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
-from typing import Any, Iterable, Optional, TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import aiohttp
@@ -32,15 +32,16 @@ except ImportError:
     ModelForm = None  # type: ignore
 
 from ..core.config import (
-    _OPENROUTER_SITE_URL,
     _OPENROUTER_FRONTEND_MODELS_URL,
     _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE,
+    _OPENROUTER_SITE_URL,
     _PIPE_METADATA_KEY,
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
 )
+
 # Lazy import to avoid circular dependency.
-from .registry import OpenRouterModelRegistry, ModelFamily
+from .registry import ModelFamily, OpenRouterModelRegistry
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -236,7 +237,7 @@ class ModelCatalogManager:
     def __init__(
         self,
         *,
-        pipe: "Pipe",
+        pipe: Pipe,
         multimodal_handler: Any,
         logger: logging.Logger,
         task_done_callback: Callable[[asyncio.Task], None] | None = None,
@@ -1386,12 +1387,14 @@ class ModelCatalogManager:
                 original_id = model.get("original_id")
 
                 profile_image_url = None
-                if valves.UPDATE_MODEL_IMAGES:
-                    if isinstance(original_id, str) and original_id:
-                        profile_image_url = icon_data_mapping.get(original_id)
-                        if not profile_image_url:
-                            maker_id = original_id.split("/", 1)[0]
-                            profile_image_url = maker_data_mapping.get(maker_id)
+                if (
+                    valves.UPDATE_MODEL_IMAGES
+                    and isinstance(original_id, str) and original_id
+                ):
+                    profile_image_url = icon_data_mapping.get(original_id)
+                    if not profile_image_url:
+                        maker_id = original_id.split("/", 1)[0]
+                        profile_image_url = maker_data_mapping.get(maker_id)
 
                 # Image-output models (Sourceful, Flux, Seedream, gpt-image,
                 # gemini-image) and video-output models do NOT support tool
@@ -1400,7 +1403,9 @@ class ModelCatalogManager:
                 # Gate web_tools_supported on absence of image_output and
                 # video_generation features (mirrors the web_search overlay
                 # gate at line ~936).
-                from ..filters.fusion_filter_renderer import is_fusion_model as _is_fusion
+                from ..filters.fusion_filter_renderer import (
+                    is_fusion_model as _is_fusion,
+                )
                 web_tools_supported = bool(
                     web_tools_filter_function_id
                     and (
@@ -1651,8 +1656,8 @@ class ModelCatalogManager:
         self,
         openwebui_model_id: str,
         name: str,
-        capabilities: Optional[dict],
-        profile_image_url: Optional[str],
+        capabilities: dict | None,
+        profile_image_url: str | None,
         update_capabilities: bool,
         update_images: bool,
         *,
@@ -2005,15 +2010,19 @@ class ModelCatalogManager:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
 
-            if update_images and profile_image_url:
-                if meta_dict.get("profile_image_url") != profile_image_url:
-                    meta_dict["profile_image_url"] = profile_image_url
-                    meta_updated = True
+            if (
+                update_images and profile_image_url
+                and meta_dict.get("profile_image_url") != profile_image_url
+            ):
+                meta_dict["profile_image_url"] = profile_image_url
+                meta_updated = True
 
-            if update_descriptions and description:
-                if meta_dict.get("description") != description:
-                    meta_dict["description"] = description
-                    meta_updated = True
+            if (
+                update_descriptions and description
+                and meta_dict.get("description") != description
+            ):
+                meta_dict["description"] = description
+                meta_updated = True
 
             if _prune_stale_openrouter_filter_ids(meta_dict):
                 meta_updated = True

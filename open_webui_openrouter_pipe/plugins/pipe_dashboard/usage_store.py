@@ -18,7 +18,8 @@ import queue
 import random
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ...core.utils import _stable_crockford_id
 from ...storage.persistence import _db_session, generate_item_id
@@ -66,7 +67,7 @@ class UsageStore:
         self._model: Any = None
         self._table_name: str | None = None
         self._signature: tuple[Any, ...] | None = None
-        self._queue: "queue.Queue[dict[str, Any] | None]" = queue.Queue(maxsize=queue_max)
+        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._dropped = 0
@@ -269,7 +270,7 @@ class UsageStore:
                     exc_info=True,
                 )
         days = max(1, days)
-        return datetime.datetime.now() - datetime.timedelta(days=days)
+        return datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
 
     def _purge_sync(self, cutoff: datetime.datetime) -> None:
         store = self._store
@@ -308,7 +309,7 @@ class UsageStore:
                 "item_type": "dashboard_purge_lock",
                 "payload": {"pid": os.getpid(), "claimed_at": time.time()},
                 "is_encrypted": False,
-                "created_at": datetime.datetime.now(),
+                "created_at": datetime.datetime.now(datetime.UTC),
             }
             return bool(store._try_acquire_lock_sync(lock_row))
         except Exception:
@@ -319,7 +320,7 @@ class UsageStore:
         session_factory = getattr(store, "_session_factory", None)
         if session_factory is None:
             return
-        stale_before = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=_US_LOCK_STALE_S)
+        stale_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=_US_LOCK_STALE_S)
         try:
             with _db_session(session_factory) as session:
                 session.query(item_model).filter(

@@ -7,8 +7,9 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, NamedTuple
+from typing import Any, NamedTuple
 
 from ..core.config import _PIPE_METADATA_KEY, NO_CONTENT_AFTER_TOOLS_FALLBACK
 from ..core.errors import OpenRouterAPIError
@@ -21,9 +22,11 @@ from ..core.fusion_defaults import (
 from ..core.logging_system import SessionLogger
 from ..core.utils import merge_usage_stats
 from ..models.registry import ModelFamily
-from ..structured_task.schema import build_response_format, downgrade_strict_for_provider
+from ..structured_task.schema import (
+    build_response_format,
+    downgrade_strict_for_provider,
+)
 from ..tools.tool_executor import _ToolExecutionContext
-
 
 logger = logging.getLogger(__name__)
 
@@ -428,8 +431,7 @@ def aggregate_sources(results: list[FusionMemberResult]) -> list[dict[str, str]]
     for res in results:
         for src in res.sources:
             url = src.get("url") or ""
-            if url.endswith("?utm_source=openai"):
-                url = url[: -len("?utm_source=openai")]
+            url = url.removesuffix("?utm_source=openai")
             if not url or url in seen:
                 continue
             seen.add(url)

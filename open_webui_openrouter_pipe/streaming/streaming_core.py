@@ -7,94 +7,107 @@ and endpoint selection.
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import re
-import uuid
-import time
-import datetime
 import base64
 import binascii
 import contextlib
+import datetime
 import inspect
+import json
+import logging
 import random
-import aiohttp
+import re
+import time
+import uuid
+from collections.abc import AsyncGenerator
 from time import perf_counter
-from typing import Any, AsyncGenerator, Optional, Dict, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
+
+import aiohttp
 from fastapi import Request
 
 # Import parent module classes that are needed at runtime
 if TYPE_CHECKING:
-    from ..pipe import Pipe
     from ..api.transforms import ResponsesBody
+    from ..pipe import Pipe
 else:
     # At runtime, avoid circular imports
     Pipe = Any
     ResponsesBody = Any
 
 # Import error classes
-from ..core.errors import OpenRouterAPIError, RequiredInternalFileError, StatusMessages
+# Import transform functions
+from ..api.transforms import (
+    _apply_disable_native_websearch_to_payload,
+    _apply_identifier_valves_to_payload,
+    _apply_model_fallback_to_payload,
+    _apply_openrouter_trace_to_payload,
+    _apply_provider_routing_params_to_payload,
+    _parse_url_citation_annotations,
+    _strip_disable_model_settings_params,
+    _unhandled_citation_types,
+)
+
+# Import config classes
+from ..core.config import (
+    _NON_REPLAYABLE_TOOL_ARTIFACTS,
+    _PIPE_METADATA_KEY,
+    DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
+    NO_CONTENT_AFTER_TOOLS_FALLBACK,
+    EncryptedStr,
+)
+from ..core.context_budget import (
+    apply_live_tool_output_budget,
+)
 
 # Import costs helper
 from ..core.costs import maybe_dump_costs_snapshot
+from ..core.errors import OpenRouterAPIError, RequiredInternalFileError, StatusMessages
 
-# Import request sanitizer
-from ..requests.sanitizer import _sanitize_request_input
+# Import SessionLogger
+from ..core.logging_system import SessionLogger
+
+# Import timing instrumentation
+from ..core.timing_logger import timed, timing_mark
+
+# Imports from core.utils
+from ..core.utils import (
+    REASONING_ANCHOR_SEQ_KEY,
+    REASONING_FOLLOWING_ORDINAL_KEY,
+    REASONING_PRECEDING_ORDINAL_KEY,
+    _redact_payload_blobs,
+    _render_error_template,
+    _safe_json_loads,
+    _serialize_marker,
+    _serialize_phase_marker,
+    merge_usage_stats,
+    wrap_code_block,
+)
 
 # Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 
-# Import SessionLogger
-from ..core.logging_system import SessionLogger
-from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
+# Imports from models.registry
+from ..models.registry import (
+    ModelFamily,
+    _matches_any_model_pattern,
+    _parse_model_patterns,
+)
 
-# Import EventEmitter type alias
-from .event_emitter import EventEmitter
-from .fusion_embed import FusionDeliberationState, FusionDeltaBatcher, build_fusion_embed_html
-
-# Import timing instrumentation
-from ..core.timing_logger import timed, timing_mark
-from .constants import ReasoningStatusThrottle
+# Import request sanitizer
+from ..requests.sanitizer import _sanitize_request_input
 
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type
 from ..storage.persistence import normalize_persisted_item
-# Imports from core.utils
-from ..core.utils import (
-    wrap_code_block,
-    _redact_payload_blobs,
-    merge_usage_stats,
-    _render_error_template,
-    _serialize_marker,
-    _serialize_phase_marker,
-    _safe_json_loads,
-    REASONING_ANCHOR_SEQ_KEY,
-    REASONING_FOLLOWING_ORDINAL_KEY,
-    REASONING_PRECEDING_ORDINAL_KEY,
-)
-# Imports from models.registry
-from ..models.registry import (
-    _parse_model_patterns,
-    _matches_any_model_pattern,
-    ModelFamily,
-)
+from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
+from .constants import ReasoningStatusThrottle
 
-# Import transform functions
-from ..api.transforms import (
-    _apply_identifier_valves_to_payload,
-    _apply_model_fallback_to_payload,
-    _apply_openrouter_trace_to_payload,
-    _apply_disable_native_websearch_to_payload,
-    _apply_provider_routing_params_to_payload,
-    _parse_url_citation_annotations,
-    _unhandled_citation_types,
-    _strip_disable_model_settings_params,
-)
-
-# Import config classes
-from ..core.config import EncryptedStr, DEFAULT_STREAM_INTERRUPTED_TEMPLATE, _NON_REPLAYABLE_TOOL_ARTIFACTS, _PIPE_METADATA_KEY, NO_CONTENT_AFTER_TOOLS_FALLBACK
-from ..core.context_budget import (
-    apply_live_tool_output_budget,
+# Import EventEmitter type alias
+from .event_emitter import EventEmitter
+from .fusion_embed import (
+    FusionDeliberationState,
+    FusionDeltaBatcher,
+    build_fusion_embed_html,
 )
 
 # Import Open WebUI models
@@ -105,14 +118,18 @@ except ImportError:
 
 # Import citation extraction function (OpenWebUI >= 0.7.0)
 try:
-    from open_webui.utils.middleware import get_citation_source_from_tool_result  # type: ignore[import-not-found]
+    from open_webui.utils.middleware import (
+        get_citation_source_from_tool_result,  # type: ignore[import-not-found]
+    )
 except ImportError:
     get_citation_source_from_tool_result = None  # type: ignore
 
 # Import OWUI's apply_source_context_to_messages for source context injection
 # This is the authoritative implementation - we use adapter transforms to support Responses API
 try:
-    from open_webui.utils.middleware import apply_source_context_to_messages as _owui_apply_source_context  # type: ignore[import-not-found]
+    from open_webui.utils.middleware import (
+        apply_source_context_to_messages as _owui_apply_source_context,  # type: ignore[import-not-found]
+    )
 except ImportError:
     _owui_apply_source_context = None  # type: ignore
 
@@ -264,7 +281,7 @@ async def _apply_source_context_responses_api(
     input_items: list,
     sources: list,
     user_message: str,
-    request_context: Optional[Request] = None,
+    request_context: Request | None = None,
 ) -> list:
     """
     Apply source context to messages in Responses API format.
@@ -414,15 +431,15 @@ class StreamingHandler:
         body: ResponsesBody,
         valves: Pipe.Valves,
         event_emitter: EventEmitter | None,
-        metadata: dict[str, Any] = {},
-        tools: dict[str, Dict[str, Any]] | list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        tools: dict[str, dict[str, Any]] | list[dict[str, Any]] | None = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
-        request_context: Optional[Request] = None,
-        user_obj: Optional[Any] = None,
-        pipe_identifier: Optional[str] = None,
+        request_context: Request | None = None,
+        user_obj: Any | None = None,
+        pipe_identifier: str | None = None,
         fusion_live_enabled: bool = False,
         event_source: AsyncGenerator[dict[str, Any], None] | None = None,
         outcome_sink: dict[str, Any] | None = None,
@@ -430,6 +447,7 @@ class StreamingHandler:
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
         """
+        metadata = {} if metadata is None else metadata
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
@@ -533,7 +551,7 @@ class StreamingHandler:
         response_completed_at: float | None = None
         stream_started_at: float | None = None
         surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
-        storage_context_cache: Optional[tuple[Optional[Request], Optional[Any]]] = None
+        storage_context_cache: tuple[Request | None, Any | None] | None = None
         processed_image_item_ids: set[str] = set()
         generated_image_count = 0
         thinking_mode = valves.THINKING_OUTPUT_MODE
@@ -618,7 +636,7 @@ class StreamingHandler:
                     "document": [title or url],
                     "metadata": [{
                         "source": url,
-                        "date_accessed": datetime.date.today().isoformat(),
+                        "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
                     }],
                 }
                 try:
@@ -635,14 +653,14 @@ class StreamingHandler:
             if text:
                 await event_emitter({"type": "status", "data": {"description": text, "done": False}})
 
-        async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+        async def _get_storage_context() -> tuple[Request | None, Any | None]:
             nonlocal storage_context_cache
             if storage_context_cache is None:
                 storage_context_cache = await self._pipe._file_gateway.resolve_storage_context(request_context, user_obj)
             return storage_context_cache or (None, None)
 
         @timed
-        async def _persist_generated_image(data: bytes, mime_type: str) -> Optional[str]:
+        async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
             upload_request, upload_user = await _get_storage_context()
             if not upload_request or not upload_user:
                 return None
@@ -664,7 +682,7 @@ class StreamingHandler:
             )
 
         @timed
-        async def _materialize_image_from_str(data_str: str) -> Optional[str]:
+        async def _materialize_image_from_str(data_str: str) -> str | None:
             text = (data_str or "").strip()
             if not text:
                 return None
@@ -707,7 +725,7 @@ class StreamingHandler:
             return None
 
         @timed
-        async def _materialize_image_entry(entry: Any) -> Optional[str]:
+        async def _materialize_image_entry(entry: Any) -> str | None:
             if entry is None:
                 return None
             if isinstance(entry, str):
@@ -911,7 +929,7 @@ class StreamingHandler:
                         return "".join(fragments)
             return ""
 
-        def _reasoning_stream_key(event: dict[str, Any], etype: Optional[str]) -> str:
+        def _reasoning_stream_key(event: dict[str, Any], etype: str | None) -> str:
             """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
             item_id = event.get("item_id")
             if isinstance(item_id, str) and item_id:
@@ -1053,7 +1071,7 @@ class StreamingHandler:
                 try:
                     await asyncio.wait_for(model_started.wait(), timeout=delay)
                     return
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if model_started.is_set():
                         return
                 await event_emitter({"type": "status", "data": {"description": msg}})
@@ -1146,8 +1164,7 @@ class StreamingHandler:
             if not isinstance(raw_annotations, list) or not raw_annotations:
                 return
             for url, title, content in _parse_url_citation_annotations(raw_annotations):
-                if url.endswith("?utm_source=openai"):
-                    url = url[: -len("?utm_source=openai")]
+                url = url.removesuffix("?utm_source=openai")
                 if url in ordinal_by_url:
                     continue
                 ordinal_by_url[url] = len(ordinal_by_url) + 1
@@ -1157,7 +1174,7 @@ class StreamingHandler:
                     "document": [content[:citation_excerpt_max] if content else title],
                     "metadata": [{
                         "source": url,
-                        "date_accessed": datetime.date.today().isoformat(),
+                        "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
                     }],
                 }
                 try:
@@ -1323,8 +1340,8 @@ class StreamingHandler:
                             note_model_activity()
 
                             key = _reasoning_stream_key(event, etype)
-                            is_incremental = etype.endswith(".delta") or etype.endswith(".added")
-                            is_final = etype.endswith(".done") or etype.endswith(".completed")
+                            is_incremental = etype.endswith((".delta", ".added"))
+                            is_final = etype.endswith((".done", ".completed"))
 
                             delta_text = _extract_reasoning_text(event)
                             normalized_delta = _normalize_surrogate_chunk(delta_text, "reasoning") if delta_text else ""
@@ -1616,8 +1633,7 @@ class StreamingHandler:
                         if ann.get("type") == "url_citation":
                             payload = ann.get("url_citation") if isinstance(ann.get("url_citation"), dict) else ann
                             url = (payload.get("url") or "").strip()
-                            if url.endswith("?utm_source=openai"):
-                                url = url[: -len("?utm_source=openai")]
+                            url = url.removesuffix("?utm_source=openai")
                             title = (payload.get("title") or url).strip()
                             ann_content = payload.get("content")
                             ann_content = ann_content.strip() if isinstance(ann_content, str) else ""
@@ -1633,7 +1649,7 @@ class StreamingHandler:
                                 "document": [ann_content[:citation_excerpt_max] if ann_content else title],
                                 "metadata": [{
                                     "source": url,
-                                    "date_accessed": datetime.date.today().isoformat(),
+                                    "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
                                 }],
                             }
                             try:
@@ -2157,7 +2173,7 @@ class StreamingHandler:
                     try:
                         template_vars = {
                             "model": body.model or "",
-                            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+                            "timestamp": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
                             "support_email": valves.SUPPORT_EMAIL,
                             "support_url": valves.SUPPORT_URL,
                         }
@@ -2730,7 +2746,7 @@ class StreamingHandler:
                                         "document": [(snippet or title or url)[:citation_excerpt_max]],
                                         "metadata": [{
                                             "source": url,
-                                            "date_accessed": datetime.date.today().isoformat(),
+                                            "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
                                         }],
                                     }
                                     emitted_citations.append(citation)
@@ -2758,8 +2774,7 @@ class StreamingHandler:
                             try:
                                 user_message = ""
                                 for item in reversed(body.input):
-                                    if isinstance(item, dict):
-                                        if item.get("role") == "user":
+                                    if isinstance(item, dict) and item.get("role") == "user":
                                             content = item.get("content")
                                             if isinstance(content, str):
                                                 user_message = content
@@ -3294,15 +3309,15 @@ class StreamingHandler:
         body: ResponsesBody,
         valves: Pipe.Valves,
         event_emitter: EventEmitter | None,
-        metadata: Dict[str, Any] = {},
-        tools: dict[str, Dict[str, Any]] | list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        tools: dict[str, dict[str, Any]] | list[dict[str, Any]] | None = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str = "",
         *,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
-        request_context: Optional[Request] = None,
-        user_obj: Optional[Any] = None,
-        pipe_identifier: Optional[str] = None,
+        request_context: Request | None = None,
+        user_obj: Any | None = None,
+        pipe_identifier: str | None = None,
         fusion_live_enabled: bool = False,
         event_source: AsyncGenerator[dict[str, Any], None] | None = None,
         outcome_sink: dict[str, Any] | None = None,
@@ -3313,6 +3328,7 @@ class StreamingHandler:
         `chat:message` frames are suppressed while still running all value-add logic
         (tools, citations, usage snapshots, persistence).
         """
+        metadata = {} if metadata is None else metadata
 
         # Pass through status / citations / usage, but do NOT emit partial text
         wrapped_emitter = _wrap_event_emitter(
@@ -3351,7 +3367,7 @@ class StreamingHandler:
         refs = getattr(body, "_replayed_reasoning_refs", None)
         if not refs:
             return
-        setattr(body, "_replayed_reasoning_refs", [])
+        setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - dynamic attribute not declared on ResponsesBody
         await self._pipe._artifact_store._delete_artifacts(refs)
 
 
@@ -3361,7 +3377,7 @@ class StreamingHandler:
         self,
         model_id: str,
         *,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
     ) -> Literal["responses", "chat_completions"]:
         """Choose which OpenRouter endpoint to use for a given model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
@@ -3402,7 +3418,7 @@ class StreamingHandler:
         self,
         model_id: str,
         *,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
         """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
@@ -3443,9 +3459,7 @@ class StreamingHandler:
                 return True
             if any(token in haystack for token in ("chat/completions", "chat completions")):
                 return True
-            if any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")):
-                return True
-            return False
+            return bool(any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")))
 
         haystack_parts: list[str] = [str(exc)]
         for attr in ("openrouter_message", "upstream_message", "raw_body"):
@@ -3459,9 +3473,7 @@ class StreamingHandler:
             return True
         if any(token in haystack for token in ("chat/completions", "chat completions")):
             return True
-        if any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")):
-            return True
-        return False
+        return bool(any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")))
 
 
 
@@ -3479,13 +3491,13 @@ def _wrap_event_emitter(
     events through.
     """
     if emitter is None:
-        async def _noop(_event: Dict[str, Any]) -> None:
+        async def _noop(_event: dict[str, Any]) -> None:
             """Swallow events when no emitter is provided."""
             return
 
         return _noop
 
-    async def _wrapped(event: Dict[str, Any]) -> None:
+    async def _wrapped(event: dict[str, Any]) -> None:
         """Proxy emitter that suppresses selected event types."""
         etype = (event or {}).get("type")
         # Suppress BOTH chat:message AND chat:message:delta for non-streaming

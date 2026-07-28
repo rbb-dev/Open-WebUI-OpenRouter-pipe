@@ -37,8 +37,8 @@ from .dashboard_socket import (
     consume_resync,
     emit_dashboard,
     local_viewer_sids,
-    reauthorize_local_viewers,
     read_config_rev,
+    reauthorize_local_viewers,
 )
 from .runtime_metrics import (
     collect_fast_stats,

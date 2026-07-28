@@ -16,15 +16,20 @@ import io
 import logging
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse, urlunparse
 
 # External dependencies
 import aiohttp
 import httpx
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
-from ..core.timing_logger import timed
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 # Internal imports
 from ..core.config import (
@@ -33,11 +38,12 @@ from ..core.config import (
     _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
 )
 from ..core.errors import (
-    _RetryableHTTPStatusError,
-    _RetryWait,
     _classify_retryable_http_error,
     _read_rag_file_constraints,
+    _RetryableHTTPStatusError,
+    _RetryWait,
 )
+from ..core.timing_logger import timed
 from .owui_files import is_internal_file_url
 
 if TYPE_CHECKING:
@@ -179,10 +185,10 @@ class MultimodalHandler:
         self,
         logger: logging.Logger,
         valves: Any,  # Pipe.Valves
-        http_session: Optional[aiohttp.ClientSession] = None,
-        artifact_store: Optional[Any] = None,  # ArtifactStore
-        emit_status_callback: Optional[Callable] = None,
-        file_gateway: Optional["OwuiFileGateway"] = None,
+        http_session: aiohttp.ClientSession | None = None,
+        artifact_store: Any | None = None,  # ArtifactStore
+        emit_status_callback: Callable | None = None,
+        file_gateway: OwuiFileGateway | None = None,
     ):
         """Initialize the MultimodalHandler with dependencies from Pipe.
 
@@ -199,14 +205,14 @@ class MultimodalHandler:
         self._http_session = http_session
         self._artifact_store = artifact_store
         self._emit_status_callback = emit_status_callback
-        self._file_gateway: Optional["OwuiFileGateway"] = file_gateway
+        self._file_gateway: OwuiFileGateway | None = file_gateway
         self._warned_missing_imaging: set[str] = set()
 
-    def set_http_session(self, session: Optional[aiohttp.ClientSession]) -> None:
+    def set_http_session(self, session: aiohttp.ClientSession | None) -> None:
         """Set or clear the HTTP session for remote downloads."""
         self._http_session = session
 
-    def set_artifact_store(self, store: Optional[Any]) -> None:
+    def set_artifact_store(self, store: Any | None) -> None:
         """Set or clear the artifact store reference."""
         self._artifact_store = store
 
@@ -218,8 +224,8 @@ class MultimodalHandler:
     async def _download_remote_url(
         self,
         url: str,
-        timeout_seconds: Optional[int] = None
-    ) -> Optional[Dict[str, Any]]:
+        timeout_seconds: int | None = None
+    ) -> dict[str, Any] | None:
         """Download file or image from remote URL with exponential backoff retry logic.
 
         This method fetches content from HTTP/HTTPS URLs with automatic retry on transient
@@ -331,57 +337,59 @@ class MultimodalHandler:
                             f"Retry attempt {attempt - 1}/{max_retries} for {url} after {elapsed:.1f}s"
                         )
 
-                    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                        async with client.stream(
+                    async with (
+                        httpx.AsyncClient(timeout=timeout_seconds) as client,
+                        client.stream(
                             "GET",
                             request_url,
                             headers=pin_headers or None,
                             extensions=pin_extensions or None,
-                        ) as response:
+                        ) as response,
+                    ):
+                        try:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            retryable, retry_after = _classify_retryable_http_error(exc)
+                            if retryable:
+                                raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
+                            raise
+
+                        mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                        if mime_type == "image/jpg":
+                            mime_type = "image/jpeg"
+
+                        # Enforce configurable size limit (valve + optional RAG cap)
+                        effective_limit_mb = self._get_effective_remote_file_limit_mb()
+                        max_size_bytes = effective_limit_mb * 1024 * 1024
+
+                        content_length = response.headers.get("content-length")
+                        if content_length:
                             try:
-                                response.raise_for_status()
-                            except httpx.HTTPStatusError as exc:
-                                retryable, retry_after = _classify_retryable_http_error(exc)
-                                if retryable:
-                                    raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
-                                raise
-
-                            mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
-                            if mime_type == "image/jpg":
-                                mime_type = "image/jpeg"
-
-                            # Enforce configurable size limit (valve + optional RAG cap)
-                            effective_limit_mb = self._get_effective_remote_file_limit_mb()
-                            max_size_bytes = effective_limit_mb * 1024 * 1024
-
-                            content_length = response.headers.get("content-length")
-                            if content_length:
-                                try:
-                                    if int(content_length) > max_size_bytes:
-                                        self.logger.warning(
-                                            "Remote file %s exceeds configured limit based on Content-Length header "
-                                            "(%s bytes > %s bytes); aborting download.",
-                                            url,
-                                            content_length,
-                                            max_size_bytes,
-                                        )
-                                        return None
-                                except ValueError:
-                                    pass
-
-                            payload = bytearray()
-                            async for chunk in response.aiter_bytes():
-                                if not chunk:
-                                    continue
-                                projected_size = len(payload) + len(chunk)
-                                if projected_size > max_size_bytes:
-                                    size_mb = projected_size / (1024 * 1024)
+                                if int(content_length) > max_size_bytes:
                                     self.logger.warning(
-                                        f"Remote file {url} exceeds configured limit "
-                                        f"({size_mb:.1f}MB > {effective_limit_mb}MB), aborting download."
+                                        "Remote file %s exceeds configured limit based on Content-Length header "
+                                        "(%s bytes > %s bytes); aborting download.",
+                                        url,
+                                        content_length,
+                                        max_size_bytes,
                                     )
                                     return None
-                                payload.extend(chunk)
+                            except ValueError:
+                                pass
+
+                        payload = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if not chunk:
+                                continue
+                            projected_size = len(payload) + len(chunk)
+                            if projected_size > max_size_bytes:
+                                size_mb = projected_size / (1024 * 1024)
+                                self.logger.warning(
+                                    f"Remote file {url} exceeds configured limit "
+                                    f"({size_mb:.1f}MB > {effective_limit_mb}MB), aborting download."
+                                )
+                                return None
+                            payload.extend(chunk)
 
                     # Success
                     if attempt > 1:
@@ -396,10 +404,10 @@ class MultimodalHandler:
                         "url": url
                     }
 
-        except Exception as exc:
+        except Exception:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(
-                f"Failed to download {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
+                "Failed to download %s after %d attempt(s) in %.1fs", url, attempt, elapsed
             )
             return None
 
@@ -409,11 +417,11 @@ class MultimodalHandler:
         dest_path: Path,
         *,
         chunk_size: int = 1024 * 1024,
-        max_size_bytes: Optional[int] = None,
-        timeout_seconds: Optional[int] = None,
-        mime_allowlist: Optional[set[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        max_size_bytes: int | None = None,
+        timeout_seconds: int | None = None,
+        mime_allowlist: set[str] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
         url = (url or "").strip()
         if not url.lower().startswith(("http://", "https://")):
             return None
@@ -473,68 +481,70 @@ class MultimodalHandler:
 
                     request_headers = dict(extra_headers) if extra_headers else {}
                     request_headers.update(pin_headers)  # original Host for the pinned IP
-                    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                        async with client.stream(
+                    async with (
+                        httpx.AsyncClient(timeout=timeout_seconds) as client,
+                        client.stream(
                             "GET",
                             request_url,
                             headers=request_headers or None,
                             extensions=pin_extensions or None,
-                        ) as response:
+                        ) as response,
+                    ):
+                        try:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            retryable, retry_after = _classify_retryable_http_error(exc)
+                            if retryable:
+                                raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
+                            raise
+
+                        mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
+                        if mime_type == "image/jpg":
+                            mime_type = "image/jpeg"
+
+                        content_length = response.headers.get("content-length")
+                        if content_length:
                             try:
-                                response.raise_for_status()
-                            except httpx.HTTPStatusError as exc:
-                                retryable, retry_after = _classify_retryable_http_error(exc)
-                                if retryable:
-                                    raise _RetryableHTTPStatusError(exc, retry_after=retry_after) from exc
-                                raise
-
-                            mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
-                            if mime_type == "image/jpg":
-                                mime_type = "image/jpeg"
-
-                            content_length = response.headers.get("content-length")
-                            if content_length:
-                                try:
-                                    if int(content_length) > effective_max:
-                                        self.logger.warning(
-                                            "Remote streaming target %s exceeds configured limit per Content-Length "
-                                            "(%s bytes > %s bytes); aborting.",
-                                            url, content_length, effective_max,
-                                        )
-                                        return None
-                                except ValueError:
-                                    pass
-
-                            written = 0
-                            sniff_buffer = bytearray()
-                            sniffed_mime: Optional[str] = mime_type
-                            with dest_path.open("wb") as fh:
-                                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                                    if not chunk:
-                                        continue
-                                    projected = written + len(chunk)
-                                    if projected > effective_max:
-                                        size_mb = projected / (1024 * 1024)
-                                        limit_mb = effective_max / (1024 * 1024)
-                                        self.logger.warning(
-                                            f"Streaming download {url} exceeds limit "
-                                            f"({size_mb:.1f}MB > {limit_mb:.1f}MB); aborting."
-                                        )
-                                        return None
-                                    if len(sniff_buffer) < 32:
-                                        sniff_buffer.extend(chunk[: 32 - len(sniff_buffer)])
-                                    fh.write(chunk)
-                                    written = projected
-
-                            if mime_allowlist is not None:
-                                if not sniffed_mime or sniffed_mime in {"application/octet-stream", ""}:
-                                    sniffed_mime = _sniff_mime_from_prefix(bytes(sniff_buffer)) or sniffed_mime
-                                if sniffed_mime not in mime_allowlist:
+                                if int(content_length) > effective_max:
                                     self.logger.warning(
-                                        "Streaming download MIME %r not in allowlist %r; aborting.",
-                                        sniffed_mime, sorted(mime_allowlist),
+                                        "Remote streaming target %s exceeds configured limit per Content-Length "
+                                        "(%s bytes > %s bytes); aborting.",
+                                        url, content_length, effective_max,
                                     )
                                     return None
+                            except ValueError:
+                                pass
+
+                        written = 0
+                        sniff_buffer = bytearray()
+                        sniffed_mime: str | None = mime_type
+                        with dest_path.open("wb") as fh:
+                            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                                if not chunk:
+                                    continue
+                                projected = written + len(chunk)
+                                if projected > effective_max:
+                                    size_mb = projected / (1024 * 1024)
+                                    limit_mb = effective_max / (1024 * 1024)
+                                    self.logger.warning(
+                                        f"Streaming download {url} exceeds limit "
+                                        f"({size_mb:.1f}MB > {limit_mb:.1f}MB); aborting."
+                                    )
+                                    return None
+                                if len(sniff_buffer) < 32:
+                                    sniff_buffer.extend(chunk[: 32 - len(sniff_buffer)])
+                                fh.write(chunk)
+                                written = projected
+
+                        if mime_allowlist is not None:
+                            if not sniffed_mime or sniffed_mime in {"application/octet-stream", ""}:
+                                sniffed_mime = _sniff_mime_from_prefix(bytes(sniff_buffer)) or sniffed_mime
+                            if sniffed_mime not in mime_allowlist:
+                                self.logger.warning(
+                                    "Streaming download MIME %r not in allowlist %r; aborting.",
+                                    sniffed_mime, sorted(mime_allowlist),
+                                )
+                                return None
 
                     if attempt > 1:
                         self.logger.info(
@@ -547,10 +557,13 @@ class MultimodalHandler:
                         "url": url,
                         "size_bytes": written,
                     }
-        except Exception as exc:
+        except Exception:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(
-                f"Failed streaming download of {url} after {attempt} attempt(s) in {elapsed:.1f}s: {exc}"
+                "Failed streaming download of %s after %d attempt(s) in %.1fs",
+                url,
+                attempt,
+                elapsed,
             )
             return None
 
@@ -565,21 +578,21 @@ class MultimodalHandler:
         """
         return await asyncio.to_thread(self._request_ips_blocking, url) is not None
 
-    def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, Optional[int]]]:
+    def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, int | None]]:
         """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""
         if not isinstance(raw, str):
             return set()
         raw = raw.strip()
         if not raw:
             return set()
-        allowed: set[tuple[str, Optional[int]]] = set()
+        allowed: set[tuple[str, int | None]] = set()
         for entry in raw.split(","):
             candidate = entry.strip()
             if not candidate:
                 continue
 
             host = candidate
-            port: Optional[int] = None
+            port: int | None = None
 
             if candidate.startswith("[") and "]" in candidate:
                 # Bracketed IPv6 with optional port: [::1]:8080
@@ -668,7 +681,7 @@ class MultimodalHandler:
         """
         return self._request_ips_blocking(url) is not None
 
-    def _request_ips_blocking(self, url: str) -> Optional[list[str]]:
+    def _request_ips_blocking(self, url: str) -> list[str] | None:
         """Single SSRF gate (blocking): sequences the insecure-HTTP policy,
         the ENABLE_SSRF_PROTECTION valve, and address validation in one place
         so the pre-flight checks and the pinned download path cannot drift.
@@ -684,7 +697,7 @@ class MultimodalHandler:
             return []
         return self._resolve_validated_ips(url)
 
-    def _resolve_validated_ips(self, url: str) -> Optional[list[str]]:
+    def _resolve_validated_ips(self, url: str) -> list[str] | None:
         """Resolve the URL's host and return every resolved IP (as strings) iff
         ALL of them are public addresses; return None if resolution fails or ANY
         address targets a private/reserved range.
@@ -732,8 +745,8 @@ class MultimodalHandler:
                 except (socket.gaierror, UnicodeError):
                     self.logger.warning(f"DNS resolution failed for: {host}")
                     return None
-                except (OSError, TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
-                    self.logger.exception("Unexpected DNS error for %s: %s", host, exc)
+                except (OSError, TypeError, ValueError):  # pragma: no cover - defensive guard
+                    self.logger.exception("Unexpected DNS error for %s", host)
                     return None
 
                 for _, _, _, _, sockaddr in addrinfo:
@@ -772,9 +785,9 @@ class MultimodalHandler:
 
             return [ip.compressed for ip in ip_objects]
 
-        except Exception as exc:
+        except Exception:
             # Defensive: treat validation errors as unsafe
-            self.logger.exception("URL safety validation failed for %s: %s", url, exc)
+            self.logger.exception("URL safety validation failed for %s", url)
             return None
 
     def _build_pinned_request(
@@ -813,7 +826,7 @@ class MultimodalHandler:
 
     async def _prepare_pinned_request(
         self, url: str
-    ) -> Optional[tuple[str, dict[str, str], dict[str, Any]]]:
+    ) -> tuple[str, dict[str, str], dict[str, Any]] | None:
         """Validate `url` against the SSRF guard and return (request_url,
         headers, extensions) for an IP-pinned httpx request, or None if blocked.
 
@@ -829,7 +842,7 @@ class MultimodalHandler:
             return (url, {}, {})
         return self._build_pinned_request(url, ips[0])
 
-    def _is_youtube_url(self, url: Optional[str]) -> bool:
+    def _is_youtube_url(self, url: str | None) -> bool:
         """Check if URL is a valid YouTube video URL.
 
         Supports both standard and short YouTube URL formats:
@@ -1085,7 +1098,7 @@ class MultimodalHandler:
     # 3. DATA URL HANDLING (1 method)
     # -----------------------------------------------------------------
 
-    def _parse_data_url(self, data_url: str) -> Optional[Dict[str, Any]]:
+    def _parse_data_url(self, data_url: str) -> dict[str, Any] | None:
         """Extract base64 data from data URL.
 
         Parses data URLs in the format: data:<mime_type>;base64,<base64_data>
@@ -1156,6 +1169,6 @@ class MultimodalHandler:
                 "mime_type": mime_type,
                 "b64": b64_data
             }
-        except (AttributeError, TypeError, ValueError) as exc:
-            self.logger.exception("Failed to parse data URL: %s", exc)
+        except (AttributeError, TypeError, ValueError):
+            self.logger.exception("Failed to parse data URL")
             return None

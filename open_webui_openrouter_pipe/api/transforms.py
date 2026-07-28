@@ -15,31 +15,37 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+from collections.abc import Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 if TYPE_CHECKING:
     from fastapi import Request
+
     from ..pipe import Pipe
 
 from ..core.config import (
     _MAX_OPENROUTER_ID_CHARS,
-    _MAX_OPENROUTER_METADATA_PAIRS,
     _MAX_OPENROUTER_METADATA_KEY_CHARS,
+    _MAX_OPENROUTER_METADATA_PAIRS,
     _MAX_OPENROUTER_METADATA_VALUE_CHARS,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _PIPE_METADATA_KEY,
     _PROVIDER_SLUG_PATTERN,
+    LOGGER,
 )
 from ..core.timing_logger import timed
-from ..models.registry import ModelFamily
-from ..tools.tool_schema import _strictify_schema
-from ..core.config import LOGGER
-from ..core.utils import _coerce_bool, _parse_model_fallback_csv, _sticky_session_key, strip_hidden_marker_lines
+from ..core.utils import (
+    _coerce_bool,
+    _parse_model_fallback_csv,
+    _sticky_session_key,
+    strip_hidden_marker_lines,
+)
 from ..filters.fusion_filter_renderer import is_fusion_model
+from ..models.registry import ModelFamily
 from ..requests.transformer import transform_messages_to_input
+from ..tools.tool_schema import _strictify_schema
 
 # -----------------------------------------------------------------------------
 # Pydantic Body Classes
@@ -52,12 +58,12 @@ class CompletionsBody(BaseModel):
     Represents the body of a completions request to OpenAI completions API.
     """
     model: str
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     stream: bool = False
-    response_format: Optional[Dict[str, Any]] = None
-    parallel_tool_calls: Optional[bool] = None
-    function_call: Optional[Union[str, Dict[str, Any]]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    response_format: dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+    function_call: str | dict[str, Any] | None = None
+    tool_choice: str | dict[str, Any] | None = None
     model_config = ConfigDict(extra="allow")  # pass through additional OpenAI parameters
 
 
@@ -68,56 +74,56 @@ class ResponsesBody(BaseModel):
     
     # Core parameters
     model: str
-    models: Optional[List[str]] = None
-    instructions: Optional[str] = None  # system/developer instructions
-    input: Union[str, List[Dict[str, Any]]]  # plain text, or rich array
+    models: list[str] | None = None
+    instructions: str | None = None  # system/developer instructions
+    input: str | list[dict[str, Any]]  # plain text, or rich array
 
     stream: bool = False                          # SSE chunking
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[float] = None
-    min_p: Optional[float] = None
-    top_a: Optional[float] = None
-    max_output_tokens: Optional[int] = None
-    reasoning: Optional[Dict[str, Any]] = None    # {"effort":"high", ...}
-    include_reasoning: Optional[bool] = None
-    thinking_config: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
-    tools: Optional[List[Dict[str, Any]]] = None
-    plugins: Optional[List[Dict[str, Any]]] = None
-    truncation: Optional[str] = None
-    text: Optional[Dict[str, Any]] = None
-    parallel_tool_calls: Optional[bool] = None
-    transforms: Optional[List[str]] = None
-    stop_server_tools_when: Optional[List[Dict[str, Any]]] = None
-    user: Optional[str] = None
-    session_id: Optional[str] = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: float | None = None
+    min_p: float | None = None
+    top_a: float | None = None
+    max_output_tokens: int | None = None
+    reasoning: dict[str, Any] | None = None    # {"effort":"high", ...}
+    include_reasoning: bool | None = None
+    thinking_config: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    plugins: list[dict[str, Any]] | None = None
+    truncation: str | None = None
+    text: dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+    transforms: list[str] | None = None
+    stop_server_tools_when: list[dict[str, Any]] | None = None
+    user: str | None = None
+    session_id: str | None = None
 
     # OpenRouter /chat/completions parameters (preserved for endpoint fallback).
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
-    stop: Optional[Union[str, List[str]]] = None
-    seed: Optional[int] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    repetition_penalty: Optional[float] = None
-    logit_bias: Optional[Dict[str, float]] = None
-    logprobs: Optional[bool] = None
-    top_logprobs: Optional[int] = None
-    response_format: Optional[Dict[str, Any]] = None
-    structured_outputs: Optional[bool] = None
-    reasoning_effort: Optional[str] = None
-    verbosity: Optional[str] = None
-    web_search_options: Optional[Dict[str, Any]] = None
-    stream_options: Optional[Dict[str, Any]] = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    stop: str | list[str] | None = None
+    seed: int | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    logit_bias: dict[str, float] | None = None
+    logprobs: bool | None = None
+    top_logprobs: int | None = None
+    response_format: dict[str, Any] | None = None
+    structured_outputs: bool | None = None
+    reasoning_effort: str | None = None
+    verbosity: str | None = None
+    web_search_options: dict[str, Any] | None = None
+    stream_options: dict[str, Any] | None = None
 
     # OpenRouter routing extras (best-effort passthrough for /chat/completions).
-    provider: Optional[Dict[str, Any]] = None
-    route: Optional[str] = None
-    debug: Optional[Dict[str, Any]] = None
-    image_config: Optional[Dict[str, Any]] = None
-    modalities: Optional[List[str]] = None
+    provider: dict[str, Any] | None = None
+    route: str | None = None
+    debug: dict[str, Any] | None = None
+    image_config: dict[str, Any] | None = None
+    modalities: list[str] | None = None
     model_config = ConfigDict(extra="allow")  # allow additional OpenAI parameters automatically
 
     @staticmethod
@@ -156,14 +162,14 @@ class ResponsesBody(BaseModel):
         if value is None:
             return None
         if isinstance(value, bool):
-            raise ValueError("Boolean is not a valid integer value.")
+            raise ValueError("Boolean is not a valid integer value.")  # noqa: TRY004 - callers catch ValueError from coercion
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(round(value))
+            return round(value)
         if isinstance(value, str):
             try:
-                return int(round(float(value)))
+                return round(float(value))
             except ValueError as exc:
                 raise ValueError(f"Invalid integer value: {value!r}") from exc
         raise ValueError(f"Invalid integer value: {value!r}")
@@ -190,7 +196,7 @@ class ResponsesBody(BaseModel):
         raise ValueError("models must be an array of strings (or a CSV string).")
 
     @model_validator(mode='after')
-    def _normalize_model_id(self) -> "ResponsesBody":
+    def _normalize_model_id(self) -> ResponsesBody:
         """Ensure the model name references the canonical base id (prefix/date stripped)."""
         normalized = ModelFamily.base_model(self.model or "")
         if normalized and normalized != self.model:
@@ -199,7 +205,7 @@ class ResponsesBody(BaseModel):
 
     @staticmethod
     @timed
-    def transform_owui_tools(__tools__: Dict[str, dict] | None, *, strict: bool = False) -> List[dict]:
+    def transform_owui_tools(__tools__: dict[str, dict] | None, *, strict: bool = False) -> list[dict]:
         """
         Convert Open WebUI __tools__ registry (dict of entries with {"spec": {...}}) into
         OpenAI Responses-API tool specs: {"type": "function", "name", ...}.
@@ -208,7 +214,7 @@ class ResponsesBody(BaseModel):
         if not __tools__:
             return []
 
-        tools: List[dict] = []
+        tools: list[dict] = []
         for item in __tools__.values():
             spec = item.get("spec") or {}
             name = spec.get("name")
@@ -231,7 +237,7 @@ class ResponsesBody(BaseModel):
         return tools
 
     @staticmethod
-    def _convert_function_call_to_tool_choice(function_call: Any) -> Optional[Any]:
+    def _convert_function_call_to_tool_choice(function_call: Any) -> Any | None:
         """
         Translate legacy OpenAI `function_call` payloads into modern `tool_choice` values.
 
@@ -257,22 +263,20 @@ class ResponsesBody(BaseModel):
     @timed
     async def from_completions(
         cls,
-        completions_body: "CompletionsBody",
-        chat_id: Optional[str] = None,
-        openwebui_model_id: Optional[str] = None,
+        completions_body: CompletionsBody,
+        chat_id: str | None = None,
+        openwebui_model_id: str | None = None,
         *,
-        request: Optional[Request] = None,
-        user_obj: Optional[Any] = None,
-        event_emitter: Optional[Callable] = None,
-        artifact_loader: Optional[
-            Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
-        ] = None,
+        request: Request | None = None,
+        user_obj: Any | None = None,
+        event_emitter: Callable | None = None,
+        artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
         pruning_turns: int = 0,
-        transformer_context: Optional[Any] = None,
-        transformer_valves: Optional["Pipe.Valves"] = None,
-        capability_model_id: Optional[str] = None,
+        transformer_context: Any | None = None,
+        transformer_valves: Pipe.Valves | None = None,
+        capability_model_id: str | None = None,
         **extra_params,
-    ) -> "ResponsesBody":
+    ) -> ResponsesBody:
         """
         Convert CompletionsBody -> ResponsesBody.
 
@@ -302,7 +306,7 @@ class ResponsesBody(BaseModel):
         sanitized_params = {}
         for key, value in completions_dict.items():
             if key in unsupported_fields:
-                logging.warning(f"Dropping unsupported parameter: '{key}'")
+                logger.warning("Dropping unsupported parameter: '%s'", key)
             else:
                 sanitized_params[key] = value
 
@@ -329,7 +333,7 @@ class ResponsesBody(BaseModel):
         # Transform input messages to OpenAI Responses API format
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
-            replayed_reasoning_refs: list[Tuple[str, str]] = []
+            replayed_reasoning_refs: list[tuple[str, str]] = []
             # Resolve the transformer context. When provided, the transformer_context is typically
             # the Pipe instance so helper methods (upload, emit_status, etc.) are available.
             if transformer_context is None:
@@ -504,11 +508,11 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
 # Request Filtering
 # -----------------------------------------------------------------------------
 
-def _filter_openrouter_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Filter payload to fields accepted by OpenRouter's /chat/completions."""
     if not isinstance(payload, dict):
         return {}
-    filtered: Dict[str, Any] = {}
+    filtered: dict[str, Any] = {}
     for key, value in payload.items():
         if key in ALLOWED_OPENROUTER_CHAT_FIELDS:
             filtered[key] = value
@@ -589,9 +593,8 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
 
         fn = tool.get("function")
         name = tool.get("name")
-        if not isinstance(name, str) or not name.strip():
-            if isinstance(fn, dict):
-                name = fn.get("name")
+        if (not isinstance(name, str) or not name.strip()) and isinstance(fn, dict):
+            name = fn.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
         name = name.strip()
@@ -642,7 +645,7 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
 # Response Format Transforms
 # -----------------------------------------------------------------------------
 
-def _chat_response_format_to_responses_text_format(value: Any) -> Optional[dict[str, Any]]:
+def _chat_response_format_to_responses_text_format(value: Any) -> dict[str, Any] | None:
     """Convert Chat Completions `response_format` -> Responses `text.format`."""
     if not isinstance(value, dict):
         return None
@@ -673,7 +676,7 @@ def _chat_response_format_to_responses_text_format(value: Any) -> Optional[dict[
 
     return None
 
-def _responses_text_format_to_chat_response_format(value: Any) -> Optional[dict[str, Any]]:
+def _responses_text_format_to_chat_response_format(value: Any) -> dict[str, Any] | None:
     """Convert Responses `text.format` -> Chat Completions `response_format`."""
     if not isinstance(value, dict):
         return None
@@ -736,7 +739,7 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
             "Dropping invalid `text.format` on /responses request payload."
         )
 
-    final_format: Optional[dict[str, Any]] = None
+    final_format: dict[str, Any] | None = None
     if existing_canonical is not None:
         final_format = dict(existing_canonical)
         if response_format_as_text is not None and existing_canonical != response_format_as_text:
@@ -886,7 +889,7 @@ def _responses_input_to_chat_messages(
                             file_payload: dict[str, Any] = {}
                             if isinstance(filename, str) and filename.strip():
                                 file_payload["filename"] = filename.strip()
-                            file_value: Optional[str] = None
+                            file_value: str | None = None
                             if isinstance(file_data, str) and file_data.strip():
                                 file_value = file_data.strip()
                             elif isinstance(file_url, str) and file_url.strip():
@@ -1008,7 +1011,7 @@ def _responses_input_to_chat_messages(
                         file_payload: dict[str, Any] = {}
                         if isinstance(filename, str) and filename.strip():
                             file_payload["filename"] = filename.strip()
-                        file_value: Optional[str] = None
+                        file_value: str | None = None
                         if isinstance(file_data, str) and file_data.strip():
                             file_value = file_data.strip()
                         elif isinstance(file_url, str) and file_url.strip():
@@ -1140,13 +1143,13 @@ def _responses_payload_to_chat_completions_payload(
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(round(value))
+            return round(value)
         if isinstance(value, str):
             candidate = value.strip()
             if not candidate:
                 return None
             try:
-                return int(round(float(candidate)))
+                return round(float(candidate))
             except ValueError:
                 return value
         return value
@@ -1508,7 +1511,7 @@ def _get_disable_param(params: Any, key: str) -> bool:
     coerced = _coerce_bool(raw)
     return bool(coerced) if coerced is not None else False
 
-def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
+def _sanitize_openrouter_metadata(raw: Any) -> dict[str, str] | None:
     """Return a validated OpenRouter `metadata` dict or None.
 
     OpenRouter's Responses schema documents `metadata` as a string->string map with:
@@ -1538,7 +1541,7 @@ def _sanitize_openrouter_metadata(raw: Any) -> Optional[dict[str, str]]:
 def _apply_identifier_valves_to_payload(
     payload: dict[str, Any],
     *,
-    valves: "Pipe.Valves",
+    valves: Pipe.Valves,
     owui_metadata: dict[str, Any],
     owui_user_id: str,
     owui_user: Any = None,
@@ -1625,11 +1628,11 @@ def _apply_identifier_valves_to_payload(
 
 
 
-def _filter_openrouter_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
     _normalise_openrouter_responses_text_format(candidate)
-    filtered: Dict[str, Any] = {}
+    filtered: dict[str, Any] = {}
     for key, value in candidate.items():
         if key not in ALLOWED_OPENROUTER_FIELDS:
             continue
@@ -1710,7 +1713,7 @@ def _filter_replayable_input_items(
     return items
 
 
-def apply_context_transforms(responses_body: "ResponsesBody", *, auto_context_trimming: bool) -> None:
+def apply_context_transforms(responses_body: ResponsesBody, *, auto_context_trimming: bool) -> None:
     """Set context trimming fields when not already explicitly configured."""
     if not auto_context_trimming:
         if responses_body.truncation is None:

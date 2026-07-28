@@ -11,19 +11,19 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _debug_print_request(
-    headers: Dict[str, str],
-    payload: Optional[Dict[str, Any]],
+    headers: dict[str, str],
+    payload: dict[str, Any] | None,
     *,
     logger: logging.Logger,
 ) -> None:
     """Log sanitized request metadata when DEBUG logging is enabled."""
     # Late import for test compatibility (allows monkeypatching)
-    from ..core.utils import _redact_payload_blobs
     from ..core.config import _owui_forwarded_header_names
+    from ..core.utils import _redact_payload_blobs
 
     if not logger.isEnabledFor(logging.DEBUG):
         return

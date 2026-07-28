@@ -14,20 +14,21 @@ These utilities have minimal dependencies and can be used by any module.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import inspect
 import json
 import logging
-import re
-import hashlib
-import hmac
 import os
-from typing import Any, Awaitable, Optional, TypeVar, cast
+import re
+from collections.abc import Awaitable
+from typing import Any, TypeVar, cast
 
 # Import constants needed for template rendering and ULID generation
 from .config import (
+    CROCKFORD_ALPHABET,
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ULID_LENGTH,
-    CROCKFORD_ALPHABET,
 )
 
 # Generic type variable for _await_if_needed
@@ -179,7 +180,7 @@ def _pretty_json(value: Any) -> str:
 # JSON Helpers
 # -----------------------------------------------------------------------------
 
-def _safe_json_loads(payload: Optional[str]) -> Any:
+def _safe_json_loads(payload: str | None) -> Any:
     """Return parsed JSON or None without raising."""
     if not payload:
         return None
@@ -193,7 +194,7 @@ def _safe_json_loads(payload: Optional[str]) -> Any:
 # Type Coercion and String Normalization
 # -----------------------------------------------------------------------------
 
-def _coerce_positive_int(value: Any) -> Optional[int]:
+def _coerce_positive_int(value: Any) -> int | None:
     """Convert strings/bools into positive integers (MB)."""
     if value is None:
         return None
@@ -206,7 +207,7 @@ def _coerce_positive_int(value: Any) -> Optional[int]:
     return coerced if coerced > 0 else None
 
 
-def _coerce_bool(value: Any) -> Optional[bool]:
+def _coerce_bool(value: Any) -> bool | None:
     """Best-effort coercion of truthy string/int flags into booleans."""
     if isinstance(value, bool):
         return value
@@ -258,7 +259,7 @@ def _parse_model_fallback_csv(value: Any) -> list[str]:
     return models
 
 
-def _select_best_effort_fallback(requested: str, supported: list[str]) -> Optional[str]:
+def _select_best_effort_fallback(requested: str, supported: list[str]) -> str | None:
     """Choose the closest supported effort to retry with."""
     ordering = ["none", "minimal", "low", "medium", "high", "xhigh"]
     if not supported:
@@ -593,7 +594,7 @@ def _template_value_present(value: Any) -> bool:
     return bool(value)
 
 
-def _normalize_optional_str(value: Any) -> Optional[str]:
+def _normalize_optional_str(value: Any) -> str | None:
     """Convert arbitrary input into a trimmed string or None."""
     if value is None:
         return None
@@ -629,7 +630,7 @@ def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_lengt
 # HTTP and Timing Utilities
 # -----------------------------------------------------------------------------
 
-def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
+def _retry_after_seconds(value: str | None) -> float | None:
     """Convert Retry-After header value into seconds."""
     import datetime
     import email.utils
@@ -649,8 +650,8 @@ def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
         if dt is None:
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        now = datetime.datetime.now(datetime.timezone.utc)
+            dt = dt.replace(tzinfo=datetime.UTC)
+        now = datetime.datetime.now(datetime.UTC)
         seconds = (dt - now).total_seconds()
         return max(0.0, seconds)
     except (TypeError, ValueError, OverflowError):
@@ -703,7 +704,7 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
         marker_ulid = _extract_marker_ulid(stripped)
         if marker_ulid:
             offset = segment.find(stripped)
-            start = cursor + (offset if offset >= 0 else 0)
+            start = cursor + (max(offset, 0))
             spans.append(
                 {
                     "start": start,
@@ -729,7 +730,7 @@ def _iter_phase_marker_spans(text: str) -> list[dict[str, Any]]:
         phase_token = _extract_phase_marker_value(stripped)
         if phase_token is not None:
             offset = segment.find(stripped)
-            start = cursor + (offset if offset >= 0 else 0)
+            start = cursor + (max(offset, 0))
             spans.append(
                 {
                     "start": start,
@@ -785,7 +786,7 @@ def _extract_kind_marker(line: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def _iter_kind_marker_spans(text: str, *, kind: Optional[str] = None) -> list[dict[str, Any]]:
+def _iter_kind_marker_spans(text: str, *, kind: str | None = None) -> list[dict[str, Any]]:
     if not text:
         return []
     spans: list[dict[str, Any]] = []
@@ -797,7 +798,7 @@ def _iter_kind_marker_spans(text: str, *, kind: Optional[str] = None) -> list[di
             mk_kind, body = match
             if kind is None or mk_kind == kind:
                 offset = segment.find(stripped)
-                start = cursor + (offset if offset >= 0 else 0)
+                start = cursor + (max(offset, 0))
                 spans.append(
                     {
                         "start": start,
@@ -824,7 +825,7 @@ def _find_first_kind_marker_body(text: str, kind: str) -> str:
 async def _await_if_needed(
     value: Awaitable[_T] | _T,
     *,
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> _T:
     """Return ``value`` immediately when it's synchronous, otherwise await it.
 

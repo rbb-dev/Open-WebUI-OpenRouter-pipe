@@ -16,7 +16,8 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -321,8 +322,8 @@ class SessionTracker:
         done = float(entry.get("done") or time.time())
         started = float(entry.get("started") or done)
         return {
-            "ts": datetime.datetime.fromtimestamp(done, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None),
-            "started_at": datetime.datetime.fromtimestamp(started, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None),
+            "ts": datetime.datetime.fromtimestamp(done, tz=datetime.UTC).astimezone().replace(tzinfo=None),
+            "started_at": datetime.datetime.fromtimestamp(started, tz=datetime.UTC).astimezone().replace(tzinfo=None),
             "kind": entry.get("kind") or "chat",
             "user_id": entry.get("user_id") or "",
             "user_name": entry.get("user_name") or "",

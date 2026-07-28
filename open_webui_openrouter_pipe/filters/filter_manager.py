@@ -20,27 +20,28 @@ import itertools
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Callable, ClassVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from ..core.timing_logger import timed
 from ..core.config import (
-    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
-    _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
-    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
-    _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
-    _OPENROUTER_FUSION_FILTER_MARKER,
-    _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
-    _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_MARKER,
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_FUSION_FILTER_MARKER,
+    _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
+    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+    _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
+    _PROVIDER_ROUTING_FILTER_ID_PREFIX,
     _PROVIDER_ROUTING_FILTER_MARKER_PREFIX,
     _PROVIDER_ROUTING_FILTER_MARKER_VERSION,
-    _PROVIDER_ROUTING_FILTER_ID_PREFIX,
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX,
     _PROVIDER_SLUG_PATTERN,
 )
+from ..core.timing_logger import timed
 
 # Security: Quantization level validation (alphanumeric + underscore/hyphen)
 # Used for validating quantization values like "int4", "int8", "fp16", "bf16"
@@ -66,7 +67,7 @@ class FilterManager:
 
     def __init__(
         self,
-        pipe: "Pipe",
+        pipe: Pipe,
         valves: Any,
         logger: logging.Logger,
     ) -> None:
@@ -259,7 +260,7 @@ class FilterManager:
                 error_msg = str(e)
             return False, error_msg
         except (RecursionError, MemoryError, ValueError) as e:
-            return False, f"Parse error: {str(e)}"
+            return False, f"Parse error: {e!s}"
 
     # =========================================================================
     # GENERIC FILTER INSTALL / UPDATE
@@ -312,7 +313,7 @@ class FilterManager:
                 marked = [f for f in candidates if primary_marker in (getattr(f, "content", "") or "")]
                 if marked:
                     candidates = marked
-            chosen = sorted(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0), reverse=True)[0]
+            chosen = max(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0))
             if len(candidates) > 1:
                 self.logger.warning(
                     "Multiple %s candidates found (%d); using '%s'.",
@@ -335,7 +336,10 @@ class FilterManager:
                     return None
 
             try:
-                from open_webui.models.functions import FunctionForm, FunctionMeta  # type: ignore
+                from open_webui.models.functions import (  # type: ignore
+                    FunctionForm,
+                    FunctionMeta,
+                )
             except ImportError:
                 return None
 
@@ -408,67 +412,67 @@ class FilterManager:
         """
         # -- Valves fields (admin) -------------------------------------------
         valves_fields = [
-            '        priority: int = Field(\n'
+            ('        priority: int = Field(\n'
             '            default=0,\n'
             '            description="Priority level for the filter operations.",\n'
-            '        )',
+            '        )'),
         ]
         if enable_web_search:
             valves_fields.extend([
-                '        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(\n'
+                ('        WEB_SEARCH_ENGINE: Literal["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] = Field(\n'
                 '            default="auto",\n'
                 '            description="Web search backend. auto lets OpenRouter choose, native uses the model provider, others use specific engines.",\n'
-                '        )',
-                '        WEB_SEARCH_MAX_RESULTS: int = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_MAX_RESULTS: int = Field(\n'
                 '            default=5,\n'
                 '            ge=1,\n'
                 '            le=25,\n'
                 '            description="Maximum number of search results per query.",\n'
-                '        )',
-                '        WEB_SEARCH_MAX_TOTAL_RESULTS: int = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_MAX_TOTAL_RESULTS: int = Field(\n'
                 '            default=0,\n'
                 '            ge=0,\n'
                 '            description="Cap on total search results across all queries in one request. 0 means no cap.",\n'
-                '        )',
-                '        WEB_SEARCH_MAX_CHARACTERS: int = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_MAX_CHARACTERS: int = Field(\n'
                 '            default=0,\n'
                 '            ge=0,\n'
                 '            le=100000,\n'
                 '            description="Max characters of content per search result (1-100000). 0 means no cap. Takes precedence over context size when set.",\n'
-                '        )',
-                '        WEB_SEARCH_ALLOWED_DOMAINS: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_ALLOWED_DOMAINS: str = Field(\n'
                 '            default="",\n'
                 '            description="Comma-separated list of domains to restrict search results to. Empty means no restriction.",\n'
-                '        )',
-                '        WEB_SEARCH_EXCLUDED_DOMAINS: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_EXCLUDED_DOMAINS: str = Field(\n'
                 '            default="",\n'
                 '            description="Comma-separated list of domains to exclude from search results.",\n'
-                '        )',
+                '        )'),
             ])
         if enable_web_fetch:
             valves_fields.extend([
-                '        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] = Field(\n'
+                ('        WEB_FETCH_ENGINE: Literal["auto", "native", "exa", "openrouter", "firecrawl", "parallel"] = Field(\n'
                 '            default="auto",\n'
                 '            description="Web fetch backend. auto lets OpenRouter choose the best engine for each URL.",\n'
-                '        )',
-                '        WEB_FETCH_MAX_USES: int = Field(\n'
+                '        )'),
+                ('        WEB_FETCH_MAX_USES: int = Field(\n'
                 '            default=0,\n'
                 '            ge=0,\n'
                 '            description="Maximum number of URL fetches per request. 0 means no limit.",\n'
-                '        )',
-                '        WEB_FETCH_MAX_CONTENT_TOKENS: int = Field(\n'
+                '        )'),
+                ('        WEB_FETCH_MAX_CONTENT_TOKENS: int = Field(\n'
                 '            default=0,\n'
                 '            ge=0,\n'
                 '            description="Maximum tokens of fetched content to return per URL. 0 means no limit.",\n'
-                '        )',
-                '        WEB_FETCH_ALLOWED_DOMAINS: str = Field(\n'
+                '        )'),
+                ('        WEB_FETCH_ALLOWED_DOMAINS: str = Field(\n'
                 '            default="",\n'
                 '            description="Comma-separated list of domains allowed for fetching. Empty means allow all.",\n'
-                '        )',
-                '        WEB_FETCH_BLOCKED_DOMAINS: str = Field(\n'
+                '        )'),
+                ('        WEB_FETCH_BLOCKED_DOMAINS: str = Field(\n'
                 '            default="",\n'
                 '            description="Comma-separated list of domains blocked from fetching.",\n'
-                '        )',
+                '        )'),
             ])
         if enable_advisor:
             valves_fields.append(
@@ -496,30 +500,30 @@ class FilterManager:
         user_valves_fields: list[str] = []
         if enable_web_search:
             user_valves_fields.extend([
-                '        WEB_SEARCH: bool = Field(\n'
+                ('        WEB_SEARCH: bool = Field(\n'
                 '            default=True,\n'
                 '            description="Enable OpenRouter web search for this chat.",\n'
-                '        )',
-                '        WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high"] = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high"] = Field(\n'
                 '            default="medium",\n'
                 '            description="Amount of search context to include (low saves tokens, high is more thorough).",\n'
-                '        )',
-                '        WEB_SEARCH_LOCATION_CITY: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_LOCATION_CITY: str = Field(\n'
                 '            default="",\n'
                 '            description="City for location-aware search results.",\n'
-                '        )',
-                '        WEB_SEARCH_LOCATION_REGION: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_LOCATION_REGION: str = Field(\n'
                 '            default="",\n'
                 '            description="Region/state for location-aware search results.",\n'
-                '        )',
-                '        WEB_SEARCH_LOCATION_COUNTRY: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_LOCATION_COUNTRY: str = Field(\n'
                 '            default="",\n'
                 '            description="Country code (e.g. AU, US) for location-aware search results.",\n'
-                '        )',
-                '        WEB_SEARCH_LOCATION_TIMEZONE: str = Field(\n'
+                '        )'),
+                ('        WEB_SEARCH_LOCATION_TIMEZONE: str = Field(\n'
                 '            default="",\n'
                 '            description="Timezone (e.g. Australia/Sydney) for location-aware search results.",\n'
-                '        )',
+                '        )'),
             ])
         if enable_web_fetch:
             user_valves_fields.append(
@@ -530,14 +534,14 @@ class FilterManager:
             )
         if enable_datetime:
             user_valves_fields.extend([
-                '        DATETIME: bool = Field(\n'
+                ('        DATETIME: bool = Field(\n'
                 '            default=True,\n'
                 '            description="Enable OpenRouter datetime tool for this chat (free, no extra cost).",\n'
-                '        )',
-                '        DATETIME_TIMEZONE: str = Field(\n'
+                '        )'),
+                ('        DATETIME_TIMEZONE: str = Field(\n'
                 '            default="",\n'
                 '            description="Timezone for the datetime tool (e.g. Australia/Sydney). Empty uses UTC.",\n'
-                '        )',
+                '        )'),
             ])
         if enable_advisor:
             user_valves_fields.append(
@@ -791,7 +795,7 @@ class FilterManager:
             module.__file__ = "<installed-web-tools-filter>"
             try:
                 sys.modules[module_name] = module
-                exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)
+                exec(compile(content, "<installed-web-tools-filter>", "exec"), module.__dict__)  # noqa: S102 - loading the installed filter module is this function's purpose
             except Exception as exc:
                 self.logger.warning(
                     "Installed web tools filter failed to load for fusion inner calls: %s",
@@ -1218,13 +1222,13 @@ class Filter:
     @staticmethod
     def render_openrouter_image_filter_source(variant: str) -> str:
         from .image_filter_renderer import (
-            render_generic_image_filter_source,
             render_gemini_image_filter_source,
-            render_sourceful_image_filter_source,
-            render_sourceful_v25_image_filter_source,
+            render_generic_image_filter_source,
+            render_grok_image_filter_source,
             render_recraft_common_image_filter_source,
             render_recraft_v3_image_filter_source,
-            render_grok_image_filter_source,
+            render_sourceful_image_filter_source,
+            render_sourceful_v25_image_filter_source,
         )
         if variant == "generic":
             return render_generic_image_filter_source()
@@ -1367,13 +1371,13 @@ class Filter:
         variant: str,
     ) -> str | None:
         from .image_filter_renderer import (
-            build_generic_image_filter_spec,
             build_gemini_image_filter_spec,
-            build_sourceful_image_filter_spec,
-            build_sourceful_v25_image_filter_spec,
+            build_generic_image_filter_spec,
+            build_grok_image_filter_spec,
             build_recraft_common_image_filter_spec,
             build_recraft_v3_image_filter_spec,
-            build_grok_image_filter_spec,
+            build_sourceful_image_filter_spec,
+            build_sourceful_v25_image_filter_spec,
         )
         if variant == "generic":
             spec = build_generic_image_filter_spec()
@@ -2365,7 +2369,11 @@ class Filter:
             Mapping of model slug -> filter function ID for filters that should be attached.
         """
         try:
-            from open_webui.models.functions import Functions, FunctionForm, FunctionMeta
+            from open_webui.models.functions import (
+                FunctionForm,
+                FunctionMeta,
+                Functions,
+            )
         except ImportError:
             return {}
 

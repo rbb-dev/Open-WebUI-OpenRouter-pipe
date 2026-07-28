@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
@@ -40,7 +39,7 @@ async def ensure_video_catalog_loaded(
 
     try:
         models = await client.list_models()
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+    except (TimeoutError, aiohttp.ClientError, OSError) as exc:
         OpenRouterModelRegistry.record_video_attempt()
         logger.warning(
             "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",

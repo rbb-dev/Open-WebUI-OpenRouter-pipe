@@ -8,26 +8,45 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Optional
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
-
-from ...core.config import _OPENROUTER_TITLE, _OPENROUTER_CATEGORIES, _select_openrouter_http_referer, _apply_owui_forward_user_headers
-from ...core.timing_logger import timed, timing_mark
-from ...streaming.nagle_coalescer import nagle_coalesce_stream
-from ...requests.debug import (
-    _debug_print_error_response,
-    _debug_print_request,
-    _debug_print_response,
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
 )
+
+from ...core.config import (
+    _OPENROUTER_CATEGORIES,
+    _OPENROUTER_TITLE,
+    _apply_owui_forward_user_headers,
+    _select_openrouter_http_referer,
+)
+
 # Imports from core.errors
 from ...core.errors import (
     RequiredInternalFileError,
     _build_openrouter_api_error,
 )
+from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
-from .responses_adapter import _should_retry_stream
+from ...models.registry import normalize_model_id_dotted
+from ...requests.debug import (
+    _debug_print_error_response,
+    _debug_print_request,
+    _debug_print_response,
+)
+
+# Imports from storage
+from ...storage.owui_files import (
+    is_internal_file_url,
+)
+from ...storage.persistence import generate_item_id
+from ...streaming.nagle_coalescer import nagle_coalesce_stream
+
 # Imports from api.transforms
 from ..transforms import (
     _filter_openrouter_chat_request,
@@ -35,12 +54,7 @@ from ..transforms import (
     _parse_url_citation_annotations,
     _responses_payload_to_chat_completions_payload,
 )
-# Imports from storage
-from ...storage.owui_files import (
-    is_internal_file_url,
-)
-from ...storage.persistence import generate_item_id
-from ...models.registry import normalize_model_id_dotted
+from .responses_adapter import _should_retry_stream
 
 if TYPE_CHECKING:
     from ...pipe import Pipe
@@ -50,7 +64,7 @@ class ChatCompletionsAdapter:
     """Adapter for OpenRouter /chat/completions API endpoint."""
 
     @timed
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize ChatCompletionsAdapter.
 
         Args:
@@ -117,8 +131,8 @@ class ChatCompletionsAdapter:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
-        breaker_key: Optional[str] = None,
+        valves: Pipe.Valves | None = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -544,11 +558,13 @@ class ChatCompletionsAdapter:
                                             }
 
                                 finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
-                                if isinstance(finish_reason, str) and finish_reason:
-                                    if finish_reason == "tool_calls":
-                                        tool_calls_completed = True
-                                    elif finish_reason in {"stop", "length", "content_filter"}:
-                                        tool_calls_completed = True
+                                if isinstance(finish_reason, str) and finish_reason in {
+                                    "tool_calls",
+                                    "stop",
+                                    "length",
+                                    "content_filter",
+                                }:
+                                    tool_calls_completed = True
 
                             if stripped.startswith(b":"):
                                 continue
@@ -644,8 +660,8 @@ class ChatCompletionsAdapter:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
-        breaker_key: Optional[str] = None,
+        valves: Pipe.Valves | None = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
@@ -746,10 +762,10 @@ class ChatCompletionsAdapter:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
         workers: int = 4,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         nagle_min_chars: int = 1,
@@ -778,9 +794,7 @@ class ChatCompletionsAdapter:
                 return True
             if etype.startswith("response.reasoning"):
                 return True
-            if etype in {"response.completed", "response.failed", "response.error", "error"}:
-                return True
-            return False
+            return etype in {"response.completed", "response.failed", "response.error", "error"}
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import logging
-
 import asyncio
 import copy
+import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ...storage.persistence import _db_session
 
@@ -121,7 +121,7 @@ def query_usage_stats(
 
         rows = (
             session.query(model)
-            .filter(model.ts >= datetime.datetime.fromtimestamp(prev_start, tz=datetime.timezone.utc).astimezone().replace(tzinfo=None))
+            .filter(model.ts >= datetime.datetime.fromtimestamp(prev_start, tz=datetime.UTC).astimezone().replace(tzinfo=None))
             .all()
         )
 

@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 from fastapi import BackgroundTasks, Request, UploadFile
 from starlette.datastructures import Headers
@@ -40,13 +40,17 @@ except ImportError:
     Users = None  # type: ignore
 
 try:
-    from open_webui.routers.files import upload_file_handler  # type: ignore[import-not-found]
+    from open_webui.routers.files import (
+        upload_file_handler,  # type: ignore[import-not-found]
+    )
 except ImportError:
     upload_file_handler = None  # type: ignore
 
 try:
     from open_webui.config import (  # type: ignore[import-not-found]
         STORAGE_PROVIDER as _OWUI_STORAGE_PROVIDER,
+    )
+    from open_webui.config import (
         UPLOAD_DIR as _OWUI_UPLOAD_DIR,
     )
 except Exception:
@@ -66,7 +70,7 @@ class InlinedFile(NamedTuple):
 
 
 @timed
-async def get_file_by_id(file_id: str, logger: logging.Logger) -> Optional[Any]:
+async def get_file_by_id(file_id: str, logger: logging.Logger) -> Any | None:
     """Fetch an OWUI file record by id; log and return None on failure."""
     if Files is None:
         logger.debug("Cannot load file %s: Open WebUI integration not available", file_id)
@@ -81,10 +85,12 @@ async def get_file_by_id(file_id: str, logger: logging.Logger) -> Optional[Any]:
 _warned_storage_provider: set[bool] = set()
 
 
-def get_owui_storage() -> Optional[Any]:
+def get_owui_storage() -> Any | None:
     """Return OWUI's Storage provider singleton, or None outside OWUI / on init failure."""
     try:
-        from open_webui.storage.provider import Storage  # type: ignore[import-not-found]
+        from open_webui.storage.provider import (
+            Storage,  # type: ignore[import-not-found]
+        )
 
         return Storage
     except Exception:
@@ -112,7 +118,7 @@ def owui_storage_provider_kind() -> str:
     return "unknown"
 
 
-def declared_file_size(file_obj: Any) -> Optional[int]:
+def declared_file_size(file_obj: Any) -> int | None:
     """Return a positive integer declared size from file.meta, else None."""
     meta = getattr(file_obj, "meta", None)
     if not isinstance(meta, dict):
@@ -129,7 +135,7 @@ def declared_file_size(file_obj: Any) -> Optional[int]:
     return None
 
 
-def contained_under_upload_dir(local_path: Any) -> Optional[Path]:
+def contained_under_upload_dir(local_path: Any) -> Path | None:
     """Resolve a path and return it only if it lies under OWUI UPLOAD_DIR, else None (fail-closed)."""
     if _OWUI_UPLOAD_DIR is None:
         return None
@@ -205,7 +211,7 @@ async def materialize_owui_file_to_temp(
     max_bytes: int,
     allow_unknown_size: bool,
     require_auth: bool = True,
-    allowed_suffixes: Optional[set[str]] = None,
+    allowed_suffixes: set[str] | None = None,
     suffix: str = "",
 ) -> Path:
     """Authorise, size-gate, and copy an OWUI file to a private temp the caller owns.
@@ -215,11 +221,14 @@ async def materialize_owui_file_to_temp(
     overrun, unknown-size cloud reads (unless allowed), unsupported extension, or
     a path that escapes UPLOAD_DIR. The caller must unlink the returned path.
     """
-    if require_auth and is_real_owui_file_record(file_obj):
-        if not await authorize_file_read(file_obj, user, logger):
-            raise RequiredInternalFileError(
-                "You do not have access to a referenced file.", denied=True
-            )
+    if (
+        require_auth
+        and is_real_owui_file_record(file_obj)
+        and not await authorize_file_read(file_obj, user, logger)
+    ):
+        raise RequiredInternalFileError(
+            "You do not have access to a referenced file.", denied=True
+        )
 
     raw_path = getattr(file_obj, "path", None)
     if not raw_path:
@@ -339,7 +348,7 @@ async def encode_file_path_base64(path: Path, chunk_size: int, max_bytes: int) -
     return await loop.run_in_executor(None, _encode_stream)
 
 
-def extract_internal_file_id(url: str) -> Optional[str]:
+def extract_internal_file_id(url: str) -> str | None:
     """Return the Open WebUI file identifier embedded in a storage URL.
 
     Args:
@@ -413,7 +422,7 @@ class OwuiFileGateway:
         *,
         user: Any = None,
         require_auth: bool = True,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return base64 for an OWUI file: authorize, then read inline data or via Storage.
 
         Real OWUI records are authorized before any byte source is touched, and their
@@ -498,7 +507,7 @@ class OwuiFileGateway:
         chunk_size: int,
         max_bytes: int,
         user: Any = None,
-    ) -> Optional[InlinedFile]:
+    ) -> InlinedFile | None:
         """Convert an Open WebUI file id into a data URL with metadata.
 
         Args:
@@ -546,7 +555,7 @@ class OwuiFileGateway:
         chunk_size: int,
         max_bytes: int,
         user: Any = None,
-    ) -> Optional[InlinedFile]:
+    ) -> InlinedFile | None:
         """Convert an Open WebUI file URL into a data URL with metadata.
 
         Args:
@@ -650,10 +659,10 @@ class OwuiFileGateway:
         file_data: bytes,
         filename: str,
         mime_type: str,
-        chat_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-        owui_user_id: Optional[str] = None,
-    ) -> Optional[str]:
+        chat_id: str | None = None,
+        message_id: str | None = None,
+        owui_user_id: str | None = None,
+    ) -> str | None:
         """Upload file or image to Open WebUI storage and return the OWUI file id.
 
         Args:
@@ -696,7 +705,7 @@ class OwuiFileGateway:
                 user=user,
                 background_tasks=BackgroundTasks(),
             )
-            file_id: Optional[str] = None
+            file_id: str | None = None
             if hasattr(file_item, "id"):
                 candidate = getattr(file_item, "id", None)
                 if isinstance(candidate, str) and candidate.strip():
@@ -709,7 +718,7 @@ class OwuiFileGateway:
                 self.logger.error("Upload handler returned an object without an id; aborting OWUI storage write.")
                 return None
 
-            effective_user_id: Optional[str] = None
+            effective_user_id: str | None = None
             if isinstance(owui_user_id, str) and owui_user_id.strip():
                 effective_user_id = owui_user_id.strip()
             else:
@@ -751,10 +760,10 @@ class OwuiFileGateway:
         source_path: Path,
         filename: str,
         mime_type: str,
-        chat_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-        owui_user_id: Optional[str] = None,
-    ) -> Optional[str]:
+        chat_id: str | None = None,
+        message_id: str | None = None,
+        owui_user_id: str | None = None,
+    ) -> str | None:
         """Stream a file from a local path into Open WebUI storage and return the file id."""
         if upload_file_handler is None:
             self.logger.error("Open WebUI file upload helpers are unavailable; skipping OWUI storage upload.")
@@ -790,7 +799,7 @@ class OwuiFileGateway:
                     background_tasks=BackgroundTasks(),
                 )
 
-            file_id: Optional[str] = None
+            file_id: str | None = None
             if hasattr(file_item, "id"):
                 candidate = getattr(file_item, "id", None)
                 if isinstance(candidate, str) and candidate.strip():
@@ -803,7 +812,7 @@ class OwuiFileGateway:
                 self.logger.error("Streaming upload handler returned an object without an id; aborting.")
                 return None
 
-            effective_user_id: Optional[str] = None
+            effective_user_id: str | None = None
             if isinstance(owui_user_id, str) and owui_user_id.strip():
                 effective_user_id = owui_user_id.strip()
             else:
@@ -842,10 +851,10 @@ class OwuiFileGateway:
     async def try_link_file_to_chat(
         self,
         *,
-        chat_id: Optional[str],
-        message_id: Optional[str],
+        chat_id: str | None,
+        message_id: str | None,
         file_id: str,
-        user_id: Optional[str],
+        user_id: str | None,
     ) -> bool:
         """Link uploaded file to chat and message in Open WebUI database.
 
@@ -869,7 +878,7 @@ class OwuiFileGateway:
         if not normalized_user_id:
             return False
 
-        normalized_message_id: Optional[str] = None
+        normalized_message_id: str | None = None
         if isinstance(message_id, str):
             candidate = message_id.strip()
             if candidate:
@@ -910,9 +919,9 @@ class OwuiFileGateway:
 
     async def resolve_storage_context(
         self,
-        request: Optional[Request],
-        user_obj: Optional[Any],
-    ) -> tuple[Optional[Request], Optional[Any]]:
+        request: Request | None,
+        user_obj: Any | None,
+    ) -> tuple[Request | None, Any | None]:
         """Return a `(request, user)` tuple suitable for OWUI uploads.
 
         Args:
@@ -936,7 +945,7 @@ class OwuiFileGateway:
         return request, fallback_user
 
     @timed
-    async def ensure_storage_user(self) -> Optional[Any]:
+    async def ensure_storage_user(self) -> Any | None:
         """Ensure the fallback storage user exists (lazy creation).
 
         Returns:

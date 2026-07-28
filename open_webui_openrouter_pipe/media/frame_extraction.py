@@ -12,7 +12,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import imageio.v3 as iio  # type: ignore[import-untyped]
 from PIL import Image
@@ -52,7 +52,7 @@ class ExtractedFrame:
     width: int
     height: int
     actual_timestamp_seconds: float
-    requested_timestamp_seconds: Optional[float]
+    requested_timestamp_seconds: float | None
     downgrade_note: str = ""
 
 
@@ -167,7 +167,7 @@ async def _extract_frame_ffmpeg(
         "-loglevel", "error",
         "-",
     ]
-    proc: Optional[asyncio.subprocess.Process] = None
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -178,7 +178,7 @@ async def _extract_frame_ffmpeg(
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_FFMPEG_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             with contextlib.suppress(Exception):
                 proc.kill()
                 await proc.wait()
@@ -215,10 +215,10 @@ async def extract_frame(
     path: Path,
     *,
     target: Literal["first_frame", "last_frame", "at_timestamp"],
-    timestamp_seconds: Optional[float] = None,
+    timestamp_seconds: float | None = None,
     fallback_to_last_on_overshoot: bool = True,
     overshoot_fallback_index: Literal["first", "last"] = "last",
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger | None = None,
 ) -> ExtractedFrame:
     """Extract a frame from a video file.
 
@@ -242,7 +242,7 @@ async def extract_frame(
     downgrade_note = ""
     requested_ts = timestamp_seconds if target == "at_timestamp" else None
     use_end_seek = False
-    meta: Optional[VideoMetadata] = None
+    meta: VideoMetadata | None = None
 
     if target == "first_frame":
         actual_ts = 0.0

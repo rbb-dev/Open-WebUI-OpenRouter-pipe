@@ -29,5 +29,5 @@ del importlib, pkgutil
 
 # Explicit imports — redundant in package mode (already loaded by pkgutil above)
 # but essential in compressed-bundle mode where pkgutil returns nothing.
-from . import help_cmd as _help_cmd  # noqa: E402, F401
-from . import dashboard_cmd as _dashboard_cmd  # noqa: E402, F401
+from . import dashboard_cmd as _dashboard_cmd  # noqa: F401
+from . import help_cmd as _help_cmd  # noqa: F401

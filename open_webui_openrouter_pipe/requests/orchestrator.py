@@ -10,10 +10,19 @@ import binascii
 import inspect
 import json
 import logging
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Awaitable, Literal
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 from starlette.requests import Request
+
+from ..api.transforms import (
+    CompletionsBody,
+    ResponsesBody,
+    _chat_tools_to_responses_tools,
+    apply_context_transforms,
+)
+from ..core.config import _PIPE_METADATA_KEY
 
 # Import types needed for request processing
 from ..core.errors import (
@@ -21,21 +30,19 @@ from ..core.errors import (
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
 )
-from ..core.config import _PIPE_METADATA_KEY
 from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
-from ..integrations.image_help import render_image_help
-from .fusion_engine import FusionInnerInvocation, latest_user_text, run_internal_fusion
-from ..core.utils import _select_best_effort_fallback
-from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
-from ..models.registry import ModelFamily, OpenRouterModelRegistry
-from ..api.transforms import CompletionsBody, ResponsesBody, _chat_tools_to_responses_tools, apply_context_transforms
-from ..core.timing_logger import timed
 from ..core.logging_system import SessionLogger
-from .task_model_adapter import TaskModelAdapter
-from .sanitizer import _sanitize_request_input
-from ..storage.users import get_user_by_id
-from ..storage.owui_files import get_file_by_id, infer_file_mime_type
+from ..core.timing_logger import timed
+from ..core.utils import _select_best_effort_fallback
 from ..filters.fusion_filter_renderer import is_fusion_model
+from ..integrations.image_help import render_image_help
+from ..models.registry import ModelFamily, OpenRouterModelRegistry
+from ..storage.owui_files import get_file_by_id, infer_file_mime_type
+from ..storage.users import get_user_by_id
+from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
+from .fusion_engine import FusionInnerInvocation, latest_user_text, run_internal_fusion
+from .sanitizer import _sanitize_request_input
+from .task_model_adapter import TaskModelAdapter
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -148,9 +155,7 @@ def _fusion_internal_divert(
     if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
         return False
     entry = find_fusion_entry(plugins)
-    if isinstance(entry, dict) and entry.get("enabled") is False:
-        return False
-    return True
+    return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
 
 def _fusion_active_entry(model_id: str, plugins: Any, *, fusion_enabled: bool, is_task_request: bool) -> bool:
@@ -199,7 +204,7 @@ def _fusion_force_tool_choice(
 
 
 def _apply_server_tools_metadata(
-    responses_body: "ResponsesBody",
+    responses_body: ResponsesBody,
     metadata: Any,
     *,
     logger: logging.Logger | None = None,
@@ -227,7 +232,7 @@ def _apply_server_tools_metadata(
 class RequestOrchestrator:
     """Orchestrates the processing of transformed OpenRouter requests."""
 
-    def __init__(self, pipe: "Pipe", logger: logging.Logger):
+    def __init__(self, pipe: Pipe, logger: logging.Logger):
         """Initialize RequestOrchestrator.
 
         Args:
@@ -237,7 +242,7 @@ class RequestOrchestrator:
         self._pipe = pipe
         self.logger = logger
 
-    def _resolve_fusion_live_enabled(self, valves: "Pipe.Valves", is_fusion: bool, is_direct: bool) -> bool:
+    def _resolve_fusion_live_enabled(self, valves: Pipe.Valves, is_fusion: bool, is_direct: bool) -> bool:
         return bool(
             valves.ENABLE_OPENROUTER_FUSION
             and is_fusion
@@ -256,7 +261,7 @@ class RequestOrchestrator:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Any,
         __task_body__: Any,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
         session: aiohttp.ClientSession,
         openwebui_model_id: str,
         pipe_identifier: str,
@@ -320,7 +325,7 @@ class RequestOrchestrator:
                     last_user_msg = msg
                     break
             if not isinstance(last_user_msg, dict):
-                raise ValueError("Direct uploads require at least one user message.")
+                raise ValueError("Direct uploads require at least one user message.")  # noqa: TRY004 - reported to the user via the ValueError path
 
             content = last_user_msg.get("content")
             content_blocks: list[dict[str, Any]] = []
@@ -1077,7 +1082,7 @@ class RequestOrchestrator:
 
 
         # Convert the normalized model id back to the original OpenRouter id for the API request.
-        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)
+        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 
         if _fusion_internal_divert(
             responses_body.model,

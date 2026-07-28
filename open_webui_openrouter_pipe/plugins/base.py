@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Awaitable, ClassVar
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from ..pipe import Pipe

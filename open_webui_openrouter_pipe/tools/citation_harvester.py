@@ -13,9 +13,8 @@ those names keep using the Open WebUI extractor at the call site.
 
 from __future__ import annotations
 
-import logging
-
 import json
+import logging
 import re
 from typing import Any
 from urllib.parse import urlparse

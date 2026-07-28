@@ -4,7 +4,7 @@ PIL pattern reuses `storage/multimodal.py:1616-1631` decode→re-encode flow.
 """
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from PIL import Image as _Image  # type: ignore[import-untyped]
@@ -20,7 +20,7 @@ def normalise_mime(value: Any) -> str:
     return text.split(";", 1)[0].strip().lower()
 
 
-def composite_on_white(img: "_Image.Image") -> "_Image.Image":
+def composite_on_white(img: _Image.Image) -> _Image.Image:
     """Flatten alpha onto a white background; return RGB image.
 
     Always converts palette ("P") and alpha modes through RGBA before

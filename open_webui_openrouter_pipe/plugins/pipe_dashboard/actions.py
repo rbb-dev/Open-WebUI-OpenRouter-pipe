@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping, NamedTuple
+from typing import Any, NamedTuple
 
 from .authz import can_act, can_view
 from .config_service import describe_valves, drift, json_safe, merge_for_save

@@ -6,9 +6,9 @@ import json
 import logging
 from typing import Any
 
+from ..models.registry import ModelFamily
 from .config import LOGGER
 from .utils import _coerce_positive_int
-from ..models.registry import ModelFamily
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
@@ -80,7 +80,7 @@ def is_tool_omission_stub(text: str) -> bool:
     if not isinstance(text, str):
         return False
     stripped = text.lstrip()
-    return stripped.startswith(_LIVE_OMISSION_PREFIX) or stripped.startswith(_REPLAY_OMISSION_PREFIX)
+    return stripped.startswith((_LIVE_OMISSION_PREFIX, _REPLAY_OMISSION_PREFIX))
 
 
 def build_live_tool_omission_stub(result_chars: int, remaining_tokens: int) -> str:

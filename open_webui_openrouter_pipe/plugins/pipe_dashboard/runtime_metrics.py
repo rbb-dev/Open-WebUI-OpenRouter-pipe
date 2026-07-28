@@ -347,10 +347,11 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
             assert sf is not None  # guaranteed by db_connected check
             assert model is not None  # guaranteed by db_connected check
             try:
-                from ...storage.persistence import _db_session
                 from sqlalchemy import String, func
                 from sqlalchemy.exc import SQLAlchemyError
                 from sqlalchemy.sql.expression import cast
+
+                from ...storage.persistence import _db_session
 
                 name_map = build_model_name_map()
 

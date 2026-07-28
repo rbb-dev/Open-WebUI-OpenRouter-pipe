@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "alibaba/happyhorse-1.1": {
         "display_name": "Alibaba: HappyHorse 1.1",
@@ -634,8 +633,7 @@ def _format_sku_unit(raw_key: str) -> str:
         return "per unit"
     # Strip the cents-per prefix — callers handle the unit symbol; here we only
     # need to expose the base label to the existing token-matching logic.
-    if key.startswith(_CENTS_PER_PREFIX):
-        key = key[len(_CENTS_PER_PREFIX):]
+    key = key.removeprefix(_CENTS_PER_PREFIX)
     remainder = key
     modifiers: list[str] = []
     for token, label in _SKU_MODIFIERS:

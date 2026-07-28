@@ -9,22 +9,22 @@ from typing import Any, ClassVar
 
 from pydantic import Field
 
+from .._utils import extract_task_name, extract_user_message
 from ..base import PluginBase, PluginContext
 from ..registry import PluginRegistry
 from .auth import ACCESS_DENIED_MD
-from .command_registry import CommandRegistry
-from .context import CommandContext
-from .._utils import extract_task_name, extract_user_message
 from .authz import can_view, model_id, resolve_user
-from .http_routes import register_action_route, set_pipe_getter
-from .dashboard_socket import register_socket_handler
+from .command_registry import CommandRegistry
+
+# Trigger command auto-imports so @register_command decorators fire
+from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
+from .context import CommandContext
 from .dashboard_publisher import run_dashboard_publisher, set_snapshot_getter
+from .dashboard_socket import register_socket_handler
+from .http_routes import register_action_route, set_pipe_getter
 from .session_tracker import SessionTracker
 from .update_service import DEFAULT_REPO
 from .usage_store import UsageStore
-
-# Trigger command auto-imports so @register_command decorators fire
-from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401, E402
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class PipeDashboardPlugin(PluginBase):
 
     def on_init(self, ctx: PluginContext, **kwargs: Any) -> None:
         self.ctx = ctx
-        self._get_pipe = lambda: getattr(ctx, "pipe", None)  # noqa: E731
+        self._get_pipe = lambda: getattr(ctx, "pipe", None)
 
         register_socket_handler(self._get_pipe)
         set_pipe_getter(self._get_pipe)
@@ -240,7 +240,12 @@ class PipeDashboardPlugin(PluginBase):
     async def _ensure_model_overlay(self, display_name: str, description: str) -> None:
         """Create or update the OWUI Models table entry for this virtual model."""
         try:
-            from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+            from open_webui.models.models import (
+                ModelForm,
+                ModelMeta,
+                ModelParams,
+                Models,
+            )
             from open_webui.models.users import Users
 
             owui_model_id = model_id(self.ctx.pipe)

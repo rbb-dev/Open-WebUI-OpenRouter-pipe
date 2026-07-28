@@ -28,27 +28,28 @@ import json
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, TypeVar
+from typing import Any, TypeVar
 
 # -----------------------------------------------------------------------------
 # Global file output state
 # -----------------------------------------------------------------------------
 
 _timing_file_lock = threading.RLock()
-_timing_file_path: Optional[Path] = None
-_timing_file_handle: Optional[Any] = None  # File object when open
+_timing_file_path: Path | None = None
+_timing_file_handle: Any | None = None  # File object when open
 
 # Per-request timing buffer (kept for session log integration if needed)
-_timing_events: Dict[str, Deque[Dict[str, Any]]] = {}
+_timing_events: dict[str, deque[dict[str, Any]]] = {}
 _timing_lock = threading.RLock()
 
 # Context variables for per-request state
 _timing_enabled: ContextVar[bool] = ContextVar("timing_enabled", default=False)
-_timing_request_id: ContextVar[Optional[str]] = ContextVar(
+_timing_request_id: ContextVar[str | None] = ContextVar(
     "timing_request_id", default=None
 )
 
@@ -76,7 +77,7 @@ class TimingEvent:
     wall_ts: float  # time.time() for absolute/ISO timestamp
     event: str  # "enter" or "exit"
     label: str  # function/scope name
-    elapsed_ms: Optional[float] = None  # Only on exit events
+    elapsed_ms: float | None = None  # Only on exit events
 
 
 # -----------------------------------------------------------------------------
@@ -87,10 +88,10 @@ class TimingEvent:
 def _format_iso_utc(wall_ts: float) -> str:
     """Format wall clock time as ISO 8601 UTC string."""
     try:
-        dt = datetime.datetime.fromtimestamp(wall_ts, tz=datetime.timezone.utc)
+        dt = datetime.datetime.fromtimestamp(wall_ts, tz=datetime.UTC)
         return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     except (OSError, OverflowError, TypeError, ValueError):
-        return datetime.datetime.now(datetime.timezone.utc).isoformat(
+        return datetime.datetime.now(datetime.UTC).isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
 
@@ -100,15 +101,13 @@ def _record_event(event: TimingEvent) -> None:
 
     Events are written immediately in JSONL format. Thread-safe via file lock.
     """
-    global _timing_file_handle
-
     if not _timing_enabled.get():
         return
     request_id = _timing_request_id.get()
     if not request_id:
         return
 
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "ts": _format_iso_utc(event.wall_ts),
         "perf_ts": round(event.ts, 6),
         "event": event.event,
@@ -173,7 +172,7 @@ def configure_timing_file(file_path: str) -> bool:
             # Create parent directories if needed
             path.parent.mkdir(parents=True, exist_ok=True)
             # Open file in append mode
-            _timing_file_handle = open(path, "a", encoding="utf-8")
+            _timing_file_handle = open(path, "a", encoding="utf-8")  # noqa: SIM115 - handle outlives this call; closed by close_timing_file
             _timing_file_path = path
             return True
         except (OSError, TypeError, ValueError):
@@ -217,7 +216,7 @@ def ensure_timing_file_configured(file_path: str) -> bool:
         True if file is ready for writing (already open or newly opened),
         False if configuration failed
     """
-    global _timing_file_path, _timing_file_handle
+    global _timing_file_handle
 
     with _timing_file_lock:
         # Check if already configured with the same path
@@ -260,7 +259,7 @@ def clear_timing_context() -> None:
     _timing_enabled.set(False)
 
 
-def get_timing_events(request_id: str) -> List[Dict[str, Any]]:
+def get_timing_events(request_id: str) -> list[dict[str, Any]]:
     """Retrieve timing events for a request (for session log archival).
 
     Args:
@@ -424,8 +423,7 @@ def timed(func: F) -> F:
     qualname = getattr(func, "__qualname__", "") or getattr(func, "__name__", "unknown")
 
     # Shorten common prefixes for readability
-    if module.startswith("open_webui_openrouter_pipe."):
-        module = module[len("open_webui_openrouter_pipe.") :]
+    module = module.removeprefix("open_webui_openrouter_pipe.")
 
     label = f"{module}.{qualname}" if module else qualname
 

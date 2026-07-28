@@ -12,26 +12,26 @@ Responsible for translating technical errors into user-friendly markdown message
 
 from __future__ import annotations
 
-from typing import Any, Optional, TypeVar
-
 import asyncio
+from typing import Any
+
 import httpx
 
 from .config import (
-    DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     _REMOTE_FILE_MAX_SIZE_MAX_MB,
+    DEFAULT_OPENROUTER_ERROR_TEMPLATE,
 )
 from .utils import (
-    _render_error_template,
-    _pretty_json,
-    _safe_json_loads,
+    _coerce_bool,
+    _coerce_positive_int,
+    _get_open_webui_config_module,
     _normalize_optional_str,
     _normalize_string_list,
-    _coerce_positive_int,
-    _coerce_bool,
-    _get_open_webui_config_module,
-    _unwrap_config_value,
+    _pretty_json,
+    _render_error_template,
     _retry_after_seconds,
+    _safe_json_loads,
+    _unwrap_config_value,
 )
 
 # -----------------------------------------------------------------------------
@@ -41,7 +41,7 @@ from .utils import (
 class _RetryableHTTPStatusError(Exception):
     """Wrapper that marks an HTTPStatusError as retryable."""
 
-    def __init__(self, original: httpx.HTTPStatusError, retry_after: Optional[float] = None):
+    def __init__(self, original: httpx.HTTPStatusError, retry_after: float | None = None):
         """Capture the original HTTP error plus optional Retry-After hint."""
         self.original = original
         self.retry_after = retry_after
@@ -72,7 +72,6 @@ class _RetryWait:
         return base_delay
 
 
-_TWait = TypeVar("_TWait")
 
 
 class StatusMessages:
@@ -118,26 +117,26 @@ class OpenRouterAPIError(RuntimeError):
         *,
         status: int,
         reason: str,
-        provider: Optional[str] = None,
-        openrouter_message: Optional[str] = None,
-        openrouter_code: Optional[Any] = None,
-        upstream_message: Optional[str] = None,
-        upstream_type: Optional[str] = None,
-        request_id: Optional[str] = None,
-        raw_body: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        moderation_reasons: Optional[list[str]] = None,
-        flagged_input: Optional[str] = None,
-        model_slug: Optional[str] = None,
-        requested_model: Optional[str] = None,
-        metadata_json: Optional[str] = None,
-        provider_raw: Optional[Any] = None,
-        provider_raw_json: Optional[str] = None,
-        native_finish_reason: Optional[str] = None,
-        chunk_id: Optional[str] = None,
-        chunk_created: Optional[Any] = None,
-        chunk_provider: Optional[str] = None,
-        chunk_model: Optional[str] = None,
+        provider: str | None = None,
+        openrouter_message: str | None = None,
+        openrouter_code: Any | None = None,
+        upstream_message: str | None = None,
+        upstream_type: str | None = None,
+        request_id: str | None = None,
+        raw_body: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        moderation_reasons: list[str] | None = None,
+        flagged_input: str | None = None,
+        model_slug: str | None = None,
+        requested_model: str | None = None,
+        metadata_json: str | None = None,
+        provider_raw: Any | None = None,
+        provider_raw_json: str | None = None,
+        native_finish_reason: str | None = None,
+        chunk_id: str | None = None,
+        chunk_created: Any | None = None,
+        chunk_provider: str | None = None,
+        chunk_model: str | None = None,
         is_streaming_error: bool = False,
     ) -> None:
         """Normalize raw OpenRouter metadata into convenient attributes."""
@@ -174,14 +173,14 @@ class OpenRouterAPIError(RuntimeError):
     def to_markdown(
         self,
         *,
-        model_label: Optional[str] = None,
-        diagnostics: Optional[list[str]] = None,
-        fallback_model: Optional[str] = None,
-        template: Optional[str] = None,
-        metrics: Optional[dict[str, Any]] = None,
-        normalized_model_id: Optional[str] = None,
-        api_model_id: Optional[str] = None,
-        context: Optional[dict[str, Any]] = None,
+        model_label: str | None = None,
+        diagnostics: list[str] | None = None,
+        fallback_model: str | None = None,
+        template: str | None = None,
+        metrics: dict[str, Any] | None = None,
+        normalized_model_id: str | None = None,
+        api_model_id: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> str:
         """Return a user-friendly markdown block describing the failure."""
         provider_label = (self.provider or "").strip()
@@ -214,7 +213,7 @@ class OpenRouterAPIError(RuntimeError):
 
 def _classify_retryable_http_error(
     exc: httpx.HTTPStatusError,
-) -> tuple[bool, Optional[float]]:
+) -> tuple[bool, float | None]:
     """Return (is_retryable, retry_after_seconds) for an HTTPStatusError."""
     response = exc.response
     if response is None:
@@ -225,7 +224,7 @@ def _classify_retryable_http_error(
     return False, None
 
 
-def _extract_openrouter_error_details(body_text: Optional[str]) -> dict[str, Any]:
+def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
     """Normalize OpenRouter error payloads into structured metadata."""
     parsed = _safe_json_loads(body_text) if body_text else None
     raw_error_section = parsed.get("error", {}) if isinstance(parsed, dict) else {}
@@ -278,11 +277,11 @@ def _extract_openrouter_error_details(body_text: Optional[str]) -> dict[str, Any
 def _build_openrouter_api_error(
     status: int,
     reason: str,
-    body_text: Optional[str],
+    body_text: str | None,
     *,
-    requested_model: Optional[str] = None,
-    extra_metadata: Optional[dict[str, Any]] = None,
-) -> "OpenRouterAPIError":
+    requested_model: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> OpenRouterAPIError:
     """Create a structured error wrapper for OpenRouter 4xx responses."""
     details = _extract_openrouter_error_details(body_text)
     metadata_block = details.get("metadata") or {}
@@ -336,15 +335,15 @@ def _parse_supported_effort_values(error_message: str) -> list[str]:
 
 
 def _build_error_template_values(
-    error: "OpenRouterAPIError",
+    error: OpenRouterAPIError,
     *,
     heading: str,
     diagnostics: list[str],
     metrics: dict[str, Any],
-    model_identifier: Optional[str],
-    normalized_model_id: Optional[str],
-    api_model_id: Optional[str],
-    context: Optional[dict[str, Any]] = None,
+    model_identifier: str | None,
+    normalized_model_id: str | None,
+    api_model_id: str | None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Prepare placeholder values for the customizable error template."""
     detail = (error.upstream_message or error.openrouter_message or str(error)).strip()
@@ -359,7 +358,7 @@ def _build_error_template_values(
     context_limit_value = metrics.get("context_limit") if include_model_limits else None
     max_output_tokens_value = metrics.get("max_output_tokens") if include_model_limits else None
     include_model_limits = include_model_limits and bool(
-        (context_limit_value or max_output_tokens_value)
+        context_limit_value or max_output_tokens_value
     )
 
     metadata_json = error.metadata_json or _pretty_json(error.metadata)
@@ -422,15 +421,15 @@ def _build_error_template_values(
 def _resolve_error_model_context(
     error: OpenRouterAPIError,
     *,
-    normalized_model_id: Optional[str] = None,
-    api_model_id: Optional[str] = None,
-) -> tuple[Optional[str], list[str], dict[str, Any]]:
+    normalized_model_id: str | None = None,
+    api_model_id: str | None = None,
+) -> tuple[str | None, list[str], dict[str, Any]]:
     """Return (display_label, diagnostics_lines, metrics) for the affected model."""
     # Import here to avoid circular dependency
     from ..models.registry import ModelFamily
 
     diagnostics: list[str] = []
-    display_label: Optional[str] = None
+    display_label: str | None = None
 
     norm_id = ModelFamily.base_model(normalized_model_id or "") if normalized_model_id else None
     spec = ModelFamily._lookup_spec(norm_id or "")
@@ -463,7 +462,7 @@ def _resolve_error_model_context(
 # RAG File Constraints (using imported config helpers from core.utils)
 # -----------------------------------------------------------------------------
 
-def _read_rag_file_constraints() -> tuple[bool, Optional[int]]:
+def _read_rag_file_constraints() -> tuple[bool, int | None]:
     """Return (rag_enabled, rag_file_size_mb) gleaned from Open WebUI config."""
     module = _get_open_webui_config_module()
     if module is None:
@@ -473,7 +472,7 @@ def _read_rag_file_constraints() -> tuple[bool, Optional[int]]:
     bypass_bool = _coerce_bool(bypass_raw)
     rag_enabled = True if bypass_bool is None else not bypass_bool
 
-    limit_mb: Optional[int] = None
+    limit_mb: int | None = None
     for attr_name in ("RAG_FILE_MAX_SIZE", "FILE_MAX_SIZE"):
         attr_value = _unwrap_config_value(getattr(module, attr_name, None))
         limit_mb = _coerce_positive_int(attr_value)

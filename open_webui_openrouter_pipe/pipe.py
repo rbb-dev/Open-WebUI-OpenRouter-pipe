@@ -28,9 +28,10 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Awaitable, Callable, ClassVar, Literal, Optional, TYPE_CHECKING, cast, no_type_check
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
 
 # Third-party imports
 import aiohttp
@@ -38,7 +39,12 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 # Open WebUI internals (available when running as a pipe)
 try:
@@ -63,7 +69,7 @@ except ImportError:
 
 # Timing instrumentation
 from .core.timing_logger import timed, timing_mark
-from .storage.persistence import _RedisClient, _detect_redis_config
+from .storage.persistence import _detect_redis_config, _RedisClient
 
 # Optional pyzipper support for session log encryption
 try:
@@ -72,61 +78,69 @@ except ImportError:
     pyzipper = None  # type: ignore
 
 # Import subsystems
-from .storage.persistence import ArtifactStore
-from .storage.multimodal import MultimodalHandler
-from .storage.owui_files import OwuiFileGateway
-from .streaming.streaming_core import StreamingHandler
-from .streaming.event_emitter import EventEmitterHandler
+from .core.circuit_breaker import CircuitBreaker
+
+# Import configuration and core modules
+from .core.config import (
+    _OPENROUTER_CATEGORIES,
+    _OPENROUTER_REFERER,
+    _OPENROUTER_TITLE,
+    _PIPE_RUNTIME_ID,
+    EncryptedStr,
+    UserValves,
+    Valves,
+    _select_openrouter_http_referer,
+)
+
+# Import error handling
+from .core.error_formatter import ErrorFormatter
+from .core.errors import (
+    OpenRouterAPIError,
+    RequiredInternalFileError,
+    _build_openrouter_api_error,
+)
+from .core.logging_system import SessionLogger
+from .core.utils import (
+    _apply_retry_after_metadata,
+    _await_if_needed,
+    _extract_feature_flags,
+    _render_error_template,
+)
 
 # Import vendor integrations
 from .integrations.anthropic import _is_anthropic_model_id
 
-# Import model management
-from .models.catalog_manager import ModelCatalogManager
-from .models.reasoning_config import ReasoningConfigManager
-
-# Import error handling
-from .core.error_formatter import ErrorFormatter
-from .core.circuit_breaker import CircuitBreaker
-
 # Import logging
 from .logging.session_log_manager import SessionLogManager
 
-# Import request handling
-from .requests import NonStreamingAdapter, TaskModelAdapter
-
-# Import configuration and core modules
-from .core.config import (
-    Valves,
-    UserValves,
-    EncryptedStr,
-    _PIPE_RUNTIME_ID,
-    _OPENROUTER_TITLE,
-    _OPENROUTER_CATEGORIES,
-    _OPENROUTER_REFERER,
-    _select_openrouter_http_referer,
-)
-from .core.utils import _extract_feature_flags, _await_if_needed, _render_error_template, _apply_retry_after_metadata
-from .core.errors import _build_openrouter_api_error, OpenRouterAPIError, RequiredInternalFileError
+# Import model management
+from .models.catalog_manager import ModelCatalogManager
+from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
-    OpenRouterModelRegistry,
     ModelFamily,
-    sanitize_model_id,
+    OpenRouterModelRegistry,
     is_free_model,
+    sanitize_model_id,
     supports_tool_calling,
 )
+
+# Import request handling
+from .requests import NonStreamingAdapter, TaskModelAdapter
+from .storage.multimodal import MultimodalHandler
+from .storage.owui_files import OwuiFileGateway
+from .storage.persistence import ArtifactStore
+from .streaming.event_emitter import EventEmitter, EventEmitterHandler
+from .streaming.streaming_core import StreamingHandler
 from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
-from .core.logging_system import SessionLogger
-from .streaming.event_emitter import EventEmitter
 
 if TYPE_CHECKING:
-    from .tools.tool_executor import ToolExecutor
-    from .api.gateway.responses_adapter import ResponsesAdapter
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
-    from .requests.orchestrator import RequestOrchestrator
+    from .api.gateway.responses_adapter import ResponsesAdapter
     from .filters import FilterManager
     from .integrations.video import VideoGenerationAdapter
     from .plugins.registry import PluginRegistry
+    from .requests.orchestrator import RequestOrchestrator
+    from .tools.tool_executor import ToolExecutor
 
 ToolCallable = Callable[..., Awaitable[Any]] | Callable[..., Any]
 
@@ -142,16 +156,16 @@ _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
 
 class _LifecycleRegistry:
     def __init__(self) -> None:
-        self._current: dict[str, weakref.ref["Pipe"]] = {}
+        self._current: dict[str, weakref.ref[Pipe]] = {}
         self._lock = threading.Lock()
 
-    def swap_in(self, new: "Pipe") -> "Pipe | None":
+    def swap_in(self, new: Pipe) -> Pipe | None:
         with self._lock:
             old_ref = self._current.get(new.id)
             self._current[new.id] = weakref.ref(new)
             return old_ref() if old_ref else None
 
-    def current(self, pipe_id: str) -> "Pipe | None":
+    def current(self, pipe_id: str) -> Pipe | None:
         with self._lock:
             ref = self._current.get(pipe_id)
             return ref() if ref else None
@@ -194,7 +208,7 @@ def _get_lifecycle_registry():
 class _PipeJob:
     """Encapsulate a single OpenRouter request scheduled through the queue."""
 
-    pipe: "Pipe"
+    pipe: Pipe
     body: dict[str, Any]
     user: dict[str, Any]
     request: Request | None
@@ -202,9 +216,9 @@ class _PipeJob:
     event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None
     metadata: dict[str, Any]
     tools: list[dict[str, Any]] | dict[str, Any] | None
-    task: Optional[dict[str, Any]]
-    task_body: Optional[dict[str, Any]]
-    valves: "Pipe.Valves"
+    task: dict[str, Any] | None
+    task_body: dict[str, Any] | None
+    valves: Pipe.Valves
     future: asyncio.Future
     stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
     request_id: str = field(default_factory=lambda: secrets.token_hex(8))
@@ -269,7 +283,7 @@ class Pipe:
     _video_global_semaphore: asyncio.Semaphore | None = None
     _video_global_limit: int = 0
     _timing_file_warned_path: str | None = None
-    _TOOL_CONTEXT: ContextVar[Optional[_ToolExecutionContext]] = ContextVar(
+    _TOOL_CONTEXT: ContextVar[_ToolExecutionContext | None] = ContextVar(
         "openrouter_tool_context",
         default=None,
     )
@@ -311,10 +325,10 @@ class Pipe:
         self.logger = SessionLogger.get_logger(__name__.split(".")[0])
 
         # Instance variables that will be lazy-initialized
-        self._http_session: Optional[aiohttp.ClientSession] = None
+        self._http_session: aiohttp.ClientSession | None = None
         self._initialized = False
         self._closed = False
-        self._shutdown_lock: Optional[asyncio.Lock] = None
+        self._shutdown_lock: asyncio.Lock | None = None
 
         # Instance-level worker state (prevents event loop contamination across tests)
         self._request_queue: asyncio.Queue[_PipeJob] | None = None
@@ -363,18 +377,18 @@ class Pipe:
             model_registry=OpenRouterModelRegistry,  # Pass the class itself
             pipe_instance=self,
         )
-        self._catalog_manager: Optional[ModelCatalogManager] = None
-        self._error_formatter: Optional["ErrorFormatter"] = None
-        self._reasoning_config_manager: Optional[ReasoningConfigManager] = None
-        self._nonstreaming_adapter: Optional["NonStreamingAdapter"] = None
-        self._task_model_adapter: Optional["TaskModelAdapter"] = None
-        self._tool_executor: Optional["ToolExecutor"] = None
-        self._responses_adapter: Optional["ResponsesAdapter"] = None
-        self._chat_completions_adapter: Optional["ChatCompletionsAdapter"] = None
-        self._request_orchestrator: Optional["RequestOrchestrator"] = None
-        self._filter_manager: Optional["FilterManager"] = None
-        self._video_generation_adapter: Optional["VideoGenerationAdapter"] = None
-        self._plugin_registry: Optional["PluginRegistry"] = None
+        self._catalog_manager: ModelCatalogManager | None = None
+        self._error_formatter: ErrorFormatter | None = None
+        self._reasoning_config_manager: ReasoningConfigManager | None = None
+        self._nonstreaming_adapter: NonStreamingAdapter | None = None
+        self._task_model_adapter: TaskModelAdapter | None = None
+        self._tool_executor: ToolExecutor | None = None
+        self._responses_adapter: ResponsesAdapter | None = None
+        self._chat_completions_adapter: ChatCompletionsAdapter | None = None
+        self._request_orchestrator: RequestOrchestrator | None = None
+        self._filter_manager: FilterManager | None = None
+        self._video_generation_adapter: VideoGenerationAdapter | None = None
+        self._plugin_registry: PluginRegistry | None = None
         self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._video_active_tasks_dict_lock: asyncio.Lock = asyncio.Lock()
         self._video_message_locks_dict_lock: asyncio.Lock = asyncio.Lock()
@@ -662,7 +676,7 @@ class Pipe:
         if aioredis is None:
             self.logger.warning("Redis cache requested but redis-py is unavailable.")
             return
-        client: Optional[_RedisClient] = None
+        client: _RedisClient | None = None
         try:
             client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
             if client is None:
@@ -765,7 +779,7 @@ class Pipe:
             )
         return self._task_model_adapter
 
-    def _ensure_tool_executor(self) -> "ToolExecutor":
+    def _ensure_tool_executor(self) -> ToolExecutor:
         if self._tool_executor is None:
             from .tools.tool_executor import ToolExecutor
             self._tool_executor = ToolExecutor(
@@ -774,7 +788,7 @@ class Pipe:
             )
         return self._tool_executor
 
-    def _ensure_responses_adapter(self) -> "ResponsesAdapter":
+    def _ensure_responses_adapter(self) -> ResponsesAdapter:
         if self._responses_adapter is None:
             from .api.gateway.responses_adapter import ResponsesAdapter
             self._responses_adapter = ResponsesAdapter(
@@ -783,7 +797,7 @@ class Pipe:
             )
         return self._responses_adapter
 
-    def _ensure_chat_completions_adapter(self) -> "ChatCompletionsAdapter":
+    def _ensure_chat_completions_adapter(self) -> ChatCompletionsAdapter:
         if self._chat_completions_adapter is None:
             from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
             self._chat_completions_adapter = ChatCompletionsAdapter(
@@ -792,7 +806,7 @@ class Pipe:
             )
         return self._chat_completions_adapter
 
-    def _ensure_request_orchestrator(self) -> "RequestOrchestrator":
+    def _ensure_request_orchestrator(self) -> RequestOrchestrator:
         if self._request_orchestrator is None:
             from .requests.orchestrator import RequestOrchestrator
             self._request_orchestrator = RequestOrchestrator(
@@ -801,7 +815,7 @@ class Pipe:
             )
         return self._request_orchestrator
 
-    def _ensure_filter_manager(self) -> "FilterManager":
+    def _ensure_filter_manager(self) -> FilterManager:
         if self._filter_manager is None:
             from .filters import FilterManager
             self._filter_manager = FilterManager(
@@ -811,7 +825,7 @@ class Pipe:
             )
         return self._filter_manager
 
-    def _ensure_video_generation_adapter(self) -> "VideoGenerationAdapter":
+    def _ensure_video_generation_adapter(self) -> VideoGenerationAdapter:
         if self._video_generation_adapter is None:
             from .integrations.video import VideoGenerationAdapter
             self._video_generation_adapter = VideoGenerationAdapter(
@@ -836,7 +850,7 @@ class Pipe:
         except Exception:
             self.logger.debug("Plugin event %s dispatch failed", method, exc_info=True)
 
-    def _ensure_plugin_registry(self) -> "PluginRegistry":
+    def _ensure_plugin_registry(self) -> PluginRegistry:
         if self._plugin_registry is None:
             from .plugins.registry import PluginRegistry
             self._plugin_registry = PluginRegistry()
@@ -890,7 +904,7 @@ class Pipe:
                     )
         except ValueError as exc:
             refresh_error = exc
-            self.logger.exception("OpenRouter configuration error: %s", exc)
+            self.logger.exception("OpenRouter configuration error")
         except Exception as exc:
             refresh_error = exc
             self.logger.warning("OpenRouter catalog refresh failed: %s", exc, exc_info=True)
@@ -1106,7 +1120,7 @@ class Pipe:
                 self._maybe_trigger_drain_close()
 
     @staticmethod
-    def _release_stream_counter(pipe: "Pipe", state: dict) -> None:
+    def _release_stream_counter(pipe: Pipe, state: dict) -> None:
         if state.get("released"):
             return
         state["released"] = True
@@ -1301,7 +1315,7 @@ class Pipe:
                         if stream_queue.maxsize > 0:
                             try:
                                 item = await asyncio.wait_for(stream_queue.get(), timeout=0.25)
-                            except asyncio.TimeoutError:
+                            except TimeoutError:
                                 continue
                         else:
                             item = await stream_queue.get()
@@ -1735,7 +1749,7 @@ class Pipe:
 
 
     @timed
-    async def _ensure_concurrency_controls(self, valves: "Pipe.Valves") -> None:
+    async def _ensure_concurrency_controls(self, valves: Pipe.Valves) -> None:
         """Lazy-initialize queue worker and semaphore with the latest valves."""
         cls = type(self)
         current_loop = asyncio.get_running_loop()
@@ -1888,7 +1902,7 @@ class Pipe:
         session: aiohttp.ClientSession | None = None
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tool_context: _ToolExecutionContext | None = None
-        tool_token: contextvars.Token[Optional[_ToolExecutionContext]] | None = None
+        tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
         stream_queue = job.stream_queue
         stream_emitter = (
             self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
@@ -2502,7 +2516,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Any,
         __task_body__: Any,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
         session: aiohttp.ClientSession,
         openwebui_model_id: str,
         pipe_identifier: str,
@@ -2526,9 +2540,9 @@ class Pipe:
     @timed
     def _qualify_model_for_pipe(
         self,
-        pipe_identifier: Optional[str],
-        model_id: Optional[str],
-    ) -> Optional[str]:
+        pipe_identifier: str | None,
+        model_id: str | None,
+    ) -> str | None:
         """Return a dot-prefixed Open WebUI model id for this pipe.
 
         Args:
@@ -2560,9 +2574,9 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         workers: int = 4,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         nagle_min_chars: int = 1,
@@ -2591,8 +2605,8 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
-        breaker_key: Optional[str] = None,
+        valves: Pipe.Valves | None = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -2610,8 +2624,8 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
-        breaker_key: Optional[str] = None,
+        valves: Pipe.Valves | None = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
@@ -2628,9 +2642,9 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -2654,10 +2668,10 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
+        valves: Pipe.Valves | None = None,
         endpoint_override: Literal["responses", "chat_completions"] | None = None,
         workers: int = 4,
-        breaker_key: Optional[str] = None,
+        breaker_key: str | None = None,
         delta_char_limit: int = 0,
         idle_flush_ms: int = 0,
         nagle_min_chars: int = 1,
@@ -2695,9 +2709,9 @@ class Pipe:
         timeout = self.valves.TOOL_SHUTDOWN_TIMEOUT_SECONDS
         try:
             if timeout <= 0:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
             await asyncio.wait_for(_graceful(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.warning(
                 "Tool shutdown exceeded %.1fs; cancelling workers.",
                 timeout,
@@ -2738,7 +2752,7 @@ class Pipe:
                 results = await asyncio.wait_for(gather_coro, timeout=context.batch_timeout)
             else:
                 results = await gather_coro
-        except asyncio.TimeoutError:
+        except TimeoutError:
             message = (
                 f"Tool batch '{batch[0].call.get('name')}' exceeded {context.batch_timeout:.0f}s and was cancelled."
                 if context.batch_timeout
@@ -2974,8 +2988,8 @@ class Pipe:
         api_key: str,
         base_url: str,
         *,
-        valves: "Pipe.Valves | None" = None,
-        breaker_key: Optional[str] = None,
+        valves: Pipe.Valves | None = None,
+        breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
     ) -> dict[str, Any]:
@@ -3065,7 +3079,7 @@ class Pipe:
         return selected or available_models
 
     @timed
-    def _apply_model_filters(self, models: list[dict[str, Any]], valves: "Pipe.Valves") -> list[dict[str, Any]]:
+    def _apply_model_filters(self, models: list[dict[str, Any]], valves: Pipe.Valves) -> list[dict[str, Any]]:
         """Apply model capability filters (free pricing/tool calling) to a model list."""
         if not models:
             return []
@@ -3128,7 +3142,7 @@ class Pipe:
     def _expand_variant_models(
         self,
         models: list[dict[str, Any]],
-        valves: "Pipe.Valves"
+        valves: Pipe.Valves
     ) -> list[dict[str, Any]]:
         """Expand model list by adding virtual variant and preset model entries.
 
@@ -3242,7 +3256,7 @@ class Pipe:
     def _expand_variants_for_enforcement(
         self,
         allowlist_models: list[dict[str, Any]],
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
         available_models: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Expand MODEL_ID + VARIANT_MODELS into the allowlist for enforcement.
@@ -3379,7 +3393,7 @@ class Pipe:
         self,
         model_norm_id: str,
         *,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
         allowlist_norm_ids: set[str],
         catalog_norm_ids: set[str],
         virtual_variant_bases: dict[str, str] | None = None,
@@ -3392,14 +3406,18 @@ class Pipe:
         spec_lookup_id = vvb.get(model_norm_id, model_norm_id)
         spec_available = spec_lookup_id in catalog_norm_ids
 
-        if catalog_norm_ids and model_norm_id not in catalog_norm_ids:
-            if model_norm_id not in allowlist_norm_ids:
-                reasons.append("not_in_catalog")
+        if (
+            catalog_norm_ids and model_norm_id not in catalog_norm_ids
+            and model_norm_id not in allowlist_norm_ids
+        ):
+            reasons.append("not_in_catalog")
 
         model_id_filter = valves.MODEL_ID
-        if model_id_filter and model_id_filter.lower() != "auto":
-            if model_norm_id not in allowlist_norm_ids:
-                reasons.append("MODEL_ID")
+        if (
+            model_id_filter and model_id_filter.lower() != "auto"
+            and model_norm_id not in allowlist_norm_ids
+        ):
+            reasons.append("MODEL_ID")
 
         free_mode = valves.FREE_MODEL_FILTER
         if free_mode != "all" and spec_available:
@@ -3433,7 +3451,7 @@ class Pipe:
         headers: dict[str, str],
         model: Any,
         *,
-        valves: "Pipe.Valves",
+        valves: Pipe.Valves,
     ) -> None:
         """Apply provider-specific beta headers when needed.
 
@@ -3463,7 +3481,7 @@ class Pipe:
 
     @classmethod
     @timed
-    def _note_auth_failure(cls, *, ttl_seconds: Optional[int] = None) -> None:
+    def _note_auth_failure(cls, *, ttl_seconds: int | None = None) -> None:
         key = cls._auth_failure_scope_key()
         if not key:
             return
@@ -3479,7 +3497,7 @@ class Pipe:
 
     @staticmethod
     @timed
-    def _resolve_openrouter_api_key(valves: "Pipe.Valves") -> tuple[str | None, str | None]:
+    def _resolve_openrouter_api_key(valves: Pipe.Valves) -> tuple[str | None, str | None]:
         """Return (api_key, error_message) where api_key is a usable bearer token.
 
         This guards against cases where `API_KEY` is stored encrypted but cannot
@@ -3493,14 +3511,16 @@ class Pipe:
         if not decrypted:
             return None, "OpenRouter API key is not configured."
 
-        if raw_value.startswith(EncryptedStr._ENCRYPTION_PREFIX):
-            # If the key was stored encrypted but decryption did not yield a plausible plaintext key,
-            # treat it as an operator config issue.
-            if decrypted.startswith(EncryptedStr._ENCRYPTION_PREFIX) or (not decrypted.startswith("sk-")):
+        # If the key was stored encrypted but decryption did not yield a plausible plaintext key,
+        # treat it as an operator config issue.
+        if raw_value.startswith(EncryptedStr._ENCRYPTION_PREFIX) and (
+            decrypted.startswith(EncryptedStr._ENCRYPTION_PREFIX)
+            or (not decrypted.startswith("sk-"))
+        ):
                 return (
                     None,
-                    "OpenRouter API key is encrypted but cannot be decrypted. "
-                    "This usually means WEBUI_SECRET_KEY changed. Re-enter the API key in this pipe's settings.",
+                    ("OpenRouter API key is encrypted but cannot be decrypted. "
+                    "This usually means WEBUI_SECRET_KEY changed. Re-enter the API key in this pipe's settings."),
                 )
 
         return decrypted, None
@@ -3540,7 +3560,7 @@ class Pipe:
         return ""
 
     @timed
-    def _merge_valves(self, global_valves, user_valves) -> "Pipe.Valves":
+    def _merge_valves(self, global_valves, user_valves) -> Pipe.Valves:
         """Merge user-level valves into the global defaults.
 
         Any field set to ``"INHERIT"`` (case-insensitive) is ignored so the
@@ -3573,9 +3593,10 @@ class Pipe:
             if not hasattr(global_valves, target_key):
                 if key == "next_reply":
                     target_key = "PERSIST_REASONING_TOKENS"
-                elif key == "PERSIST_REASONING_TOKENS" and not hasattr(global_valves, key):
-                    continue
-                elif not hasattr(global_valves, target_key):
+                elif (
+                    key == "PERSIST_REASONING_TOKENS"
+                    and not hasattr(global_valves, key)
+                ) or not hasattr(global_valves, target_key):
                     continue
             mapped[target_key] = value
 

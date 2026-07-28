@@ -6,14 +6,16 @@ Handles event emission to Open WebUI and middleware stream queue management.
 from __future__ import annotations
 
 import asyncio
-import logging
 import datetime
 import json
+import logging
 import secrets
 import time
-from typing import Any, Optional, Awaitable, Callable, Dict, Literal, Protocol, TYPE_CHECKING
-from ..core.utils import _render_error_template
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Literal
+
 from ..core.logging_system import SessionLogger
+from ..core.utils import _render_error_template
 
 # Type hints for Open WebUI components
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -22,15 +24,15 @@ if TYPE_CHECKING:
     from ..pipe import _PipeJob
 
 # Lazy loading for Open WebUI utilities to avoid triggering langchain at import time
-_owui_template_cached: Optional[Callable[..., dict[str, Any]]] = None
+_owui_template_cached: Callable[..., dict[str, Any]] | None = None
 
 
 def _stub_chat_chunk_template(
     model: str,
-    content: Optional[str] = None,
-    _reasoning_unused: Optional[str] = None,
-    tool_calls: Optional[list[dict[str, Any]]] = None,
-    usage: Optional[dict[str, Any]] = None,
+    content: str | None = None,
+    _reasoning_unused: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stub implementation mimicking OpenAI chat completion chunk format."""
     chunk: dict[str, Any] = {
@@ -55,30 +57,20 @@ def _stub_chat_chunk_template(
     return chunk
 
 
-class _OpenAIChatChunkTemplate(Protocol):
-    def __call__(
-        self,
-        model: str,
-        content: Optional[str] = None,
-        _reasoning_unused: Optional[str] = None,
-        tool_calls: Optional[list[dict[str, Any]]] = None,
-        usage: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        ...
-
-
 def openai_chat_chunk_message_template(
     model: str,
-    content: Optional[str] = None,
-    _reasoning_unused: Optional[str] = None,
-    tool_calls: Optional[list[dict[str, Any]]] = None,
-    usage: Optional[dict[str, Any]] = None,
+    content: str | None = None,
+    _reasoning_unused: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wrapper that lazily loads the Open WebUI template or uses stub."""
     global _owui_template_cached
     if _owui_template_cached is None:
         try:
-            from open_webui.utils.misc import openai_chat_chunk_message_template as _real_template
+            from open_webui.utils.misc import (
+                openai_chat_chunk_message_template as _real_template,
+            )
             _owui_template_cached = _real_template
         except ImportError:
             _owui_template_cached = _stub_chat_chunk_template
@@ -109,7 +101,7 @@ class EventEmitterHandler:
         logger: logging.Logger,
         valves: Any,
         pipe_instance: Any,  # Reference to Pipe instance for helper methods
-        event_emitter: Optional[EventEmitter] = None,
+        event_emitter: EventEmitter | None = None,
     ):
         """Initialize EventEmitterHandler.
         
@@ -126,7 +118,7 @@ class EventEmitterHandler:
 
     async def _emit_status(
         self,
-        event_emitter: Optional[Callable[[dict], Awaitable[None]]],
+        event_emitter: Callable[[dict], Awaitable[None]] | None,
         message: str,
         done: bool = False
     ):
@@ -291,7 +283,7 @@ class EventEmitterHandler:
         error_id = secrets.token_hex(8)
         context = {
             "error_id": error_id,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
             "session_id": SessionLogger.session_id.get() or "",
             "user_id": SessionLogger.user_id.get() or "",
             "support_email": self.valves.SUPPORT_EMAIL,
@@ -304,7 +296,7 @@ class EventEmitterHandler:
     async def _emit_citation(
         self,
         event_emitter: EventEmitter | None,
-        citation: Dict[str, Any],
+        citation: dict[str, Any],
     ) -> None:
         """Send a normalized source block to the UI if an emitter is available."""
         if event_emitter is None or not isinstance(citation, dict):
@@ -339,7 +331,7 @@ class EventEmitterHandler:
         if not metadata:
             metadata = [
                 {
-                    "date_accessed": datetime.datetime.now().isoformat(),
+                    "date_accessed": datetime.datetime.now(datetime.UTC).isoformat(),
                     "source": source_info.get("url") or source_name,
                 }
             ]
@@ -542,7 +534,7 @@ class EventEmitterHandler:
 
         try:
             await asyncio.wait_for(stream_queue.put(item), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.warning(
                 "Middleware stream queue enqueue timed out, dropping item (request_id=%s, maxsize=%s).",
                 job.request_id,

@@ -26,16 +26,24 @@ import re
 import secrets
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Column, String, JSON, Boolean, DateTime, Engine, text, inspect as sa_inspect
-from sqlalchemy.orm import sessionmaker, Session, declarative_base
+from sqlalchemy import JSON, Boolean, Column, DateTime, Engine, String, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import SQLAlchemyError
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from ..core.timing_logger import timed
 from ..core.utils import _await_if_needed
 
@@ -52,11 +60,11 @@ except ImportError:
 
 # Import ULID constants from config
 from ..core.config import (
-    ULID_LENGTH,
-    ULID_TIME_LENGTH,
-    ULID_RANDOM_LENGTH,
-    CROCKFORD_ALPHABET,
     _ULID_TIME_MASK,
+    CROCKFORD_ALPHABET,
+    ULID_LENGTH,
+    ULID_RANDOM_LENGTH,
+    ULID_TIME_LENGTH,
 )
 
 # -----------------------------------------------------------------------------
@@ -209,9 +217,9 @@ class ArtifactStore:
         pipe_id: str,
         logger: logging.Logger,
         valves: Any,  # Pipe.Valves reference
-        emit_notification_callback: Optional[Callable] = None,
-        tool_context_var: Optional[ContextVar] = None,
-        user_id_context_var: Optional[ContextVar] = None,
+        emit_notification_callback: Callable | None = None,
+        tool_context_var: ContextVar | None = None,
+        user_id_context_var: ContextVar | None = None,
     ):
         """Initialize the ArtifactStore with dependencies from Pipe.
 
@@ -281,7 +289,7 @@ class ArtifactStore:
         )
 
         self._redis_enabled = False
-        self._redis_client: Optional[_RedisClient] = None
+        self._redis_client: _RedisClient | None = None
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
@@ -295,7 +303,7 @@ class ArtifactStore:
         """Initialize SQLAlchemy state."""
         self._engine: Engine | None = None
         self._session_factory: sessionmaker | None = None
-        self._item_model: Type[Any] | None = None
+        self._item_model: type[Any] | None = None
         self._artifact_table_name: str | None = None
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
@@ -309,7 +317,7 @@ class ArtifactStore:
     # -----------------------------------------------------------------------------
 
     @timed
-    def _ensure_artifact_store(self, valves: Any, pipe_identifier: Optional[str] = None) -> None:
+    def _ensure_artifact_store(self, valves: Any, pipe_identifier: str | None = None) -> None:
         """Configure encryption/compression + ensure the backing table exists."""
         # Import EncryptedStr locally to avoid circular dependency
         from open_webui_openrouter_pipe.core.config import EncryptedStr
@@ -408,9 +416,9 @@ class ArtifactStore:
     @timed
     def _init_artifact_store(
         self,
-        pipe_identifier: Optional[str] = None,
+        pipe_identifier: str | None = None,
         *,
-        table_fragment: Optional[str] = None,
+        table_fragment: str | None = None,
     ) -> None:
         """Initialize the per-pipe SQLAlchemy model + executor for artifact storage."""
         engine: Any | None = None
@@ -540,7 +548,9 @@ class ArtifactStore:
                 elif isinstance(size_attr, int) and size_attr > 0:
                     pool_workers = size_attr  # SingletonThreadPool.size
                 try:
-                    from open_webui.env import DATABASE_POOL_MAX_OVERFLOW  # type: ignore
+                    from open_webui.env import (
+                        DATABASE_POOL_MAX_OVERFLOW,  # type: ignore
+                    )
                     if isinstance(DATABASE_POOL_MAX_OVERFLOW, int) and DATABASE_POOL_MAX_OVERFLOW > 0:
                         pool_workers += DATABASE_POOL_MAX_OVERFLOW
                 except (ImportError, ModuleNotFoundError):
@@ -828,11 +838,11 @@ class ArtifactStore:
 
     def _make_db_row(
         self,
-        chat_id: Optional[str],
-        message_id: Optional[str],
+        chat_id: str | None,
+        message_id: str | None,
         model_id: str,
-        payload: Dict[str, Any],
-    ) -> Optional[dict[str, Any]]:
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
         """Construct a persistence-ready row dict or return ``None`` when invalid."""
         if not (chat_id and self._item_model):
             return None
@@ -1111,7 +1121,7 @@ class ArtifactStore:
     def _db_fetch_sync(
         self,
         chat_id: str,
-        message_id: Optional[str],
+        message_id: str | None,
         item_ids: list[str],
     ) -> dict[str, dict]:
         """Synchronously fetch persisted artifacts for ``chat_id``."""
@@ -1185,8 +1195,8 @@ class ArtifactStore:
     @timed
     async def _db_fetch(
         self,
-        chat_id: Optional[str],
-        message_id: Optional[str],
+        chat_id: str | None,
+        message_id: str | None,
         item_ids: list[str],
     ) -> dict[str, dict]:
         """Fetch artifacts with Redis cache + retries."""
@@ -1252,7 +1262,7 @@ class ArtifactStore:
     async def _db_fetch_direct(
         self,
         chat_id: str,
-        message_id: Optional[str],
+        message_id: str | None,
         item_ids: list[str],
     ) -> dict[str, dict]:
         retryer = AsyncRetrying(
@@ -1282,7 +1292,7 @@ class ArtifactStore:
             session.commit()
 
     @timed
-    async def _delete_artifacts(self, refs: list[Tuple[str, str]]) -> None:
+    async def _delete_artifacts(self, refs: list[tuple[str, str]]) -> None:
         """Delete persisted artifacts (and cached copies) once they have been replayed."""
         if not refs:
             return
@@ -1352,10 +1362,7 @@ class ArtifactStore:
                     failure_reason = reason
                 else:
                     self.logger.debug("Redis pub/sub listener error repeated: %s", reason)
-                try:
-                    await asyncio.sleep(backoff)
-                except asyncio.CancelledError:  # pragma: no cover - shutdown path
-                    raise
+                await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 5.0)
             finally:
                 if pubsub is not None:
@@ -1503,7 +1510,7 @@ class ArtifactStore:
                     # Redis errors during lock release are non-fatal - continue pipe operation
                     self.logger.debug("Failed to release Redis flush lock", exc_info=True)
 
-    def _redis_cache_key(self, chat_id: Optional[str], row_id: Optional[str]) -> Optional[str]:
+    def _redis_cache_key(self, chat_id: str | None, row_id: str | None) -> str | None:
         if not (chat_id and row_id):
             return None
         return f"{self._redis_cache_prefix}:{chat_id}:{row_id}"
@@ -1539,7 +1546,7 @@ class ArtifactStore:
             return await self._db_persist_direct(rows)
 
     @timed
-    async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: Optional[str] = None) -> None:
+    async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: str | None = None) -> None:
         if not (self._redis_enabled and self._redis_client):
             return
         try:
@@ -1568,7 +1575,7 @@ class ArtifactStore:
     @timed
     async def _redis_fetch_rows(
         self,
-        chat_id: Optional[str],
+        chat_id: str | None,
         item_ids: list[str],
     ) -> dict[str, dict[str, Any]]:
         if not (self._redis_enabled and self._redis_client and chat_id and item_ids):
@@ -1712,9 +1719,9 @@ class ArtifactStore:
 # -----------------------------------------------------------------------------
 
 def normalize_persisted_item(
-    item: Optional[Dict[str, Any]],
+    item: dict[str, Any] | None,
     generate_item_id: Callable[[], str] = generate_item_id,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Ensure persisted response artifacts match the schema expected by the
     Responses API when replayed via the ``input`` array.
 

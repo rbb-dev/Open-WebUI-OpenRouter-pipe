@@ -15,12 +15,11 @@ import hashlib
 import logging
 import os
 import re
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, cast
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, model_validator
 from pydantic_core import core_schema
-from pydantic import GetCoreSchemaHandler
 
 from .fusion_defaults import (
     DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
@@ -543,7 +542,7 @@ class EncryptedStr(str):
     _ENCRYPTION_PREFIX = "encrypted:"
 
     @classmethod
-    def _get_encryption_key(cls) -> Optional[bytes]:
+    def _get_encryption_key(cls) -> bytes | None:
         """Return the Fernet key derived from ``WEBUI_SECRET_KEY``.
 
         Returns:
@@ -720,7 +719,7 @@ class Valves(BaseModel):
         ge=1,
         description="Seconds to wait for the TCP/TLS connection to OpenRouter before failing.",
     )
-    HTTP_TOTAL_TIMEOUT_SECONDS: Optional[int] = Field(
+    HTTP_TOTAL_TIMEOUT_SECONDS: int | None = Field(
         default=None,
         ge=1,
         description="Overall HTTP timeout (seconds) for OpenRouter requests. Set to null to disable the total timeout so long-running streaming responses are not interrupted.",
@@ -1109,7 +1108,7 @@ class Valves(BaseModel):
         default="lzma",
         description="Zip compression algorithm for session log archives (default lzma).",
     )
-    SESSION_LOG_ZIP_COMPRESSLEVEL: Optional[int] = Field(
+    SESSION_LOG_ZIP_COMPRESSLEVEL: int | None = Field(
         default=None,
         ge=0,
         le=9,
@@ -1463,7 +1462,7 @@ class Valves(BaseModel):
         ge=1,
         description="Max seconds to wait for a batch of tool calls to complete before timing out. Longer default keeps complex batches from being interrupted prematurely.",
     )
-    TOOL_IDLE_TIMEOUT_SECONDS: Optional[int] = Field(
+    TOOL_IDLE_TIMEOUT_SECONDS: int | None = Field(
         default=None,
         ge=1,
         description="Idle timeout (seconds) between tool executions in a queue. Set to null for unlimited idle time so intermittent tool usage does not fail unexpectedly.",
@@ -2072,9 +2071,8 @@ class UserValves(BaseModel):
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
-    if override:
-        if override.startswith(("http://", "https://")):
-            return override
+    if override and override.startswith(("http://", "https://")):
+        return override
     return _OPENROUTER_REFERER
 
 
@@ -2110,7 +2108,7 @@ def _owui_forwarded_header_names() -> set[str]:
     for attr in dir(env):
         if not attr.startswith("FORWARD_") or "_HEADER_" not in attr:
             continue
-        if attr.endswith("_SECRET") or attr.endswith("_EXPIRES_SECONDS"):
+        if attr.endswith(("_SECRET", "_EXPIRES_SECONDS")):
             continue
         val = getattr(env, attr, None)
         if isinstance(val, str) and val.strip():

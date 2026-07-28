@@ -27,7 +27,7 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, ClassVar
 
 from .utils import _sanitize_path_component
 
@@ -47,7 +47,7 @@ class _SessionLogArchiveJob:
     base_dir: str
     zip_password: bytes
     zip_compression: str
-    zip_compresslevel: Optional[int]
+    zip_compresslevel: int | None
     user_id: str
     session_id: str
     chat_id: str
@@ -93,13 +93,13 @@ class SessionLogger:
         logs:       Map of request_id -> fixed-size deque of structured log events (dicts).
     """
 
-    session_id: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
-    request_id: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
-    user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
+    session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
+    request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
+    user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
     log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
-    logs: ClassVar[Dict[str, deque[dict[str, Any]]]] = {}
-    _session_last_seen: ClassVar[Dict[str, float]] = {}
+    logs: ClassVar[dict[str, deque[dict[str, Any]]]] = {}
+    _session_last_seen: ClassVar[dict[str, float]] = {}
     log_queue: asyncio.Queue[logging.LogRecord] | None = None
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
@@ -115,7 +115,7 @@ class SessionLogger:
             return "openrouter.request.payload"
         if msg.startswith("OpenRouter payload:"):
             return "openrouter.sse.event"
-        if msg.startswith("Tool ") or msg.startswith("🔧") or msg.startswith("Skipping "):
+        if msg.startswith(("Tool ", "🔧", "Skipping ")):
             return "pipe.tools"
         return "pipe"
 
@@ -168,7 +168,7 @@ class SessionLogger:
             msecs = int((created - int(created)) * 1000)
             asctime = f"{base},{msecs:03d}"
         except (ValueError, OverflowError, OSError):
-            asctime = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
+            asctime = datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
         level = str(event.get("level") or "INFO")
         uid = str(event.get("user_id") or "-")
         message = event.get("message")
@@ -381,7 +381,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         request_ids = []
 
     meta = {
-        "created_at": datetime.datetime.fromtimestamp(job.created_at, tz=datetime.timezone.utc).isoformat(),
+        "created_at": datetime.datetime.fromtimestamp(job.created_at, tz=datetime.UTC).isoformat(),
         "ids": {
             "user_id": str(job.user_id or ""),
             "session_id": str(session_id),
@@ -410,7 +410,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             msecs = int((created - int(created)) * 1000)
             return f"{base},{msecs:03d}"
         except (ValueError, OverflowError, OSError):
-            return datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
+            return datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
 
     def _format_event_as_text(event: dict[str, Any]) -> str:
         created = event.get("created")
@@ -429,10 +429,10 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
 
     def _format_iso_utc(created: float) -> str:
         try:
-            ts = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
+            ts = datetime.datetime.fromtimestamp(created, tz=datetime.UTC).isoformat(timespec="milliseconds")
             return ts.replace("+00:00", "Z")
         except (ValueError, OverflowError, OSError):
-            ts = datetime.datetime.fromtimestamp(time.time(), tz=datetime.timezone.utc).isoformat(timespec="milliseconds")
+            ts = datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC).isoformat(timespec="milliseconds")
             return ts.replace("+00:00", "Z")
 
     def _coerce_event(raw: Any) -> dict[str, Any]:

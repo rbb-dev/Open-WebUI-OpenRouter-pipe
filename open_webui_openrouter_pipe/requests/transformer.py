@@ -14,28 +14,40 @@ import binascii
 import contextlib
 import json
 import uuid
-from typing import Any, Dict, List, Optional, Callable, Awaitable, Tuple, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
+
 from starlette.requests import Request
 
-# Import helper functions from domain modules
-from ..storage.persistence import normalize_persisted_item
-from ..tools.tool_schema import (
-    _classify_function_call_artifacts,
+# Import from config
+from ..core.config import (
+    _MARKDOWN_IMAGE_RE,
+    _NON_REPLAYABLE_TOOL_ARTIFACTS,
+    LOGGER,
 )
+
+# Import status messages
+from ..core.errors import RequiredInternalFileError, StatusMessages
 
 # Import utility functions
 from ..core.utils import (
-    _extract_plain_text_content,
-    contains_marker,
-    strip_hidden_marker_lines,
-    split_text_by_phase_markers,
-    split_text_by_markers,
     REASONING_ANCHOR_KEYS,
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
+    _extract_plain_text_content,
+    contains_marker,
+    split_text_by_markers,
+    split_text_by_phase_markers,
+    strip_hidden_marker_lines,
 )
+
+# Import Anthropic integration
+from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
+
+# Import from registry
+from ..models.registry import ModelFamily, supports_phase_model
 
 # Import from storage
 from ..storage.owui_files import (
@@ -43,24 +55,12 @@ from ..storage.owui_files import (
     is_internal_file_url,
 )
 
+# Import helper functions from domain modules
 # Import from persistence
-from ..storage.persistence import generate_item_id
-
-# Import from config
-from ..core.config import (
-    LOGGER,
-    _MARKDOWN_IMAGE_RE,
-    _NON_REPLAYABLE_TOOL_ARTIFACTS,
+from ..storage.persistence import generate_item_id, normalize_persisted_item
+from ..tools.tool_schema import (
+    _classify_function_call_artifacts,
 )
-
-# Import from registry
-from ..models.registry import ModelFamily, supports_phase_model
-
-# Import status messages
-from ..core.errors import StatusMessages, RequiredInternalFileError
-
-# Import Anthropic integration
-from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -143,7 +143,7 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
     inserts_before: dict[int, list[tuple[int, dict[str, Any]]]] = {}
     inserts_after: dict[int, list[tuple[int, dict[str, Any]]]] = {}
     for seq, item, mode, ordinal in sorted(movable, key=lambda a: a[0]):
-        pos: Optional[int] = None
+        pos: int | None = None
         if mode == "before":
             if 0 <= ordinal < len(fc_items):
                 pos = fc_items[ordinal][0]
@@ -192,22 +192,20 @@ def _reinterleave_reasoning_by_anchor(
 
 async def transform_messages_to_input(
     pipe: "Pipe",
-    messages: List[Dict[str, Any]],
-    chat_id: Optional[str] = None,
-    openwebui_model_id: Optional[str] = None,
-    artifact_loader: Optional[
-        Callable[[Optional[str], Optional[str], List[str]], Awaitable[Dict[str, Dict[str, Any]]]]
-    ] = None,
+    messages: list[dict[str, Any]],
+    chat_id: str | None = None,
+    openwebui_model_id: str | None = None,
+    artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
     pruning_turns: int = 0,
-    replayed_reasoning_refs: Optional[List[Tuple[str, str]]] = None,
-    __request__: Optional[Request] = None,
-    user_obj: Optional[Any] = None,
-    event_emitter: Optional[Callable] = None,
+    replayed_reasoning_refs: list[tuple[str, str]] | None = None,
+    __request__: Request | None = None,
+    user_obj: Any | None = None,
+    event_emitter: Callable | None = None,
     *,
-    model_id: Optional[str] = None,
+    model_id: str | None = None,
     valves: Optional["Pipe.Valves"] = None,
-    capability_model_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    capability_model_id: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
 
@@ -246,7 +244,7 @@ async def transform_messages_to_input(
     openai_input: list[dict] = []
     last_assistant_images: list[dict[str, Any]] = []
 
-    def _message_identifier(entry: dict[str, Any]) -> Optional[str]:
+    def _message_identifier(entry: dict[str, Any]) -> str | None:
         """Return the most specific identifier available on ``entry``."""
         for key in ("id", "_id", "message_id"):
             value = entry.get(key)
@@ -254,16 +252,16 @@ async def transform_messages_to_input(
                 return value
         return None
 
-    def _compute_turn_indices() -> tuple[list[Optional[int]], int]:
+    def _compute_turn_indices() -> tuple[list[int | None], int]:
         """Label each message with a turn index and return the total count."""
-        indices: list[Optional[int]] = []
+        indices: list[int | None] = []
         current_turn = -1
         max_turn = -1
-        last_dialog_role: Optional[str] = None
+        last_dialog_role: str | None = None
 
         for msg in messages:
             role = (msg.get("role") or "").lower()
-            turn_idx: Optional[int] = None
+            turn_idx: int | None = None
 
             if role == "user":
                 if last_dialog_role != "user":
@@ -271,8 +269,7 @@ async def transform_messages_to_input(
                 turn_idx = current_turn
                 last_dialog_role = "user"
             elif role == "assistant":
-                if current_turn < 0:
-                    current_turn = 0
+                current_turn = max(current_turn, 0)
                 turn_idx = current_turn
                 last_dialog_role = "assistant"
             else:
@@ -295,7 +292,7 @@ async def transform_messages_to_input(
             if match.group("url").strip()
         ]
 
-    def _is_old_turn(turn_index: Optional[int], *, threshold: Optional[int]) -> bool:
+    def _is_old_turn(turn_index: int | None, *, threshold: int | None) -> bool:
         """Return True when a message turn falls outside the retention window."""
         return (
             threshold is not None
@@ -304,10 +301,10 @@ async def transform_messages_to_input(
         )
 
     def _prune_tool_output(
-        item: Dict[str, Any],
+        item: dict[str, Any],
         *,
-        marker: Optional[str],
-        turn_index: Optional[int],
+        marker: str | None,
+        turn_index: int | None,
         retention_turns: int,
     ) -> bool:
         """Shorten oversized tool output strings while leaving markers intact."""
@@ -352,7 +349,7 @@ async def transform_messages_to_input(
         return True
 
     turn_indices, total_turns = _compute_turn_indices()
-    prune_before_turn: Optional[int] = None
+    prune_before_turn: int | None = None
     if pruning_turns > 0 and total_turns > pruning_turns:
         prune_before_turn = total_turns - pruning_turns
 
@@ -463,7 +460,7 @@ async def transform_messages_to_input(
                 )
                 content_blocks = []
 
-            async def _to_input_image(block: dict, *, required: bool = True, msg_id: Optional[str] = msg_id) -> Optional[dict[str, Any]]:
+            async def _to_input_image(block: dict, *, required: bool = True, msg_id: str | None = msg_id) -> dict[str, Any] | None:
                 """Convert Open WebUI image block into Responses format.
 
                 When ``required`` is True (current-user message attachments), a
@@ -508,9 +505,9 @@ async def transform_messages_to_input(
                 """
                 try:
                     image_payload = block.get("image_url")
-                    detail: Optional[str] = None
+                    detail: str | None = None
                     url: str = ""
-                    owui_file_id: Optional[str] = None
+                    owui_file_id: str | None = None
 
                     if isinstance(image_payload, dict):
                         url = image_payload.get("url", "")
@@ -524,8 +521,11 @@ async def transform_messages_to_input(
                     if not url:
                         return None
 
-                    if url.startswith("http://") and not is_internal_file_url(url):
-                        if not pipe._multimodal_handler._is_insecure_http_allowed(url):
+                    if (
+                        url.startswith("http://")
+                        and not is_internal_file_url(url)
+                        and not pipe._multimodal_handler._is_insecure_http_allowed(url)
+                    ):
                             pipe.logger.error("Blocked insecure HTTP image URL by default: %s", url)
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
@@ -535,9 +535,9 @@ async def transform_messages_to_input(
                             )
                             return None
 
-                    storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
+                    storage_context: tuple[Request | None, Any | None] | None = None
 
-                    async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+                    async def _get_storage_context() -> tuple[Request | None, Any | None]:
                         """Resolve (request,user) tuple only once for storage uploads."""
                         nonlocal storage_context
                         if storage_context is None:
@@ -549,7 +549,7 @@ async def transform_messages_to_input(
                         mime_type: str,
                         preferred_name: str,
                         status_message: str,
-                    ) -> Optional[str]:
+                    ) -> str | None:
                         """Upload image bytes to Open WebUI storage and emit status."""
                         upload_request, upload_user = await _get_storage_context()
                         if not (upload_request and upload_user):
@@ -582,7 +582,7 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            pipe.logger.exception("Failed to process base64 image: %s", exc)
+                            pipe.logger.exception("Failed to process base64 image")
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to save base64 image: {exc}",
@@ -607,7 +607,7 @@ async def transform_messages_to_input(
                                 if stored_id:
                                     owui_file_id = stored_id
                         except Exception as exc:
-                            pipe.logger.exception("Failed to download remote image %s: %s", url, exc)
+                            pipe.logger.exception("Failed to download remote image %s", url)
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to download image: {exc}",
@@ -648,7 +648,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.exception("Error in _to_input_image: %s", exc)
+                    pipe.logger.exception("Error in _to_input_image")
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Image processing error: {exc}",
@@ -656,7 +656,7 @@ async def transform_messages_to_input(
                     )
                     return None
 
-            async def _to_input_file(block: dict, *, msg_id: Optional[str] = msg_id) -> dict:
+            async def _to_input_file(block: dict, *, msg_id: str | None = msg_id) -> dict:
                 """Convert Open WebUI file blocks into Responses API format.
 
                 Handles file content blocks from multiple sources, downloading remote files
@@ -703,9 +703,9 @@ async def transform_messages_to_input(
                     file_url = source.get("file_url")
                     file_url_set_from_file_data = False
 
-                    storage_context: Optional[Tuple[Optional[Request], Optional[Any]]] = None
+                    storage_context: tuple[Request | None, Any | None] | None = None
 
-                    async def _get_storage_context() -> tuple[Optional[Request], Optional[Any]]:
+                    async def _get_storage_context() -> tuple[Request | None, Any | None]:
                         """Lazy-load the request/user pair used for uploads."""
                         nonlocal storage_context
                         if storage_context is None:
@@ -716,9 +716,9 @@ async def transform_messages_to_input(
                         payload: bytes,
                         mime_type: str,
                         *,
-                        preferred_name: Optional[str],
+                        preferred_name: str | None,
                         status_message: str,
-                    ) -> Optional[str]:
+                    ) -> str | None:
                         """Persist arbitrary bytes to Open WebUI storage and emit status."""
                         upload_request, upload_user = await _get_storage_context()
                         if not (upload_request and upload_user):
@@ -750,8 +750,8 @@ async def transform_messages_to_input(
                     async def _download_and_store(
                         remote_url: str,
                         *,
-                        name_hint: Optional[str] = None,
-                    ) -> Optional[str]:
+                        name_hint: str | None = None,
+                    ) -> str | None:
                         """Download a remote file and persist it via `_save_bytes_to_storage`."""
                         downloaded = await pipe._multimodal_handler._download_remote_url(remote_url)
                         if not downloaded:
@@ -801,7 +801,7 @@ async def transform_messages_to_input(
                                         file_url = None
                                         file_data = None  # Clear base64; store via OWUI id instead.
                             except Exception as exc:
-                                pipe.logger.exception("Failed to process base64 file: %s", exc)
+                                pipe.logger.exception("Failed to process base64 file")
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file: {exc}",
@@ -848,7 +848,7 @@ async def transform_messages_to_input(
                                             )
                                     file_data = None  # Clear, use URL instead
                             except Exception as exc:
-                                pipe.logger.exception("Failed to download remote file: %s", exc)
+                                pipe.logger.exception("Failed to download remote file")
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file: {exc}",
@@ -876,7 +876,7 @@ async def transform_messages_to_input(
                                         file_id = stored_id
                                         file_url = None
                             except Exception as exc:
-                                pipe.logger.exception("Failed to process base64 file_url: %s", exc)
+                                pipe.logger.exception("Failed to process base64 file_url")
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to save base64 file URL: {exc}",
@@ -916,7 +916,7 @@ async def transform_messages_to_input(
                                                 level="warning",
                                             )
                             except Exception as exc:
-                                pipe.logger.exception("Failed to download remote file_url: %s", exc)
+                                pipe.logger.exception("Failed to download remote file_url")
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
                                     f"Failed to download file URL: {exc}",
@@ -971,7 +971,7 @@ async def transform_messages_to_input(
                     return result
 
                 except Exception as exc:
-                    pipe.logger.exception("Error in _to_input_file: %s", exc)
+                    pipe.logger.exception("Error in _to_input_file")
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"File processing error: {exc}",
@@ -1053,7 +1053,7 @@ async def transform_messages_to_input(
                     "webm",
                 }
 
-                def _map_format(mime: Optional[str]) -> str:
+                def _map_format(mime: str | None) -> str:
                     if not isinstance(mime, str):
                         return "mp3"
                     return format_map.get(mime.lower(), "mp3")
@@ -1067,7 +1067,7 @@ async def transform_messages_to_input(
                         },
                     }
 
-                def _normalize_base64(data: str) -> Optional[str]:
+                def _normalize_base64(data: str) -> str | None:
                     if not data:
                         return None
                     cleaned = "".join(data.split())
@@ -1081,7 +1081,7 @@ async def transform_messages_to_input(
                         return None
                     return cleaned
 
-                def _resolved_mime_hint(payload: Optional[dict[str, Any]] = None) -> Optional[str]:
+                def _resolved_mime_hint(payload: dict[str, Any] | None = None) -> str | None:
                     candidates: list[Any] = []
                     if isinstance(payload, dict):
                         candidates.extend(
@@ -1106,8 +1106,8 @@ async def transform_messages_to_input(
                     return None
 
                 def _normalize_format(
-                    explicit_format: Optional[str],
-                    mime_hint: Optional[str],
+                    explicit_format: str | None,
+                    mime_hint: str | None,
                 ) -> str:
                     if isinstance(explicit_format, str):
                         normalized = explicit_format.strip().lower()
@@ -1202,7 +1202,7 @@ async def transform_messages_to_input(
                     return _empty_audio_block()
 
                 except Exception as exc:
-                    pipe.logger.exception("Error in _to_input_audio: %s", exc)
+                    pipe.logger.exception("Error in _to_input_audio")
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Audio processing error: {exc}",
@@ -1351,7 +1351,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.exception("Error in _to_input_video: %s", exc)
+                    pipe.logger.exception("Error in _to_input_video")
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Video processing error: {exc}",
@@ -1442,7 +1442,7 @@ async def transform_messages_to_input(
                 except RequiredInternalFileError:
                     raise
                 except Exception as exc:
-                    pipe.logger.exception("Failed to transform block type '%s': %s", block_type, exc)
+                    pipe.logger.exception("Failed to transform block type '%s'", block_type)
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
                         f"Block transformation error for '{block_type}': {exc}",
@@ -1467,8 +1467,8 @@ async def transform_messages_to_input(
                             fallback_blocks.append(transformed)
                     except RequiredInternalFileError:
                         raise
-                    except Exception as exc:
-                        pipe.logger.exception("Failed to reuse assistant image: %s", exc)
+                    except Exception:
+                        pipe.logger.exception("Failed to reuse assistant image")
                 if fallback_blocks:
                     pipe.logger.debug(
                         "Rehydrating %d assistant-generated image(s) due to empty user attachments (selection_mode=%s, limit=%d).",

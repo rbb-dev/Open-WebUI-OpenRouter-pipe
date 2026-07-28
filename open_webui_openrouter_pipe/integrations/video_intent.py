@@ -16,11 +16,16 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Any, Literal
 
 from ..core.config import _PIPE_METADATA_KEY
-from ..core.utils import _iter_kind_marker_spans, _safe_marker_body, _serialize_kind_marker
+from ..core.utils import (
+    _iter_kind_marker_spans,
+    _safe_marker_body,
+    _serialize_kind_marker,
+)
 from ..structured_task import (
     build_response_format,
     call_with_candidates,
@@ -59,7 +64,7 @@ def resolve_intent_user_setting(
     admin_field: str,
     default: Any,
     *,
-    coerce: Optional[Callable[[Any], Any]] = None,
+    coerce: Callable[[Any], Any] | None = None,
 ) -> Any:
     """Prefer the per-request user value pushed by the per-model video filter
     inlet, fall back to the admin valve.
@@ -112,7 +117,7 @@ _CONTROL_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ZERO_WIDTH_CHARS = ("​", "‌", "‍", "﻿", "⁠")
+_ZERO_WIDTH_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff", "\u2060")
 
 
 def neutralise_control_tokens(text: str) -> str:
@@ -157,8 +162,8 @@ ConfidenceLiteral = Literal["high", "medium", "low"]
 @dataclass
 class FramePlanEntry:
     source: FrameSourceLiteral
-    source_index: Optional[int]
-    timestamp_seconds: Optional[float]
+    source_index: int | None
+    timestamp_seconds: float | None
     target: FrameTargetLiteral
 
 
@@ -166,7 +171,7 @@ class FramePlanEntry:
 class ClarificationPayload:
     needs: bool
     question: str
-    options: Optional[list[str]]
+    options: list[str] | None
     reason: str
 
 
@@ -178,7 +183,7 @@ class VideoIntentResult:
     use_user_prompt: bool
     language: str
     confidence: ConfidenceLiteral
-    clarification: Optional[ClarificationPayload]
+    clarification: ClarificationPayload | None
     reason: str
     downgrades: list[str] = field(default_factory=list)
     discarded_plan: bool = False
@@ -408,7 +413,7 @@ def _strip_placeholders(text: str) -> str:
 
 def _normalize_prior_video_index(
     raw: Any, prior_videos: list[dict[str, Any]]
-) -> Optional[int]:
+) -> int | None:
     """Resolve -1 to last index; bounds-check; return None if invalid."""
     if not isinstance(raw, int) or not prior_videos:
         return None
@@ -466,7 +471,7 @@ def validate_intent_params(
     reason = str(raw.get("reason") or "").strip()[:500]
 
     # Clarification
-    clarification: Optional[ClarificationPayload] = None
+    clarification: ClarificationPayload | None = None
     clar_raw = raw.get("clarification")
     if isinstance(clar_raw, dict):
         needs = bool(clar_raw.get("needs"))
@@ -503,8 +508,8 @@ def validate_intent_params(
 
             source_index_raw = entry_raw.get("source_index")
             timestamp_seconds_raw = entry_raw.get("timestamp_seconds")
-            source_index: Optional[int]
-            timestamp_seconds: Optional[float]
+            source_index: int | None
+            timestamp_seconds: float | None
 
             if source == "uploaded_attachment":
                 if not isinstance(source_index_raw, int):
@@ -646,8 +651,8 @@ def emit_telemetry_log(
     logger: logging.Logger,
     chat_id: str,
     log_decisions_enabled: bool,
-    task_model_latency_ms: Optional[int] = None,
-    task_model_fallback_triggered: Optional[bool] = None,
+    task_model_latency_ms: int | None = None,
+    task_model_fallback_triggered: bool | None = None,
 ) -> None:
     """Emit one structured INFO log line per video intent turn.
 
@@ -739,9 +744,9 @@ async def resolve_intent(
     user_obj: Any,
     chat_id: str,
     logger: logging.Logger,
-    invoke_chat_completion: Optional[Callable[[dict[str, Any]], Awaitable[Any]]] = None,
+    invoke_chat_completion: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
     fallback_prompt_text: str = "",
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> VideoIntentResult:
     """Run the classifier; ALWAYS returns a VideoIntentResult — never raises.
 
@@ -905,7 +910,9 @@ def _make_default_invoke(
     """Build the default invoke closure that calls OWUI's generate_chat_completion."""
     async def _invoke(form_data: dict[str, Any]) -> Any:
         # Lazy import to avoid pulling OWUI at module load
-        from open_webui.utils.chat import generate_chat_completion  # type: ignore[import-not-found]
+        from open_webui.utils.chat import (
+            generate_chat_completion,  # type: ignore[import-not-found]
+        )
         return await generate_chat_completion(
             request=request, form_data=form_data, user=user_obj,
         )
@@ -948,9 +955,9 @@ def _user_facing_downgrade_message(code: str) -> str:
     # (e.g. "prior_video_index_0_unresolvable"). A plain startswith misses the
     # middle case, so strip the numeric segments before matching the base keys.
     normalized = re.sub(r"_\d+", "", code)
-    for prefix in _DOWNGRADE_USER_MESSAGES:
+    for prefix, message in _DOWNGRADE_USER_MESSAGES.items():
         if normalized.startswith(prefix):
-            return _DOWNGRADE_USER_MESSAGES[prefix]
+            return message
     return "A non-critical step was skipped."
 
 
