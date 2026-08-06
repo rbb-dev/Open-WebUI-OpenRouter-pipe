@@ -56,9 +56,10 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
     except ImportError:
         version = "unknown"
     except Exception:
-        logging.getLogger(__name__).warning(
-            "open_webui_openrouter_pipe failed to import for a reason other than absence; "
-            "the features that depend on it are now disabled",
+        logger.log(
+            warn_level(_warned_system_resources, "version"),
+            "pipe_dashboard: the pipe version could not be read; the dashboard will "
+            "show it as unknown",
             exc_info=True,
         )
         version = "unknown"

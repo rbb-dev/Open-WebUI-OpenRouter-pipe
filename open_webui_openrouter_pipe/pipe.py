@@ -2423,7 +2423,13 @@ class Pipe:
                 )
                 self.logger.exception("OpenRouter model catalog unavailable")
                 return ""
-            self.logger.warning("OpenRouter catalog refresh failed (%s). Serving %d cached model(s).", exc, len(available_models), exc_info=True)
+            self.logger.log(
+                warn_level(_warned_pipes_maintenance, f"chat_catalog_refresh:{type(exc).__name__}"),
+                "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
+                exc,
+                len(available_models),
+                exc_info=True,
+            )
         else:
             available_models = OpenRouterModelRegistry.list_models()
         catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
@@ -3148,7 +3154,11 @@ class Pipe:
         selected = [model for model in available_models if model["norm_id"] in requested]
         missing = requested - {model["norm_id"] for model in selected}
         if missing:
-            self.logger.warning("Requested models not found in OpenRouter catalog: %s", ", ".join(sorted(missing)))
+            self.logger.log(
+                warn_level(_warned_pipes_maintenance, f"models_missing:{','.join(sorted(missing))}"),
+                "Requested models not found in OpenRouter catalog: %s",
+                ", ".join(sorted(missing)),
+            )
         return selected or available_models
 
     @timed
@@ -3265,7 +3275,8 @@ class Pipe:
             base_model = model_map.get(base_id)
             if not base_model:
                 separator = "@" if is_preset else ":"
-                self.logger.warning(
+                self.logger.log(
+                    warn_level(_warned_pipes_maintenance, f"variant_base_missing:{base_id}"),
                     "Variant model base not found: %s (skipping %s%s%s)",
                     base_id,
                     base_id,
@@ -3410,13 +3421,18 @@ class Pipe:
 
             if not base_model:
                 separator = "@" if is_preset else ":"
-                self.logger.warning(
+                self.logger.log(
+                    warn_level(_warned_pipes_maintenance, f"enforcement_base_missing:{base_id}"),
                     "Variant model base not found in catalog: %s (skipping %s%s%s)",
                     base_id, base_id, separator, variant_tag,
                 )
                 continue
             if not full_norm_id:
-                self.logger.warning("Variant model base could not be normalized: %s", base_id)
+                self.logger.log(
+                    warn_level(_warned_pipes_maintenance, f"enforcement_base_unnormalized:{base_id}"),
+                    "Variant model base could not be normalized: %s",
+                    base_id,
+                )
                 continue
 
             variant_model = dict(base_model)

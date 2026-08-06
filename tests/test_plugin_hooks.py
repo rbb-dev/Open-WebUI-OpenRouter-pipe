@@ -318,6 +318,11 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
     pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = "openrouter/test"
     pipe.valves.ZDR_MODELS_ONLY = True
+    # A model id and a variant base that the catalog does not hold: both are STABLE
+    # misconfigurations, so unlatched they warned on every /api/models request for
+    # the life of the worker -- the variant one once per bad entry.
+    pipe.valves.MODEL_ID = "does/not-exist"
+    pipe.valves.VARIANT_MODELS = "does/not-exist:nitro"
 
     def _explode(*_args, **_kwargs):
         raise RuntimeError("filter table is read-only")
@@ -429,7 +434,17 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     # reachable at all, and a populated registry is served from cache. They are covered
     # by no test today -- named here rather than dropped from the inventory, so the gap
     # is visible in the failure message instead of being an absence nobody can see.
-    not_driven_here = {"catalog_refresh", "catalog_cached"}
+    not_driven_here = {
+        "catalog_refresh",
+        "catalog_cached",
+        # The chat path, which this drive never enters -- it calls pipes() only. Named
+        # here rather than given a driver written to satisfy the census: a drive that
+        # exists only to arm a latch passes for the wrong reason, and this file has
+        # already paid for that twice.
+        "enforcement_base_missing",
+        "enforcement_base_unnormalized",
+        "chat_catalog_refresh",
+    }
 
     # Frozen, NOT discovered. An inventory read from the same source being mutated
     # self-heals: deleting a diagnostic removes it from the expected set as well as the
@@ -438,7 +453,9 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     expected_sites = {
         "catalog_refresh", "catalog_cached", "web_tools", "fusion", "image_gen",
         "video", "direct_uploads", "provider_routing", "stale_prune", "on_models",
-        "zdr_list_unavailable",
+        "zdr_list_unavailable", "models_missing", "variant_base_missing",
+        "enforcement_base_missing", "enforcement_base_unnormalized",
+        "chat_catalog_refresh",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
 
