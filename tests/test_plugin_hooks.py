@@ -466,6 +466,16 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         f"only in this list {sorted(expected_sites - discovered)}. Update it deliberately -- "
         "a new site needs a driver, and a deleted diagnostic needs to be intentional."
     )
+    # Both directions, like the sibling censuses. An exemption is one line and always
+    # locally justified, while removing one needs somebody to NOTICE it went stale --
+    # so left unchecked this list only ever grows. If a later drive arms one of these,
+    # the entry stops exempting anything and has to go.
+    inert = sorted(not_driven_here & armed)
+    assert not inert, (
+        f"these exemptions no longer exempt anything -- the drive now arms them: "
+        f"{inert}. Remove them from not_driven_here so the census covers them again."
+    )
+
     missing = sorted(expected_sites - armed - not_driven_here)
     assert not missing, (
         f"these pipes() maintenance sites were never driven, so deleting their "
