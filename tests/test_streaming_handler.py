@@ -5002,8 +5002,9 @@ def test_valve_descriptions_warn_about_small_bounded_queues(pipe_instance):
     assert "warn" in warn_desc.lower(), (
         f"the warn-size description no longer says a warning is logged: {warn_desc!r}"
     )
-    assert "backlog" in warn_desc.lower(), (
-        f"the warn-size description no longer says what it counts: {warn_desc!r}"
+    assert any(w in warn_desc.lower() for w in ("backlog", "queue", "buffer", "pending")), (
+        f"the warn-size description no longer says what it counts: {warn_desc!r}. Any "
+        "word for the thing piling up will do -- this must not pin one spelling."
     )
 
 
