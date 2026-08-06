@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
@@ -29,12 +31,25 @@ PNG_BYTES = (
 
 
 class _FakeResponse:
-    def __init__(self, chunks: list[bytes], headers: dict[str, str]):
+    def __init__(self, chunks: list[bytes], headers: dict[str, str], status: int = 200):
         self._chunks = chunks
         self.headers = headers
+        self.status_code = status
 
     def raise_for_status(self) -> None:
-        return None
+        """Real behaviour, because a no-op here hid the whole retry decision.
+
+        With this returning None unconditionally, no test could ever reach
+        `_classify_retryable_http_error` on the streaming path -- so both arms of the
+        retry decision for VIDEO downloads were unexercised while the image path's
+        equivalent was covered.
+        """
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "https://example.test/asset"),
+                response=httpx.Response(self.status_code, headers=self.headers),
+            )
 
     async def aiter_bytes(self, chunk_size: int = 0):
         for chunk in self._chunks:
@@ -48,9 +63,10 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    def __init__(self, chunks: list[bytes], headers: dict[str, str]):
+    def __init__(self, chunks: list[bytes], headers: dict[str, str], status: int = 200):
         self._chunks = chunks
         self._headers = headers
+        self._status = status
 
     async def __aenter__(self):
         return self
@@ -59,7 +75,7 @@ class _FakeClient:
         return False
 
     def stream(self, _method, _url, **_kwargs):
-        return _FakeResponse(self._chunks, self._headers)
+        return _FakeResponse(self._chunks, self._headers, self._status)
 
 
 @pytest.fixture
@@ -67,10 +83,10 @@ def transport(monkeypatch):
     """Replace only the network, leaving every decision in the function under test."""
     from open_webui_openrouter_pipe.storage import multimodal as mm
 
-    def _install(chunks: list[bytes], headers: dict[str, str] | None = None):
+    def _install(chunks: list[bytes], headers: dict[str, str] | None = None, status: int = 200):
         hdrs = headers or {}
         monkeypatch.setattr(
-            mm.httpx, "AsyncClient", lambda **_kw: _FakeClient(chunks, hdrs), raising=True
+            mm.httpx, "AsyncClient", lambda **_kw: _FakeClient(chunks, hdrs, status), raising=True
         )
 
     return _install
@@ -328,3 +344,69 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
         'VIDEO_OUTPUT_MIME_ALLOWLIST="video/x-probe". None means no MIME restriction at '
         "all, so any content type would be stored and served."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expect_retries"),
+    [(429, True), (503, True), (404, False), (403, False)],
+    ids=["rate-limited", "server-busy", "not-found", "forbidden"],
+)
+async def test_a_failing_video_download_retries_only_what_is_worth_retrying(
+    pipe_instance_async, tmp_path, monkeypatch, status, expect_retries
+):
+    """The streaming path's retry decision, which nothing had ever reached.
+
+    `_FakeResponse.raise_for_status` returned None unconditionally, so no test could
+    drive an HTTP error status into `_download_remote_url_streaming` at all -- both arms
+    of `if retryable:` were unexercised. That path fetches GENERATED VIDEOS: the slowest
+    and most expensive thing a user waits for, and the one where OpenRouter is most
+    likely to answer "busy, try again". The image path's equivalent was covered; this
+    one was not.
+
+    Asserted on the number of attempts, not on an exception: the function's contract is
+    `None` on failure, and the retry classification is internal. What a user actually
+    experiences is whether a 429 gets another go -- and whether a 404 wastes their time
+    being retried when it never will succeed.
+
+    Both directions over four statuses, so neither "always retry" nor "never retry"
+    satisfies it.
+    """
+    from open_webui_openrouter_pipe.storage import multimodal as mm
+
+    attempts = {"n": 0}
+    real_client = _FakeClient
+
+    class _CountingClient(real_client):
+        def __init__(self, chunks, headers, st=status):
+            super().__init__(chunks, headers, st)
+
+        def stream(self, *a, **kw):
+            attempts["n"] += 1
+            return super().stream(*a, **kw)
+
+    monkeypatch.setattr(
+        mm.httpx, "AsyncClient",
+        lambda **_kw: _CountingClient([b"x" * 10], {"content-type": "video/mp4"}),
+        raising=True,
+    )
+
+    # Small and fast: the point is whether a retry happens at all, not how long it waits.
+    pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 2
+    pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 1
+    pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 5
+
+    result = await _download(pipe_instance_async, tmp_path, max_size_bytes=100_000)
+
+    assert result is None, f"HTTP {status} produced a result dict; the download failed"
+    if expect_retries:
+        assert attempts["n"] > 1, (
+            f"HTTP {status} was attempted once and abandoned. OpenRouter says 'busy, "
+            "try again' with this status -- giving up loses a video the user already "
+            "paid to generate."
+        )
+    else:
+        assert attempts["n"] == 1, (
+            f"HTTP {status} was attempted {attempts['n']} times. It will never succeed, "
+            "so every extra attempt is the user waiting for nothing."
+        )

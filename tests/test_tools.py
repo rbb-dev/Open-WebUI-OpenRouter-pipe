@@ -1494,10 +1494,16 @@ async def test_multiple_tools_with_various_errors():
 
 @pytest.mark.asyncio
 async def test_direct_tool_callable_event_call_becomes_none():
-    """Test direct tool callable handles runtime None _event_call (line 340).
+    """A direct tool with no channel to its server must say so, not leak a TypeError.
 
-    This tests the case where a callable was created with event_call but
-    the closure is called with _event_call=None.
+    `__event_call__` is `| None` at every Pipe.pipe signature. Without the guard,
+    `await None(payload)` raises TypeError, the handler below catches it at DEBUG, and
+    the model and the user are both handed "'NoneType' object is not callable" -- a
+    message neither can act on, with nothing above DEBUG for the operator.
+
+    This test previously built the registry with a REAL event_call and asserted it was
+    invoked, so despite its name it never exercised the None case at all -- which is why
+    deleting the guard left the whole suite green.
     """
     pipe = Pipe()
     try:
@@ -1525,8 +1531,21 @@ async def test_direct_tool_callable_event_call_becomes_none():
         key = list(registry.keys())[0]
         callable_fn = registry[key]["callable"]
 
+        # The control: with a real channel the call goes through.
         result = await callable_fn()
         assert call_count["count"] == 1
+
+        # The case this test is named for, and never covered: no channel at all.
+        no_channel = await callable_fn(_event_call=None)
+        assert call_count["count"] == 1, "the tool server was reached without a channel"
+
+        payload = no_channel[0] if isinstance(no_channel, list) else no_channel
+        error = (payload or {}).get("error", "") if isinstance(payload, dict) else str(payload)
+        assert error, f"a tool with no channel returned {no_channel!r} instead of an error"
+        assert "NoneType" not in error and "not callable" not in error, (
+            f"the model was handed the interpreter's own words: {error!r}. It cannot act "
+            "on that, and neither can the user who sees it in the tool card."
+        )
 
     finally:
         await pipe.close()

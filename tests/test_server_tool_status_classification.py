@@ -151,3 +151,28 @@ def test_the_card_reads_each_documented_status_the_way_it_is_classified(status):
         f"a server tool reporting {status!r} is carded as "
         f"{_server_tool_status({'status': status})!r}, not {expected!r}"
     )
+
+
+def test_a_status_in_both_sets_is_classified_as_a_failure(monkeypatch):
+    """Failure wins over success, so an overlap can never report a broken call as fine.
+
+    The explicit failure branch is unreachable while the two sets are disjoint -- which
+    they are today -- so a mutation sweep reports it as dead code and the tempting fix is
+    to delete it. Deleting it removes the guarantee: with the branch gone, a status in
+    both sets is not `not in SUCCESS`, so it falls through to the error/httpStatus checks
+    and a tool that failed can be labelled completed. Open WebUI appends that card
+    verbatim onto the persisted assistant message, so the user is told a call worked when
+    it did not.
+
+    Driving it through an injected overlap makes the branch live and pins the ordering.
+    """
+    from open_webui_openrouter_pipe.streaming import streaming_core as sc
+
+    monkeypatch.setattr(sc, "SERVER_TOOL_SUCCESS_STATUSES", frozenset({"completed", "ok", "wobbly"}))
+    monkeypatch.setattr(sc, "SERVER_TOOL_FAILURE_STATUSES", frozenset({"incomplete", "failed", "wobbly"}))
+
+    assert sc._server_tool_status({"status": "wobbly"}) == "incomplete", (
+        "a status listed as BOTH a failure and a success was classified as a success. "
+        "Failure has to win: the alternative labels a broken tool call as one that "
+        "worked, on a card the user reads and Open WebUI persists."
+    )
