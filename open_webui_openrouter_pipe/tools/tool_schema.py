@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from functools import lru_cache
 from typing import Any
 
-from ..core.config import LOGGER
+logger = logging.getLogger(__name__)
+
 
 _STRICT_SCHEMA_CACHE_SIZE = 128
 
@@ -147,7 +149,7 @@ def _strictify_schema(schema):
         cached = _strictify_schema_cached(canonical)
         return json.loads(cached)
     except (RecursionError, TypeError, ValueError):
-        LOGGER.warning("Failed to strictify tool schema; sending it unmodified", exc_info=True)
+        logger.warning("Failed to strictify tool schema; sending it unmodified", exc_info=True)
         return schema
 
 
@@ -258,14 +260,14 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                     if has_nested_structure:
                         if "properties" in p:
                             p["type"] = "object"
-                            LOGGER.debug(
+                            logger.debug(
                                 "Added inferred type 'object' to property '%s' which has 'properties' but no explicit type. "
                                 "Consider fixing the schema definition at the source.",
                                 name
                             )
                         elif "items" in p:
                             p["type"] = "array"
-                            LOGGER.debug(
+                            logger.debug(
                                 "Added inferred type 'array' to property '%s' which has 'items' but no explicit type. "
                                 "Consider fixing the schema definition at the source.",
                                 name
@@ -276,7 +278,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                         # Empty or minimal schema (e.g., {"description": "..."} or just {})
                         # Default to object as the safest, most flexible type
                         p["type"] = "object"
-                        LOGGER.debug(
+                        logger.debug(
                             "Added default type 'object' to property '%s' with no type or schema structure. "
                             "This indicates an incomplete schema definition that should be fixed at the source.",
                             name
@@ -301,7 +303,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 and "$ref" not in items
             ):
                 items["type"] = "object"
-                LOGGER.debug("Added default type 'object' to empty items schema")
+                logger.debug("Added default type 'object' to empty items schema")
             stack.append(items)
         elif isinstance(items, list):
             for it in items:
@@ -321,7 +323,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                             and "$ref" not in br
                         ):
                             br["type"] = "object"
-                            LOGGER.debug("Added default type 'object' to empty %s branch", key)
+                            logger.debug("Added default type 'object' to empty %s branch", key)
                         stack.append(br)
 
     return schema

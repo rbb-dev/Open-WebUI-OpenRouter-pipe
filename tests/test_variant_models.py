@@ -669,19 +669,31 @@ class TestVariantRegistryEnforcement:
         """ZDR check should match on exact full ID."""
         original_zdr = OpenRouterModelRegistry._zdr_model_ids
         try:
-            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o", "arcee-ai.trinity-mini:free"}
+            OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o", "arcee-ai.trinity-mini"}
             assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o") is True
             assert OpenRouterModelRegistry.is_zdr_capable("arcee-ai/trinity-mini:free") is True
         finally:
             OpenRouterModelRegistry._zdr_model_ids = original_zdr
 
-    def test_is_zdr_capable_no_base_fallback(self):
-        """ZDR check should NOT fall back to base model."""
+    def test_is_zdr_capable_admits_a_routing_variant_of_a_zdr_base(self):
+        """Issue #56. This test used to assert the opposite, and pinned the bug.
+
+        It read "ZDR check should NOT fall back to base model" and asserted that
+        `openai/gpt-4o:nitro` is NOT ZDR-capable when `openai.gpt-4o` is in the list.
+        That is the defect the reporter hit twice: OpenRouter's ZDR endpoint list only
+        ever contains BASE ids, so under that rule no variant of any model can ever be
+        ZDR-capable, and `:nitro` was rejected while the identical base was accepted.
+
+        A routing variant selects how the same base model is routed. Its endpoints are
+        the base model's endpoints, so the base's ZDR status is its ZDR status.
+        """
         original_zdr = OpenRouterModelRegistry._zdr_model_ids
         try:
-            # Only base in ZDR, not the :nitro variant
             OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o"}
-            assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o:nitro") is False
+            assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o:nitro") is True
+            assert OpenRouterModelRegistry.is_zdr_capable("anthropic/claude:nitro") is False, (
+                "a variant of a model that is NOT in the ZDR list must still be rejected"
+            )
         finally:
             OpenRouterModelRegistry._zdr_model_ids = original_zdr
 

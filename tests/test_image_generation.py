@@ -24,6 +24,8 @@ from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import logging
+
 import pytest
 
 from open_webui_openrouter_pipe.api.transforms import CompletionsBody, ResponsesBody
@@ -1080,7 +1082,6 @@ def test_sourceful_v25_filter_inlet_validates_background_hex():
     with pytest.raises(module.ImageGenerationError, match="#RGB or #RRGGBB"):
         module.Filter().inlet(dict(body), __metadata__={}, __user__={"valves": bad_hex})
 
-    # transparent mode alone is valid (no hex required)
     transparent = module.Filter.UserValves(IMAGE_BACKGROUND_MODE="transparent")
     out_body = dict(body)
     module.Filter().inlet(out_body, __metadata__={}, __user__={"valves": transparent})
@@ -1138,7 +1139,6 @@ def test_grok_filter_inlet_writes_grok_knobs_only_for_grok_models():
     module.Filter().inlet(other_body, __metadata__={}, __user__={"valves": user_valves})
     assert "image_config" not in other_body
 
-    # n=0 is the skip sentinel; empty ratio skipped too
     defaults_body: dict[str, Any] = {"model": "x-ai/grok-imagine-image-quality", "messages": []}
     module.Filter().inlet(defaults_body, __metadata__={}, __user__={"valves": module.Filter.UserValves()})
     assert "image_config" not in defaults_body
@@ -1443,7 +1443,6 @@ async def test_image_catalog_ttl_gate_skips_within_window():
         session, valves=valves, api_key="test", logger=MagicMock(), cache_seconds=3600
     )
 
-    # session.get was never called — TTL gate worked
     assert not session.get.called
 
 
@@ -1624,8 +1623,22 @@ async def test_image_catalog_network_failure_records_attempt_no_models():
     # Fetch clock NOT bumped (no successful registration)
     assert OpenRouterModelRegistry._last_image_fetch == 0.0
     # Warning logged with the specific failure message (not just any warning)
-    assert logger.warning.called
-    warn_message = logger.warning.call_args[0][0]
+    from open_webui_openrouter_pipe.integrations import image_catalog
+
+    assert logger.log.called, (
+        "the catalog failure was not reported at all. It is now emitted through "
+        "warn_level so a persistent outage does not warn once per /api/models request, "
+        "but the FIRST occurrence must still be a warning."
+    )
+    assert image_catalog._warned_image_catalog, (
+        "the latch was never armed, so warn_level never ran and the failure was not "
+        "reported through the shared decision"
+    )
+    level, warn_message = logger.log.call_args[0][0], logger.log.call_args[0][1]
+    assert level == logging.WARNING, (
+        f"the FIRST catalog failure was reported at level {level}, not WARNING; the "
+        "latch is meant to quiet repeats, not the first occurrence"
+    )
     assert "Image catalog fetch failed" in warn_message
 
 
@@ -1741,7 +1754,6 @@ def test_apply_image_filter_ids_cleans_up_stale_previously_attached():
     # Stale id removed, generic kept
     assert "openrouter_image_filter_old" not in meta_dict["filterIds"]
     assert "openrouter_image_filter_generic" in meta_dict["filterIds"]
-    # pipe_meta updated to reflect new attached set (drives next cleanup cycle)
     assert meta_dict["openrouter_pipe"]["image_filter_ids"] == ["openrouter_image_filter_generic"]
 
 
@@ -1946,7 +1958,6 @@ def test_inject_image_modalities_non_dict_body_no_crash():
     """Helper returns gracefully when body isn't a dict (defensive)."""
     from open_webui_openrouter_pipe.requests.orchestrator import _inject_image_modalities
 
-    # str body: must NOT mutate (assert by reference equality)
     body_str = "not-a-dict"
     body_str_before = body_str
     _inject_image_modalities(body_str)  # type: ignore[arg-type]

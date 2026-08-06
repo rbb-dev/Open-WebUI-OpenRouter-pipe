@@ -7,6 +7,7 @@ package mode, the bundle manifest in compressed mode), never import one by name.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -24,10 +25,17 @@ _PLUGINS_DIR = (
 _FRAMEWORK_FILES = ("__init__.py", "base.py", "registry.py", "_utils.py")
 _PREFIX = "open_webui_openrouter_pipe.plugins."
 
-_DISCOVERY_INTROSPECTABLE = all(
-    hasattr(_plugins_pkg, _attr)
-    for _attr in ("_discover_plugins", "_import_plugin_module", "__path__")
-)
+_INTROSPECTION_ATTRS = ("_discover_plugins", "_import_plugin_module", "__path__")
+_MISSING_ATTRS = [_a for _a in _INTROSPECTION_ATTRS if not hasattr(_plugins_pkg, _a)]
+_DISCOVERY_INTROSPECTABLE = not _MISSING_ATTRS
+
+if _MISSING_ATTRS and not os.environ.get("OWUI_PIPE_BUNDLE_PATH"):
+    raise RuntimeError(
+        f"plugins package is missing {_MISSING_ATTRS} in package mode. Renaming a "
+        "discovery internal must fail here, not silently skip every test below -- a "
+        "guard that switches itself off when the thing it guards changes is no guard."
+    )
+
 _requires_introspectable_plugins = pytest.mark.skipif(
     not _DISCOVERY_INTROSPECTABLE,
     reason=(
@@ -76,17 +84,16 @@ def test_manifest_discovery_imports_only_top_level_plugin_packages(monkeypatch):
     framework code path."""
     imported: list[str] = []
     monkeypatch.setattr(_plugins_pkg, "_import_plugin_module", lambda name: imported.append(name))
-    # Empty the filesystem path so only the manifest branch runs (as in a bundle).
     monkeypatch.setattr(_plugins_pkg, "__path__", [])
 
     class _FakeBundleFinder:
         def bundled_module_names(self):
             return [
-                _PREFIX + "base",                    # framework -> excluded
-                _PREFIX + "registry",                # framework -> excluded
-                _PREFIX + "pipe_dashboard",          # top-level plugin pkg -> imported
-                _PREFIX + "pipe_dashboard.plugin",   # deep submodule -> excluded
-                "some.other.package",                # foreign prefix -> ignored
+                _PREFIX + "base",
+                _PREFIX + "registry",
+                _PREFIX + "pipe_dashboard",
+                _PREFIX + "pipe_dashboard.plugin",
+                "some.other.package",
             ]
 
     monkeypatch.setattr(sys, "meta_path", [_FakeBundleFinder(), *sys.meta_path])
@@ -101,8 +108,8 @@ def test_finder_without_manifest_contract_is_ignored(monkeypatch):
     (no crash), so ordinary finders never interfere with discovery."""
     monkeypatch.setattr(_plugins_pkg, "__path__", [])
 
-    class _PlainFinder:  # no bundled_module_names attribute
+    class _PlainFinder:
         pass
 
     monkeypatch.setattr(sys, "meta_path", [_PlainFinder(), *sys.meta_path])
-    _plugins_pkg._discover_plugins()  # must not raise
+    _plugins_pkg._discover_plugins()

@@ -8,14 +8,17 @@ to OpenRouter/OpenAI Responses API input format, including:
 - Content pruning and filtering
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import binascii
 import contextlib
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from starlette.requests import Request
@@ -24,7 +27,6 @@ from starlette.requests import Request
 from ..core.config import (
     _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
-    LOGGER,
 )
 
 # Import status messages
@@ -55,7 +57,6 @@ from ..storage.owui_files import (
     is_internal_file_url,
 )
 
-# Import helper functions from domain modules
 # Import from persistence
 from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.tool_schema import (
@@ -66,9 +67,9 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 # Tool output pruning constants
-_TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800  # Minimum length before pruning is applied
-_TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256  # Characters to keep from the beginning
-_TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128  # Characters to keep from the end
+_TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800
+_TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
+_TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
 
 def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
     """Return *item* without the internal anchor keys used only for replay
@@ -76,6 +77,9 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
     if not any(k in item for k in REASONING_ANCHOR_KEYS):
         return item
     return {k: v for k, v in item.items() if k not in REASONING_ANCHOR_KEYS}
+
+
+logger = logging.getLogger(__name__)
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -107,9 +111,6 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
             elif isinstance(preceding, int):
                 movable.append((seq, stripped, "after", preceding))
             else:
-                # No anchor: leave in place. Reasoning is never dropped, so
-                # genuinely-consecutive blocks (e.g. redacted_thinking +
-                # thinking in a no-tool turn) are preserved.
                 skeleton.append(stripped)
         elif isinstance(it, dict):
             skeleton.append(_strip_reasoning_anchor_keys(it))
@@ -127,9 +128,6 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
         (i, e) for i, e in enumerate(skeleton)
         if isinstance(e, dict) and e.get("type") == "function_call_output"
     ]
-    # Pair each call (by ordinal) to its own output index, consuming outputs in
-    # order by call_id. This survives missing/error outputs and repeated call_ids:
-    # the Nth output is not assumed to belong to the Nth call.
     output_index_for_call: dict[int, int] = {}
     remaining_outputs = list(fco_items)
     for call_ordinal, (_, call_item) in enumerate(fc_items):
@@ -155,7 +153,7 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 pos = fc_items[ordinal][0]
             bucket = inserts_after
         if pos is None:
-            skeleton.append(item)  # ordinal out of range: keep, never drop
+            skeleton.append(item)
             continue
         bucket.setdefault(pos, []).append((seq, item))
 
@@ -191,7 +189,7 @@ def _reinterleave_reasoning_by_anchor(
 
 
 async def transform_messages_to_input(
-    pipe: "Pipe",
+    pipe: Pipe,
     messages: list[dict[str, Any]],
     chat_id: str | None = None,
     openwebui_model_id: str | None = None,
@@ -203,7 +201,7 @@ async def transform_messages_to_input(
     event_emitter: Callable | None = None,
     *,
     model_id: str | None = None,
-    valves: Optional["Pipe.Valves"] = None,
+    valves: Pipe.Valves | None = None,
     capability_model_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -226,7 +224,6 @@ async def transform_messages_to_input(
     List[dict] : The fully-formed `input` list for the OpenAI Responses API.
     """
 
-    logger = LOGGER
     active_valves = valves or pipe.valves
     image_limit = active_valves.MAX_INPUT_IMAGES_PER_REQUEST
     selection_mode = active_valves.IMAGE_INPUT_SELECTION
@@ -318,7 +315,6 @@ async def transform_messages_to_input(
             try:
                 output_text = json.dumps(output_value, ensure_ascii=False)
             except (TypeError, ValueError):
-                # Fallback to str() if object isn't JSON serializable
                 output_text = str(output_value)
         else:
             output_text = output_value
@@ -345,7 +341,7 @@ async def transform_messages_to_input(
         item["output"] = "\n".join(
             part for part in (head, note, tail) if part
         )
-        LOGGER.debug("Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)", marker, item.get("call_id"), turn_index, removed_chars, retention_turns)
+        logger.debug("Pruned tool output (marker=%s, call_id=%s, turn=%s, removed_chars=%d, retention=%d)", marker, item.get("call_id"), turn_index, removed_chars, retention_turns)
         return True
 
     turn_indices, total_turns = _compute_turn_indices()
@@ -370,7 +366,6 @@ async def transform_messages_to_input(
             else []
         )
 
-        # -------- system / developer messages --------------------------- #
         if role in {"system", "developer"}:
             blocks: list[dict[str, Any]] = []
 
@@ -412,7 +407,6 @@ async def transform_messages_to_input(
                 )
             continue
 
-        # -------- tool response ---------------------------------------- #
         if role == "tool":
             call_id = msg.get("tool_call_id") or msg.get("id") or msg.get("call_id")
             call_id = call_id.strip() if isinstance(call_id, str) else ""
@@ -440,7 +434,6 @@ async def transform_messages_to_input(
             )
             continue
 
-        # -------- user message ---------------------------------------- #
         if role == "user":
             content_blocks = msg.get("content") or []
             if isinstance(content_blocks, str):
@@ -768,7 +761,6 @@ async def transform_messages_to_input(
                             status_message=StatusMessages.FILE_REMOTE_SAVED,
                         )
 
-                    # Normalize internal OWUI URLs into a file_id (preferred).
                     if isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
                         extracted = extract_internal_file_id(file_url.strip())
                         if extracted:
@@ -799,7 +791,7 @@ async def transform_messages_to_input(
                                     if stored_id:
                                         file_id = stored_id
                                         file_url = None
-                                        file_data = None  # Clear base64; store via OWUI id instead.
+                                        file_data = None
                             except Exception as exc:
                                 pipe.logger.exception("Failed to process base64 file")
                                 await pipe._ensure_error_formatter()._emit_error(
@@ -846,7 +838,7 @@ async def transform_messages_to_input(
                                                 f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
                                                 level="warning",
                                             )
-                                    file_data = None  # Clear, use URL instead
+                                    file_data = None
                             except Exception as exc:
                                 pipe.logger.exception("Failed to download remote file")
                                 await pipe._ensure_error_formatter()._emit_error(
@@ -1042,12 +1034,6 @@ async def transform_messages_to_input(
                     "audio/webm": "webm",
                     "audio/x-webm": "webm",
                 }
-                # Formats OpenRouter's /chat/completions input_audio.format accepts
-                # (the schema is an open string; support varies by provider).
-                # The orchestrator sniffs and forces non-mp3/wav uploads (flac, m4a,
-                # ogg, webm) to this endpoint precisely because it supports them, so
-                # a correctly-detected explicit format must be preserved here rather
-                # than coerced back to "mp3".
                 supported_formats = {
                     "mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24",
                     "webm",
@@ -1291,7 +1277,6 @@ async def transform_messages_to_input(
                     if url.startswith("data:"):
                         if "," in url:
                             b64_data = url.split(",", 1)[1]
-                            # Estimate decoded size (base64 is ~33% larger than raw)
                             estimated_size_bytes = (len(b64_data) * 3) // 4
                             max_size_bytes = pipe.valves.VIDEO_MAX_SIZE_MB * 1024 * 1024
                             if estimated_size_bytes > max_size_bytes:
@@ -1313,7 +1298,6 @@ async def transform_messages_to_input(
                             done=False
                         )
                     elif pipe._multimodal_handler._is_youtube_url(url):
-                        # Note: YouTube videos only work with Gemini models (per OpenRouter docs)
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
                             StatusMessages.VIDEO_YOUTUBE,
@@ -1367,11 +1351,11 @@ async def transform_messages_to_input(
                 "image_url":  _to_input_image,
                 "input_image": _to_input_image,
                 "input_file": _to_input_file,
-                "file":       _to_input_file,  # Chat Completions format
-                "input_audio": _to_input_audio,  # Responses API audio format
-                "audio":      _to_input_audio,   # Open WebUI tool audio output format
-                "video_url":  _to_input_video,   # Chat Completions video format
-                "video":      _to_input_video,   # Alternative video format
+                "file":       _to_input_file,
+                "input_audio": _to_input_audio,
+                "audio":      _to_input_audio,
+                "video_url":  _to_input_video,
+                "video":      _to_input_video,
             }
 
             converted_blocks: list[dict[str, Any]] = []
@@ -1384,7 +1368,7 @@ async def transform_messages_to_input(
                 latest_user_message and vision_supported and image_limit > 0
             )
 
-            for block in content_blocks:
+            for block_idx, block in enumerate(content_blocks):
                 if not block:
                     continue
                 if not isinstance(block, dict):
@@ -1396,7 +1380,7 @@ async def transform_messages_to_input(
                     pipe.logger.warning(
                         "Dropping unsupported %s content block at index %d of the %s message %s",
                         type(block).__name__,
-                        idx,
+                        block_idx,
                         role,
                         msg_id,
                     )
@@ -1504,7 +1488,6 @@ async def transform_messages_to_input(
             })
             continue
 
-        # -------- assistant message ----------------------------------- #
         raw_msg_annotations = msg.get("annotations")
         msg_annotations: list[Any] = (
             list(raw_msg_annotations)
@@ -1559,8 +1542,6 @@ async def transform_messages_to_input(
                 chunk_items[-1]["reasoning_details"] = msg_reasoning_details
             openai_input.extend(chunk_items)
 
-        # If tool_calls are provided explicitly (native OWUI tool execution flow),
-        # do not attempt DB artifact replay for this message to avoid duplicate injection.
         if (not msg_tool_calls) and contains_marker(assistant_text):
             segments = split_text_by_markers(assistant_text)
             markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
@@ -1593,7 +1574,6 @@ async def transform_messages_to_input(
                             sorted(orphaned_output_ids),
                         )
                 except Exception:
-                    # Catch all loader errors (DB, network, etc.) - pipe must continue
                     logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
                     db_artifacts = {}
 
@@ -1655,10 +1635,8 @@ async def transform_messages_to_input(
                 elif segment["type"] == "text":
                     _append_assistant_text_chunks(segment["text"])
         else:
-            # Plain assistant text (no markers detected)
             _append_assistant_text_chunks(assistant_text)
 
-        # Native OWUI tool calling: assistant.tool_calls -> Responses function_call items.
         if msg_tool_calls:
             for index, tool_call in enumerate(msg_tool_calls):
                 if not isinstance(tool_call, dict):

@@ -5,19 +5,16 @@
   ],
   "venvPath": ".",
   "venv": ".venv",
+  "pythonVersion": "3.11",
   "exclude": [
     "backups",
     ".external",
     ".git",
     ".venv",
     ".pytest_cache",
-    "**/__pycache__",
-    "coverage_annotate",
-    "update_usage_db.py"
+    "**/__pycache__"
   ],
   "extraPaths": [
-    ".",
-    ".external/open-webui/backend",
-    ".venv/lib/python3.12/site-packages"
+    "."
   ]
 }

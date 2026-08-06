@@ -8,8 +8,11 @@ from typing import Any
 import aiohttp
 
 from ..core.config import _select_openrouter_http_referer
+from ..core.warn_latch import warn_level
 from ..models.registry import OpenRouterModelRegistry
 from .video_client import OpenRouterVideoClient
+
+_warned_video_catalog: set[str] = set()
 
 
 async def ensure_video_catalog_loaded(
@@ -41,7 +44,8 @@ async def ensure_video_catalog_loaded(
         models = await client.list_models()
     except (TimeoutError, aiohttp.ClientError, OSError) as exc:
         OpenRouterModelRegistry.record_video_attempt()
-        logger.warning(
+        logger.log(
+            warn_level(_warned_video_catalog, type(exc).__name__),
             "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
             exc,
         )

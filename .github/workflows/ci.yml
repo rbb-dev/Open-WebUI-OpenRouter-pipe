@@ -1,8 +1,9 @@
 name: CI
 
+# Pull requests only. Branch and tag pushes get the same gate from bundle.yml,
+# which must call it directly because `publish` cannot depend on a job in another
+# workflow. Triggering here on push too ran the whole five-mode suite twice.
 on:
-  push:
-    branches: ["**"]
   pull_request:
 
 permissions:
@@ -16,76 +17,4 @@ concurrency:
 jobs:
   tests-and-typecheck:
     name: Tests & Type Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Create venv and install dependencies
-        run: |
-          uv venv .venv
-          # Install CPU-only PyTorch first (saves ~5GB, much faster)
-          uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
-          # Install open-webui and project dependencies
-          uv pip install --python .venv/bin/python open-webui -e .
-          uv pip install --python .venv/bin/python pytest pytest-asyncio pytest-timeout pyright cairosvg pyzipper aioresponses ruff==0.16.0
-
-      - name: Lint source code
-        run: |
-          source .venv/bin/activate
-          ruff check open_webui_openrouter_pipe/
-
-      - name: Build monolith bundles
-        run: |
-          source .venv/bin/activate
-          python scripts/bundle_v2.py
-          python scripts/bundle_v2.py --compress
-          python scripts/bundle_v2.py --no-plugins
-          python scripts/bundle_v2.py --compress --no-plugins
-
-      - name: Lint bundles
-        run: |
-          source .venv/bin/activate
-          ruff check --per-file-ignores 'open_webui_openrouter_pipe_bundled*.py:E402' open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py open_webui_openrouter_pipe_bundled_no_plugins.py open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
-
-      - name: Type-check source and bundles
-        run: |
-          source .venv/bin/activate
-          pyright
-          pyright open_webui_openrouter_pipe_bundled.py
-          pyright open_webui_openrouter_pipe_bundled_compressed.py
-          pyright open_webui_openrouter_pipe_bundled_no_plugins.py
-          pyright open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
-
-      - name: Run tests
-        run: |
-          source .venv/bin/activate
-          python -m compileall open_webui_openrouter_pipe tests filters open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py open_webui_openrouter_pipe_bundled_no_plugins.py open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
-
-          # Run the test suite in 5 modes:
-          # 1) Normal package imports (on-disk modules)
-          # 2) Bundled flat monolith
-          # 3) Bundled compressed monolith
-          # 4) Bundled flat, no plugins (plugin tests self-skip via importorskip)
-          # 5) Bundled compressed, no plugins
-          echo "==> pytest (package imports)"
-          PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled flat: open_webui_openrouter_pipe_bundled.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled compressed: open_webui_openrouter_pipe_bundled_compressed.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled flat, no plugins: open_webui_openrouter_pipe_bundled_no_plugins.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_no_plugins.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled compressed, no plugins: open_webui_openrouter_pipe_bundled_compressed_no_plugins.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed_no_plugins.py PYTHONPATH=. pytest tests -q -p pytest_timeout --timeout=60 --timeout-method=thread
+    uses: ./.github/workflows/verify.yml

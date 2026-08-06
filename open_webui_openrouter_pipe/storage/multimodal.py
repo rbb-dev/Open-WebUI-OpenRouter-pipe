@@ -44,15 +44,14 @@ from ..core.errors import (
     _RetryWait,
 )
 from ..core.timing_logger import timed
+from ..core.warn_latch import warn_level
 from .owui_files import is_internal_file_url
 
 if TYPE_CHECKING:
     from .owui_files import OwuiFileGateway
 
 
-# -----------------------------------------------------------------------------
 # Standalone Utility Functions
-# -----------------------------------------------------------------------------
 
 def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
     """Guess MIME type for image data by inspecting magic bytes and URL extension.
@@ -158,9 +157,7 @@ def _extract_openrouter_og_image(html: str) -> str | None:
     return None
 
 
-# -----------------------------------------------------------------------------
 # MultimodalHandler Class
-# -----------------------------------------------------------------------------
 
 class MultimodalHandler:
     """Manages multimodal content operations.
@@ -184,9 +181,9 @@ class MultimodalHandler:
     def __init__(
         self,
         logger: logging.Logger,
-        valves: Any,  # Pipe.Valves
+        valves: Any,
         http_session: aiohttp.ClientSession | None = None,
-        artifact_store: Any | None = None,  # ArtifactStore
+        artifact_store: Any | None = None,
         emit_status_callback: Callable | None = None,
         file_gateway: OwuiFileGateway | None = None,
     ):
@@ -216,9 +213,6 @@ class MultimodalHandler:
         """Set or clear the artifact store reference."""
         self._artifact_store = store
 
-    # -----------------------------------------------------------------
-    # 1. REMOTE DOWNLOADS (5 methods)
-    # -----------------------------------------------------------------
 
     @timed
     async def _download_remote_url(
@@ -290,9 +284,6 @@ class MultimodalHandler:
         if not url.lower().startswith(("http://", "https://")):
             return None
 
-        # SSRF protection + HTTPS-only default: validate the URL and pin the
-        # connection to a validated IP so httpx cannot re-resolve the host to a
-        # rebound private address between validation and connect.
         pinned = await self._prepare_pinned_request(url)
         if pinned is None:
             self.logger.error(
@@ -318,7 +309,7 @@ class MultimodalHandler:
         try:
             async for attempt_info in AsyncRetrying(
                 retry=retry_if_exception_type((_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)),
-                stop=stop_after_attempt(max_retries + 1),  # +1 because first attempt doesn't count as retry
+                stop=stop_after_attempt(max_retries + 1),
                 wait=_RetryWait(wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time)),
                 reraise=True
             ):
@@ -358,7 +349,6 @@ class MultimodalHandler:
                         if mime_type == "image/jpg":
                             mime_type = "image/jpeg"
 
-                        # Enforce configurable size limit (valve + optional RAG cap)
                         effective_limit_mb = self._get_effective_remote_file_limit_mb()
                         max_size_bytes = effective_limit_mb * 1024 * 1024
 
@@ -442,7 +432,7 @@ class MultimodalHandler:
             timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
         if timeout_seconds is None:
             timeout_seconds = 60
-        timeout_seconds = max(timeout_seconds, 60)  # streaming downloads need more time
+        timeout_seconds = max(timeout_seconds, 60)
 
         effective_max = (
             max_size_bytes
@@ -480,7 +470,7 @@ class MultimodalHandler:
                         dest_path.unlink()
 
                     request_headers = dict(extra_headers) if extra_headers else {}
-                    request_headers.update(pin_headers)  # original Host for the pinned IP
+                    request_headers.update(pin_headers)
                     async with (
                         httpx.AsyncClient(timeout=timeout_seconds) as client,
                         client.stream(
@@ -595,7 +585,6 @@ class MultimodalHandler:
             port: int | None = None
 
             if candidate.startswith("[") and "]" in candidate:
-                # Bracketed IPv6 with optional port: [::1]:8080
                 host = candidate[1:candidate.index("]")]
                 remainder = candidate[candidate.index("]") + 1:]
                 if remainder.startswith(":") and remainder[1:]:
@@ -604,7 +593,6 @@ class MultimodalHandler:
                     else:
                         continue
             elif ":" in candidate:
-                # If there's only one colon, treat it as host:port (not IPv6).
                 if candidate.count(":") == 1:
                     host_part, port_str = candidate.split(":", 1)
                     if port_str.isdigit():
@@ -613,7 +601,6 @@ class MultimodalHandler:
                         continue
                     host = host_part
                 else:
-                    # IPv6 without brackets (no port).
                     host = candidate
 
             host = host.strip().lower().rstrip(".")
@@ -665,21 +652,6 @@ class MultimodalHandler:
             port,
         )
         return False
-
-    def _is_safe_url_blocking(self, url: str) -> bool:
-        """Blocking implementation of the SSRF guard (runs in a thread).
-
-        Delegates to the single `_request_ips_blocking` gate so the HTTP
-        policy, the ENABLE_SSRF_PROTECTION valve, and address validation are
-        sequenced identically to `_is_safe_url` and `_prepare_pinned_request`.
-
-        Args:
-            url: URL to validate
-
-        Returns:
-            True if URL is allowed, False if blocked
-        """
-        return self._request_ips_blocking(url) is not None
 
     def _request_ips_blocking(self, url: str) -> list[str] | None:
         """Single SSRF gate (blocking): sequences the insecure-HTTP policy,
@@ -738,7 +710,6 @@ class MultimodalHandler:
             else:
                 _record_ip(literal_ip)
 
-            # Resolve hostname to all available IPs (IPv4 + IPv6) when not a literal
             if literal_ip is None:
                 try:
                     addrinfo = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -786,7 +757,6 @@ class MultimodalHandler:
             return [ip.compressed for ip in ip_objects]
 
         except Exception:
-            # Defensive: treat validation errors as unsafe
             self.logger.exception("URL safety validation failed for %s", url)
             return None
 
@@ -805,8 +775,7 @@ class MultimodalHandler:
         """
         parsed = urlparse(url)
         host = parsed.hostname or ""
-        ip_host = f"[{ip}]" if ":" in ip else ip  # bracket IPv6 literals
-        # Preserve userinfo if present (rare for download URLs).
+        ip_host = f"[{ip}]" if ":" in ip else ip
         userinfo = ""
         if parsed.username:
             userinfo = parsed.username
@@ -891,11 +860,9 @@ class MultimodalHandler:
         if not rag_enabled or rag_limit_mb is None:
             return base_limit_mb
 
-        # Never exceed Open WebUI's configured FILE_MAX_SIZE when RAG is active.
         if base_limit_mb > rag_limit_mb:
             return rag_limit_mb
 
-        # If the valve is still using the default, upgrade to the RAG cap for consistency.
         if (
             base_limit_mb == _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
             and rag_limit_mb > base_limit_mb
@@ -903,9 +870,6 @@ class MultimodalHandler:
             return rag_limit_mb
         return base_limit_mb
 
-    # -----------------------------------------------------------------
-    # 2. IMAGE PROCESSING (2 methods)
-    # -----------------------------------------------------------------
 
     @timed
     async def _fetch_image_as_data_url(
@@ -964,14 +928,14 @@ class MultimodalHandler:
             try:
                 import cairosvg  # type: ignore[import-not-found]
             except Exception as exc:
-                if "cairosvg" not in self._warned_missing_imaging:
-                    self._warned_missing_imaging.add("cairosvg")
-                    self.logger.warning(
-                        "CairoSVG is not installed, so no SVG model icon can be converted "
-                        "while UPDATE_MODEL_IMAGES is enabled: %s",
-                        exc,
-                        exc_info=True,
-                    )
+                _level = warn_level(self._warned_missing_imaging, 'cairosvg')
+                self.logger.log(
+                    _level,
+                    "CairoSVG is not installed, so no SVG model icon can be converted "
+                    "while UPDATE_MODEL_IMAGES is enabled: %s",
+                    exc,
+                    exc_info=True,
+                )
                 return None
 
             try:
@@ -1010,14 +974,14 @@ class MultimodalHandler:
         try:
             from PIL import Image
         except Exception as exc:
-            if "pillow" not in self._warned_missing_imaging:
-                self._warned_missing_imaging.add("pillow")
-                self.logger.warning(
-                    "Pillow is not installed, so no model icon can be converted while "
-                    "UPDATE_MODEL_IMAGES is enabled: %s",
-                    exc,
-                    exc_info=True,
-                )
+            _level = warn_level(self._warned_missing_imaging, 'pillow')
+            self.logger.log(
+                _level,
+                "Pillow is not installed, so no model icon can be converted while "
+                "UPDATE_MODEL_IMAGES is enabled: %s",
+                exc,
+                exc_info=True,
+            )
             return None
 
         try:
@@ -1084,7 +1048,6 @@ class MultimodalHandler:
             )
             return None
 
-        # Protect against bad HTML responses that might crash downstream parsing.
         if not isinstance(html, str):
             self.logger.warning(
                 "OpenRouter maker page returned non-string content type '%s' (maker=%s); treating as empty.",
@@ -1094,9 +1057,6 @@ class MultimodalHandler:
             return None
         return _extract_openrouter_og_image(html)
 
-    # -----------------------------------------------------------------
-    # 3. DATA URL HANDLING (1 method)
-    # -----------------------------------------------------------------
 
     def _parse_data_url(self, data_url: str) -> dict[str, Any] | None:
         """Extract base64 data from data URL.
@@ -1131,7 +1091,7 @@ class MultimodalHandler:
         Note:
             - Invalid base64 data results in None return
             - Oversized data results in None return
-            - All exceptions are caught and logged
+            - Parsing failures are caught and logged; an unconfigured file gateway raises
             - Non-data URLs return None immediately
 
         Example:

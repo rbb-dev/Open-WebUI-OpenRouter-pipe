@@ -12,7 +12,7 @@ Responsible for translating technical errors into user-friendly markdown message
 
 from __future__ import annotations
 
-import asyncio
+import concurrent.futures
 from typing import Any
 
 import httpx
@@ -34,9 +34,7 @@ from .utils import (
     _unwrap_config_value,
 )
 
-# -----------------------------------------------------------------------------
 # Supporting Classes
-# -----------------------------------------------------------------------------
 
 class _RetryableHTTPStatusError(Exception):
     """Wrapper that marks an HTTPStatusError as retryable."""
@@ -63,15 +61,13 @@ class _RetryWait:
         if retry_state.outcome is not None:
             try:
                 exc = retry_state.outcome.exception()
-            except (asyncio.CancelledError, TypeError):
+            except (concurrent.futures.CancelledError, TypeError):
                 exc = None
         if isinstance(exc, _RetryableHTTPStatusError):
             retry_after = exc.retry_after
             if isinstance(retry_after, (int, float)) and retry_after > 0:
                 return max(base_delay, retry_after)
         return base_delay
-
-
 
 
 class StatusMessages:
@@ -105,9 +101,7 @@ class RequiredInternalFileError(Exception):
         self.denied = denied
 
 
-# -----------------------------------------------------------------------------
 # OpenRouterAPIError Class
-# -----------------------------------------------------------------------------
 
 class OpenRouterAPIError(RuntimeError):
     """User-facing error raised when OpenRouter rejects a request with status 400."""
@@ -207,9 +201,7 @@ class OpenRouterAPIError(RuntimeError):
         return _render_error_template(template or DEFAULT_OPENROUTER_ERROR_TEMPLATE, replacements)
 
 
-# -----------------------------------------------------------------------------
 # Error Helper Functions
-# -----------------------------------------------------------------------------
 
 def _classify_retryable_http_error(
     exc: httpx.HTTPStatusError,
@@ -228,8 +220,6 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
     """Normalize OpenRouter error payloads into structured metadata."""
     parsed = _safe_json_loads(body_text) if body_text else None
     raw_error_section = parsed.get("error", {}) if isinstance(parsed, dict) else {}
-    # The top-level `error` value may itself be a non-dict (string/list/null);
-    # coerce once so every `.get()` below is safe.
     error_section = raw_error_section if isinstance(raw_error_section, dict) else {}
     metadata = error_section.get("metadata", {})
     metadata_dict = metadata if isinstance(metadata, dict) else {}
@@ -364,9 +354,6 @@ def _build_error_template_values(
     metadata_json = error.metadata_json or _pretty_json(error.metadata)
     provider_raw_json = error.provider_raw_json or _pretty_json(error.provider_raw)
     context = context or {}
-    # Select by presence, not truthiness: a parsed retry_after_seconds of 0
-    # (expired HTTP-date) is falsy but must still win over the raw header,
-    # otherwise the template renders "<date>s".
     retry_after = context.get("retry_after_seconds")
     if retry_after is None:
         retry_after = error.metadata.get("retry_after_seconds")
@@ -425,7 +412,6 @@ def _resolve_error_model_context(
     api_model_id: str | None = None,
 ) -> tuple[str | None, list[str], dict[str, Any]]:
     """Return (display_label, diagnostics_lines, metrics) for the affected model."""
-    # Import here to avoid circular dependency
     from ..models.registry import ModelFamily
 
     diagnostics: list[str] = []
@@ -456,11 +442,6 @@ def _resolve_error_model_context(
         "max_output_tokens": max_output_tokens,
     }
 
-
-
-# -----------------------------------------------------------------------------
-# RAG File Constraints (using imported config helpers from core.utils)
-# -----------------------------------------------------------------------------
 
 def _read_rag_file_constraints() -> tuple[bool, int | None]:
     """Return (rag_enabled, rag_file_size_mb) gleaned from Open WebUI config."""

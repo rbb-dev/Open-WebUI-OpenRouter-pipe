@@ -181,6 +181,12 @@ async def _current_config_rev(pipe: Any) -> Any:
         from open_webui.models.functions import Functions
 
         function = await Functions.get_function_by_id(getattr(pipe, "id", ""))
+        if function is None:
+            logger.warning(
+                "pipe_dashboard: the stored function row could not be read, so the "
+                "config revision is unknown; concurrent-edit protection is unavailable"
+            )
+            return None
         return getattr(function, "updated_at", None)
     except Exception:
         logger.warning(
@@ -245,7 +251,12 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
-    if client_rev is not None and (current_rev is None or client_rev != current_rev):
+    # An unreadable revision is a conflict on its own, independent of what the caller
+    # sent. Open WebUI's get_function_by_id catches its own DB errors and returns None,
+    # so the except arm below can never fire for a real fault -- and config_get then
+    # hands the client rev: null, which it echoes back, making `client_rev is not None`
+    # False and letting the write through with no concurrency check at all.
+    if current_rev is None or (client_rev is not None and client_rev != current_rev):
         effective = await _effective_valves(pipe)
         stale = _config_snapshot(effective)
         stale["conflict"] = True
@@ -281,7 +292,15 @@ async def _update_enabled(pipe: Any) -> bool:
             getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True)
         )
     try:
-        valves = await svc._row_valves()
+        valves, stored_read_ok = await svc._row_valves_checked()
+        if not stored_read_ok:
+            logger.warning(
+                "pipe_dashboard: the persisted PIPE_DASHBOARD_UPDATE_ENABLE valve is "
+                "unreadable; refusing update actions rather than falling back to the "
+                "in-memory copy, which would let a failed read override an operator's "
+                "disable"
+            )
+            return False
         return bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True))
     except Exception:
         logger.warning(

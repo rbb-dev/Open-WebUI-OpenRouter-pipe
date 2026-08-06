@@ -38,7 +38,9 @@ else:
     except ImportError:
         Valves = Any  # type: ignore
 
-from ..core.config import LOGGER
+
+_module_logger = logging.getLogger(__name__)
+
 
 
 @timed
@@ -195,7 +197,7 @@ def _build_collision_safe_tool_specs_and_registry(
       - exec_registry: mapping exposed_name -> OWUI tool cfg dict (callable/spec/etc).
       - exposed_to_origin: mapping exposed_name -> origin tool name (for passthrough execution).
     """
-    log = logger or LOGGER
+    log = logger or _module_logger
     request_tool_specs = request_tool_specs or []
     extra_tools = extra_tools or []
     owui_registry = owui_registry or {}

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 from typing import TYPE_CHECKING, Any
 
+from ...core.warn_latch import warn_level
 from ._collectors import (
     PROCESS_START,
     _safe_int,
@@ -39,10 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_warned_system_resources: set[str] = set()
 
-# ---------------------------------------------------------------------------
-# Identity (once)
-# ---------------------------------------------------------------------------
 
 def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
     """Static identity data — sent on the first SSE event only.
@@ -55,6 +55,13 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
         version = __version__
     except ImportError:
         version = "unknown"
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui_openrouter_pipe failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        version = "unknown"
 
     return {
         "identity": {
@@ -64,10 +71,6 @@ def collect_identity(pipe: Pipe, *, worker_count: int = 1) -> dict[str, Any]:
         },
     }
 
-
-# ---------------------------------------------------------------------------
-# Fast tier (every 2 s) — no DB, no heavy imports
-# ---------------------------------------------------------------------------
 
 def collect_fast_stats(pipe: Pipe) -> dict[str, Any]:
     """Lightweight metrics collected every tick.
@@ -85,10 +88,6 @@ def collect_fast_stats(pipe: Pipe) -> dict[str, Any]:
         "sessions": collect_sessions(pipe),
     }
 
-
-# ---------------------------------------------------------------------------
-# Medium tier (~16 s) — light reads, no DB queries
-# ---------------------------------------------------------------------------
 
 def collect_model_registry() -> dict[str, Any]:
     """Raw model-registry state shared by the dashboard and the health command.
@@ -149,7 +148,6 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
     """Model catalog health + system health indicators."""
     stats: dict[str, Any] = {}
 
-    # ── Models ──
     try:
         reg = collect_model_registry()
         last_error = reg["last_error"]
@@ -181,7 +179,6 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
             "status": "unknown",
         }
 
-    # ── System Health ──
     valves = getattr(pipe, "valves", None)
     slm = getattr(pipe, "_session_log_manager", None)
     worker = getattr(slm, "_worker_thread", None) if slm else None
@@ -249,21 +246,35 @@ def collect_system_resources() -> dict[str, Any]:
         out.setdefault("cores", int(os.cpu_count() or 0))
     except (OSError, AttributeError):
         pass
+    data_path = os.getcwd()
     try:
-        import shutil
+        from open_webui.env import DATA_DIR
 
-        try:
-            from open_webui.env import DATA_DIR
-
-            data_path = str(DATA_DIR)
-        except ImportError:
-            data_path = os.getcwd()
+        data_path = str(DATA_DIR)
+    except ImportError:
+        pass
+    except Exception:
+        logger.log(
+            warn_level(_warned_system_resources, "data_dir_import"),
+            "pipe_dashboard: open_webui.env would not import; free space is reported "
+            "for %s rather than the configured data directory",
+            data_path,
+            exc_info=True,
+        )
+    try:
         usage = shutil.disk_usage(data_path)
+    except OSError:
+        # OSError, not Exception: the env import has its own handlers above
+        logger.log(
+            warn_level(_warned_system_resources, "disk_usage"),
+            "pipe_dashboard: cannot read disk usage for %s; the dashboard will omit it",
+            data_path,
+            exc_info=True,
+        )
+    else:
         out["disk_total"] = int(usage.total)
         out["disk_free"] = int(usage.free)
         out["disk_path"] = data_path
-    except OSError:
-        pass
     return out
 
 
@@ -299,15 +310,10 @@ def _collect_db_stats(pipe: Pipe) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Slow tier (~60 s) — DB queries, file I/O
-# ---------------------------------------------------------------------------
-
 def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
     """Heavy data: storage DB queries, config, plugins."""
     stats: dict[str, Any] = {}
 
-    # ── Storage ──
     store = getattr(pipe, "_artifact_store", None)
     if store is not None:
         ensure_error: str | None = None
@@ -344,8 +350,8 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
         }
 
         if db_connected:
-            assert sf is not None  # guaranteed by db_connected check
-            assert model is not None  # guaranteed by db_connected check
+            assert sf is not None
+            assert model is not None
             try:
                 from sqlalchemy import String, func
                 from sqlalchemy.exc import SQLAlchemyError
@@ -453,7 +459,6 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
     else:
         stats["storage"] = {"connected": False, "state": "unavailable", "error": "no store"}
 
-    # ── Configuration ──
     valves = getattr(pipe, "valves", None)
     if valves is not None:
         stats["config"] = {
@@ -468,7 +473,6 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
     else:
         stats["config"] = {}
 
-    # ── Plugins ──
     plugins: list[dict[str, str]] = []
     try:
         from ..registry import PluginRegistry

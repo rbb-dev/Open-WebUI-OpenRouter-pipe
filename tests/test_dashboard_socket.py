@@ -738,3 +738,74 @@ class TestConfigChangeNotification:
         pipe = _make_mock_pipe()
         payload = await _build_emit_payload(pipe, None, "ns", "wk", 0, {})
         assert payload["cfgRev"] == 555
+
+
+class TestReadConfigRev:
+    """The config revision the whole config tab notices changes by.
+
+    Its body was never executed: every test that touches it replaced the function with
+    an `AsyncMock`, so replacing the two lines that matter with `return None` left the
+    suite green. Both consumers then go dark -- `_emit_config_rev` pushes
+    `CONFIG_EVENT {"rev": None}` to every viewer, and the slow-tick publisher writes
+    `cfg_rev = None` -- which are the two mechanisms the tab uses to notice a settings
+    change at all.
+
+    Stubbed one seam lower, at `Functions.get_function_by_id`, because the subject IS
+    the code between that seam and the caller. Mocking the outer one deletes it.
+    """
+
+    @pytest.mark.parametrize("rev", [1717171717, 1828282828])
+    @pytest.mark.asyncio
+    async def test_it_returns_the_rows_updated_at(self, rev, monkeypatch):
+        """Two revisions, because one is satisfied by returning that constant.
+
+        Verified: with a single case, replacing the body with `return 1717171717`
+        passed. A second distinct value makes any hardcoded answer fail one of them.
+        """
+        import open_webui.models.functions as owui_functions
+
+        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
+
+        seen: list[str] = []
+
+        async def _get(function_id):
+            seen.append(function_id)
+            return types.SimpleNamespace(id=function_id, updated_at=rev)
+
+        monkeypatch.setattr(
+            owui_functions.Functions, "get_function_by_id", _get, raising=False
+        )
+        assert await dashboard_socket.read_config_rev("openrouter") == rev
+        assert seen == ["openrouter"], (
+            f"the row was looked up as {seen!r}; a revision read for the wrong pipe id "
+            "would report another function's revision as this one's"
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_is_none_when_the_row_is_missing(self, monkeypatch):
+        """Needed alongside the case above: alone, either is satisfied by a constant."""
+        import open_webui.models.functions as owui_functions
+
+        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
+
+        async def _missing(_function_id):
+            return None
+
+        monkeypatch.setattr(
+            owui_functions.Functions, "get_function_by_id", _missing, raising=False
+        )
+        assert await dashboard_socket.read_config_rev("openrouter") is None
+
+    @pytest.mark.asyncio
+    async def test_it_is_none_when_the_lookup_raises(self, monkeypatch):
+        import open_webui.models.functions as owui_functions
+
+        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
+
+        async def _boom(_function_id):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(
+            owui_functions.Functions, "get_function_by_id", _boom, raising=False
+        )
+        assert await dashboard_socket.read_config_rev("openrouter") is None

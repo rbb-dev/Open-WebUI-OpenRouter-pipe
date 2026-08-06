@@ -303,7 +303,6 @@ def test_anchor_does_not_bind_across_turns():
     assert types.count("reasoning") == 3, f"all reasoning must survive: {types}"
     r_idx = [i for i, t in enumerate(types) if t == "reasoning"]
     assert all(b > a + 1 for a, b in zip(r_idx, r_idx[1:])), f"reasoning collapsed: {types}"
-    # turn-2 reasoning stayed in turn 2 (after the q2 user message)
     t2_idx = next(i for i, it in enumerate(result)
                   if it.get("type") == "reasoning" and "T2" in _reasoning_text(it))
     q2_idx = next(i for i, it in enumerate(result)

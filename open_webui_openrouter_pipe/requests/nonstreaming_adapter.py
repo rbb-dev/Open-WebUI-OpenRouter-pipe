@@ -13,14 +13,26 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
-from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
 from ..core.timing_logger import timed
 from ..models.registry import normalize_model_id_dotted
 from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
+    from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from ..pipe import Pipe
+
+
+
+def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
+    """Imported lazily: a module-level edge here closes an import cycle.
+
+    Returning the concrete type rather than Any keeps the call site statically
+    checked; `-> Any` silently accepts a rename of the method it calls.
+    """
+    from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
+
+    return ChatCompletionsAdapter
 
 
 class NonStreamingAdapter:
@@ -296,7 +308,7 @@ class NonStreamingAdapter:
                 "type": "response.completed",
                 "response": {
                     "output": output,
-                    "usage": ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage),
+                    "usage": _chat_completions_adapter()._chat_usage_to_responses_usage(latest_usage),
                 },
             }
 

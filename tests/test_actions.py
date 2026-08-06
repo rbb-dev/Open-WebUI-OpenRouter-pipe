@@ -378,9 +378,13 @@ class _FakeUpdateService:
         self.calls: list[tuple[str, dict]] = []
         self.raise_error: Exception | None = None
         self.row_valves = {}
+        self.stored_read_ok = True
 
     async def _row_valves(self):
         return dict(self.row_valves)
+
+    async def _row_valves_checked(self):
+        return dict(self.row_valves), self.stored_read_ok
 
     async def check(self, *, force=False):
         self.calls.append(("check", {"force": force}))
@@ -450,10 +454,10 @@ async def test_update_check_force_downgraded_for_non_admin(update_env):
 async def test_update_gate_uses_row_valves_over_ctx(update_env):
     update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = True
 
-    async def _row_valves():
-        return {"PIPE_DASHBOARD_UPDATE_ENABLE": False}
+    async def _row_valves_checked():
+        return {"PIPE_DASHBOARD_UPDATE_ENABLE": False}, True
 
-    update_env.svc._row_valves = _row_valves
+    update_env.svc._row_valves_checked = _row_valves_checked
     status, payload = await actions.dispatch_action(
         update_env.pipe, _user(role="admin"), "update_check", {}, request=_req()
     )
@@ -479,10 +483,10 @@ async def test_update_gate_denies_when_the_persisted_valve_is_unreadable(update_
     """An operator's disable must not be overridden by an in-memory True on a read failure."""
     import logging as _logging
 
-    async def _boom():
-        raise RuntimeError("database unavailable")
-
-    update_env.svc._row_valves = _boom
+    # The real UpdateService never raises here -- it catches the DB error itself and
+    # falls back to the in-memory valves -- so a stub that raises proves only a branch
+    # the real API cannot reach. What it reports instead is stored_read_ok=False.
+    update_env.svc.stored_read_ok = False
     update_env.pipe.valves.PIPE_DASHBOARD_UPDATE_ENABLE = True
 
     with caplog.at_level(_logging.WARNING):
@@ -588,3 +592,121 @@ async def test_update_snapshot_delete_happy(update_env):
     assert status == 200
     assert payload["result"]["ok"] is True
     assert update_env.svc.calls[0][0] == "snapshot_delete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_rev", [None, 1000, "whatever-the-client-had"])
+async def test_a_row_open_webui_cannot_read_blocks_the_write(fake_functions, caplog, client_rev):
+    """Open WebUI returns None on a DB fault; it does not raise.
+
+    `Functions.get_function_by_id` is `try: ... except Exception: return None`
+    (models/functions.py), so `_current_config_rev`'s except arm is unreachable for a
+    real fault. The pipe got None, logged nothing, and `config_get` handed the client
+    `rev: null` -- which the shipped client stores and echoes back verbatim. Server-side
+    `client_rev` was then None, so `client_rev is not None` was False and the write went
+    through with NO concurrent-edit check, which is the state the guard exists to deny.
+
+    Parametrised over what the caller sent, including the None the server itself
+    produced: an unreadable revision must block regardless of the caller.
+    """
+    import logging as _logging
+
+    pipe = _config_pipe()
+
+    async def _missing_row(*_args, **_kwargs):
+        return None
+
+    original = fake_functions.get_function_by_id
+    fake_functions.get_function_by_id = _missing_row
+    try:
+        with caplog.at_level(_logging.WARNING):
+            result = await actions.ACTIONS["config_set"].handler(
+                pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": client_rev}
+            )
+    finally:
+        fake_functions.get_function_by_id = original
+
+    assert result.get("conflict") is True, (
+        f"client_rev={client_rev!r}: the write was accepted while the server could not "
+        "read the stored revision, so a concurrent edit would be silently overwritten"
+    )
+    assert fake_functions.saved is None, (
+        f"client_rev={client_rev!r}: config was persisted despite the conflict"
+    )
+    assert any("config revision is unknown" in m for m in caplog.messages), (
+        "nothing told the operator why the write was refused"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_memory_enable", [True, False])
+@pytest.mark.parametrize(
+    ("outcome", "readable"),
+    [
+        ("returns-None", False),
+        ("returns-empty-dict", True),
+        ("returns-a-value", True),
+        ("raises", False),
+    ],
+)
+async def test_the_real_service_reports_an_unreadable_valve_read(
+    monkeypatch, in_memory_enable, outcome, readable
+):
+    """Drives the real `_row_valves_checked` across every outcome the store produces.
+
+    The version of this test that existed used a fake which RAISED, and raising is the
+    one behaviour Open WebUI's API is guaranteed never to exhibit:
+    `Functions.get_function_valves_by_id` catches Exception itself and returns None, and
+    `decrypt_valves` returns `{}` for every non-error input including a missing row. So
+    a guard keyed on the exception could never fire in production while this test stayed
+    green -- the store was unreadable and the update action ran anyway.
+
+    `None` and `{}` are therefore the two rows that matter, and they must give OPPOSITE
+    answers: None is a swallowed DB error, `{}` is a healthy read of an absent override.
+    A guard that denies on both is as wrong as one that denies on neither, which is why
+    "returns-empty-dict" asserts readable rather than being left out. The raising row
+    stays as a defensive case for a future Open WebUI that lets one escape.
+
+    Parametrised over the in-memory value because that is the trap: with an in-memory
+    True and an unreadable store, the old code returned True and let the action run.
+    """
+    import open_webui.models.functions as owf
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateService
+
+    class _Store:
+        async def get_function_valves_by_id(self, _id, db=None):
+            if outcome == "raises":
+                raise RuntimeError("database unavailable")
+            if outcome == "returns-None":
+                return None
+            if outcome == "returns-empty-dict":
+                return {}
+            return {"PIPE_DASHBOARD_UPDATE_ENABLE": True}
+
+    monkeypatch.setattr(owf, "Functions", _Store())
+    valves = SimpleNamespace(
+        PIPE_DASHBOARD_UPDATE_ENABLE=in_memory_enable,
+        PIPE_DASHBOARD_UPDATE_AUTO=False,
+        PIPE_DASHBOARD_UPDATE_REPO="",
+    )
+    pipe = SimpleNamespace(id="openrouter", valves=valves)
+
+    svc = UpdateService.__new__(UpdateService)
+    svc._pipe = lambda: pipe
+    svc._valves = lambda: valves
+    svc._functions = lambda: _Store()
+
+    merged, stored_read_ok = await svc._row_valves_checked()
+    assert stored_read_ok is readable, (
+        f"a store that {outcome} was reported as "
+        f"{'readable' if stored_read_ok else 'unreadable'}. Open WebUI returns None for "
+        "a swallowed DB error and {} for an absent override; collapsing the two either "
+        "lets an unverified in-memory True authorise an update, or denies every update "
+        "on a perfectly healthy store."
+    )
+    expected = True if outcome == "returns-a-value" else in_memory_enable
+    assert merged.get("PIPE_DASHBOARD_UPDATE_ENABLE") is expected, (
+        "the merged dict should carry the stored value where there is one and the "
+        "in-memory fallback otherwise; only the flag says whether it is verified"
+    )

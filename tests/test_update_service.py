@@ -272,13 +272,31 @@ async def test_fetch_rejects_wrong_id(svc, fake_functions, fake_http):
 
 
 @pytest.mark.asyncio
-async def test_fetch_rejects_downgrade(svc, fake_functions, fake_http):
-    content = GOOD_HEADER.replace("version: 2.7.0", "version: 2.6.8").encode()
+async def test_fetch_rejects_downgrade(svc, fake_functions, fake_http, monkeypatch):
+    """The downgrade guard, reached.
+
+    The previous version offered 2.6.8 against an installed 2.6.9 and asserted only
+    `code == "validation_failed"`. MIN_UPDATE_VERSION is 2.7.0 and that check runs
+    first with the same code, so the raise always came from the pre-updater floor --
+    replacing the entire downgrade condition with `if False:` left the suite green.
+
+    Two things make it reachable: lowering the floor out of the way, and raising the
+    INSTALLED version above the candidate rather than lowering the candidate. The
+    message assertion is what stops a sibling guard from satisfying this again.
+    """
+    monkeypatch.setattr(us, "MIN_UPDATE_VERSION", "2.0.0")
+    fake_functions.row.content = INSTALLED_CONTENT.replace("version: 2.6.9", "version: 2.9.0")
+
+    content = GOOD_HEADER.replace("version: 2.7.0", "version: 2.8.0").encode()
     asset = _asset(content)
     fake_http.bytes_map[asset["browser_download_url"]] = content
     with pytest.raises(us.UpdateError) as exc:
         await svc.fetch_and_validate(asset, require_newer=True)
     assert exc.value.code == "validation_failed"
+    assert "older than installed" in exc.value.message, (
+        f"the refusal came from a different guard: {exc.value.message!r}. The "
+        "downgrade branch is still unreached."
+    )
 
 
 @pytest.mark.asyncio
@@ -2009,3 +2027,252 @@ def test_pipe_init_attaches_registry_last():
             assert getattr(func, "attr", "") == "_attach_to_lifecycle_registry"
             return
     raise AssertionError("class Pipe not found in pipe.py")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [True, object()])
+@pytest.mark.parametrize("fetch", ["_http_get_bytes", "_http_get_json"])
+async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, configured, fetch):
+    """Certificate verification is the only thing binding an update to GitHub.
+
+    The release digest is read from the same response the download is checked against,
+    so with `ssl=False` an on-path attacker serves both the metadata and the asset, the
+    sha256 matches, and `_reload_via_loader` executes the payload as the pipe.
+
+    It was unasserted: the only test that reaches the real HTTP code uses a session
+    stand-in whose `get(self, url, **kw)` discards every keyword, so replacing
+    `ssl=_client_ssl()` with `ssl=False` at both call sites left the suite green -- as
+    did flipping `_client_ssl`'s own fallback from True to False.
+
+    The second parametrised value is a sentinel `object()` rather than `False`, because
+    both `True` and `False` are literals a careless edit could leave behind. Only a
+    value this test invents proves the resolved setting actually propagated.
+    """
+    seen: dict = {}
+
+    async def _empty_chunks():
+        return
+        yield b""
+
+    class _Resp:
+        status = 200
+        headers: dict[str, str] = {}
+        content = SimpleNamespace(iter_chunked=lambda _size: _empty_chunks())
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def json(self, **_kw):
+            return {}
+
+        async def text(self):
+            return ""
+
+    class _Session:
+        closed = False
+
+        def get(self, url, **kw):
+            seen.update(kw)
+            return _Resp()
+
+    monkeypatch.setattr(us, "_client_ssl", lambda: configured)
+    await getattr(us, fetch)(_Session(), "https://example.test/asset.py")
+
+    assert "ssl" in seen, (
+        f"{fetch} issued its request with no ssl argument at all, so aiohttp's default "
+        "applies and Open WebUI's AIOHTTP_CLIENT_SESSION_SSL setting is ignored"
+    )
+    assert seen["ssl"] is configured, (
+        f"{fetch} went out with ssl={seen['ssl']!r} instead of the value _client_ssl() "
+        "resolved. False disables certificate validation, and the release digest comes "
+        "from the same unverified channel, so nothing binds the downloaded code to "
+        "GitHub."
+    )
+
+
+@pytest.mark.parametrize(
+    ("owui_setting", "expected"),
+    [(True, True), (False, False), (None, None)],
+)
+def test_client_ssl_reports_what_open_webui_configured(monkeypatch, owui_setting, expected):
+    """The resolver itself, which the propagation test above cannot see.
+
+    That test monkeypatches `_client_ssl`, so its body never runs there -- flipping the
+    fallback from True to False left it green. Both halves are needed: one proves the
+    resolved value reaches aiohttp, this proves the value is the operator's.
+
+    `None` is included because aiohttp treats it as "use the default context", which is
+    a legitimate third setting and not a synonym for either boolean.
+
+    The module is injected into sys.modules rather than monkeypatched in place: this
+    suite stubs `open_webui` as a plain module, so `open_webui.env` is not importable
+    and `_client_ssl`'s inner import would always take the fallback branch.
+    """
+    import sys
+    import types
+
+    fake_env = types.ModuleType("open_webui.env")
+    fake_env.AIOHTTP_CLIENT_SESSION_SSL = owui_setting  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "open_webui.env", fake_env)
+    assert us._client_ssl() is expected, (
+        f"Open WebUI configured AIOHTTP_CLIENT_SESSION_SSL={owui_setting!r} but the "
+        f"updater resolved {us._client_ssl()!r}; the operator's TLS setting is ignored "
+        "on the one path that downloads and executes new pipe source"
+    )
+
+
+def test_client_ssl_verifies_certificates_when_open_webui_is_unavailable(monkeypatch):
+    """The fallback must fail CLOSED.
+
+    It is reached whenever `open_webui.env` cannot be imported -- a partially
+    initialised host, a stripped install. Returning False there would silently disable
+    certificate validation for the self-updater on exactly the hosts whose environment
+    is already unusual.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocking_import(name, *args, **kwargs):
+        if name == "open_webui.env" or name.startswith("open_webui.env."):
+            raise ImportError("open_webui.env unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocking_import)
+    assert us._client_ssl() is True, (
+        "with Open WebUI unavailable the updater fell back to a value other than True; "
+        "anything but True disables or weakens certificate validation on the one code "
+        "path that downloads and executes new pipe source"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_tick_skips_when_the_persisted_valves_are_unreadable(auto, caplog):
+    """`_auto_tick` applies updates unattended, so it must fail closed.
+
+    Its sibling gate in `actions._update_enabled` denies on an unreadable read; this
+    one was written the same way and left without the check. An operator's disable
+    lives only in the persisted valves — falling back to the in-memory copy on a read
+    failure means the very fault that hid the setting is what overrides it, and then a
+    new bundle is downloaded and executed with nobody watching.
+    """
+    import logging as _logging
+
+    async def _unreadable():
+        return ({"PIPE_DASHBOARD_UPDATE_ENABLE": True, "PIPE_DASHBOARD_UPDATE_AUTO": True}, False)
+
+    auto.svc._row_valves_checked = _unreadable
+
+    with caplog.at_level(_logging.WARNING):
+        delay = await auto.svc._auto_tick()
+
+    assert auto.applied == [], (
+        "an unattended update was applied while the operator's persisted settings could "
+        "not be read"
+    )
+    assert delay == us._PD_UPDATE_AUTO_INTERVAL
+    assert any("unreadable" in m for m in caplog.messages), (
+        "the tick was skipped with nothing saying why"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_column", "decoded", "expected_ok"),
+    [
+        (None, {}, True),
+        ({}, {}, True),
+        ("gAAAAAB_ciphertext", {}, False),
+        ("gAAAAAB_ciphertext", {"PIPE_DASHBOARD_UPDATE_ENABLE": False}, True),
+    ],
+    ids=["fresh-install", "unencrypted-empty", "rotated-key", "healthy-encrypted-install"],
+)
+async def test_an_undecodable_valve_blob_is_not_read_as_no_override(monkeypatch, caplog, raw_column, decoded, expected_ok):
+    """`{}` from decrypt_valves means two different things, and only one is safe.
+
+    Open WebUI's `decrypt_valves` returns `{}` on InvalidToken -- a FAILED decrypt --
+    exactly as it does for a row with nothing stored. Treating both as "no override"
+    meant an operator who disabled updates and then rotated WEBUI_SECRET_KEY got the
+    in-memory default of True back.
+
+    Stubbed at the DATABASE seam, not at `get_function_by_id`. The first version of this
+    test handed the service a `SimpleNamespace(valves=...)` -- a shape Open WebUI never
+    returns, because `FunctionModel` has no `valves` field at all. The production code
+    read that nonexistent attribute, always got None, and the test certified dead code
+    green. The ciphertext lives only in the `Function.valves` ORM column.
+
+    The dict arm is not decoration. `Function.valves` is a JSONField, so the column
+    round-trips through json.loads; ENABLE_VALVE_ENCRYPTION defaults to False, so a
+    default install stores the valve dict itself and an empty form writes `{}`. Without
+    this arm, `raw is not None` satisfies both other arms while denying the update
+    surface on every unencrypted install.
+    """
+    import contextlib
+    import sys
+    import types
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateService
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return raw_column
+
+    class _Session:
+        async def execute(self, _stmt):
+            return _Result()
+
+    @contextlib.asynccontextmanager
+    async def _ctx(*_a, **_k):
+        yield _Session()
+
+    db_mod = types.ModuleType("open_webui.internal.db")
+    setattr(db_mod, "get_async_db_context", _ctx)
+    monkeypatch.setitem(sys.modules, "open_webui.internal", types.ModuleType("open_webui.internal"))
+    monkeypatch.setitem(sys.modules, "open_webui.internal.db", db_mod)
+
+    # The ORM class the production query selects from. The suite's Open WebUI stand-in
+    # has the models module but not this class, so without it the import fails into the
+    # tolerant branch and the arm below passes for the wrong reason.
+    # A REAL mapped class, because the production query is `select(Function.valves)
+    # .filter_by(id=...)` and SQLAlchemy rejects a plain attribute as an entity. A
+    # hand-rolled stand-in raised InvalidRequestError into the tolerant branch, which
+    # made the arm below pass for the wrong reason.
+    from sqlalchemy import Column, String
+    from sqlalchemy.orm import declarative_base
+
+    fn_mod = sys.modules["open_webui.models.functions"]
+    if not hasattr(fn_mod, "Function"):
+        _Base = declarative_base()
+
+        class _Function(_Base):
+            __tablename__ = "function"
+            id = Column(String, primary_key=True)
+            valves = Column(String)
+
+        monkeypatch.setattr(fn_mod, "Function", _Function, raising=False)
+
+    svc = UpdateService.__new__(UpdateService)
+    svc._valves = lambda: types.SimpleNamespace(
+        **{k: True for k in UpdateService._UPDATE_VALVE_KEYS}
+    )
+    svc._pipe = lambda: types.SimpleNamespace(id="fn")
+    svc._functions = lambda: types.SimpleNamespace(get_function_valves_by_id=lambda _id: decoded)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _merged, read_ok = await svc._row_valves_checked()
+    assert read_ok is expected_ok, (
+        f"with raw valve column {raw_column!r}, the persisted read was reported "
+        f"{'readable' if read_ok else 'unreadable'}. A stored blob that will not decode "
+        "must not read as 'nothing stored', and an empty column must not read as broken."
+    )
+    told = [m for m in caplog.messages if "did not decode" in m]
+    assert bool(told) is (not expected_ok), (
+        f"raw column {raw_column!r}: read_ok={read_ok}, operator told={bool(told)}. A "
+        "downgrade with nothing said leaves the operator with a refused action and no "
+        "cause; a warning on a healthy row is a false alarm."
+    )

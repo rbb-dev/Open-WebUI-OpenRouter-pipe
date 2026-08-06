@@ -31,9 +31,7 @@ from open_webui_openrouter_pipe.storage.multimodal import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Helper Functions
-# ---------------------------------------------------------------------------
 
 
 def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = None):
@@ -51,9 +49,7 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
     )
 
 
-# ---------------------------------------------------------------------------
 # Icon Mapping Tests
-# ---------------------------------------------------------------------------
 
 
 def test_build_icon_mapping_with_protocol_relative_url(pipe_instance) -> None:
@@ -280,9 +276,7 @@ def test_build_icon_mapping_skips_no_icon_or_fallback(pipe_instance) -> None:
     assert "test/model" not in icon_mapping
 
 
-# ---------------------------------------------------------------------------
 # Frontend Catalog Fetch Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -362,9 +356,7 @@ async def test_fetch_frontend_model_catalog_connection_error(pipe_instance_async
             await session.close()
 
 
-# ---------------------------------------------------------------------------
 # Maker Profile Image Mapping Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -403,7 +395,7 @@ async def test_build_maker_profile_image_mapping_deduplicates_makers(pipe_instan
         result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(
             session, ["openai", "openai", "anthropic", "openai"]
         )
-        assert call_count == 2  # Only 2 unique makers
+        assert call_count == 2
         assert len(result) == 2
     finally:
         await session.close()
@@ -433,9 +425,7 @@ async def test_build_maker_profile_image_mapping_handles_none_results(pipe_insta
         await session.close()
 
 
-# ---------------------------------------------------------------------------
 # Metadata Sync Scheduling Tests
-# ---------------------------------------------------------------------------
 
 
 def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> None:
@@ -485,7 +475,6 @@ def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
-    # Set a sync key that matches what would be generated
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
     last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
     last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
@@ -554,7 +543,7 @@ def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
 
     def _fake_create_task(coro, *args, **kwargs):
         created["called"] = True
-        coro.close()  # never scheduled; avoid "coroutine was never awaited"
+        coro.close()
         task = Mock()
         task.done.return_value = True
         return task
@@ -569,9 +558,6 @@ def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
     last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
     last_image_fetch = OpenRouterModelRegistry.last_image_fetch()
 
-    # Seed a key identical to what production builds now, EXCEPT the Fusion attach
-    # flag is inverted (the state before the admin toggled it). If the Fusion
-    # valves are part of the key, production computes a different key and reschedules.
     pipe._catalog_manager._model_metadata_sync_key = (
         "test_pipe",
         float(last_fetch or 0.0),
@@ -634,9 +620,7 @@ def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_inst
     assert pipe._catalog_manager._model_metadata_sync_key is None
 
 
-# ---------------------------------------------------------------------------
 # Sync Model Metadata Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -717,7 +701,7 @@ async def test_sync_model_metadata_uses_id_as_name_when_missing(pipe_instance_as
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
-    assert args[1] == "test.model"  # name falls back to id
+    assert args[1] == "test.model"
 
 
 @pytest.mark.asyncio
@@ -732,7 +716,6 @@ async def test_sync_model_metadata_web_tools_filter_warning_not_installed(pipe_i
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value=None)
 
@@ -742,7 +725,6 @@ async def test_sync_model_metadata_web_tools_filter_warning_not_installed(pipe_i
             pipe_identifier="test_pipe",
         )
 
-    # Check that the Web Tools filter warning was among the warnings logged
     warning_messages = [call[0][0] for call in mock_warning.call_args_list]
     assert any("AUTO_ATTACH_WEB_TOOLS_FILTER is enabled" in msg for msg in warning_messages)
 
@@ -758,7 +740,6 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(return_value=None)
 
@@ -768,7 +749,6 @@ async def test_sync_model_metadata_direct_uploads_filter_warning(pipe_instance_a
             pipe_identifier="test_pipe",
         )
 
-    # Check that the direct uploads warning was among the warnings logged
     warning_messages = [call[0][0] for call in mock_warning.call_args_list]
     assert any("AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled" in msg for msg in warning_messages)
 
@@ -783,7 +763,6 @@ async def test_sync_model_metadata_logs_supported_model_counts(pipe_instance_asy
     pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = True
     pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
 
-    # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value="openrouter_web_tools")
     pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={
@@ -840,20 +819,16 @@ async def test_sync_model_metadata_ensure_filter_exception_handling(pipe_instanc
     pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = True
     pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
 
-    # Initialize the filter manager and mock its method to raise
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_openrouter_web_tools_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
 
-    # Should not raise, logs debug instead
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
         [{"id": "test.model", "original_id": "test/model"}],
         pipe_identifier="test_pipe",
     )
 
 
-# ---------------------------------------------------------------------------
 # Update/Insert Model Metadata Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1053,7 +1028,6 @@ async def test_update_or_insert_new_model_invalid_access_control_defaults_privat
 
     insert_mock.assert_called_once()
     inserted_form = insert_mock.call_args[0][0]
-    # Invalid values should default to private (empty grants) not public (wildcard)
     assert inserted_form.access_grants == []
 
 
@@ -1087,7 +1061,6 @@ async def test_update_existing_model_merges_capabilities(pipe_instance_async) ->
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Should merge: vision overwritten to True, web_search added, file_upload preserved
     assert meta["capabilities"]["vision"] is True
     assert meta["capabilities"]["web_search"] is True
     assert meta["capabilities"]["file_upload"] is True
@@ -1111,7 +1084,7 @@ async def test_update_existing_model_no_changes_skips_update(pipe_instance_async
         await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
-            {"vision": True},  # Same as existing
+            {"vision": True},
             None,
             True,
             False,
@@ -1220,7 +1193,6 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Old filter should be replaced with new one
     assert "old_openrouter_web_tools" not in meta["filterIds"]
     assert "new_openrouter_web_tools" in meta["filterIds"]
 
@@ -1344,7 +1316,6 @@ async def test_update_existing_model_default_filter_migration(pipe_instance_asyn
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Default filter ID should be migrated
     assert "new_openrouter_web_tools" in meta["defaultFilterIds"]
     assert meta["openrouter_pipe"]["web_tools_filter_id"] == "new_openrouter_web_tools"
 
@@ -1358,7 +1329,7 @@ async def test_update_existing_model_default_filter_not_attached_skips(pipe_inst
 
     existing = _make_existing_model(
         model_id,
-        meta={"filterIds": []},  # Filter not attached
+        meta={"filterIds": []},
     )
     update_mock = AsyncMock()
 
@@ -1372,9 +1343,9 @@ async def test_update_existing_model_default_filter_not_attached_skips(pipe_inst
             False,
             False,
             filter_function_id="openrouter_web_tools",
-            filter_supported=False,  # Not supported, so not attached
+            filter_supported=False,
             auto_attach_filter=False,
-            auto_default_filter=True,  # Even though enabled, should not add default
+            auto_default_filter=True,
         )
 
     update_mock.assert_not_called()
@@ -1596,7 +1567,6 @@ async def test_normalize_filter_ids_filters_non_strings(pipe_instance_async) -> 
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Should have valid_filter, another_filter, and openrouter_web_tools (newly added)
     assert "valid_filter" in meta["filterIds"]
     assert "another_filter" in meta["filterIds"]
     assert "openrouter_web_tools" in meta["filterIds"]
@@ -1635,7 +1605,6 @@ async def test_dedupe_preserves_order(pipe_instance_async) -> None:
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
-    # Order should be preserved, duplicates removed
     assert meta["filterIds"] == ["filter_a", "filter_b", "filter_c", "openrouter_web_tools"]
 
 
@@ -1675,9 +1644,7 @@ async def test_existing_model_null_meta_handled(pipe_instance_async) -> None:
     update_mock.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # Additional Edge Case Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1692,7 +1659,6 @@ async def test_sync_model_metadata_direct_uploads_logs_supported_count(pipe_inst
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    # Initialize the filter manager and mock its method
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(return_value="openrouter_direct_uploads")
 
@@ -1743,7 +1709,7 @@ async def test_sync_model_metadata_with_images_and_maker_mapping(pipe_instance_a
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
-    assert args[3] == "data:image/png;base64,ABC123"  # profile_image_url
+    assert args[3] == "data:image/png;base64,ABC123"
 
 
 @pytest.mark.asyncio
@@ -1758,7 +1724,7 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
 
-    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})  # No icon data
+    pipe._ensure_catalog_manager()._fetch_frontend_model_catalog = AsyncMock(return_value={"data": []})
     pipe._ensure_catalog_manager()._build_maker_profile_image_mapping = AsyncMock(return_value={"anthropic": "https://example.com/anthropic.png"})
     pipe._multimodal_handler._fetch_image_as_data_url = AsyncMock(return_value="data:image/png;base64,ANTHROPIC123")
 
@@ -1771,7 +1737,7 @@ async def test_sync_model_metadata_maker_image_fallback(pipe_instance_async) -> 
 
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
-    assert args[3] == "data:image/png;base64,ANTHROPIC123"  # profile_image_url from maker
+    assert args[3] == "data:image/png;base64,ANTHROPIC123"
 
 
 @pytest.mark.asyncio
@@ -1793,14 +1759,13 @@ async def test_sync_model_metadata_skips_model_without_original_id_for_images(pi
     pipe._catalog_manager._update_or_insert_model_with_metadata = AsyncMock()
 
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-        [{"id": "test.model", "original_id": None, "name": "Test"}],  # No original_id
+        [{"id": "test.model", "original_id": None, "name": "Test"}],
         pipe_identifier="test_pipe",
     )
 
-    # Should still call update but without image
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
-    assert args[3] is None  # profile_image_url should be None
+    assert args[3] is None
 
 
 @pytest.mark.asyncio
@@ -1854,7 +1819,7 @@ async def test_update_existing_model_description_no_change_skips_update(pipe_ins
             None,
             False,
             False,
-            description="Same description",  # Same as existing
+            description="Same description",
             update_descriptions=True,
         )
 
@@ -1979,7 +1944,7 @@ async def test_update_existing_model_same_image_skips_update(pipe_instance_async
             model_id,
             "GPT-4o",
             None,
-            "data:image/png;base64,SAME",  # Same as existing
+            "data:image/png;base64,SAME",
             False,
             True,
         )
@@ -2071,11 +2036,9 @@ async def test_sync_model_metadata_direct_uploads_filter_exception_handling(pipe
     pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
 
-    # Initialize the filter manager and mock its method to raise
     pipe._ensure_filter_manager()
     pipe._filter_manager.ensure_direct_uploads_filter_function_id = AsyncMock(side_effect=Exception("Filter install failed"))
 
-    # Should not raise, logs debug instead
     await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
         [{"id": "test.model", "original_id": "test/model"}],
         pipe_identifier="test_pipe",
@@ -2108,7 +2071,7 @@ def test_build_icon_mapping_success(pipe_instance):
                 "endpoint": {
                     "provider_info": {
                         "icon": {
-                            "url": "/images/icons/OpenAI.svg",  # relative URL
+                            "url": "/images/icons/OpenAI.svg",
                             "className": "something",
                         },
                         "baseUrl": "https://api.openai.com/v1",
@@ -2121,7 +2084,7 @@ def test_build_icon_mapping_success(pipe_instance):
             },
             {
                 "slug": "meta/llama-3.1-70b",
-                "endpoint": {"provider_info": {"icon": None}},  # no icon
+                "endpoint": {"provider_info": {"icon": None}},
             },
         ]
     }
@@ -2424,7 +2387,6 @@ class TestQualifyModelForPipe:
     def test_qualification_with_normalized_model_id(self, pipe_instance):
         """Test that model IDs are normalized before qualification."""
         pipe = pipe_instance
-        # ModelFamily.base_model normalizes: lowercase, strip dates, replace / with .
         result = pipe._qualify_model_for_pipe("mypipe", "openai/gpt-4")
         assert result == "mypipe.openai.gpt-4"
 
@@ -2448,7 +2410,7 @@ class TestQualifyModelForPipe:
 
         # Whitespace-only pipe_identifier
         result = pipe._qualify_model_for_pipe("  ", "gpt-4")
-        assert result is not None  # Should still qualify with the trimmed identifier
+        assert result is not None
 
     def test_none_model_id_returns_none(self, pipe_instance):
         """Test that None model_id returns None."""
@@ -2497,16 +2459,13 @@ class TestQualifyModelForPipe:
     def test_complex_model_ids_with_slashes(self, pipe_instance):
         """Test model IDs containing slashes (e.g., provider/model format)."""
         pipe = pipe_instance
-        # Slashes should be normalized to dots by ModelFamily.base_model
         result = pipe._qualify_model_for_pipe("mypipe", "anthropic/claude-3-opus")
         assert result == "mypipe.anthropic.claude-3-opus"
 
     def test_model_ids_with_dates_are_normalized(self, pipe_instance):
         """Test that date suffixes in model IDs are stripped during normalization."""
         pipe = pipe_instance
-        # ModelFamily.base_model strips date patterns
         result = pipe._qualify_model_for_pipe("mypipe", "gpt-4-2024-01-15")
-        # Date should be stripped by normalization
         assert "2024" not in result
         assert result.startswith("mypipe.")
 
@@ -2514,7 +2473,6 @@ class TestQualifyModelForPipe:
         """Test that model IDs are normalized to lowercase."""
         pipe = pipe_instance
         result = pipe._qualify_model_for_pipe("mypipe", "GPT-4")
-        # Should be lowercased by ModelFamily.base_model
         assert result == "mypipe.gpt-4"
 
     def test_pipe_identifier_with_special_characters(self, pipe_instance):
@@ -2532,15 +2490,12 @@ class TestQualifyModelForPipe:
     def test_multiple_dots_in_qualified_id(self, pipe_instance):
         """Test that already-qualified IDs with multiple dots are handled."""
         pipe = pipe_instance
-        # Model already has pipe prefix with dots
         result = pipe._qualify_model_for_pipe("mypipe", "mypipe.provider.model-v1")
         assert result == "mypipe.provider.model-v1"
 
     def test_normalization_fallback_behavior(self, pipe_instance):
         """Test behavior when ModelFamily.base_model returns None."""
         pipe = pipe_instance
-        # If normalization fails or returns None, should use original trimmed value
-        # This tests the `or trimmed` fallback in: normalized = ModelFamily.base_model(trimmed) or trimmed
         result = pipe._qualify_model_for_pipe("mypipe", "unknown-model")
         assert result is not None
         assert result.startswith("mypipe.")
@@ -2556,13 +2511,11 @@ class TestQualifyModelForPipe:
         """Test that prefix detection requires exact match with dot separator."""
         pipe = pipe_instance
 
-        # Model starts with identifier but no dot - should NOT be considered qualified
         result = pipe._qualify_model_for_pipe("my", "mygpt-4")
-        assert result == "my.mygpt-4"  # Should qualify it
+        assert result == "my.mygpt-4"
 
-        # Model with exact prefix match - should be considered already qualified
         result = pipe._qualify_model_for_pipe("my", "my.gpt-4")
-        assert result == "my.gpt-4"  # Should NOT double-qualify
+        assert result == "my.gpt-4"
 
     def test_real_world_openrouter_model_ids(self, pipe_instance):
         """Test with realistic OpenRouter model ID formats."""
@@ -2603,15 +2556,11 @@ class TestQualifyModelForPipe:
         # First qualification
         first = pipe._qualify_model_for_pipe("mypipe", "gpt-4")
 
-        # Second qualification of already-qualified ID
         second = pipe._qualify_model_for_pipe("mypipe", first)
 
         # Should be idempotent
         assert first == second
         assert first == "mypipe.gpt-4"
-
-
-# ===== From test_model_metadata_disable_flags.py =====
 
 
 from types import SimpleNamespace
@@ -2621,7 +2570,7 @@ from open_webui_openrouter_pipe import Pipe
 
 
 def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = None):
-    from open_webui.models.models import ModelMeta  # provided by test stubs
+    from open_webui.models.models import ModelMeta
 
     return SimpleNamespace(
         id=model_id,
@@ -2905,7 +2854,6 @@ def test_model_fallback_merges_with_existing_models_list() -> None:
     ]
 
 
-
 # ===== From openrouter/test_registry.py =====
 
 from open_webui_openrouter_pipe import (
@@ -2950,17 +2898,13 @@ def test_model_family_capabilities_returns_copy_and_defaults():
         caps = ModelFamily.capabilities("foo")
         assert caps["vision"] is True
         caps["vision"] = False
-        # Original spec should remain unchanged
         assert ModelFamily.capabilities("foo")["vision"] is True
-        # Unknown models fall back to empty dict
         assert ModelFamily.capabilities("unknown") == {}
     finally:
         ModelFamily.set_dynamic_specs(previous_specs)
 
 
-# ---------------------------------------------------------------------------
 # Stale Filter ID Pruning Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2975,7 +2919,7 @@ async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instanc
         meta={
             "filterIds": [
                 "openrouter_web_tools",
-                "openrouter_native_attachments",  # stale — doesn't exist
+                "openrouter_native_attachments",
                 "openrouter_direct_uploads",
             ],
         },
@@ -3021,8 +2965,8 @@ async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_asy
         meta={
             "filterIds": [
                 "openrouter_web_tools",
-                "openrouter_native_attachments",  # stale
-                "some_other_plugin_filter",        # non-openrouter — must survive
+                "openrouter_native_attachments",
+                "some_other_plugin_filter",
                 "openrouter_direct_uploads",
             ],
         },
@@ -3068,7 +3012,7 @@ async def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance_async) ->
         meta={
             "filterIds": [
                 "openrouter_web_tools",
-                "openrouter_native_attachments",  # would be stale, but pruning disabled
+                "openrouter_native_attachments",
             ],
         },
     )
@@ -3083,10 +3027,9 @@ async def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance_async) ->
             None,
             False,
             False,
-            valid_openrouter_filter_ids=frozenset(),  # empty — pruning disabled
+            valid_openrouter_filter_ids=frozenset(),
         )
 
-    # No changes should be made (pruning skipped, no other metadata changes)
     update_mock.assert_not_called()
 
 
@@ -3108,14 +3051,13 @@ async def test_prune_stale_no_filter_ids_is_noop(pipe_instance_async) -> None:
         await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
-            {"vision": True},  # same as existing — no capability change
+            {"vision": True},
             None,
             True,
             False,
             valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
         )
 
-    # No update needed — capabilities identical and no stale filter IDs
     update_mock.assert_not_called()
 
 
@@ -3154,7 +3096,6 @@ async def test_prune_stale_all_valid_no_update(pipe_instance_async) -> None:
             }),
         )
 
-    # All filter IDs valid — no changes needed
     update_mock.assert_not_called()
 
 
@@ -3233,14 +3174,13 @@ async def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_i
         await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id,
             "GPT-4o",
-            {"vision": True},  # same as existing — no capability change
+            {"vision": True},
             None,
             True,
             False,
             valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
         )
 
-    # Update should still happen because stale ID was pruned
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
     meta = dict(updated_form.meta)
@@ -3283,13 +3223,7 @@ async def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance
             }),
         )
 
-    # All valid — no update
     update_mock.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Startup Bulk Prune Tests (prune_stale_openrouter_filter_ids)
-# ---------------------------------------------------------------------------
 
 
 def _make_model_for_bulk_prune(model_id: str, filter_ids: list[str]):
@@ -3369,7 +3303,7 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
          patch("open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)):
         count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
 
-    assert count == 2  # model_a and model_c updated; model_b clean
+    assert count == 2
     assert "model_a" in update_calls
     assert "model_b" not in update_calls
     assert "model_c" in update_calls
@@ -3378,7 +3312,7 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
     assert meta_a["filterIds"] == ["openrouter_web_tools", "openrouter_direct_uploads"]
 
     meta_c = dict(update_calls["model_c"].meta)
-    assert meta_c["filterIds"] == []  # both IDs were stale
+    assert meta_c["filterIds"] == []
 
 
 @pytest.mark.asyncio
@@ -3503,8 +3437,6 @@ def test_startup_prune_flag_prevents_repeat_calls(pipe_instance) -> None:
     pipe = pipe_instance
     assert pipe._stale_filter_ids_pruned is False
     pipe._stale_filter_ids_pruned = True
-    # After flag is set, pipes() should not call prune again
-    # (verified implicitly — if it did, it would fail without mocks)
 
 
 def test_register_video_models_uses_atomic_assignment_for_all_state_attrs():
@@ -3716,10 +3648,6 @@ def test_catalog_manager_uses_direct_attr_for_last_fetch(pipe_instance):
         "catalog_manager must read _last_fetch via direct attribute access."
     )
 
-
-# ---------------------------------------------------------------------------
-# Provider routing overlay (issue #57): per-model endpoints fetch + merge
-# ---------------------------------------------------------------------------
 
 _ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
 
@@ -4192,3 +4120,155 @@ class TestDescriptionsFetchGate:
             [{"id": "a/b", "name": "AB"}], pipe_identifier="openrouter"
         )
         assert reached == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("any_tool_enabled", "should_install"),
+    [(True, True), (False, False)],
+)
+async def test_the_web_tools_filter_is_not_installed_when_every_tool_is_off(
+    pipe_instance_async, monkeypatch, any_tool_enabled, should_install
+) -> None:
+    """AUTO_INSTALL_WEB_TOOLS_FILTER alone is not the gate.
+
+    Installing writes a filter function into Open WebUI and shows it in the operator's
+    Integrations menu. Doing that when every underlying tool is disabled puts a control
+    in front of users that cannot do anything, and refreshes it on every `pipes()` call.
+    Dropping the second conjunct went entirely unnoticed by the suite.
+
+    The catalog endpoint is mocked because it was not: `pipes()` fetches
+    /api/v1/models, and with a real API key set and no mock this reached
+    openrouter.ai over the network on every run. That made the negative arm pass for the
+    wrong reason -- a failed fetch installs nothing, so "every tool disabled" and "the
+    request did not complete" produced the same answer -- and made both arms fail on any
+    DNS or connectivity hiccup with a message about web tools.
+    """
+    pipe = pipe_instance_async
+    pipe.valves.API_KEY = "sk-test-key"
+    pipe.valves.ENABLE_VIDEO_GENERATION = False
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
+    for name in (
+        "ENABLE_WEB_SEARCH",
+        "ENABLE_WEB_FETCH",
+        "ENABLE_DATETIME",
+        "ENABLE_ADVISOR",
+        "ENABLE_SUBAGENT",
+        "ENABLE_SEARCH_MODELS",
+    ):
+        setattr(pipe.valves, name, False)
+    if any_tool_enabled:
+        pipe.valves.ENABLE_WEB_FETCH = True
+
+    manager = pipe._ensure_filter_manager()
+    installer = AsyncMock(return_value="openrouter_web_tools")
+    monkeypatch.setattr(
+        manager,
+        "ensure_openrouter_web_tools_filter_function_id",
+        installer,
+        raising=False,
+    )
+
+    with aioresponses() as mock_http:
+        mock_http.get(
+            "https://openrouter.ai/api/v1/models",
+            payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+            repeat=True,
+        )
+        models = await pipe.pipes()
+
+    assert models and not any("error" in str(m.get("id", "")).lower() for m in models), (
+        f"pipes() returned {models!r}; the catalog did not load, so this test would "
+        "report 'not installed' whatever the valve gate did"
+    )
+    assert installer.called is should_install, (
+        "the web tools filter was "
+        f"{'installed' if installer.called else 'not installed'} with "
+        f"{'one tool enabled' if any_tool_enabled else 'every tool disabled'}; "
+        "installing with all tools off publishes a filter that can do nothing"
+    )
+
+
+class _HostileModel(dict):
+    """A model entry whose own read raises, so `_apply` fails BEFORE the sync call.
+
+    There are two failure recorders: one inside `_apply` for a failed sync, and one at
+    the gather for an exception that escaped `_apply` altogether. They feed the same
+    aggregate warning, so covering only one leaves the other deletable in silence.
+    """
+
+    def get(self, key, default=None):
+        # "name" rather than "id": the caller reads the id before dispatching, so raising
+        # there escapes the gather instead of being captured by it.
+        if key == "name":
+            raise RuntimeError("model entry is unreadable")
+        return super().get(key, default)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escapes_apply", [False, True], ids=["sync-call-fails", "apply-raises"])
+async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
+    pipe_instance_async, caplog, escapes_apply
+) -> None:
+    """An operator must learn HOW MANY models failed, not just that something did.
+
+    `_sync_model_metadata_to_owui` swallows every per-model failure into a DEBUG line and
+    reports one aggregate warning. Nothing tested it: the per-model failure recorder was
+    executed by zero of 5885 tests, and replacing the whole warning with `if False:` left
+    the suite green -- restoring exactly the silence the diagnostic was added to end.
+    Capabilities, descriptions and filter attachments would silently stop updating.
+
+    Two models with ONE failing, so the counts are distinguishable: with a single model
+    `1/1` cannot tell the real counters from two hardcoded `1`s.
+
+    Asserted on `record.args`, not on the rendered string -- the numbers are separate `%`
+    arguments, so a string assertion couples the test to the formatting and still passes
+    if both counts are hardcoded.
+    """
+    import logging as _logging
+
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+    pipe.valves.UPDATE_MODEL_IMAGES = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+
+    async def _one_fails(*args, **kwargs):
+        model_id = kwargs.get("openrouter_id") or (args[0] if args else "")
+        if "bad" in str(model_id):
+            raise RuntimeError("model row is read-only")
+        return None
+
+    manager._update_or_insert_model_with_metadata = AsyncMock(side_effect=_one_fails)
+
+    bad = (
+        _HostileModel({"id": "vendor/bad", "name": "Bad"})
+        if escapes_apply
+        else {"id": "vendor/bad", "name": "Bad"}
+    )
+    with caplog.at_level(_logging.WARNING, logger=manager.logger.name):
+        await manager._sync_model_metadata_to_owui(
+            [{"id": "vendor/good", "name": "Good"}, bad],
+            pipe_identifier="openrouter",
+        )
+
+    aggregates = [
+        r
+        for r in caplog.records
+        if r.levelno >= _logging.WARNING
+        and r.args
+        and isinstance(r.args, tuple)
+        and len(r.args) >= 2
+        and isinstance(r.args[0], int)
+        and isinstance(r.args[1], int)
+    ]
+    assert len(aggregates) == 1, (
+        f"expected exactly one aggregate sync-failure warning, got {len(aggregates)}: "
+        f"{[r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]}"
+    )
+    failed, total = aggregates[0].args[0], aggregates[0].args[1]
+    assert (failed, total) == (1, 2), (
+        f"the warning reported {failed}/{total} model(s) failed; one of two did. An "
+        "operator sizes the blast radius from these numbers."
+    )

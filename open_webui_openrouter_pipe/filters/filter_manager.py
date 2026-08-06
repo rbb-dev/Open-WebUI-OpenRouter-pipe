@@ -42,15 +42,13 @@ from ..core.config import (
     _PROVIDER_SLUG_PATTERN,
 )
 from ..core.timing_logger import timed
+from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
 
-# Security: Quantization level validation (alphanumeric + underscore/hyphen)
-# Used for validating quantization values like "int4", "int8", "fp16", "bf16"
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
-# Regex patterns for provider name validation
 _PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
 _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
@@ -62,7 +60,6 @@ class FilterManager:
     Instance methods handle filter installation/updates in OWUI.
     """
 
-    # Class-level state hash to prevent unnecessary filter regeneration
     _provider_routing_state_hash: str = ""
 
     def __init__(
@@ -82,9 +79,6 @@ class FilterManager:
         self.valves = valves
         self.logger = logger
 
-    # =========================================================================
-    # SECURITY/UTILITY METHODS (Static)
-    # =========================================================================
 
     @staticmethod
     def safe_literal_string(s: str) -> str:
@@ -165,26 +159,19 @@ class FilterManager:
         if not cleaned:
             return "Unknown"
 
-        # Remove any characters not in our allowlist (use pre-compiled pattern)
-        # Allow: ASCII letters, digits, space, hyphen, underscore, period
         cleaned = _PROVIDER_NAME_ALLOWLIST_RE.sub("", cleaned)
 
-        # Collapse multiple spaces/underscores (use pre-compiled pattern)
         cleaned = _PROVIDER_NAME_COLLAPSE_RE.sub(" ", cleaned)
         cleaned = cleaned.strip()
 
         if not cleaned:
             return "Unknown"
 
-        # Enforce maximum length with hash suffix for uniqueness
         max_length = 64
         if len(cleaned) > max_length:
-            # Use slug for hash if provided, otherwise use the cleaned name itself
             hash_source = slug if slug else cleaned
             hash_suffix = hashlib.md5(hash_source.encode("utf-8")).hexdigest()[:8]
-            # Truncate to leave room for underscore + 8-char hash
             truncated = cleaned[: max_length - 9].rstrip(" _-.")
-            # Handle edge case: if truncated is empty after rstrip, use fallback
             if not truncated:
                 cleaned = f"Provider_{hash_suffix}"
             else:
@@ -198,16 +185,16 @@ class FilterManager:
 
         Example: 'openai/gpt-4o' -> 'openai_gpt_4o'
 
-        The colon matters: variant slugs ('deepseek/deepseek-v3.2:free') would
-        otherwise produce an id that fails OWUI's own ``id.isidentifier()`` check
-        on its function-create route.
+        Every character outside ``[A-Za-z0-9_]`` is replaced, not an enumerated few:
+        a chain of ``.replace()`` calls only covers the separators someone thought of,
+        and the catalog contains ids they did not -- the tilde aliases
+        (``~anthropic/claude-sonnet-latest``) are real, supported ids that a
+        colon-only fix leaves broken. The sibling renderers use the same character
+        class and are injective for the same reason; they additionally lower-case and
+        prepend their own prefix, which this one must not, because the id it produces
+        is matched against already-installed filters.
         """
-        return (
-            model_slug.replace("/", "_")
-            .replace("-", "_")
-            .replace(".", "_")
-            .replace(":", "_")
-        )
+        return _MODEL_FILTER_ID_RE.sub("_", model_slug)
 
     @staticmethod
     def validate_filter_source(source: str) -> tuple[bool, str | None]:
@@ -252,8 +239,6 @@ class FilterManager:
             ast.parse(source)
             return True, None
         except SyntaxError as e:
-            # Include line number and message for debugging
-            # Note: Use str(e) rather than e.msg for cross-version compatibility
             if e.lineno:
                 error_msg = f"Line {e.lineno}: {e}"
             else:
@@ -262,9 +247,7 @@ class FilterManager:
         except (RecursionError, MemoryError, ValueError) as e:
             return False, f"Parse error: {e!s}"
 
-    # =========================================================================
     # GENERIC FILTER INSTALL / UPDATE
-    # =========================================================================
 
     @timed
     async def _ensure_filter_installed(
@@ -294,6 +277,13 @@ class FilterManager:
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
+            return None
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
             return None
 
         try:
@@ -341,6 +331,13 @@ class FilterManager:
                     FunctionMeta,
                 )
             except ImportError:
+                return None
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "open_webui.models.functions failed to import for a reason other than absence; "
+                    "the features that depend on it are now disabled",
+                    exc_info=True,
+                )
                 return None
 
             meta_obj = FunctionMeta(**desired_meta)
@@ -390,9 +387,6 @@ class FilterManager:
 
         return function_id
 
-    # =========================================================================
-    # OPENROUTER WEB TOOLS FILTER (Web Search + Web Fetch + Datetime)
-    # =========================================================================
 
     @staticmethod
     def render_openrouter_web_tools_filter_source(
@@ -410,7 +404,6 @@ class FilterManager:
         UserValves (per-tool toggles, preferences) for whichever tools are enabled.
         Tools disabled via the gate parameters are excluded from the template entirely.
         """
-        # -- Valves fields (admin) -------------------------------------------
         valves_fields = [
             ('        priority: int = Field(\n'
             '            default=0,\n'
@@ -565,7 +558,6 @@ class FilterManager:
                 '        )'
             )
 
-        # -- inlet logic (conditional per tool) -------------------------------
         inlet_tool_blocks: list[str] = []
         if enable_web_search:
             inlet_tool_blocks.append(
@@ -678,7 +670,10 @@ class FilterManager:
         template += '\n'
         template += 'from pydantic import BaseModel, Field\n'
         template += '\n'
-        template += 'from open_webui.env import SRC_LOG_LEVELS\n'
+        template += 'try:' + '\n'
+        template += '    from open_webui.env import SRC_LOG_LEVELS' + '\n'
+        template += 'except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import' + '\n'
+        template += '    SRC_LOG_LEVELS = {}' + '\n'
         template += '\n'
         template += 'OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"\n'
         template += '\n'
@@ -692,7 +687,6 @@ class FilterManager:
         template += '\n'.join(valves_fields) + '\n'
         template += '\n'
 
-        # UserValves class (always emit — OWUI expects it even when empty)
         template += '    class UserValves(BaseModel):\n'
         if user_valves_fields:
             template += '\n'.join(user_valves_fields) + '\n'
@@ -716,7 +710,6 @@ class FilterManager:
         template += '        return [item.strip() for item in value.split(",") if item.strip()]\n'
         template += '\n'
 
-        # inlet method
         template += '    def inlet(\n'
         template += '        self,\n'
         template += '        body: dict[str, Any],\n'
@@ -883,9 +876,7 @@ class FilterManager:
             primary_marker=_OPENROUTER_WEB_TOOLS_FILTER_MARKER,
         )
 
-    # =========================================================================
     # OPENROUTER FUSION FILTER
-    # =========================================================================
 
     async def ensure_openrouter_fusion_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Fusion filter exists (and is up to date), returning its OWUI function id."""
@@ -924,9 +915,7 @@ class FilterManager:
             primary_marker=_OPENROUTER_FUSION_FILTER_MARKER,
         )
 
-    # =========================================================================
     # OPENROUTER IMAGE GENERATION FILTER
-    # =========================================================================
 
     @staticmethod
     def render_openrouter_image_gen_filter_source() -> str:
@@ -948,7 +937,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from open_webui.env import SRC_LOG_LEVELS
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
 
@@ -1204,15 +1196,8 @@ class Filter:
             matches_candidate=_matches,
         )
 
-    # =========================================================================
-    # OPENROUTER NATIVE IMAGE FILTERS (generic / gemini / sourceful)
-    # =========================================================================
-    #
 
     _GEMINI_IMAGE_PATTERN = re.compile(r"^~?google/gemini-3.*flash-image.*$")
-    # Each Riverflow version gets exactly ONE Sourceful filter (never stacked):
-    # V2 Pro/Fast -> sourceful (fonts + super-res); 2.5 Pro/Fast -> sourceful_v25
-    # (fonts + scoring + background — 2.5 dropped super-res).
     _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2-(pro|fast)$")
     _SOURCEFUL_V25_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2\.5-(pro|fast)$")
     _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^~?recraft/recraft-")
@@ -1274,7 +1259,6 @@ class Filter:
         recraft_id: str | None = None
         recraft_v3_id: str | None = None
         grok_id: str | None = None
-        # Sentinel: empty string means we attempted install and failed.
         for model in models:
             model_id = model.get("id")
             if not isinstance(model_id, str) or not model_id.strip():
@@ -1360,7 +1344,6 @@ class Filter:
                     ids.append(grok_id)
 
             if ids:
-                # list(ids) for both keys to avoid shared-reference aliasing
                 installed[model_id] = list(ids)
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
                     installed[original_id] = list(ids)
@@ -1434,15 +1417,11 @@ class Filter:
             matches_candidate=_matches,
         )
 
-    # =========================================================================
     # DIRECT UPLOADS FILTER
-    # =========================================================================
 
     @staticmethod
     def render_direct_uploads_filter_source() -> str:
         """Return the canonical OWUI filter source for the OpenRouter Direct Uploads toggle."""
-        # NOTE: This file is inserted into Open WebUI's Functions table as a *filter* function.
-        # It must not depend on this pipe module at runtime.
         template = '''"""
 title: OR Direct Uploads
 author: Open-WebUI-OpenRouter-pipe
@@ -1457,13 +1436,20 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from open_webui.env import SRC_LOG_LEVELS
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
+
+
+class DirectUploadError(Exception):
+    """Rejects a direct upload; Open WebUI shows the message to the user verbatim."""
 
 
 class Filter:
@@ -1545,7 +1531,7 @@ class Filter:
         self.valves = self.Valves()
 
     @staticmethod
-    def _to_int(value: Any) -> Optional[int]:
+    def _to_int(value: Any) -> int | None:
         if value is None:
             return None
         if isinstance(value, bool):
@@ -1635,10 +1621,10 @@ class Filter:
         if not isinstance(user_valves, BaseModel):
             user_valves = self.UserValves()
 
-        enable_files = user_valves.DIRECT_FILES
-        enable_audio = user_valves.DIRECT_AUDIO
-        enable_video = user_valves.DIRECT_VIDEO
-        pdf_parser = user_valves.DIRECT_PDF_PARSER
+        enable_files = bool(getattr(user_valves, "DIRECT_FILES", False))
+        enable_audio = bool(getattr(user_valves, "DIRECT_AUDIO", False))
+        enable_video = bool(getattr(user_valves, "DIRECT_VIDEO", False))
+        pdf_parser = getattr(user_valves, "DIRECT_PDF_PARSER", "Native")
 
         files = body.get("files", None)
         if not isinstance(files, list) or not files:
@@ -1661,7 +1647,6 @@ class Filter:
         video_limit = int(self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
 
         audio_formats_allowed = self._csv_set(self.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST)
-
         for item in files:
             if not isinstance(item, dict):
                 retained.append(item)
@@ -1691,7 +1676,7 @@ class Filter:
 
             size_bytes = self._to_int(item.get("size"))
             if size_bytes is None or size_bytes < 0:
-                raise Exception("Direct uploads: uploaded file missing a valid size.")
+                raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
 
             kind = "files"
             if content_type.startswith("audio/"):
@@ -1712,12 +1697,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > file_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["files"].append(
@@ -1748,12 +1733,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > audio_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["audio"].append(
@@ -1779,12 +1764,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > video_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["video"].append(
@@ -1800,9 +1785,6 @@ class Filter:
             retained.append(item)
 
         diverted_any = bool(diverted["files"] or diverted["audio"] or diverted["video"])
-        # OWUI "File Context" reads `body["metadata"]["files"]`, but OWUI also rebuilds metadata.files
-        # from `body["files"]` after inlet filters. To reliably bypass OWUI RAG for diverted uploads,
-        # update both.
         if diverted_any:
             body["files"] = retained
             if isinstance(__metadata__, dict):
@@ -1899,9 +1881,7 @@ class Filter:
             matches_candidate=_matches,
         )
 
-    # =========================================================================
     # PROVIDER ROUTING FILTER
-    # =========================================================================
 
     @staticmethod
     def compute_provider_routing_hash(
@@ -1910,11 +1890,9 @@ class Filter:
         provider_map: dict[str, dict[str, list[str]]],
     ) -> str:
         """Compute hash of provider routing state to detect changes."""
-        # Include sorted versions of relevant data
         admin_sorted = sorted([m.strip() for m in admin_models.split(",") if m.strip()])
         user_sorted = sorted([m.strip() for m in user_models.split(",") if m.strip()])
 
-        # Include provider info for models we care about
         relevant_slugs = set(admin_sorted) | set(user_sorted)
         provider_data = {
             slug: provider_map.get(slug, {})
@@ -1944,7 +1922,6 @@ class Filter:
             admin_set = self.valves.model_fields_set
 '''
         if visibility in ("user", "both"):
-            # Extract user valves from OWUI-injected __user__["valves"]
             logic += '''
         # OWUI injects user valves into __user__["valves"], not self.user_valves
         user_valves = __user__.get("valves") if __user__ else None
@@ -1952,7 +1929,6 @@ class Filter:
             user_set = user_valves.model_fields_set
 '''
 
-        # Field processing - user overrides admin for 'both'
         logic += '''
         # String fields: user if set and non-empty, else admin if set and non-empty
         def get_str(field: str) -> str:
@@ -2119,7 +2095,7 @@ class Filter:
         model_slug: str,
         providers: list[str],
         quantizations: list[str],
-        visibility: str,  # "admin", "user", or "both"
+        visibility: str,
         *,
         short_name: str = "",
         provider_names: dict[str, str] | None = None,
@@ -2137,48 +2113,31 @@ class Filter:
         safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
         filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
 
-        # SECURITY: Validate model_slug format before interpolating into generated code
-        # Model slugs should be: vendor/model-name (e.g., "openai/gpt-4o")
         if not isinstance(model_slug, str) or not model_slug:
             raise ValueError("model_slug must be a non-empty string")
-        # Use json.dumps for consistent double-quote escaping (repr uses single quotes
-        # by default which causes quote-type mismatch when interpolated into "..." templates)
-        safe_model_slug_escaped = json.dumps(model_slug)[1:-1]  # Strip surrounding quotes
+        safe_model_slug_escaped = json.dumps(model_slug)[1:-1]
 
-        # Use short_name for display, fallback to model_slug if not provided
         display_name = short_name.strip() if short_name else model_slug.split("/")[-1]
-        # SECURITY: Sanitize display name for use in filter title
         safe_display_name = FilterManager.validate_provider_name(display_name, slug=model_slug)
         safe_display_name_escaped = json.dumps(safe_display_name)[1:-1]
 
         marker = f"{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{model_slug}:{_PROVIDER_ROUTING_FILTER_MARKER_VERSION}"
-        # Escape marker for safe interpolation (contains model_slug)
         safe_marker_escaped = json.dumps(marker)[1:-1]
 
-        # SECURITY: Validate provider slugs before interpolation (defense-in-depth)
-        # Provider slugs from API should be lowercase ASCII + hyphens (e.g., "amazon-bedrock")
         safe_providers = [
             p for p in providers
             if isinstance(p, str) and _PROVIDER_SLUG_PATTERN.match(p) and len(p) <= 64
         ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
-        # Build provider slug -> display name mapping (for dropdowns)
         prov_names = provider_names or {}
-        # Create display options for ONLY/IGNORE dropdowns: "Display Name" -> "slug"
-        # Format: Literal["(no preference)", "OpenAI", "Azure", ...]
         provider_display_options: list[str] = []
-        provider_slug_map_entries: list[str] = []  # For the _PROVIDER_MAP dict
+        provider_slug_map_entries: list[str] = []
         for pslug in safe_providers:
-            # Get display name, fallback to titlecased slug
             disp = prov_names.get(pslug, pslug.replace("-", " ").title())
-            # SECURITY: Sanitize display name
             safe_disp = FilterManager.validate_provider_name(disp, slug=pslug)
             provider_display_options.append(safe_disp)
-            # Map: "OpenAI" -> "openai"
             provider_slug_map_entries.append(f'    {FilterManager.safe_literal_string(safe_disp)}: {FilterManager.safe_literal_string(pslug)}')
 
-        # Build Literal type string for ONLY/IGNORE fields
-        # Include "(no preference)" as the default/empty option
         no_pref = "(no preference)"
         only_ignore_options = [no_pref] + provider_display_options
         only_ignore_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in only_ignore_options)
@@ -2186,13 +2145,9 @@ class Filter:
         # Build provider map code block
         provider_map_code = "{\n" + ",\n".join(provider_slug_map_entries) + "\n}" if provider_slug_map_entries else "{}"
 
-        # Build ORDER options. Full n! permutations are only safe for small n
-        # (14 providers would mean 8.7e10 synchronous iterations); above the
-        # threshold each provider gets a single linear "X first" preference.
         order_display_options: list[str] = []
-        order_map_entries: list[str] = []  # For the _ORDER_MAP dict
+        order_map_entries: list[str] = []
 
-        # Create mapping from display name to slug for lookups
         display_to_slug = dict(zip(provider_display_options, safe_providers))
 
         if len(provider_display_options) <= _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX:
@@ -2209,33 +2164,22 @@ class Filter:
                 slug_literal = FilterManager.safe_literal_string(display_to_slug[disp])
                 order_map_entries.append(f'    {FilterManager.safe_literal_string(first_disp)}: [{slug_literal}]')
 
-        # Build Literal type string for ORDER field
         order_options = [no_pref] + order_display_options
         order_literal = ", ".join(FilterManager.safe_literal_string(opt) for opt in order_options)
 
         # Build order map code block
         order_map_code = "{\n" + ",\n".join(order_map_entries) + "\n}" if order_map_entries else "{}"
 
-        # SECURITY: Validate quantization levels before interpolation
-        # Quantizations should be alphanumeric (e.g., "int4", "fp16", "bf16")
         safe_quantizations = [
             q for q in quantizations
             if isinstance(q, str) and _QUANTIZATION_PATTERN.match(q) and len(q) <= 32
         ][:_PROVIDER_ROUTING_MAX_PROVIDERS]
 
-        # Build Literal type string for QUANTIZATIONS dropdown
         quant_options = [no_pref] + safe_quantizations
         quantizations_literal = ", ".join(FilterManager.safe_literal_string(q) for q in quant_options)
 
-        # Determine toggle setting based on visibility
-        # ADMIN-only: toggle=False (always runs, user can't disable)
-        # USER or BOTH: toggle=True (user can toggle per-chat)
         toggle_value = "False" if visibility == "admin" else "True"
 
-        # Stale saved values (from a previous filter generation with different
-        # dropdown options) must degrade to the sentinel instead of raising:
-        # OWUI instantiates admin Valves outside any try/except, so one stale
-        # value would otherwise fail every chat on the model.
         stale_choice_guard = '''
         @field_validator("ORDER", "ONLY", "IGNORE", "QUANTIZATION", mode="before")
         @classmethod
@@ -2244,8 +2188,6 @@ class Filter:
             return value if value in options else _NO_PREF
 '''
 
-        # Generate Valves class (for admin) if visibility is 'admin' or 'both'
-        # Field order matches OpenRouter API docs: provider-selection.md
         valves_class = ""
         if visibility in ("admin", "both"):
             valves_class = f'''
@@ -2269,8 +2211,6 @@ class Filter:
         MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
 {stale_choice_guard}'''
 
-        # Generate UserValves class (for user) if visibility is 'user' or 'both'
-        # Field order matches OpenRouter API docs: provider-selection.md
         user_valves_class = ""
         if visibility in ("user", "both"):
             user_valves_class = f'''
@@ -2301,7 +2241,6 @@ class Filter:
         if visibility in ("user", "both"):
             init_body += "\n        self.user_valves = self.UserValves()"
 
-        # Generate inlet logic based on visibility
         inlet_logic = FilterManager._generate_inlet_logic(visibility)
 
         return (f'''"""
@@ -2320,7 +2259,11 @@ import logging
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from open_webui.env import SRC_LOG_LEVELS
+
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {{}}
 
 OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
 MODEL_SLUG = "{safe_model_slug_escaped}"
@@ -2376,12 +2319,18 @@ class Filter:
             )
         except ImportError:
             return {}
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
+            return {}
 
         # Parse model lists
         admin_models = {m.strip() for m in admin_models_csv.split(",") if m.strip()}
         user_models = {m.strip() for m in user_models_csv.split(",") if m.strip()}
 
-        # Compute state hash - skip generation if unchanged but still return existing mappings
         current_hash = self.compute_provider_routing_hash(admin_models_csv, user_models_csv, provider_map)
         hash_unchanged = current_hash == FilterManager._provider_routing_state_hash
         if hash_unchanged:
@@ -2393,8 +2342,6 @@ class Filter:
                 len(admin_models),
                 len(user_models),
             )
-            # NOTE: Hash update moved to end of function to prevent race condition
-            # (hash was being set before filter work completed)
 
         # Determine visibility for each model
         all_models = admin_models | user_models
@@ -2407,7 +2354,6 @@ class Filter:
             else:
                 model_visibility[slug] = "user"
 
-        # Find existing provider routing filters
         try:
             all_filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
@@ -2417,14 +2363,13 @@ class Filter:
             )
             return {}
 
-        filters_by_slug: dict[str, list[Any]] = {}  # model_slug -> every filter carrying it
+        filters_by_slug: dict[str, list[Any]] = {}
         for f in all_filters:
             content = getattr(f, "content", "") or ""
             if _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in content:
                 # Extract model slug from marker
                 for line in content.split("\n"):
                     if _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in line:
-                        # Format: OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:provider_routing:slug:v1"
                         try:
                             marker_val = line.split("=", 1)[1].strip().strip('"').strip("'")
                             parts = marker_val.split(":", 2)
@@ -2454,20 +2399,14 @@ class Filter:
             existing_filters[slug] = canonical
             orphan_filters.extend(f for f in found if f is not canonical)
 
-        # Track slug -> filter_id mappings for attachment
         slug_to_filter_id: dict[str, str] = {}
 
-        # Check if any filters are missing (deleted by user). Slugs with no
-        # provider data cannot be created at all, so they are "not applicable"
-        # rather than missing; they are reconsidered when the provider map
-        # (part of the state hash) changes.
         missing_filters = {
             slug
             for slug in all_models
             if slug not in existing_filters and (provider_map.get(slug) or {}).get("providers")
         }
 
-        # If hash unchanged AND all filters exist, just return existing mappings
         if hash_unchanged and not missing_filters:
             for slug in all_models:
                 existing = existing_filters.get(slug)
@@ -2481,7 +2420,6 @@ class Filter:
             )
             return slug_to_filter_id
 
-        # If filters are missing, we need to create them even if hash unchanged
         if missing_filters:
             self.logger.info(
                 "Provider routing filters missing for %d model(s), recreating: %s",
@@ -2489,14 +2427,12 @@ class Filter:
                 ", ".join(sorted(missing_filters)),
             )
 
-        # Create/update filters for requested models
         created = 0
         updated = 0
         for slug, visibility in model_visibility.items():
             model_info = provider_map.get(slug, {})
             providers = model_info.get("providers", [])
             quantizations = model_info.get("quantizations", [])
-            # Extract short_name and provider_names with type safety
             raw_short_name = model_info.get("short_name", "")
             short_name: str = raw_short_name if isinstance(raw_short_name, str) else ""
             raw_prov_names = model_info.get("provider_names", {})
@@ -2515,7 +2451,6 @@ class Filter:
                 provider_names=prov_names,
             ).strip() + "\n"
 
-            # SECURITY: Validate generated source before storing (defense-in-depth)
             is_valid, validation_error = self.validate_filter_source(desired_source)
             if not is_valid:
                 self.logger.error(
@@ -2523,16 +2458,15 @@ class Filter:
                     slug,
                     validation_error,
                 )
-                continue  # Skip this filter, don't store invalid code
+                continue
 
-            # Use short_name for display, fallback to slug
             display_name = short_name if short_name else slug.split("/")[-1]
             # Sanitize for safety
             safe_display = self.validate_provider_name(display_name, slug=slug)
             desired_name = f"Provider: {safe_display}"
             desired_meta = {
                 "description": f"Provider routing preferences for {slug}",
-                "toggle": visibility != "admin",  # ADMIN-only: not toggleable
+                "toggle": visibility != "admin",
                 "manifest": {
                     "title": f"Provider Routing: {slug}",
                     "id": filter_id,
@@ -2616,8 +2550,6 @@ class Filter:
                 created, updated, disabled, len(all_models),
             )
 
-        # Update hash AFTER all filter work completes (prevents race condition where
-        # hash is set but work failed, causing next call to incorrectly skip)
         FilterManager._provider_routing_state_hash = current_hash
         self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
 

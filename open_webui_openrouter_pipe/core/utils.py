@@ -14,6 +14,7 @@ These utilities have minimal dependencies and can be used by any module.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
 import hmac
 import inspect
@@ -24,33 +25,33 @@ import re
 from collections.abc import Awaitable
 from typing import Any, TypeVar, cast
 
-# Import constants needed for template rendering and ULID generation
 from .config import (
     CROCKFORD_ALPHABET,
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ULID_LENGTH,
 )
 
-# Generic type variable for _await_if_needed
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-# -----------------------------------------------------------------------------
 # Constants
-# -----------------------------------------------------------------------------
+
+TOOL_CALL_STATUSES = frozenset({"in_progress", "completed", "incomplete"})
+
+
+
+SERVER_TOOL_EXTRA_SUCCESS = frozenset({"ok"})
+SERVER_TOOL_IN_FLIGHT_STATUSES = frozenset({"in_progress", "generating", "searching"})
+SERVER_TOOL_SUCCESS_STATUSES = frozenset({"completed"}) | SERVER_TOOL_EXTRA_SUCCESS
+SERVER_TOOL_FAILURE_STATUSES = frozenset({"incomplete", "failed"})
 
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
-_MARKER_SUFFIX = "]: #"  # Suffix for artifact markers in text
+_MARKER_SUFFIX = "]: #"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
 _PHASE_MARKER_RE = re.compile(r"^\[P:([a-z_]+)\]: #$")
 _PHASE_MARKER_VALUES = frozenset({"commentary", "final_answer", "null"})
 
-# Internal ordering anchors stamped on a persisted reasoning payload so replay
-# can restore reasoning to its true position relative to tool calls. The value
-# is the call's ORDINAL within the assistant turn (0,1,2...), which is unique
-# even when a provider reuses call_ids across rounds. These keys are stripped
-# from the reasoning block before it is sent to the provider.
 REASONING_ANCHOR_SEQ_KEY = "_anchor_seq"
 REASONING_FOLLOWING_ORDINAL_KEY = "_anchor_following_call_ordinal"
 REASONING_PRECEDING_ORDINAL_KEY = "_anchor_preceding_call_ordinal"
@@ -60,9 +61,6 @@ REASONING_ANCHOR_KEYS = (
     REASONING_PRECEDING_ORDINAL_KEY,
 )
 
-# -----------------------------------------------------------------------------
-# Stable IDs (for cross-worker locks)
-# -----------------------------------------------------------------------------
 
 def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
     """Return a deterministic Crockford-base32 id of `length` characters.
@@ -101,9 +99,7 @@ def _sticky_session_key(chat_id: str) -> str | None:
         return None
     return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
-# -----------------------------------------------------------------------------
 # Template Rendering
-# -----------------------------------------------------------------------------
 
 def _render_error_template(template: str, values: dict[str, Any]) -> str:
     """Render a user-supplied template, honoring {{#if}} conditionals."""
@@ -176,9 +172,7 @@ def _pretty_json(value: Any) -> str:
         return str(value)
 
 
-# -----------------------------------------------------------------------------
 # JSON Helpers
-# -----------------------------------------------------------------------------
 
 def _safe_json_loads(payload: str | None) -> Any:
     """Return parsed JSON or None without raising."""
@@ -189,10 +183,6 @@ def _safe_json_loads(payload: str | None) -> Any:
     except (RecursionError, TypeError, ValueError):
         return None
 
-
-# -----------------------------------------------------------------------------
-# Type Coercion and String Normalization
-# -----------------------------------------------------------------------------
 
 def _coerce_positive_int(value: Any) -> int | None:
     """Convert strings/bools into positive integers (MB)."""
@@ -234,9 +224,7 @@ def _normalize_string_list(value: Any) -> list[str]:
     return items
 
 
-# -----------------------------------------------------------------------------
 # Model Fallback Helpers
-# -----------------------------------------------------------------------------
 
 
 def _parse_model_fallback_csv(value: Any) -> list[str]:
@@ -300,10 +288,7 @@ def _select_best_effort_fallback(requested: str, supported: list[str]) -> str | 
     return closest
 
 
-
-# -----------------------------------------------------------------------------
 # ULID Generation and Marker System
-# -----------------------------------------------------------------------------
 
 
 def _extract_marker_ulid(line: str) -> str | None:
@@ -320,7 +305,6 @@ def _extract_marker_ulid(line: str) -> str | None:
         if char not in _CROCKFORD_SET:
             return None
     return body
-
 
 
 def contains_marker(text: str) -> bool:
@@ -425,11 +409,6 @@ def strip_hidden_marker_lines(text: str) -> str:
     return "".join(kept_segments)
 
 
-# -----------------------------------------------------------------------------
-# Configuration and Environment Helpers
-# -----------------------------------------------------------------------------
-
-# Global cache for Open WebUI config module
 _OPEN_WEBUI_CONFIG_MODULE: Any | None = None
 
 
@@ -454,9 +433,7 @@ def _unwrap_config_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
-# -----------------------------------------------------------------------------
 # Payload and Content Utilities
-# -----------------------------------------------------------------------------
 
 # Marker for redacted data URLs
 _REDACTED_DATA_URL_MARKER = "[REDACTED]"
@@ -518,9 +495,7 @@ def _extract_plain_text_content(content: Any) -> str:
     return str(content or "")
 
 
-# -----------------------------------------------------------------------------
 # Feature Flags and Metadata
-# -----------------------------------------------------------------------------
 
 def _extract_feature_flags(__metadata__: dict[str, Any]) -> dict[str, Any]:
     """Return flat feature flags from Open WebUI metadata.
@@ -555,9 +530,7 @@ def merge_usage_stats(total, new):
     return total
 
 
-# -----------------------------------------------------------------------------
 # Formatting Utilities
-# -----------------------------------------------------------------------------
 
 def wrap_code_block(text: str, language: str = "python") -> str:
     """Wrap text in a fenced Markdown code block.
@@ -577,9 +550,7 @@ def wrap_code_block(text: str, language: str = "python") -> str:
     return f"{fence}{language}\n{text}\n{fence}"
 
 
-# -----------------------------------------------------------------------------
 # Template and String Utilities
-# -----------------------------------------------------------------------------
 
 def _template_value_present(value: Any) -> bool:
     """Return True when a placeholder value should be rendered."""
@@ -626,9 +597,7 @@ def _sanitize_path_component(value: str, *, fallback: str = "unknown", max_lengt
     return cleaned
 
 
-# -----------------------------------------------------------------------------
 # HTTP and Timing Utilities
-# -----------------------------------------------------------------------------
 
 def _retry_after_seconds(value: str | None) -> float | None:
     """Convert Retry-After header value into seconds."""
@@ -675,9 +644,7 @@ def _apply_retry_after_metadata(meta: dict[str, Any], headers: Any) -> None:
         meta["retry_after_seconds"] = round(parsed)
 
 
-# -----------------------------------------------------------------------------
 # ULID Marker System
-# -----------------------------------------------------------------------------
 
 def _serialize_marker(ulid: str) -> str:
     """Return the hidden marker representation for ``ulid``."""
@@ -818,9 +785,15 @@ def _find_first_kind_marker_body(text: str, kind: str) -> str:
     return ""
 
 
-# -----------------------------------------------------------------------------
 # Async Helper
-# -----------------------------------------------------------------------------
+
+# Open WebUI stores a function under an id it requires to be a Python identifier
+# (`routers/functions.py`: `if not form_data.id.isidentifier()` rejects the row), so an
+# id carrying anything else means the per-model filter is silently never installed.
+# One object, shared by every sanitizer: three equal-but-separate copies meant widening
+# one of them changed nothing that any test could see.
+OWUI_FUNCTION_ID_ILLEGAL_RE = re.compile(r"[^a-zA-Z0-9_]")
+
 
 async def _await_if_needed(
     value: Awaitable[_T] | _T,
@@ -847,3 +820,23 @@ async def _await_if_needed(
             return cast(_T, await coroutine)
         return cast(_T, await asyncio.wait_for(coroutine, timeout=timeout))
     return cast(_T, value)
+
+
+def citation_access_stamp() -> str:
+    """The access instant in the server's own timezone, as Open WebUI renders it.
+
+    Five call sites built this inline. `datetime.now(UTC)` alone stamps the UTC calendar
+    day, which is the wrong day for part of every day east of UTC and is persisted
+    verbatim into chat exports -- so the localisation is load-bearing, not cosmetic. One
+    function because the guard on five copies could only check that the text
+    `.astimezone()` appeared, and appending a second `.astimezone(UTC)` kept the text
+    while undoing the effect.
+
+    A full timestamp, not a bare date. Four of the five sites were date-only and the
+    fifth -- `_emit_citation` -- was not, so unifying on `.date()` silently downgraded
+    the one that carried a time, in a value that ends up in the user's chat export. A
+    timestamp truncates to the correct local calendar day, so it is strictly the more
+    informative of the two.
+    """
+    return datetime.datetime.now(datetime.UTC).astimezone().isoformat()
+

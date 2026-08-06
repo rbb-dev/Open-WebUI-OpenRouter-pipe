@@ -53,6 +53,9 @@ def _catches_import_error(handler: ast.ExceptHandler) -> bool:
     )
 
 
+_UNPARSED: list[str] = []
+
+
 def _our_owui_imports() -> list[tuple[str, str | None, bool]]:
     """Every (module, symbol, is_optional) imported from open_webui across our tree.
 
@@ -94,6 +97,7 @@ def _our_owui_imports() -> list[tuple[str, str | None, bool]]:
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
         except SyntaxError:
+            _UNPARSED.append(py_file.name)
             continue
         walk(tree.body, False)
 
@@ -176,6 +180,10 @@ def _resolves(base: Path, module: str, symbol: str | None) -> bool:
 _BASE = _owui_base()
 _IMPORTS = _our_owui_imports()
 
+_NEWER_THAN_OUR_FLOOR: dict[tuple[str, str], str] = {
+    ("open_webui.utils.chat_id", "NON_SAVED_CHAT_ID_PREFIXES"): "0.11.0",
+}
+
 
 @pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")
 @pytest.mark.parametrize(
@@ -184,16 +192,80 @@ _IMPORTS = _our_owui_imports()
     ids=[f"{m}.{s}" if s else f"{m}(module)" for m, s, _ in _IMPORTS],
 )
 def test_owui_import_seam_resolves(module: str, symbol: str | None, is_optional: bool) -> None:
+    """`is_optional` decides what a non-resolving symbol means, rather than only how it reads.
+
+    It was computed and then used for nothing but the message, so every import was held
+    to the REQUIRED rule. That forbids the one pattern a guarded import exists for:
+    preferring an API from a NEWER Open WebUI than the manifest floor, and falling back
+    on the versions that predate it. Blocking that pushes the code back onto a hand-copy
+    of upstream's value, which is what drifts.
+
+    Absence still has to be declared. An unresolved optional import that nobody listed
+    is indistinguishable from one Open WebUI deleted underneath us, which is exactly the
+    drift this file exists to catch.
+    """
     assert _BASE is not None
     target = module if symbol is None else f"{module}.{symbol}"
-    kind = "optional" if is_optional else "REQUIRED"
-    assert _resolves(_BASE, module, symbol), (
-        f"OWUI seam drift: `{target}` ({kind} import) no longer resolves in the "
+    if _resolves(_BASE, module, symbol):
+        return
+    assert is_optional, (
+        f"OWUI seam drift: `{target}` (REQUIRED import) no longer resolves in the "
         f"installed open_webui at {_BASE}. Open WebUI renamed/moved/removed it — "
         f"update our import before this ships."
     )
+    assert symbol is not None and (module, symbol) in _NEWER_THAN_OUR_FLOOR, (
+        f"OWUI seam drift: `{target}` is imported under a guard and does not resolve in "
+        f"the installed open_webui at {_BASE}, so its fallback is what runs — "
+        "permanently, and silently. If Open WebUI removed it, drop our import. If it "
+        "predates our floor, add it to _NEWER_THAN_OUR_FLOOR with the version that "
+        "introduces it."
+    )
 
 
-def test_seam_checklist_is_non_empty() -> None:
-    """Guard against the scanner silently finding nothing (e.g. a walk regression)."""
-    assert len(_IMPORTS) >= 30, f"expected ~38 open_webui imports, found {len(_IMPORTS)}"
+@pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")
+@pytest.mark.parametrize(("module", "symbol"), sorted(_NEWER_THAN_OUR_FLOOR))
+def test_a_declared_absence_is_still_absent(module: str, symbol: str) -> None:
+    """A stale declaration is a hole, so the list is checked in both directions.
+
+    Once the installed Open WebUI catches up, the entry stops describing anything and
+    starts exempting a real symbol from drift detection.
+    """
+    assert _BASE is not None
+    assert not _resolves(_BASE, module, symbol), (
+        f"`{module}.{symbol}` now resolves in the installed open_webui at {_BASE}, so "
+        "its _NEWER_THAN_OUR_FLOOR entry is stale and is exempting a symbol that is "
+        "present. Remove the entry."
+    )
+
+
+def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
+    """The declaration cannot outlive the import it excuses."""
+    guarded = {(m, sym) for m, sym, optional in _IMPORTS if optional and sym is not None}
+    orphans = sorted(set(_NEWER_THAN_OUR_FLOOR) - guarded)
+    assert not orphans, (
+        f"_NEWER_THAN_OUR_FLOOR lists {orphans}, which this package no longer imports "
+        "under a guard. Remove the entries."
+    )
+
+
+_EXPECTED_SEAM_IMPORTS = 63
+
+
+def test_seam_checklist_covers_every_open_webui_import() -> None:
+    """Pinned exactly, not floored.
+
+    The floor was 30 against 61 real imports, so half the seam could stop being checked
+    with the guard still green -- dropping the `plugins/` subtree alone takes it to 31,
+    which passes while `update_service.py`'s fifteen Open WebUI imports go unverified.
+    An exact count makes a change in either direction a deliberate edit.
+    """
+    assert not _UNPARSED, (
+        "these files did not parse, so their Open WebUI imports are absent from the "
+        f"checklist rather than checked: {_UNPARSED}"
+    )
+    assert len(_IMPORTS) == _EXPECTED_SEAM_IMPORTS, (
+        f"the package now has {len(_IMPORTS)} open_webui imports, not "
+        f"{_EXPECTED_SEAM_IMPORTS}. Every one of them is drift-checked against the "
+        "installed Open WebUI, so update the number deliberately after confirming the "
+        "new ones resolve."
+    )

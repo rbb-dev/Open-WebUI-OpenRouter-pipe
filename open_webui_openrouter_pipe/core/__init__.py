@@ -10,7 +10,7 @@ Foundation services required by all domains:
 """
 
 from .circuit_breaker import CircuitBreaker
-from .config import LOGGER, EncryptedStr, UserValves, Valves
+from .config import EncryptedStr, UserValves, Valves
 from .error_formatter import ErrorFormatter
 from .errors import OpenRouterAPIError, StatusMessages
 from .logging_system import SessionLogger
@@ -22,7 +22,6 @@ from .utils import (
 )
 
 __all__ = [
-    "LOGGER",
     "CircuitBreaker",
     "EncryptedStr",
     "ErrorFormatter",

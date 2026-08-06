@@ -2604,7 +2604,6 @@ class TestResponsesBodyFromCompletions:
                 completions,
                 transformer_context=pipe,
             )
-        # n and suffix should be dropped
         assert not hasattr(result, "n") or result.n is None
         assert not hasattr(result, "suffix") or result.suffix is None
 
@@ -2698,7 +2697,6 @@ class TestResponsesBodyFromCompletions:
             completions,
             transformer_context=pipe,
         )
-        # response_format should be normalized to text.format
         assert result.text is not None
         assert result.text.get("format", {}).get("type") == "json_object"
 
@@ -2763,10 +2761,8 @@ class TestPipeIntegration:
 
         # Verify transforms were applied
         assert received_payload is not None
-        # max_output_tokens -> max_tokens
         assert "max_tokens" in received_payload
         assert received_payload["max_tokens"] == 100
-        # input -> messages
         assert "messages" in received_payload
         # Unknown params should be filtered
         assert "unknown_param" not in received_payload
@@ -3078,7 +3074,6 @@ class TestImageConfigPydanticRoundTrip:
         })
         # Attribute access — Pydantic v2 with extra="allow" exposes via getattr
         assert getattr(body, "image_config", None) == {"aspect_ratio": "16:9", "image_size": "2K"}
-        # model_dump preservation
         dumped = body.model_dump(exclude_none=True)
         assert dumped["image_config"] == {"aspect_ratio": "16:9", "image_size": "2K"}
 
@@ -3098,7 +3093,6 @@ class TestFromCompletionsPreservesStoreAndUser:
         result = await ResponsesBody.from_completions(
             completions, transformer_context=pipe,
         )
-        # store is an extra field (not explicitly on ResponsesBody),
         # but from_completions must no longer drop it.
         dumped = result.model_dump(exclude_none=True)
         assert "store" in dumped, "store was dropped during from_completions"

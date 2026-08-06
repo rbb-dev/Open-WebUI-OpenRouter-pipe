@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from types import SimpleNamespace
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
 from open_webui_openrouter_pipe.tools.tool_executor import (
@@ -26,9 +27,7 @@ from open_webui_openrouter_pipe.tools.tool_executor import (
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 
 
-# ==============================================================================
 # Helper Functions
-# ==============================================================================
 
 
 def create_tool_context(
@@ -55,11 +54,6 @@ def create_tool_context(
     )
 
 
-# ==============================================================================
-# Tests for _execute_function_calls (lines 93-163, 186-208, 225)
-# ==============================================================================
-
-
 @pytest.mark.asyncio
 async def test_execute_function_calls_with_context_missing_tool_name():
     """Test that calls with missing/empty tool name return proper error (line 93-101)."""
@@ -80,7 +74,7 @@ async def test_execute_function_calls_with_context_missing_tool_name():
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
-            assert outputs[0]["status"] == "incomplete"  # normalized from "failed"
+            assert outputs[0]["status"] == "incomplete"
             assert "Tool call missing name" in outputs[0]["output"]
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -130,7 +124,6 @@ async def test_execute_function_calls_with_context_circuit_breaker_skips():
         token = pipe._TOOL_CONTEXT.set(context)
 
         try:
-            # Force circuit breaker to deny tool type
             for _ in range(20):
                 pipe._circuit_breaker.record_tool_failure("test-user", "function", "my_tool")
 
@@ -172,7 +165,6 @@ async def test_execute_function_calls_with_context_no_callable():
                 "my_tool": {
                     "type": "function",
                     "spec": {"name": "my_tool", "parameters": {"type": "object", "properties": {}}},
-                    # No callable!
                 }
             }
 
@@ -292,14 +284,10 @@ async def test_execute_function_calls_with_context_origin_logging():
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
 
-            # Run _execute_function_calls but don't await the result
-            # because the queue workers aren't running in this test
             outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
-            # Give the queue a chance to receive the item
             await asyncio.sleep(0.01)
 
-            # Get item from queue and resolve its future
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
             assert queued is not None
             assert isinstance(queued, _QueuedToolCall)
@@ -321,7 +309,6 @@ async def test_execute_function_calls_with_context_idle_timeout():
         pipe.valves.API_KEY = EncryptedStr("test-key")
 
         loop = asyncio.get_running_loop()
-        # Very short idle timeout — no worker, so future will never resolve
         context = create_tool_context(loop, idle_timeout=0.01)
         token = pipe._TOOL_CONTEXT.set(context)
 
@@ -365,20 +352,14 @@ async def test_execute_function_calls_with_context_timeout_error_no_raise():
 
         try:
             tools = {}
-            calls = []  # No calls, but timeout_error is set
+            calls = []
 
-            # Should return normally — no raise
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
             assert outputs == []
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
         await pipe.close()
-
-
-# ==============================================================================
-# Resilience tests — tool failures return outputs, never raise
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -388,7 +369,6 @@ async def test_idle_timeout_returns_failed_output_and_continues():
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
         loop = asyncio.get_running_loop()
-        # Very short idle timeout — no worker, so futures never resolve
         context = create_tool_context(loop, idle_timeout=0.01)
         token = pipe._TOOL_CONTEXT.set(context)
 
@@ -416,7 +396,6 @@ async def test_idle_timeout_returns_failed_output_and_continues():
                 {"type": "function_call", "call_id": "c2", "name": "tool_b", "arguments": "{}"},
             ]
 
-            # No worker → both futures time out → both should return failed outputs
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 2
@@ -448,11 +427,6 @@ async def test_context_timeout_error_does_not_raise():
         await pipe.close()
 
 
-# ==============================================================================
-# Tests for _build_direct_tool_server_registry (lines 251-278, 287-351, 361-382)
-# ==============================================================================
-
-
 @pytest.mark.asyncio
 async def test_build_direct_tool_server_registry_invalid_metadata():
     """Test that invalid metadata returns empty registry (line 251)."""
@@ -461,7 +435,7 @@ async def test_build_direct_tool_server_registry_invalid_metadata():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            "not a dict",  # Invalid metadata
+            "not a dict",
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -503,7 +477,7 @@ async def test_build_direct_tool_server_registry_no_event_call():
         registry, specs = executor._build_direct_tool_server_registry(
             {"tool_servers": [{"specs": [{"name": "test_tool"}]}]},
             valves=pipe.valves,
-            event_call=None,  # No event call
+            event_call=None,
             event_emitter=AsyncMock(),
         )
 
@@ -541,7 +515,7 @@ async def test_build_direct_tool_server_registry_empty_specs():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {"tool_servers": [{"name": "server1"}]},  # No specs
+            {"tool_servers": [{"name": "server1"}]},
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -565,9 +539,9 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
                 "tool_servers": [
                     {
                         "specs": [
-                            "not a dict",  # Invalid
-                            {"no_name": True},  # Missing name
-                            {"name": ""},  # Empty name
+                            "not a dict",
+                            {"no_name": True},
+                            {"name": ""},
                             {"name": "valid_tool", "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}},
                         ]
                     }
@@ -578,7 +552,6 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
             event_emitter=AsyncMock(),
         )
 
-        # Only valid_tool should be in registry
         assert len(registry) == 1
         assert any("valid_tool" in key for key in registry)
     finally:
@@ -639,42 +612,41 @@ async def test_build_direct_tool_server_registry_callable_execution():
 
 
 @pytest.mark.asyncio
-async def test_build_direct_tool_server_registry_callable_no_event_call():
-    """Test that callable with None event_call returns error (line 339-340)."""
-    pipe = Pipe()
-    try:
-        executor = pipe._ensure_tool_executor()
+async def test_no_direct_tool_registry_is_built_without_an_event_channel(pipe_instance):
+    """No event channel means no direct-tool callables at all.
 
-        async def mock_event_call(payload: dict) -> Any:
-            return {"result": "success"}
+    Direct tool servers execute client-side over Socket.IO, so without an event channel
+    nothing could run one. The builder returns empty rather than handing back closures
+    that must then check for the channel they were built without.
 
-        registry, specs = executor._build_direct_tool_server_registry(
-            {
-                "tool_servers": [
-                    {
-                        "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
-                    }
-                ],
-            },
-            valves=pipe.valves,
-            event_call=mock_event_call,
-            event_emitter=AsyncMock(),
-        )
+    This replaces two tests that named an in-closure `if _event_call is None` branch.
+    That branch was UNREACHABLE -- `_event_call` is a default-argument capture of
+    `event_call` and the builder early-returns when it is None -- so it has been deleted
+    and this pins the guarantee that makes it unnecessary. One of the two replaced tests
+    defined a nested coroutine returning the error literal and asserted that literal
+    against itself; the other asserted the event call HAD been made, the other branch.
+    """
+    executor = pipe_instance._ensure_tool_executor()
+    metadata = {
+        "tool_servers": [
+            {"specs": [{"name": "t", "parameters": {"type": "object", "properties": {}}}]}
+        ]
+    }
+    registry, specs = executor._build_direct_tool_server_registry(
+        metadata, valves=pipe_instance.valves, event_call=None, event_emitter=AsyncMock()
+    )
+    assert (registry, specs) == ({}, []), (
+        f"a direct-tool registry was built with no event channel: {registry!r}. Every "
+        "callable in it would be unable to reach the client that must execute it."
+    )
 
-        # Manually create a callable with _event_call=None to test the branch
-        key = list(registry.keys())[0]
-        original_callable = registry[key]["callable"]
-
-        # Create a wrapper that calls with _event_call=None
-        async def test_callable_null_event():
-            # Direct test of the code path when event_call is None at runtime
-            return [{"error": "Direct tool execution unavailable."}, None]
-
-        result = await test_callable_null_event()
-        assert result == [{"error": "Direct tool execution unavailable."}, None]
-    finally:
-        await pipe.close()
-
+    with_channel, with_specs = executor._build_direct_tool_server_registry(
+        metadata, valves=pipe_instance.valves, event_call=AsyncMock(), event_emitter=AsyncMock()
+    )
+    assert with_channel and with_specs, (
+        "the registry was empty WITH an event channel too, so the assertion above holds "
+        "for the wrong reason"
+    )
 
 @pytest.mark.asyncio
 async def test_build_direct_tool_server_registry_callable_exception():
@@ -720,7 +692,6 @@ async def test_build_direct_tool_server_registry_outer_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create metadata that causes an exception during processing
         class BadDict(dict):
             def get(self, key, default=None):
                 if key == "tool_servers":
@@ -738,11 +709,6 @@ async def test_build_direct_tool_server_registry_outer_exception():
         assert specs == []
     finally:
         await pipe.close()
-
-
-# ==============================================================================
-# Tests for _notify_tool_breaker (lines 463, 476-478)
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -774,7 +740,6 @@ async def test_notify_tool_breaker_emitter_exception():
         loop = asyncio.get_running_loop()
         context = create_tool_context(loop, event_emitter=failing_emitter)
 
-        # Should not raise despite emitter failure
         await executor._notify_tool_breaker(context, "function", "test_tool")
     finally:
         await pipe.close()
@@ -804,9 +769,7 @@ async def test_notify_tool_breaker_success():
         await pipe.close()
 
 
-# ==============================================================================
 # Tests for _build_tool_output
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -828,6 +791,54 @@ async def test_no_failure_status_is_reported_to_the_model_as_completed():
             assert output["status"] != "completed", (
                 f"{status!r} was reported to the model as a successful call"
             )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_tool_output_never_reaches_the_wire_as_completed():
+    """The guarantee end-to-end, not just at _build_tool_output.
+
+    The request sanitizer rebuilds every function_call_output into a minimal,
+    portable shape, so `status` is dropped before the wire. That is what actually
+    delivers the guarantee -- the model is never told a failed call completed,
+    because it is told no status at all. Asserting only on _build_tool_output
+    leaves that unverified: the executor could label a failure "completed" and the
+    isolated test would catch it, but so would a change that starts transmitting
+    the wrong status.
+    """
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    pipe = Pipe()
+    try:
+        executor = pipe._ensure_tool_executor()
+        built = executor._build_tool_output({"call_id": "c1"}, "boom", status="failed")
+        assert built["status"] != "completed"
+
+        body = SimpleNamespace(
+            input=[
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+                {**built, "type": "function_call_output"},
+            ],
+            model="openai/gpt-4o",
+        )
+        _sanitize_request_input(pipe, body)
+        on_wire = next(i for i in body.input if i.get("type") == "function_call_output")
+
+        assert on_wire.get("status") == built["status"] != "completed", (
+            "the failure status did not survive sanitisation, so the model is told "
+            "nothing about the outcome -- which is what the commit claims to fix"
+        )
+        assert set(on_wire) == {"type", "call_id", "output", "status"}, (
+            f"wire shape drifted to {sorted(on_wire)}; `id` must stay stripped and "
+            "`status` must survive"
+        )
+        assert "boom" in on_wire["output"]
     finally:
         await pipe.close()
 
@@ -892,7 +903,7 @@ async def test_build_tool_output_missing_call_id():
         executor = pipe._ensure_tool_executor()
 
         output = executor._build_tool_output(
-            {},  # No call_id
+            {},
             "Test output",
         )
 
@@ -956,11 +967,6 @@ async def test_build_tool_output_without_files_embeds_excludes_keys():
         await pipe.close()
 
 
-# ==============================================================================
-# Tests for ToolExecutor initialization
-# ==============================================================================
-
-
 def test_tool_executor_initialization():
     """Test ToolExecutor initializes correctly."""
     pipe = Pipe()
@@ -972,11 +978,6 @@ def test_tool_executor_initialization():
     finally:
         import asyncio
         asyncio.run(pipe.close())
-
-
-# ==============================================================================
-# Tests for breaker_only_skips path (line 191-192)
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -991,7 +992,6 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
         token = pipe._TOOL_CONTEXT.set(context)
 
         try:
-            # Force circuit breaker to deny all tool types
             for _ in range(20):
                 pipe._circuit_breaker.record_tool_failure("breaker-test-user", "function", "my_tool")
 
@@ -1009,7 +1009,6 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
-            # All calls skipped by breaker should record a failure
             assert len(outputs) >= 1
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -1017,9 +1016,7 @@ async def test_execute_function_calls_breaker_only_skips_records_failure():
         await pipe.close()
 
 
-# ==============================================================================
 # Edge case tests
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -1050,10 +1047,8 @@ async def test_execute_function_calls_with_none_arguments():
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": None}]
 
-            # Run without waiting (since no workers)
             outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
 
-            # Get item from queue and resolve its future
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
             assert queued is not None
             queued.future.set_result({"type": "function_call_output", "output": "done", "call_id": "call-1", "status": "completed"})
@@ -1083,7 +1078,6 @@ async def test_execute_function_calls_whitespace_tool_name():
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
-            # Whitespace-only name should be treated as missing
             assert "Tool call missing name" in outputs[0]["output"] or "Tool not found" in outputs[0]["output"]
         finally:
             pipe._TOOL_CONTEXT.reset(token)
@@ -1133,18 +1127,11 @@ async def test_build_direct_tool_server_registry_with_parameters():
         key = list(registry.keys())[0]
         callable_fn = registry[key]["callable"]
 
-        # Call with both allowed and disallowed params
         await callable_fn(allowed_param="test", another_allowed=42, disallowed="should be filtered")
 
-        # Only allowed params should be passed
         assert call_received["params"] == {"allowed_param": "test", "another_allowed": 42}
     finally:
         await pipe.close()
-
-
-# ==============================================================================
-# Additional coverage tests for remaining lines
-# ==============================================================================
 
 
 @pytest.mark.asyncio
@@ -1174,7 +1161,6 @@ async def test_execute_function_calls_empty_args_no_required_in_context():
                         "parameters": {
                             "type": "object",
                             "properties": {"optional_param": {"type": "string"}},
-                            # NO "required" field
                         },
                     },
                     "callable": capture_tool,
@@ -1189,7 +1175,6 @@ async def test_execute_function_calls_empty_args_no_required_in_context():
             # Get from queue and resolve
             queued = await asyncio.wait_for(context.queue.get(), timeout=1.0)
             assert queued is not None
-            # Verify args were parsed as empty dict
             assert queued.args == {}
             queued.future.set_result({"type": "function_call_output", "output": "done", "call_id": "call-1", "status": "completed"})
 
@@ -1208,8 +1193,6 @@ async def test_build_direct_tool_server_registry_openapi_fallback():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create server entry with openapi but no specs
-        # The convert_openapi_to_tool_payload function should be tried
         registry, specs = executor._build_direct_tool_server_registry(
             {
                 "tool_servers": [
@@ -1225,7 +1208,6 @@ async def test_build_direct_tool_server_registry_openapi_fallback():
                                 }
                             }
                         },
-                        # No specs - should fall back to openapi conversion
                     }
                 ]
             },
@@ -1234,8 +1216,6 @@ async def test_build_direct_tool_server_registry_openapi_fallback():
             event_emitter=AsyncMock(),
         )
 
-        # May or may not have results depending on whether convert_openapi_to_tool_payload exists
-        # The test ensures the code path is exercised without errors
         assert isinstance(registry, dict)
         assert isinstance(specs, list)
     finally:
@@ -1249,7 +1229,6 @@ async def test_build_direct_tool_server_registry_spec_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create a spec that will cause issues
         class BadSpec:
             def get(self, key, default=None):
                 if key == "name":
@@ -1263,8 +1242,8 @@ async def test_build_direct_tool_server_registry_spec_exception():
                 "tool_servers": [
                     {
                         "specs": [
-                            BadSpec(),  # Will cause exception when accessing parameters
-                            {"name": "valid_tool"},  # Valid tool to ensure loop continues
+                            BadSpec(),
+                            {"name": "valid_tool"},
                         ]
                     }
                 ]
@@ -1274,8 +1253,6 @@ async def test_build_direct_tool_server_registry_spec_exception():
             event_emitter=AsyncMock(),
         )
 
-        # Should have valid_tool, but not the bad spec
-        # Actually, BadSpec is not isinstance(spec, dict), so it will be skipped
         assert isinstance(registry, dict)
     finally:
         await pipe.close()
@@ -1288,7 +1265,6 @@ async def test_build_direct_tool_server_registry_server_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create a server entry that causes exception when iterated
         class BadServer(dict):
             def get(self, key, default=None):
                 if key == "specs":
@@ -1299,7 +1275,7 @@ async def test_build_direct_tool_server_registry_server_exception():
             {
                 "tool_servers": [
                     BadServer(),
-                    {"specs": [{"name": "valid_tool"}]},  # Valid server
+                    {"specs": [{"name": "valid_tool"}]},
                 ]
             },
             valves=pipe.valves,
@@ -1307,7 +1283,6 @@ async def test_build_direct_tool_server_registry_server_exception():
             event_emitter=AsyncMock(),
         )
 
-        # valid_tool should still be processed
         assert isinstance(registry, dict)
     finally:
         await pipe.close()
@@ -1320,7 +1295,6 @@ async def test_build_direct_tool_server_registry_transform_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create a valid registry that will pass to transform
         registry, specs = executor._build_direct_tool_server_registry(
             {
                 "tool_servers": [
@@ -1336,7 +1310,6 @@ async def test_build_direct_tool_server_registry_transform_exception():
 
         # Should have processed successfully
         assert len(registry) == 1
-        # specs may be empty if transform fails, but registry should exist
         assert isinstance(specs, list)
     finally:
         await pipe.close()
@@ -1387,7 +1360,6 @@ async def test_build_direct_tool_server_no_session_id():
         callable_fn = registry[key]["callable"]
         await callable_fn()
 
-        # session_id should be None
         assert call_received["session_id"] is None
     finally:
         await pipe.close()
@@ -1427,10 +1399,8 @@ async def test_build_direct_tool_server_no_parameters():
 
         key = list(registry.keys())[0]
         callable_fn = registry[key]["callable"]
-        # Call with some kwargs that should all be filtered
         await callable_fn(extra="should_be_filtered")
 
-        # params should be empty since no allowed_params defined
         assert call_received["params"] == {}
     finally:
         await pipe.close()
@@ -1459,7 +1429,6 @@ async def test_execute_function_calls_with_dict_arguments():
                 }
             }
 
-            # Dict arguments (already parsed)
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": {"key": "value"}}]
 
             outputs_task = asyncio.create_task(pipe._ensure_tool_executor()._execute_function_calls(calls, tools))
@@ -1507,15 +1476,14 @@ async def test_multiple_tools_with_various_errors():
             }
 
             calls = [
-                {"type": "function_call", "call_id": "call-1", "name": "", "arguments": "{}"},  # Missing name
-                {"type": "function_call", "call_id": "call-2", "name": "nonexistent", "arguments": "{}"},  # Not found
-                {"type": "function_call", "call_id": "call-3", "name": "no_callable_tool", "arguments": "{}"},  # No callable
-                {"type": "function_call", "call_id": "call-4", "name": "valid_tool", "arguments": "invalid"},  # Bad JSON
+                {"type": "function_call", "call_id": "call-1", "name": "", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call-2", "name": "nonexistent", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call-3", "name": "no_callable_tool", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call-4", "name": "valid_tool", "arguments": "invalid"},
             ]
 
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
-            # All 4 calls should have outputs (errors)
             assert len(outputs) == 4
             assert all(o["type"] == "function_call_output" for o in outputs)
         finally:
@@ -1535,8 +1503,6 @@ async def test_direct_tool_callable_event_call_becomes_none():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # We need to directly call the inner function with _event_call=None
-        # by manually invoking the callable closure
         call_count = {"count": 0}
 
         async def mock_event_call(payload: dict) -> Any:
@@ -1559,14 +1525,9 @@ async def test_direct_tool_callable_event_call_becomes_none():
         key = list(registry.keys())[0]
         callable_fn = registry[key]["callable"]
 
-        # Call normally - event_call should work
         result = await callable_fn()
         assert call_count["count"] == 1
 
-        # The line 340 is in the inner function when _event_call is None
-        # But since it's captured as a default arg, we can't easily set it to None
-        # The test for callable_no_event_call covers the case where event_call=None
-        # at registry build time. This test confirms normal operation.
     finally:
         await pipe.close()
 
@@ -1578,7 +1539,6 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create a dict-subclass that raises during spec iteration
         class FailingDict(dict):
             _call_count = 0
 
@@ -1614,7 +1574,6 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
             event_emitter=AsyncMock(),
         )
 
-        # Should still have the tool even if keys() fails later
         assert isinstance(registry, dict)
     finally:
         await pipe.close()
@@ -1679,7 +1638,6 @@ async def test_build_direct_tool_server_bad_properties_keys():
             call_received["params"] = payload["data"]["params"]
             return {"result": "ok"}
 
-        # Create properties that fails on keys() or iteration
         class FailingProperties(dict):
             def keys(self):
                 raise RuntimeError("Intentional failure")
@@ -1728,7 +1686,6 @@ async def test_build_direct_tool_server_spec_params_access_fails():
     try:
         executor = pipe._ensure_tool_executor()
 
-        # Create a spec where parameters.get fails
         class FailingParams(dict):
             def get(self, key, default=None):
                 if key == "properties":
@@ -1785,10 +1742,6 @@ import pytest
 from conftest import Pipe
 
 
-# ---------------------------------------------------------------------------
-# Direct imports from tool_registry module
-# ---------------------------------------------------------------------------
-
 from open_webui_openrouter_pipe.tools.tool_registry import (
     build_tools,
     _dedupe_tools,
@@ -1799,9 +1752,7 @@ from open_webui_openrouter_pipe.tools.tool_registry import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Helper fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mock_valves():
@@ -1869,9 +1820,7 @@ def sample_owui_tools():
     }
 
 
-# ---------------------------------------------------------------------------
 # Tests for build_tools
-# ---------------------------------------------------------------------------
 
 class TestBuildTools:
     """Tests for the build_tools function."""
@@ -1914,7 +1863,6 @@ class TestBuildTools:
                 mock_valves_passthrough,
                 __tools__=tools_dict,
             )
-            # Even if model doesn't support, passthrough mode includes tools
             assert len(result) == 1
             assert result[0]["name"] == "tool1"
 
@@ -1939,7 +1887,7 @@ class TestBuildTools:
             tools_list = [
                 {"type": "function", "name": "tool1", "description": "Tool 1"},
                 {"type": "function", "name": "tool2", "description": "Tool 2"},
-                "invalid_entry",  # Should be filtered out
+                "invalid_entry",
             ]
             result = build_tools(mock_responses_body, mock_valves, __tools__=tools_list)
             assert len(result) == 2
@@ -1971,7 +1919,7 @@ class TestBuildTools:
             ]
             result = build_tools(mock_responses_body, mock_valves, __tools__=tools_list)
             assert len(result) == 1
-            assert result[0]["description"] == "Second"  # Last wins
+            assert result[0]["description"] == "Second"
 
     def test_build_tools_with_strict_calling(self, mock_responses_body, mock_valves_strict, sample_owui_tools):
         """Test build_tools with strict tool calling enabled."""
@@ -1982,7 +1930,6 @@ class TestBuildTools:
             result = build_tools(
                 mock_responses_body, mock_valves_strict, __tools__=sample_owui_tools
             )
-            # The strictify should add additionalProperties: false to parameters
             for tool in result:
                 params = tool.get("parameters", {})
                 if params:
@@ -2009,9 +1956,7 @@ class TestBuildTools:
             assert result == []
 
 
-# ---------------------------------------------------------------------------
 # Tests for _dedupe_tools
-# ---------------------------------------------------------------------------
 
 class TestDedupeTools:
     """Tests for the _dedupe_tools function."""
@@ -2040,7 +1985,7 @@ class TestDedupeTools:
         """Test deduplication with non-function tool types."""
         tools = [
             {"type": "web_search", "config": "first"},
-            {"type": "web_search", "config": "second"},  # Should replace first
+            {"type": "web_search", "config": "second"},
             {"type": "code_interpreter"},
         ]
         result = _dedupe_tools(tools)
@@ -2063,7 +2008,7 @@ class TestDedupeTools:
     def test_dedupe_tools_no_type_key(self):
         """Test that tools without type key are filtered (key[0] check fails)."""
         tools = [
-            {"name": "no_type"},  # No type key
+            {"name": "no_type"},
             {"type": "function", "name": "has_type"},
         ]
         result = _dedupe_tools(tools)
@@ -2081,10 +2026,6 @@ class TestDedupeTools:
         assert len(result) == 1
         assert result[0]["name"] == "valid"
 
-
-# ---------------------------------------------------------------------------
-# Tests for _normalize_responses_function_tool_spec
-# ---------------------------------------------------------------------------
 
 class TestNormalizeResponsesFunctionToolSpec:
     """Tests for the _normalize_responses_function_tool_spec function."""
@@ -2189,10 +2130,6 @@ class TestNormalizeResponsesFunctionToolSpec:
         assert "parameters" not in result
 
 
-# ---------------------------------------------------------------------------
-# Tests for _responses_spec_from_owui_tool_cfg
-# ---------------------------------------------------------------------------
-
 class TestResponsesSpecFromOwuiToolCfg:
     """Tests for the _responses_spec_from_owui_tool_cfg function."""
 
@@ -2270,10 +2207,6 @@ class TestResponsesSpecFromOwuiToolCfg:
         assert result["parameters"]["additionalProperties"] is False
 
 
-# ---------------------------------------------------------------------------
-# Tests for _tool_prefix_for_collision
-# ---------------------------------------------------------------------------
-
 class TestToolPrefixForCollision:
     """Tests for the _tool_prefix_for_collision function."""
 
@@ -2307,10 +2240,6 @@ class TestToolPrefixForCollision:
         """Test prefix for unknown source defaults to tool__."""
         assert _tool_prefix_for_collision("unknown_source", None) == "tool__"
 
-
-# ---------------------------------------------------------------------------
-# Tests for _build_collision_safe_tool_specs_and_registry
-# ---------------------------------------------------------------------------
 
 class TestBuildCollisionSafeToolSpecsAndRegistry:
     """Tests for the _build_collision_safe_tool_specs_and_registry function."""
@@ -2401,7 +2330,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
 
         assert len(tools) == 1
         assert tools[0]["name"] == "pass_tool"
-        assert exec_reg == {}  # No exec registry in passthrough
+        assert exec_reg == {}
         assert origin_map["pass_tool"] == "pass_tool"
 
     def test_direct_registry_tools(self):
@@ -2513,7 +2442,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             logger=None,
         )
 
-        # Should only have one tool (from request, not duplicated from owui)
         assert len(tools) == 1
 
     def test_owui_registry_without_callable_skipped(self):
@@ -2652,7 +2580,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         async def callable_fn(**kwargs):
             return "result"
 
-        # Create multiple direct tools with same name
         direct_registry = {
             "search::0::0": {
                 "spec": {"name": "search", "description": "Direct 1"},
@@ -2679,11 +2606,9 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             logger=None,
         )
 
-        # One should be direct__search, other should have hash
         names = [t["name"] for t in tools]
         assert len(names) == 2
         assert any("direct__search" in n for n in names)
-        # At least one should have the hash suffix
         hash_suffixed = [n for n in names if "__" in n and len(n) > len("direct__search")]
         assert len(hash_suffixed) >= 1
 
@@ -2691,8 +2616,8 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         """Test that invalid request tools are skipped."""
         request_tools = [
             {"type": "not_function", "name": "invalid"},
-            {"type": "function"},  # Missing name
-            {"type": "function", "name": ""},  # Empty name
+            {"type": "function"},
+            {"type": "function", "name": ""},
             "not_a_dict",
         ]
 
@@ -2712,9 +2637,9 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
     def test_invalid_direct_registry_skipped(self):
         """Test that invalid direct registry entries are skipped."""
         direct_registry = {
-            "invalid1": {"spec": "not_a_dict"},  # Invalid spec
-            "invalid2": {"spec": {"name": ""}},  # Empty name
-            "invalid3": "not_a_dict",  # Not a dict entry
+            "invalid1": {"spec": "not_a_dict"},
+            "invalid2": {"spec": {"name": ""}},
+            "invalid3": "not_a_dict",
         }
 
         tools, exec_reg, origin_map = _build_collision_safe_tool_specs_and_registry(
@@ -2734,8 +2659,8 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         """Test that invalid OWUI registry entries are skipped."""
         owui_registry = {
             "invalid1": {"spec": None},
-            "invalid2": {"callable": lambda: None},  # Missing spec
-            "invalid3": 123,  # Not a dict
+            "invalid2": {"callable": lambda: None},
+            "invalid3": 123,
         }
 
         tools, exec_reg, origin_map = _build_collision_safe_tool_specs_and_registry(
@@ -2754,7 +2679,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
     def test_invalid_extra_tools_skipped(self):
         """Test that invalid extra tools are skipped."""
         extra_tools = [
-            {"type": "web_search"},  # Not function type
+            {"type": "web_search"},
             None,
             123,
         ]
@@ -2838,7 +2763,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         )
 
         assert len(tools) == 1
-        assert exec_reg == {}  # Should be empty in passthrough mode
+        assert exec_reg == {}
         assert "tool" in origin_map
 
     def test_pick_executor_preference_builtin(self):
@@ -2878,7 +2803,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
 
         # Should pick builtin executor
         assert "shared" in exec_reg
-        # The callable should be the builtin one
         assert exec_reg["shared"]["callable"] is builtin_fn
 
     def test_pick_executor_fallback_to_owui(self):
@@ -2915,8 +2839,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         async def direct_fn(**kwargs):
             return "direct"
 
-        # Use extra_tools instead of request_tools to test fallback to direct
-        # without causing a collision (request_tools + direct_registry same name = collision)
         extra_tools = [
             {"type": "function", "name": "direct_only", "description": "Extra only"},
         ]
@@ -2939,12 +2861,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             logger=None,
         )
 
-        # Both direct registry and extra_tools reference "direct_only"
-        # Since they share the same name and there's no collision (direct already adds it),
-        # the tool should be available under direct_only or with a prefix if collision occurs
-        # The extra_tools picks up the direct registry executor
         assert len(tools) >= 1
-        # At least one exec_reg entry should have the direct_fn callable
         found_direct_callable = any(
             cfg.get("callable") is direct_fn for cfg in exec_reg.values()
         )
@@ -3041,11 +2958,9 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         async def callable_fn(**kwargs):
             return "result"
 
-        # Create a scenario where cfg["spec"] exists but is not useful
         request_tools = [
             {"type": "function", "name": "tool", "description": "Tool"},
         ]
-        # Builtin with spec that will be overwritten
         builtin_registry = {
             "tool": {
                 "spec": {"name": "tool", "description": "Builtin"},
@@ -3065,14 +2980,9 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         )
 
         assert "tool" in exec_reg
-        # Verify the spec was updated properly
         cfg = exec_reg["tool"]
         assert isinstance(cfg["spec"], dict)
 
-
-# ---------------------------------------------------------------------------
-# Integration tests with real Pipe instance
-# ---------------------------------------------------------------------------
 
 class TestToolRegistryWithPipe:
     """Integration tests using real Pipe instances."""
@@ -3136,7 +3046,6 @@ class TestToolRegistryWithPipe:
 
         assert "exec_test" in exec_reg
 
-        # Execute through pipe (requires tool context + worker)
         loop = asyncio.get_running_loop()
         context = create_tool_context(loop)
         executor = pipe._ensure_tool_executor()
@@ -3197,7 +3106,6 @@ class _DummyWorker:
         self.batches: list[list[str]] = []
         self.execution_delay: float = 0.0
         self.raise_exception: bool = False
-        # For _tool_worker_loop to call _pipe._execute_tool_batch
         self._pipe = self
 
     async def _execute_tool_batch(
@@ -3219,7 +3127,6 @@ class _DummyWorker:
     ) -> dict[str, Any]:
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
-    # Use real implementations from ToolExecutor
     _tool_worker_loop = ToolExecutor._tool_worker_loop
     _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
     _args_reference_call = ToolExecutor._args_reference_call
@@ -3263,9 +3170,7 @@ def _make_context(
     )
 
 
-# ============================================================================
 # _args_reference_call tests
-# ============================================================================
 
 
 class TestArgsReferenceCall:
@@ -3356,9 +3261,7 @@ class TestArgsReferenceCall:
         assert worker._args_reference_call([], "call-123") is False
 
 
-# ============================================================================
 # _can_batch_tool_calls tests
-# ============================================================================
 
 
 class TestCanBatchToolCalls:
@@ -3473,14 +3376,13 @@ class TestCanBatchToolCalls:
         loop = asyncio.new_event_loop()
         try:
             first = _QueuedToolCall(
-                call={"name": "tool_a"},  # No call_id
+                call={"name": "tool_a"},
                 tool_cfg={},
                 args={},
                 future=loop.create_future(),
                 allow_batch=True,
             )
             candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            # Should return True since first has no call_id to reference
             assert worker._can_batch_tool_calls(first, candidate) is True
         finally:
             loop.close()
@@ -3492,21 +3394,18 @@ class TestCanBatchToolCalls:
         try:
             first = _make_queued(loop, "call-1", "tool_a", args={})
             candidate = _QueuedToolCall(
-                call={"name": "tool_a"},  # No call_id
+                call={"name": "tool_a"},
                 tool_cfg={},
                 args={},
                 future=loop.create_future(),
                 allow_batch=True,
             )
-            # Should return True since candidate has no call_id to reference
             assert worker._can_batch_tool_calls(first, candidate) is True
         finally:
             loop.close()
 
 
-# ============================================================================
 # _tool_worker_loop tests
-# ============================================================================
 
 
 class TestToolWorkerLoop:
@@ -3588,7 +3487,7 @@ class TestToolWorkerLoop:
         await worker._tool_worker_loop(context)
 
         # Should batch in groups of 2 at most
-        assert len(worker.batches) >= 3  # At least 3 batches for 5 items with cap 2
+        assert len(worker.batches) >= 3
 
     @pytest.mark.asyncio
     async def test_allow_batch_false_no_batching(self) -> None:
@@ -3607,7 +3506,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # First item has allow_batch=False, so no batching should occur
         assert worker.batches == [["call-1"], ["call-2"]]
 
     @pytest.mark.asyncio
@@ -3628,7 +3526,6 @@ class TestToolWorkerLoop:
         worker = _DummyWorker()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Use a very small but non-zero timeout
         context = _make_context(queue, idle_timeout=0.001)
         await worker._tool_worker_loop(context)
 
@@ -3680,7 +3577,6 @@ class TestToolWorkerLoop:
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
         call1 = _make_queued(loop, "call-1", "tool_a")
-        # Put call1, then None (simulating queue draining mid-batch)
         await queue.put(call1)
         await queue.put(None)
 
@@ -3697,7 +3593,7 @@ class TestToolWorkerLoop:
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
         call1 = _make_queued(loop, "call-1", "tool_a")
-        call2 = _make_queued(loop, "call-2", "tool_b")  # Different tool name
+        call2 = _make_queued(loop, "call-2", "tool_b")
 
         await queue.put(call1)
         await queue.put(call2)
@@ -3706,7 +3602,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # call2 should be processed after call1 in separate batch
         assert worker.batches == [["call-1"], ["call-2"]]
 
     @pytest.mark.asyncio
@@ -3716,19 +3611,15 @@ class TestToolWorkerLoop:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Create a call that will be pending when timeout occurs
         call1 = _make_queued(loop, "call-1", "tool_a")
         await queue.put(call1)
 
-        # Don't add terminator, let timeout trigger
         context = _make_context(queue, idle_timeout=0.01)
 
-        # Set the future result manually before running to simulate partial execution
         call1.future.set_result({"ok": True})
 
         await worker._tool_worker_loop(context)
 
-        # Future was already done, so it shouldn't be modified
         assert call1.future.done()
 
     @pytest.mark.asyncio
@@ -3738,27 +3629,18 @@ class TestToolWorkerLoop:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # We need to simulate a scenario where the finally block runs
-        # with pending items that have undone futures
-        # This is tricky - we need to cause the worker to exit with pending items
 
-        # One way: Use idle_timeout and have items in pending list
-        # by adding an unbatchable item after first
         call1 = _make_queued(loop, "call-1", "tool_a")
-        call2 = _make_queued(loop, "call-2", "tool_b")  # Different tool
+        call2 = _make_queued(loop, "call-2", "tool_b")
 
         await queue.put(call1)
         await queue.put(call2)
-        # No terminator - timeout will trigger
 
-        # Make execution slow so timeout can hit
         worker.execution_delay = 0.5
 
         context = _make_context(queue, idle_timeout=0.05)
         await worker._tool_worker_loop(context)
 
-        # call2 should have been cancelled via finally cleanup
-        # Note: The finally block handles leftover pending items
         assert context.timeout_error is not None
 
     @pytest.mark.asyncio
@@ -3775,7 +3657,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # If task_done wasn't called correctly, join would hang
         await asyncio.wait_for(queue.join(), timeout=1.0)
 
     @pytest.mark.asyncio
@@ -3797,7 +3678,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # call2 depends on call1, so they should be in separate batches
         assert worker.batches == [["call-1"], ["call-2"]]
 
     @pytest.mark.asyncio
@@ -3833,7 +3713,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue, batch_cap=2)
         await worker._tool_worker_loop(context)
 
-        # With batch_cap=2, first batch has 2 items, second has 1
         assert worker.batches == [["call-1", "call-2"], ["call-3"]]
 
     @pytest.mark.asyncio
@@ -3844,7 +3723,7 @@ class TestToolWorkerLoop:
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
         call1 = _make_queued(loop, "call-1", "tool_a")
-        call2 = _make_queued(loop, "call-2", "tool_b")  # Different tool
+        call2 = _make_queued(loop, "call-2", "tool_b")
 
         await queue.put(call1)
         await queue.put(call2)
@@ -3892,7 +3771,6 @@ class TestToolWorkerLoop:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # Should be separate batches due to cross-reference
         assert worker.batches == [["call-1"], ["call-2"]]
 
     @pytest.mark.asyncio
@@ -3902,12 +3780,11 @@ class TestToolWorkerLoop:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Single batchable item - queue will be empty after first get_nowait
         call1 = _make_queued(loop, "call-1", "tool_a")
         await queue.put(call1)
         await queue.put(None)
 
-        context = _make_context(queue, batch_cap=10)  # High cap
+        context = _make_context(queue, batch_cap=10)
         await worker._tool_worker_loop(context)
 
         assert worker.batches == [["call-1"]]
@@ -3919,20 +3796,17 @@ class TestToolWorkerLoopEdgeCases:
     @pytest.mark.asyncio
     async def test_from_queue_false_in_pending_skips_task_done(self) -> None:
         """Items with from_queue=False should not call task_done."""
-        # This tests the finally cleanup path where from_queue might be False
         worker = _DummyWorker()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Set up scenario: timeout while processing causes finally cleanup
         call1 = _make_queued(loop, "call-1", "tool_a")
-        call2 = _make_queued(loop, "call-2", "tool_b")  # Different tool -> goes to pending
+        call2 = _make_queued(loop, "call-2", "tool_b")
 
         await queue.put(call1)
         await queue.put(call2)
-        # No terminator, timeout triggers
 
-        worker.execution_delay = 0.1  # Slow execution
+        worker.execution_delay = 0.1
 
         context = _make_context(queue, idle_timeout=0.02)
         await worker._tool_worker_loop(context)
@@ -3950,23 +3824,18 @@ class TestToolWorkerLoopEdgeCases:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # Verify queue is properly marked done
         await asyncio.wait_for(queue.join(), timeout=1.0)
 
     @pytest.mark.asyncio
     async def test_none_in_batch_collection_handled_correctly(self) -> None:
         """None encountered during batch collection is properly handled."""
-        # This tests lines 59-61: when nxt is None during batch collection
-        # The None is added to pending with from_queue=True and processing continues
         worker = _DummyWorker()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
         # Set up scenario:
         # 1. First item is batchable
-        # 2. During batch collection, we encounter None
         # 3. None is added to pending
-        # 4. After batch executes, pending None terminates the loop
         call1 = _make_queued(loop, "call-1", "tool_a")
 
         await queue.put(call1)
@@ -3975,9 +3844,7 @@ class TestToolWorkerLoopEdgeCases:
         context = _make_context(queue)
         await worker._tool_worker_loop(context)
 
-        # Should complete normally (no timeout error)
         assert context.timeout_error is None
-        # call1 should be in its own batch
         assert worker.batches == [["call-1"]]
         assert call1.future.done()
 
@@ -4003,7 +3870,6 @@ class TestToolWorkerLoopEdgeCases:
         context = _make_context(queue, idle_timeout=0.01)
         await worker._tool_worker_loop(context)
 
-        # call2's future should retain original result
         assert call2.future.result() == original_result
 
     @pytest.mark.asyncio
@@ -4046,10 +3912,8 @@ class TestToolWorkerLoopEdgeCases:
         context = _make_context(queue, idle_timeout=0.01)
         await worker._tool_worker_loop(context)
 
-        # Check that call2 got cancelled output if it wasn't processed
         if call2.future.done():
             result = call2.future.result()
-            # If it was cancelled by finally block, it should have cancelled status
             if isinstance(result, dict) and "status" in result:
                 assert result["status"] in ("cancelled", "ok")
 
@@ -4075,7 +3939,6 @@ class TestToolWorkerFinallyCleanup:
                 self, calls: list[_QueuedToolCall], _context: _ToolExecutionContext
             ) -> None:
                 self.batches.append([call.call.get("call_id") for call in calls])
-                # Don't set future results - leave them undone
                 # Then raise to trigger finally
                 raise RuntimeError("Simulated batch failure")
 
@@ -4083,9 +3946,8 @@ class TestToolWorkerFinallyCleanup:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Set up: first item triggers batch collection, second goes to pending
         call1 = _make_queued(loop, "call-1", "tool_a")
-        call2 = _make_queued(loop, "call-2", "tool_b")  # Different tool -> goes to pending
+        call2 = _make_queued(loop, "call-2", "tool_b")
 
         await queue.put(call1)
         await queue.put(call2)
@@ -4093,15 +3955,10 @@ class TestToolWorkerFinallyCleanup:
 
         context = _make_context(queue)
 
-        # Exception should propagate, but finally runs first
         with pytest.raises(RuntimeError, match="Simulated batch failure"):
             await worker._tool_worker_loop(context)
 
-        # call1's future was never set (worker raised before setting it)
-        # But the finally block doesn't handle the current batch, only pending items
-        # So call1 might still be undone (depends on implementation)
 
-        # call2 was in pending, so finally should have resolved it
         assert call2.future.done()
         result = call2.future.result()
         assert isinstance(result, dict)
@@ -4125,30 +3982,22 @@ class TestToolWorkerFinallyCleanup:
                 self, calls: list[_QueuedToolCall], _context: _ToolExecutionContext
             ) -> None:
                 self.batches.append([call.call.get("call_id") for call in calls])
-                # Raise exception - this triggers finally with pending items
                 raise RuntimeError("Batch execution failed")
 
         worker = _ExceptionAfterBatchCollectionWorker()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Set up queue: batchable item, then None
-        # During batch collection for call1, we get None from queue
-        # None is added to pending via line 60
-        # Then exception triggers finally
         call1 = _make_queued(loop, "call-1", "tool_a")
 
         await queue.put(call1)
-        await queue.put(None)  # This will be encountered during batch collection
+        await queue.put(None)
 
         context = _make_context(queue)
 
         with pytest.raises(RuntimeError, match="Batch execution failed"):
             await worker._tool_worker_loop(context)
 
-        # call1's future should not be done (exception before setting)
-        # None was in pending, finally should have skipped it
-        # No crash means line 79 (continue) was executed
 
     @pytest.mark.asyncio
     async def test_finally_uses_default_message_when_no_timeout_error(self) -> None:
@@ -4166,11 +4015,8 @@ class TestToolWorkerFinallyCleanup:
         await queue.put(call1)
         await queue.put(call2)
 
-        # Cause timeout but manually clear the timeout_error after
-        # Actually, a cleaner approach: create a worker that raises during execution
         class _RaisingWorker(_DummyWorker):
             async def _execute_tool_batch(self, calls: list[_QueuedToolCall], _context: _ToolExecutionContext) -> None:
-                # Only process first call, then raise to trigger finally
                 for queued in calls:
                     if not queued.future.done():
                         queued.future.set_result({"ok": True})
@@ -4180,17 +4026,9 @@ class TestToolWorkerFinallyCleanup:
 
         context = _make_context(queue)
 
-        # The exception should propagate but finally should still run
         with pytest.raises(RuntimeError, match="Simulated failure"):
             await raising_worker._tool_worker_loop(context)
 
-        # Note: In this scenario, call2 goes to pending during batch collection,
-        # but the exception happens AFTER batch execution completes, so call2
-        # should still be in pending when finally runs
-        # Actually, let me reconsider the flow...
-
-        # Actually the exception propagates and finally runs, but call2 was
-        # already moved to pending and never executed.
 
     @pytest.mark.asyncio
     async def test_finally_skips_items_from_pending_not_from_queue(self) -> None:
@@ -4213,10 +4051,6 @@ class TestToolWorkerFinallyCleanup:
         context = _make_context(queue, idle_timeout=0.02)
         await worker._tool_worker_loop(context)
 
-        # The queue should be properly drained despite timeout
-        # This verifies task_done is called correctly in finally
-        # Note: We can't easily verify this without internal inspection,
-        # but the test passing without hanging indicates it works
         assert context.timeout_error is not None
 
 
@@ -4230,14 +4064,13 @@ class TestToolWorkerIntegration:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[_QueuedToolCall | None] = asyncio.Queue()
 
-        # Mix of batchable and unbatchable items
         call1 = _make_queued(loop, "call-1", "tool_a")
         call2 = _make_queued(loop, "call-2", "tool_a")
-        call3 = _make_queued(loop, "call-3", "tool_b")  # Different tool
+        call3 = _make_queued(loop, "call-3", "tool_b")
         call4 = _make_queued(loop, "call-4", "tool_b")
         call5 = _make_queued(
             loop, "call-5", "tool_b", args={"depends_on": "call-4"}
-        )  # Dependent
+        )
 
         await queue.put(call1)
         await queue.put(call2)
@@ -4250,9 +4083,6 @@ class TestToolWorkerIntegration:
         await worker._tool_worker_loop(context)
 
         # Expected batches:
-        # [call-1, call-2] - same tool
-        # [call-3, call-4] - same tool (different from first)
-        # [call-5] - depends on call-4
         assert len(worker.batches) >= 3
         assert all(
             c.future.done() for c in [call1, call2, call3, call4, call5]
@@ -4324,7 +4154,6 @@ def _build_sse_response_with_tool_call(*, tool_name: str = "my_tool", stream: bo
                 },
             },
         ),
-        # Stream arguments via delta events (this is what triggers chat:tool_calls)
         _build_sse_event(
             "response.function_call_arguments.delta",
             {
@@ -4431,7 +4260,6 @@ async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
 
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
-        # Mock catalog endpoint (with repeat for warmup + actual calls)
         catalog_response = {
             "data": [
                 {
@@ -4449,7 +4277,6 @@ async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
             repeat=True,
         )
 
-        # Mock the API response with tool calls (JSON format for non-streaming)
         json_response = {
             "output": [
                 {
@@ -4472,7 +4299,6 @@ async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
             status=200,
         )
 
-        # Create pipe INSIDE aioresponses context to avoid warmup connection issues
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
         pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
@@ -4492,7 +4318,6 @@ async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
                 __tools__=None,
             )
 
-            # Verify result was returned (dict with OpenAI-compatible format)
             assert isinstance(result, dict), f"Expected dict result, got {type(result)}"
             assert "choices" in result, "Expected OpenAI-compatible response format"
 
@@ -4505,12 +4330,7 @@ async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
             assert tool_calls_in_response[0]["function"]["name"] == "my_tool"
             assert isinstance(tool_calls_in_response[0]["function"].get("arguments"), str)
 
-            # Note: In non-streaming mode, events may not be emitted the same way
-            # The tool calls are returned directly in the response format
 
-            # In Open-WebUI mode, tool execution should be skipped
-            # This is verified implicitly: if execution happened, we'd have a follow-up request
-            # but we only mocked one HTTP call, so test would fail if execution occurred
         finally:
             await pipe.close()
 
@@ -4527,7 +4347,6 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
     """
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
-        # Mock catalog endpoint (with repeat for warmup + actual calls)
         catalog_response = {
             "data": [
                 {
@@ -4545,7 +4364,6 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
             repeat=True,
         )
 
-        # Mock the streaming API response with tool calls (SSE format)
         sse_response = _build_sse_response_with_tool_call(tool_name="my_tool")
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
@@ -4553,13 +4371,11 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
             status=200,
         )
 
-        # Create pipe INSIDE aioresponses context to avoid warmup connection issues
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
         pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
 
         try:
-            # Use async for to consume the streaming generator and collect output
             result = await pipe.pipe(
                 body={
                     "model": "openai/gpt-4o-mini",
@@ -4568,25 +4384,21 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
                 },
                 __user__={"valves": {}},
                 __request__=None,
-                __event_emitter__=None,  # Events go through SSE only
+                __event_emitter__=None,
                 __event_call__=None,
                 __metadata__={},
                 __tools__=None,
             )
             assert hasattr(result, "__aiter__")
 
-            # Collect stream output (can be dicts or strings)
             stream_items: list[Any] = []
             async for item in cast(AsyncGenerator[Any, None], result):
                 stream_items.append(item)
 
-            # Parse stream items to find tool_calls
-            # Items can be dicts (OpenAI format) or strings (SSE format)
             import json as json_module
             found_tool_calls = False
             for item in stream_items:
                 if isinstance(item, dict):
-                    # Check for tool_calls in OpenAI format chunks
                     choices = item.get("choices", [])
                     for choice in choices:
                         delta = choice.get("delta", {})
@@ -4605,9 +4417,6 @@ async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
 
             assert found_tool_calls, f"Expected tool_calls with 'my_tool' in stream. Got: {stream_items[:5]}"
 
-            # In Open-WebUI mode, tool execution should be skipped
-            # This is verified implicitly: if execution happened, we'd have a follow-up request
-            # but we only mocked one HTTP call, so test would fail if execution occurred
         finally:
             await pipe.close()
 
@@ -4668,12 +4477,11 @@ def test_build_tools_openwebui_mode_keeps_tools_and_does_not_strictify(pipe_inst
         update={"TOOL_EXECUTION_MODE": "Open-WebUI", "ENABLE_STRICT_TOOL_CALLING": True}
     )
 
-    # Configure a model without tool support using real infrastructure
     ModelFamily.set_dynamic_specs({
         "pipe.model": {
             "architecture": {"modality": "text"},
-            "features": set(),  # No function_calling feature
-            "supported_parameters": frozenset(),  # No tool support
+            "features": set(),
+            "supported_parameters": frozenset(),
         }
     })
 
@@ -4684,9 +4492,7 @@ def test_build_tools_openwebui_mode_keeps_tools_and_does_not_strictify(pipe_inst
             valves,
             __tools__={"my_tool": {"spec": {"name": "my_tool", "parameters": schema}}},
         )
-        # Even though model doesn't support tools, Open-WebUI mode should forward them
         assert tools and tools[0]["name"] == "my_tool"
-        # strict should not be added in Open-WebUI mode
         assert "strict" not in tools[0]
         assert tools[0]["parameters"] == schema
     finally:
@@ -4707,7 +4513,6 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
     """
     # Mock HTTP at boundary
     with aioresponses() as mock_http:
-        # Mock catalog endpoint (with repeat for warmup + actual calls)
         catalog_response = {
             "data": [
                 {
@@ -4725,7 +4530,6 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
             repeat=True,
         )
 
-        # Mock the streaming API response with incremental argument deltas
         sse_response = _build_sse_response_with_incremental_arguments(tool_name="my_tool")
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
@@ -4733,13 +4537,11 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
             status=200,
         )
 
-        # Create pipe INSIDE aioresponses context to avoid warmup connection issues
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
         pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
 
         try:
-            # Use async for to consume the streaming generator and collect output
             result = await pipe.pipe(
                 body={
                     "model": "openai/gpt-4o-mini",
@@ -4748,20 +4550,17 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
                 },
                 __user__={"valves": {}},
                 __request__=None,
-                __event_emitter__=None,  # Events go through SSE only
+                __event_emitter__=None,
                 __event_call__=None,
                 __metadata__={},
                 __tools__=None,
             )
             assert hasattr(result, "__aiter__")
 
-            # Collect stream output (can be dicts or strings)
             stream_items: list[Any] = []
             async for item in cast(AsyncGenerator[Any, None], result):
                 stream_items.append(item)
 
-            # Parse stream items to find tool_calls events
-            # Items can be dicts (OpenAI format) or strings (SSE format)
             import json as json_module
             tool_calls_events: list[dict[str, Any]] = []
             for item in stream_items:
@@ -4788,23 +4587,17 @@ async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> Non
 
             assert len(tool_calls_events) >= 2, f"Expected at least 2 tool_calls deltas, got {len(tool_calls_events)}. Items: {stream_items[:10]}"
 
-            # First event should have function name
             first_tc = tool_calls_events[0].get("tool_calls", [{}])[0]
             first_fn = first_tc.get("function", {})
             assert first_fn.get("name") == "my_tool", f"First delta should have function name, got: {first_fn}"
 
-            # Second event should NOT repeat the name (only arguments delta)
             second_tc = tool_calls_events[1].get("tool_calls", [{}])[0]
             second_fn = second_tc.get("function", {})
             assert "name" not in second_fn, f"Second delta should not repeat function name, got: {second_fn}"
 
-            # Combined arguments should form complete JSON
             combined_args = f"{first_fn.get('arguments', '')}{second_fn.get('arguments', '')}"
             assert '{"a":1}' in combined_args, f"Expected complete arguments, got: {combined_args}"
 
-            # In Open-WebUI mode, tool execution should be skipped
-            # This is verified implicitly: if execution happened, we'd have a follow-up request
-            # but we only mocked one HTTP call, so test would fail if execution occurred
         finally:
             await pipe.close()
 
@@ -4998,7 +4791,6 @@ def test_strictify_keeps_optional_fields_optional():
             "query": {"type": "string"},
             "limit": {"type": "integer"},
         },
-        # No required list → everything optional
     }
 
     strict = _strictify_schema(schema)
@@ -5039,21 +4831,17 @@ def test_strictify_handles_nested_objects():
     assert nested["properties"]["tags"]["type"] == ["array", "null"]
 
 
-# New tests for type inference (fixing empty schema bug)
-
-
 def test_strictify_adds_type_to_empty_property():
     """Test that empty property schemas get default type 'object'"""
     schema = {
         "type": "object",
         "properties": {
-            "session": {},  # Empty schema - missing type
+            "session": {},
             "user": {"type": "string"}
         }
     }
     strict = _strictify_schema(schema)
 
-    # Should add default type "object"
     assert strict["properties"]["session"]["type"] == ["object", "null"]
     assert strict["properties"]["session"]["additionalProperties"] is False
 
@@ -5086,7 +4874,7 @@ def test_strictify_handles_nested_empty_schemas():
             "outer": {
                 "type": "object",
                 "properties": {
-                    "inner": {}  # Nested empty
+                    "inner": {}
                 }
             }
         },
@@ -5105,7 +4893,7 @@ def test_strictify_adds_type_to_empty_items():
         "properties": {
             "list": {
                 "type": "array",
-                "items": {}  # Empty items
+                "items": {}
             }
         }
     }
@@ -5123,7 +4911,7 @@ def test_strictify_handles_empty_anyof_branch():
             "value": {
                 "anyOf": [
                     {"type": "string"},
-                    {}  # Empty branch
+                    {}
                 ]
             }
         }
@@ -5141,7 +4929,6 @@ def test_strictify_infers_object_type_from_properties():
         "type": "object",
         "properties": {
             "config": {
-                # Has properties but no type - should infer "object"
                 "properties": {
                     "enabled": {"type": "boolean"}
                 }
@@ -5150,7 +4937,6 @@ def test_strictify_infers_object_type_from_properties():
     }
     strict = _strictify_schema(schema)
 
-    # Should infer type as object and add null since it's optional
     assert "object" in strict["properties"]["config"]["type"]
     assert "null" in strict["properties"]["config"]["type"]
 
@@ -5161,14 +4947,12 @@ def test_strictify_infers_array_type_from_items():
         "type": "object",
         "properties": {
             "tags": {
-                # Has items but no type - should infer "array"
                 "items": {"type": "string"}
             }
         }
     }
     strict = _strictify_schema(schema)
 
-    # Should infer type as array and add null since it's optional
     assert "array" in strict["properties"]["tags"]["type"]
     assert "null" in strict["properties"]["tags"]["type"]
 
@@ -5186,7 +4970,6 @@ def test_strictify_preserves_existing_behavior_for_valid_schemas():
 
     strict = _strictify_schema(schema)
 
-    # Existing behavior should be unchanged
     assert strict["required"] == sorted(["path", "timeout"])
     assert strict["properties"]["path"]["type"] == "string"
     assert strict["properties"]["timeout"]["type"] == ["integer", "null"]
@@ -5197,7 +4980,7 @@ def test_strictify_handles_auth_headers_scenario():
     schema = {
         "type": "object",
         "properties": {
-            "session": {}  # This was causing the OpenAI error
+            "session": {}
         },
         "required": ["session"]
     }
@@ -5209,9 +4992,6 @@ def test_strictify_handles_auth_headers_scenario():
     assert strict["properties"]["session"]["type"] == "object"
     assert strict["properties"]["session"]["additionalProperties"] is False
     assert "session" in strict["required"]
-
-
-# ===== From test_tool_collision_renaming.py =====
 
 
 from typing import Any
@@ -5404,7 +5184,6 @@ async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
     assert result and result[0]["output"] == "ok"
 
 
-
 # ===== From test_tool_worker_batching.py =====
 
 
@@ -5421,7 +5200,7 @@ class _DummyWorker2:
     def __init__(self) -> None:
         self.logger = logging.getLogger("tests.tool_worker")
         self.batches: list[list[str]] = []
-        self._pipe = self  # For _tool_worker_loop to call _pipe._execute_tool_batch
+        self._pipe = self
 
     async def _execute_tool_batch(self, calls, _context):
         self.batches.append([call.call.get("call_id") for call in calls])
@@ -5432,7 +5211,6 @@ class _DummyWorker2:
     def _build_tool_output(self, call, message, *, status="completed"):
         return {"call_id": call.get("call_id"), "status": status, "message": message}
 
-    # Use real implementations from ToolExecutor
     _tool_worker_loop = ToolExecutor._tool_worker_loop
     _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
     _args_reference_call = ToolExecutor._args_reference_call
@@ -5627,7 +5405,6 @@ async def test_execute_function_calls_rejects_empty_string_args_when_required() 
         await pipe.close()
 
 
-
 # ===== From test_tool_shutdown_timeout.py =====
 
 import asyncio
@@ -5671,8 +5448,6 @@ async def test_shutdown_tool_context_times_out_and_cancels(caplog, pipe_instance
     assert task.cancelled() or task.done()
     assert any("Tool shutdown exceeded" in r.getMessage() for r in caplog.records)
 
-
-# ===== From test_native_tools_translation.py =====
 
 import pytest
 
@@ -5747,11 +5522,6 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
     ]
 
 
-# ==============================================================================
-# Tests for Tool Backend Parity (OpenWebUI Integration)
-# ==============================================================================
-
-
 class TestToolCardHtmlFormat:
     """Tests for tool execution card HTML format."""
 
@@ -5769,7 +5539,6 @@ class TestToolCardHtmlFormat:
             f'<summary>Executing...</summary>\n</details>\n'
         )
 
-        # Verify format matches what streaming_core.py generates
         assert 'type="tool_calls"' in expected
         assert 'done="false"' in expected
         assert "Executing..." in expected
@@ -5792,7 +5561,6 @@ class TestToolCardHtmlFormat:
             f'<summary>Tool Executed</summary>\n</details>\n'
         )
 
-        # Verify format matches what streaming_core.py generates
         assert 'type="tool_calls"' in expected
         assert 'done="true"' in expected
         assert "Tool Executed" in expected
@@ -5954,7 +5722,6 @@ class TestOwuiImports:
             get_citation_source_from_tool_result,
         )
 
-        # Should be either the function or None (fallback)
         assert get_citation_source_from_tool_result is None or callable(
             get_citation_source_from_tool_result
         )
@@ -5965,7 +5732,6 @@ class TestOwuiImports:
             _owui_apply_source_context,
         )
 
-        # Should be either the function or None (fallback)
         assert _owui_apply_source_context is None or callable(
             _owui_apply_source_context
         )
@@ -5976,11 +5742,9 @@ class TestOwuiImports:
             _owui_process_tool_result,
         )
 
-        # Should be either the function or None (fallback)
         assert _owui_process_tool_result is None or callable(_owui_process_tool_result)
 
 
-# Helper to check if open_webui package is installed
 def _is_open_webui_installed():
     """Check if open_webui package is available."""
     try:
@@ -6016,7 +5780,6 @@ class TestSourceContextAdapterImports:
         source_path = Path(__file__).parent.parent / "open_webui_openrouter_pipe" / "streaming" / "streaming_core.py"
         source = source_path.read_text()
 
-        # Parse the AST to find import statements
         tree = ast.parse(source)
 
         # Track what we import from where
@@ -6073,7 +5836,6 @@ class TestApplySourceContextResponsesApi:
 
         from unittest.mock import MagicMock
 
-        # Create mock request context with RAG_TEMPLATE
         mock_request = MagicMock()
         mock_request.app.state.config.RAG_TEMPLATE = "Use the following context:\n{context}\n\nNow answer: {query}"
 
@@ -6091,7 +5853,6 @@ class TestApplySourceContextResponsesApi:
 
         result = await _apply_source_context_responses_api(messages, sources, user_message, request_context=mock_request)
 
-        # The result should contain citation instructions
         result_str = str(result)
         assert "<source" in result_str, "Result should contain <source> tags"
         assert "[id]" in result_str or "[1]" in result_str, (
@@ -6112,14 +5873,12 @@ class TestApplySourceContextResponsesApi:
 
         from unittest.mock import MagicMock
 
-        # Create mock request context with RAG_TEMPLATE
         mock_request = MagicMock()
         mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
 
-        # Responses API uses type="input_text", not type="text"
         messages = [
             {
-                "type": "message",  # REQUIRED: identifies as message item
+                "type": "message",
                 "role": "user",
                 "content": [{"type": "input_text", "text": "Search for news"}]
             }
@@ -6153,14 +5912,12 @@ class TestApplySourceContextResponsesApi:
 
         from unittest.mock import MagicMock
 
-        # Create mock request context with RAG_TEMPLATE
         mock_request = MagicMock()
         mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
 
-        # Chat Completions uses type="text"
         messages = [
             {
-                "type": "message",  # REQUIRED: identifies as message item
+                "type": "message",
                 "role": "user",
                 "content": [{"type": "text", "text": "Search query"}]
             }
@@ -6218,15 +5975,13 @@ class TestApplySourceContextResponsesApi:
         # Store original value
         original_owui_fn = sc._owui_apply_source_context
 
-        # Mock the OWUI function to return messages unchanged
         async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
-            return messages  # Return input unchanged
+            return messages
 
         try:
             # Patch the function
             sc._owui_apply_source_context = mock_apply_source_context
 
-            # Simulate input with messages + function_call + function_call_output
             input_items = [
                 {
                     "type": "message",
@@ -6264,7 +6019,6 @@ class TestApplySourceContextResponsesApi:
             function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
             function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
 
-            # Assert function_call items are preserved
             assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
             assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
             assert function_calls[0]["call_id"] == "call_test123"
@@ -6399,7 +6153,6 @@ class TestApplySourceContextResponsesApi:
 
         from unittest.mock import MagicMock
 
-        # Create mock request context with RAG_TEMPLATE
         mock_request = MagicMock()
         mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
 
@@ -6440,11 +6193,9 @@ class TestApplySourceContextResponsesApi:
 
         from unittest.mock import MagicMock
 
-        # Create mock request context with RAG_TEMPLATE
         mock_request = MagicMock()
         mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
 
-        # Simulate a real continuation request with messages + function_call + function_call_output
         input_items = [
             {
                 "type": "message",
@@ -6456,7 +6207,6 @@ class TestApplySourceContextResponsesApi:
                 "role": "user",
                 "content": [{"type": "input_text", "text": "Search for news"}]
             },
-            # These are the items that must be preserved
             {
                 "type": "function_call",
                 "call_id": "call_abc123",
@@ -6484,7 +6234,6 @@ class TestApplySourceContextResponsesApi:
         function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
         function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
 
-        # Assert function_call and function_call_output are preserved
         assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
         assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
 
@@ -6494,7 +6243,6 @@ class TestApplySourceContextResponsesApi:
         assert function_outputs[0]["call_id"] == "call_abc123"
         assert function_outputs[0]["output"] == '{"results": []}'
 
-        # Assert source context was injected into messages
         result_str = str(result)
         assert "<source" in result_str, "Source tags should be injected"
 
@@ -6505,6 +6253,47 @@ class TestChatMessagesToResponsesInput:
     This function converts Chat Completions messages back to Responses API input format.
     It's the reverse of _responses_input_to_chat_messages.
     """
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"type": "input_text", "text": "summarise this"},
+            {"type": "input_file", "filename": "report.pdf",
+             "file_data": "data:application/pdf;base64,AAAA"},
+            {"type": "input_image", "image_url": "https://example.test/i.png"},
+            {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+        ],
+    )
+    def test_every_content_block_survives_the_source_context_round_trip(self, block):
+        """Both legs, so a block dropped by either shows up here.
+
+        Source-context injection converts Responses -> Chat -> Responses on every
+        request carrying RAG or tool-result citations. The corruption check in
+        `_apply_source_context_responses_api` compares MESSAGE counts, so a block
+        vanishing from inside a message passes it. The `file` branch had no test at
+        all: inserting `continue` at the top of it left the whole suite green, and the
+        user's attachment disappears from the request whenever citations are injected.
+
+        Round-trip rather than four one-directional tests because the two legs live in
+        different modules and the property is that they agree — tested apart, both can
+        drift together.
+        """
+        from open_webui_openrouter_pipe.api.transforms import _responses_input_to_chat_messages
+        from open_webui_openrouter_pipe.streaming.streaming_core import (
+            _chat_messages_to_responses_input,
+        )
+
+        items = [{"type": "message", "role": "user", "content": [block]}]
+        chat = _responses_input_to_chat_messages(items, allow_unknown_fields=True)
+        back = _chat_messages_to_responses_input(chat)
+
+        assert back and back[0].get("content"), (
+            f"a {block['type']} block was dropped entirely by the round trip"
+        )
+        assert back[0]["content"][0] == block, (
+            f"{block['type']} did not survive: sent {block!r}, got back "
+            f"{back[0]['content'][0]!r}"
+        )
 
     def test_string_content_converts_to_input_text(self):
         """Test that string content is converted to input_text blocks."""
@@ -6681,8 +6470,8 @@ class TestChatMessagesToResponsesInput:
             {
                 "role": "user",
                 "content": "Hello",
-                "joe_sucks": True,  # Unknown field
-                "future_field": {"nested": "data"},  # Another unknown field
+                "joe_sucks": True,
+                "future_field": {"nested": "data"},
             }
         ]
 
@@ -6708,8 +6497,8 @@ class TestChatMessagesToResponsesInput:
                     {
                         "type": "text",
                         "text": "Hello",
-                        "unknown_block_field": "should survive",  # Unknown field
-                        "cache_control": {"type": "ephemeral"},  # Known field
+                        "unknown_block_field": "should survive",
+                        "cache_control": {"type": "ephemeral"},
                     }
                 ]
             }
@@ -6718,10 +6507,10 @@ class TestChatMessagesToResponsesInput:
         result = _chat_messages_to_responses_input(messages)
 
         block = result[0]["content"][0]
-        assert block["type"] == "input_text"  # Transformed
-        assert block["text"] == "Hello"  # Preserved
-        assert block.get("cache_control") == {"type": "ephemeral"}  # Known field preserved
-        assert block.get("unknown_block_field") == "should survive"  # Unknown field preserved
+        assert block["type"] == "input_text"
+        assert block["text"] == "Hello"
+        assert block.get("cache_control") == {"type": "ephemeral"}
+        assert block.get("unknown_block_field") == "should survive"
 
 
 class TestProcessToolResultSafe:
@@ -6787,7 +6576,6 @@ class TestProcessToolResultSafe:
             context=None,
         )
 
-        # str() of a dict produces repr
         assert "status" in text
         assert "success" in text
         assert files == []
@@ -6803,7 +6591,6 @@ class TestProcessToolResultSafe:
         logger_mock = MagicMock()
         executor = ToolExecutor(pipe_mock, logger_mock)
 
-        # Create an object that raises on str()
         class BadResult:
             def __str__(self):
                 raise ValueError("Cannot stringify")
@@ -6815,7 +6602,6 @@ class TestProcessToolResultSafe:
             context=None,
         )
 
-        # Should not crash, returns type info
         assert "BadResult" in text
         assert files == []
         assert embeds == []
@@ -6973,3 +6759,107 @@ async def test_empty_string_args_coerced_for_optional_only_tool():
             pipe._TOOL_CONTEXT.reset(token)
     finally:
         await pipe.close()
+
+
+def test_server_tool_cards_report_the_tools_own_outcome():
+    """A server tool reports its own failure; the card must not overwrite it.
+
+    web_fetch, advisor and subagent each render the tool's error string into the card
+    body. Hardcoding "completed" labelled those as calls that worked, and Open WebUI
+    appends the card verbatim onto the persisted assistant message.
+    """
+    from open_webui_openrouter_pipe.streaming.streaming_core import _server_tool_status as status_of
+
+    assert status_of({"status": "failed"}) == "incomplete"
+    assert status_of({"status": "error"}) == "incomplete"
+    assert status_of({"status": "error", "message": "boom"}) == "incomplete"
+    assert status_of({"status": "some_future_failure"}) == "incomplete"
+
+    assert status_of({"status": "generating"}) == "in_progress"
+    assert status_of({"status": "in_progress"}) == "in_progress"
+    assert status_of({"status": "failed"}) == "incomplete"
+
+    assert status_of({"error": "403 Forbidden"}) == "incomplete"
+    assert status_of({"httpStatus": 404}) == "incomplete"
+    assert status_of({"httpStatus": "404"}) == "incomplete", "string codes count too"
+    assert status_of({"httpStatus": "gateway-timeout"}) == "incomplete", (
+        "an httpStatus that will not parse as an integer was carded as a completed "
+        "call. Every sibling arm of this branch was covered and this one was not, so "
+        "returning 'completed' from the except left the suite green -- and Open WebUI "
+        "appends the card verbatim onto the persisted assistant message."
+    )
+    assert status_of({"httpStatus": {}}) == "incomplete", (
+        "a non-scalar httpStatus was carded as completed"
+    )
+    assert status_of({"httpStatus": None}) == "completed", (
+        "an absent httpStatus is not a failure; without this the check above could be "
+        "satisfied by treating every httpStatus as unreadable"
+    )
+    assert status_of({"status": "incomplete"}) == "incomplete"
+
+    assert status_of({"status": "in_progress"}) == "in_progress"
+    assert status_of({"httpStatus": 200}) == "completed"
+    assert status_of({"status": "completed"}) == "completed"
+    assert status_of({}) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
+    pipe_instance_async, monkeypatch, caplog
+):
+    """This runs once per tool call, so an unlatched warning floods the operator's log.
+
+    The only guard was `test_perf_counter_cooldowns_are_seeded_below_zero`, an AST scan
+    asserting the seed is a negative literal. It says nothing about the comparison:
+    changing `>= 300.0` to `>= -1.0` — which preserves the shape the scan looks for —
+    left all 5785 tests green, and nothing in the suite referenced the cooldown or its
+    message.
+
+    Driven through `_process_tool_result_safe` with Open WebUI's seam made to raise, so
+    what is asserted is the records the site emitted, not the presence of a cooldown
+    expression in the source.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.tools import tool_executor as te
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("owui cannot render this")
+
+    monkeypatch.setattr(te, "_owui_process_tool_result", _boom)
+    executor = pipe_instance_async._ensure_tool_executor()
+    executor._owui_result_warn_ts.clear()
+    context = cast(Any, SimpleNamespace(user={"id": "u1"}, request=None, metadata={}))
+
+    def _warnings():
+        return [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING and "could not process the result" in r.getMessage()
+        ]
+
+    with caplog.at_level(logging.DEBUG, logger=executor.logger.name):
+        text = ""
+        for _ in range(5):
+            text, _files, _embeds = await executor._process_tool_result_safe(
+                "lookup", "function", {"raw": "payload"}, context
+            )
+        after_five = list(_warnings())
+        await executor._process_tool_result_safe(
+            "other_tool", "function", {"raw": "payload"}, context
+        )
+        after_other = list(_warnings())
+
+    assert text, "the fallback rendering was lost; the model receives nothing for this call"
+    assert len(after_five) == 1, (
+        f"five unprocessable results for one tool produced {len(after_five)} warnings "
+        "with tracebacks. Zero means the operator never learns Open WebUI is silently "
+        "degrading every result; more than one floods the log per tool call."
+    )
+    assert after_five[0].exc_info is not None, (
+        "the report carries no traceback, so it says processing failed without saying why"
+    )
+    assert len(after_other) == 2, (
+        "a different tool failing must still get its own first report; the cooldown "
+        "keys on tool name"
+    )

@@ -111,7 +111,6 @@ class TestDowngradeUserFacingMessages:
         must resolve to their curated message, not fall back to the generic one."""
         msg = _user_facing_downgrade_message("prior_video_index_0_unresolvable")
         assert msg == "Referenced previous video not found."
-        # trailing-index form still works (no regression)
         msg2 = _user_facing_downgrade_message("prior_video_index_12_unresolvable")
         assert msg2 == "Referenced previous video not found."
 

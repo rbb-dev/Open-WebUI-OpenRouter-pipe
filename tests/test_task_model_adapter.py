@@ -289,106 +289,24 @@ async def test_task_model_request_session_none(pipe_instance_async):
         )
 
 
-# ============================================================================
-# Test _run_task_model_request - Lines 111-114 (USE_MODEL_MAX_OUTPUT_TOKENS)
-# ============================================================================
+# The two tests that lived here drove `_run_task_model_request` directly and asserted
+# the adapter's own copy of the max_output_tokens rule. That copy was unreachable: the
+# orchestrator fills `responses_body.max_output_tokens` before it dispatches to the task
+# adapter in the same call, so `task_body.get("max_output_tokens") is None` was never
+# true in production. The copy is deleted; the rule is asserted on the outbound payload
+# of a real task request in test_max_tokens_survives.py, which drives Pipe.pipe().
 
 
 @pytest.mark.asyncio
-async def test_task_model_request_use_model_max_output_tokens(pipe_instance_async):
-    """Test _run_task_model_request applies max_output_tokens from model spec (lines 111-114)."""
-    pipe = pipe_instance_async
-    pipe.valves.API_KEY = EncryptedStr("test-api-key")
-    pipe.valves.USE_MODEL_MAX_OUTPUT_TOKENS = True
+async def test_task_model_request_keeps_a_caller_set_max_output_tokens(pipe_instance_async):
+    """A limit on the request survives the valve being off.
 
-    # Set up model spec with max_completion_tokens
-    ModelFamily.set_dynamic_specs({
-        "openai.gpt-4o-mini": {
-            "features": set(),
-            "capabilities": {},
-            "max_completion_tokens": 4096,
-            "supported_parameters": frozenset(),
-        }
-    })
-
-    captured_payloads: list[dict] = []
-    callback = _make_callback(captured_payloads, "Generated Title")
-
-    session = pipe._create_http_session(pipe.valves)
-
-    try:
-        with aioresponses() as mock_http:
-            mock_http.post(
-                "https://openrouter.ai/api/v1/responses",
-                callback=callback,
-                repeat=True,
-            )
-
-            adapter = TaskModelAdapter(pipe, logging.getLogger(__name__))
-            result = await adapter._run_task_model_request(
-                {"model": "openai/gpt-4o-mini", "input": "test"},
-                pipe.valves,
-                session=session,
-            )
-
-            assert result == "Generated Title"
-
-            # Check that max_output_tokens was set
-            assert len(captured_payloads) >= 1
-            assert captured_payloads[0].get("max_output_tokens") == 4096
-    finally:
-        await session.close()
-
-
-@pytest.mark.asyncio
-async def test_task_model_request_use_model_max_output_tokens_already_set(pipe_instance_async):
-    """Test _run_task_model_request doesn't override explicit max_output_tokens (lines 111-114)."""
-    pipe = pipe_instance_async
-    pipe.valves.API_KEY = EncryptedStr("test-api-key")
-    pipe.valves.USE_MODEL_MAX_OUTPUT_TOKENS = True
-
-    # Set up model spec with max_completion_tokens
-    ModelFamily.set_dynamic_specs({
-        "openai.gpt-4o-mini": {
-            "features": set(),
-            "capabilities": {},
-            "max_completion_tokens": 4096,
-            "supported_parameters": frozenset(),
-        }
-    })
-
-    captured_payloads: list[dict] = []
-    callback = _make_callback(captured_payloads, "Generated Title")
-
-    session = pipe._create_http_session(pipe.valves)
-
-    try:
-        with aioresponses() as mock_http:
-            mock_http.post(
-                "https://openrouter.ai/api/v1/responses",
-                callback=callback,
-                repeat=True,
-            )
-
-            adapter = TaskModelAdapter(pipe, logging.getLogger(__name__))
-            result = await adapter._run_task_model_request(
-                {"model": "openai/gpt-4o-mini", "input": "test", "max_output_tokens": 1000},
-                pipe.valves,
-                session=session,
-            )
-
-            assert result == "Generated Title"
-
-            # Check that explicit max_output_tokens was preserved
-            assert len(captured_payloads) >= 1
-            assert captured_payloads[0].get("max_output_tokens") == 1000
-    finally:
-        await session.close()
-
-
-@pytest.mark.asyncio
-async def test_task_model_request_use_model_max_output_tokens_disabled(pipe_instance_async):
-    """Test _run_task_model_request removes max_output_tokens when disabled (lines 116)."""
+    This asserted the opposite -- "it should be removed" -- and pinned a bug.
+    `max_tokens` is the caller's parameter; `USE_MODEL_MAX_OUTPUT_TOKENS` is a valve
+    about whether the pipe supplies the PROVIDER's advertised maximum when the request
+    carries none. Turning the valve off means "send no limit of my own", not "delete the
+    one you were given".
+    """
     pipe = pipe_instance_async
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     pipe.valves.USE_MODEL_MAX_OUTPUT_TOKENS = False
@@ -407,7 +325,6 @@ async def test_task_model_request_use_model_max_output_tokens_disabled(pipe_inst
             )
 
             adapter = TaskModelAdapter(pipe, logging.getLogger(__name__))
-            # Include max_output_tokens in body - it should be removed
             result = await adapter._run_task_model_request(
                 {"model": "openai/gpt-4o-mini", "input": "test", "max_output_tokens": 1000},
                 pipe.valves,
@@ -416,9 +333,12 @@ async def test_task_model_request_use_model_max_output_tokens_disabled(pipe_inst
 
             assert result == "Generated Title"
 
-            # max_output_tokens should be removed when valve is disabled
             assert len(captured_payloads) >= 1
-            assert "max_output_tokens" not in captured_payloads[0]
+            assert captured_payloads[0].get("max_output_tokens") == 1000, (
+                "the caller asked for max_output_tokens=1000 and the request went out "
+                f"with {captured_payloads[0].get('max_output_tokens')!r}. The valve "
+                "controls the pipe's automatic default, not the caller's limit."
+            )
     finally:
         await session.close()
 

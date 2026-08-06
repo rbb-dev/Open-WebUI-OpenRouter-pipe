@@ -1,53 +1,46 @@
-# =============================================================================
-# BEGIN LOCAL BACKPORT - anyio #1111 workaround
-# -----------------------------------------------------------------------------
-# Symptom: a completed asyncio.Task left in CancelScope._tasks causes
-# anyio._backends._asyncio.CancelScope._deliver_cancellation to spin forever
-# via call_soon, locking the event loop at 100% CPU until the worker is
-# restarted. In production this is triggered when OWUI's MCPClient.disconnect()
-# suppresses the cross-task RuntimeError from anyio - the scope is left half-
-# exited with one done task lingering in _tasks, which feeds the spin.
-#
-# Upstream fix: anyio PR #1217 ("Fixed 100% CPU spin on cancel scope misuse",
-# Fixes #1111), released in anyio 4.14.2 on 2026-07-12.
-#   https://github.com/agronholm/anyio/issues/1111
-#   https://github.com/agronholm/anyio/pull/1217
-#
-# How this block works: at bundle exec time, before any of our pipe code runs,
-# we install a wrapper around CancelScope._deliver_cancellation. The wrapper
-# delegates to the original method, then checks: if all remaining tasks in the
-# scope are done AND the original just scheduled another _deliver_cancellation
-# iteration via call_soon, cancel that reschedule. This breaks the spin loop
-# without mutating self._tasks (mutating it would trip anyio's task_done
-# bookkeeping, which expects done tasks to remain in _tasks until task_done
-# removes them itself). Python's attribute lookup means any existing
-# CancelScope picks up the patched method on its next invocation, so
-# already-spinning scopes recover within one tick.
-#
-# Version gating: applies on any anyio older than the fixed release (< 4.14.2)
-# and stands down on 4.14.2 and later, which already contain the fix.
-#
-# Removal: delete this entire BEGIN..END block once the deployment can require
-# anyio >= 4.14.2.
-# =============================================================================
 def _apply_anyio_1111_workaround() -> None:
+    import contextlib as _contextlib
     import logging as _logging
     import sys as _sys
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import version as _pkg_version
 
-    _log = _logging.getLogger("open_webui_openrouter_pipe.anyio_1111_workaround")
+    def _pipe_logger():
+        """Resolve the logger under whatever root the pipe wires its handlers onto.
+
+        This file is emitted into the bundle HEAD in both bundle shapes, but the two
+        disagree about where the package lives: the flat bundle collapses everything
+        into the host module, while the compressed bundle keeps the real dotted names.
+        A name fixed at import time is therefore wrong in one shape or the other --
+        the literal orphaned every record in flat mode, and deriving it from __name__
+        orphaned them in compressed mode.
+
+        Resolving per call follows the package once it exists. It cannot help the
+        apply-time messages below: the head calls this function before importing any
+        pipe module, so the package is not yet in sys.modules and the fallback wins.
+        Those records also predate Pipe wiring its handlers, so they reach the host's
+        root handlers either way -- the name matters only for the cleanup warning at
+        the bottom, which fires long afterwards and re-resolves.
+        """
+        module = _sys.modules.get("open_webui_openrouter_pipe")
+        root = getattr(module, "__name__", None) or __name__
+        return _logging.getLogger(f"{root.split('.')[0]}.anyio_1111_workaround")
+
+    _logger = _pipe_logger()
 
     _FIXED_IN = "4.14.2"
     _MARKER = "_anyio_1111_workaround_applied"
 
     if "pytest" in _sys.modules or "_pytest" in _sys.modules:
-        _log.debug("anyio #1111 workaround skipped: running under pytest")
+        _logger.debug("anyio #1111 workaround skipped: running under pytest")
         return
 
     try:
         ver = _pkg_version("anyio")
-    except PackageNotFoundError:
-        _log.warning("anyio #1111 workaround not applied: anyio not installed")
+    except Exception:
+        _logger.warning(
+            "anyio #1111 workaround not applied: could not read anyio's version",
+            exc_info=True,
+        )
         return
 
     def _before_fix(installed: str, fixed: str) -> bool:
@@ -70,7 +63,7 @@ def _apply_anyio_1111_workaround() -> None:
         return a < b
 
     if not _before_fix(ver, _FIXED_IN):
-        _log.debug(
+        _logger.debug(
             "anyio #1111 workaround not applied: anyio %s already includes the "
             "fix (>= %s, PR #1217)",
             ver,
@@ -81,18 +74,19 @@ def _apply_anyio_1111_workaround() -> None:
     try:
         from anyio._backends._asyncio import CancelScope
     except Exception as exc:
-        _log.warning(
+        _logger.warning(
             "anyio #1111 workaround not applied: cannot import CancelScope (%r)",
             exc,
+            exc_info=True,
         )
         return
 
     original = getattr(CancelScope, "_deliver_cancellation", None)
     if original is None:
-        _log.warning("anyio #1111 workaround not applied: target method missing")
+        _logger.warning("anyio #1111 workaround not applied: target method missing")
         return
     if getattr(original, _MARKER, False):
-        _log.debug("anyio #1111 workaround already applied in this process")
+        _logger.debug("anyio #1111 workaround already applied in this process")
         return
 
     def _patched_deliver_cancellation(self, origin):
@@ -105,13 +99,28 @@ def _apply_anyio_1111_workaround() -> None:
                     handle.cancel()
                     self._cancel_handle = None
         except Exception:
-            pass
+            # Inlined rather than calling core.warn_latch. Not because of ordering --
+            # this runs when anyio delivers a cancellation, long after load -- but
+            # because this file is the BUNDLE HEAD, and bundle_v2's validator rejects
+            # any absolute internal import surviving there ("leftover absolute internal
+            # import"). The census in test_swallowed_failure_diagnostics.py knows about
+            # this one site by name and fails if a second appears.
+            _seen = getattr(_patched_deliver_cancellation, "_cleanup_failure_logged", False)
+            _patched_deliver_cancellation._cleanup_failure_logged = True  # type: ignore[attr-defined]
+            with _contextlib.suppress(Exception):
+                _cleanup_logger = _pipe_logger()
+                _cleanup_logger.log(
+                    _logging.DEBUG if _seen else _logging.WARNING,
+                    "anyio #1111 workaround: cancel-handle cleanup failed; the "
+                    "workaround may no longer be effective",
+                    exc_info=True,
+                )
         return result
 
-    _patched_deliver_cancellation._anyio_1111_workaround_applied = True  # type: ignore[attr-defined]
+    setattr(_patched_deliver_cancellation, _MARKER, True)
     CancelScope._deliver_cancellation = _patched_deliver_cancellation  # type: ignore[method-assign]
 
-    _log.warning(
+    _logger.warning(
         "anyio #1111 workaround APPLIED for anyio %s. Fixed upstream in anyio "
         "%s (PR #1217) - upgrade anyio to >= %s and delete the workaround block "
         "in scripts/anyio_1111_workaround.py.",
@@ -123,6 +132,3 @@ def _apply_anyio_1111_workaround() -> None:
 
 _apply_anyio_1111_workaround()
 del _apply_anyio_1111_workaround
-# =============================================================================
-# END LOCAL BACKPORT - anyio #1111 workaround
-# =============================================================================

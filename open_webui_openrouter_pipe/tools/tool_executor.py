@@ -19,6 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import ResponsesBody
 from ..core.timing_logger import timed, timing_mark
+from ..core.utils import TOOL_CALL_STATUSES
+from ..core.warn_latch import warn_level
+
+_OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
@@ -28,19 +32,30 @@ if TYPE_CHECKING:
 
 from ..streaming.event_emitter import EventEmitter
 
-# Import process_tool_result from OpenWebUI (>= 0.7.0)
-# Falls back to None if not available - we handle gracefully
 try:
     from open_webui.utils.middleware import (
         process_tool_result as _owui_process_tool_result,
     )
 except ImportError:
     _owui_process_tool_result = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_process_tool_result = None  # type: ignore[assignment]
 
-# Import Users model for dict→UserModel conversion (required by process_tool_result)
 try:
     from open_webui.models.users import Users as _Users
 except ImportError:
+    _Users = None  # type: ignore[assignment,misc]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.users failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     _Users = None  # type: ignore[assignment,misc]
 
 @dataclass(slots=True)
@@ -65,7 +80,6 @@ class _ToolExecutionContext:
     user_id: str
     event_emitter: EventEmitter | None
     batch_cap: int
-    # Phase 3: Add request/user/metadata for process_tool_result() integration
     request: Request | None = None
     user: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
@@ -89,10 +103,9 @@ class ToolExecutor:
         """
         self._pipe = pipe
         self.logger = logger
+        self._owui_result_warn_ts: dict[str, float] = {}
 
-    # ------------------------------------------------------------------
     # Argument parsing helpers
-    # ------------------------------------------------------------------
 
     def _is_batchable_tool_call(self, args: dict[str, Any]) -> bool:
         """Check if a tool call can be batched or must run sequentially.
@@ -125,10 +138,6 @@ class ToolExecutor:
                 parsed = json.loads(raw_args)
             except json.JSONDecodeError as exc:
                 raise ValueError("Unable to parse tool arguments") from exc
-            # json.loads can yield null/scalar/list; the contract (and every
-            # caller, e.g. _is_batchable_tool_call) requires a dict. Reject
-            # non-objects here so the caller's handler turns it into a clean
-            # tool error instead of a TypeError that poisons the whole batch.
             if not isinstance(parsed, dict):
                 raise ValueError(  # noqa: TRY004 - the caller catches ValueError to build a clean tool error
                     f"Tool arguments must be a JSON object, got {type(parsed).__name__}"
@@ -170,10 +179,8 @@ class ToolExecutor:
         embeds: list[str] = []
 
         try:
-            # If OpenWebUI's process_tool_result is available and we have context, use it
             if _owui_process_tool_result is not None and context is not None:
                 try:
-                    # Convert user dict to UserModel if needed (OWUI uses attribute access)
                     user_obj = context.user
                     if isinstance(user_obj, dict) and _Users is not None:
                         user_id = user_obj.get("id")
@@ -188,28 +195,30 @@ class ToolExecutor:
                         metadata=context.metadata,
                         user=user_obj,
                     )
-                    # process_tool_result returns stringified result
                     output_text = "" if processed_result is None else str(processed_result)
                     timing_mark(f"process_result:{tool_name}:owui_done")
                     return output_text, files, embeds
                 except Exception as proc_exc:
-                    # OpenWebUI's function failed - fall back to simple conversion
-                    self.logger.warning(
-                        "Open WebUI could not process the result of '%s'; the model will "
-                        "receive a plain string rendering of the raw payload instead: %s",
+                    self.logger.log(
+                        warn_level(
+                            self._owui_result_warn_ts,
+                            tool_name,
+                            cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S,
+                        ),
+                        "Open WebUI could not process the result of '%s'; the model "
+                        "will receive a plain string rendering of the raw payload "
+                        "instead: %s",
                         tool_name,
                         proc_exc,
                         exc_info=True,
                     )
                     # Continue to fallback below
 
-            # Fallback: simple str() conversion (always works, never crashes)
             output_text = "" if raw_result is None else str(raw_result)
             timing_mark(f"process_result:{tool_name}:fallback_done")
             return output_text, files, embeds
 
         except Exception as exc:
-            # Ultimate safety net - should never reach here but guarantees no crash
             self.logger.warning(
                 "Unexpected error processing result for '%s': %s",
                 tool_name,
@@ -295,8 +304,6 @@ class ToolExecutor:
             try:
                 raw_args_value = call.get("arguments")
                 if isinstance(raw_args_value, str) and not raw_args_value.strip():
-                    # Avoid silently converting empty-string args to `{}` when the tool declares
-                    # required parameters (common OpenRouter `/responses` streaming quirk).
                     required: list[str] = []
                     spec = tool_cfg.get("spec")
                     if isinstance(spec, dict):
@@ -428,7 +435,6 @@ class ToolExecutor:
             if not isinstance(tool_servers, list) or not tool_servers:
                 return {}, []
             if event_call is None:
-                # No Socket.IO bridge means direct tools cannot run; don't advertise them.
                 return {}, []
 
             for server_idx, server in enumerate(tool_servers):
@@ -437,14 +443,13 @@ class ToolExecutor:
                         continue
                     specs = server.get("specs")
                     if not isinstance(specs, list) or not specs:
-                        # Best-effort fallback: derive specs from raw OpenAPI if present.
                         openapi = server.get("openapi")
                         if isinstance(openapi, dict):
                             try:
                                 from open_webui.utils.tools import (
                                     convert_openapi_to_tool_payload,  # type: ignore
                                 )
-                            except ImportError:
+                            except Exception:
                                 self.logger.warning(
                                     "Open WebUI's OpenAPI tool converter is unavailable; "
                                     "direct tool servers cannot be advertised to the model",
@@ -497,6 +502,15 @@ class ToolExecutor:
                                 _event_emitter: EventEmitter | None = event_emitter,
                                 **kwargs,
                             ) -> Any:
+                                if _event_call is None:
+                                    # Precondition, not a late rescue: without the host's
+                                    # __event_call__ there is no channel to the tool
+                                    # server, and `await None(payload)` would hand the
+                                    # model "'NoneType' object is not callable".
+                                    return [
+                                        {"error": "Direct tool execution unavailable."},
+                                        None,
+                                    ]
                                 try:
                                     filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
                                     session_id = _metadata.get("session_id")
@@ -511,11 +525,8 @@ class ToolExecutor:
                                             "session_id": session_id,
                                         },
                                     }
-                                    if _event_call is None:
-                                        return [{"error": "Direct tool execution unavailable."}, None]
                                     return await _event_call(payload)  # type: ignore[misc]
                                 except Exception as exc:
-                                    # Never let tool failures crash the pipe/session.
                                     self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
                                     with contextlib.suppress(Exception):
                                         await self._pipe._event_emitter_handler._emit_notification(
@@ -538,7 +549,6 @@ class ToolExecutor:
                             self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
                             continue
                 except Exception:
-                    # Skip malformed server entries safely.
                     self.logger.debug("Skipping malformed direct tool server entry", exc_info=True)
                     continue
 
@@ -583,7 +593,6 @@ class ToolExecutor:
                 }
             )
         except Exception:
-            # Event emitter failures (client disconnect, etc.) shouldn't stop pipe
             self.logger.debug("Failed to emit breaker notification", exc_info=True)
 
     def _build_tool_output(
@@ -608,11 +617,7 @@ class ToolExecutor:
             Responses API compatible tool output item with optional files/embeds
         """
         call_id = call.get("call_id") or generate_item_id()
-        # OpenRouter Responses schema does not accept arbitrary status values (e.g. "failed")
-        # for tool items in `input`. Encode failures in the output payload and keep status in
-        # the accepted enum for compatibility.
-        allowed_statuses = {"completed", "incomplete", "in_progress"}
-        normalized_status = status if status in allowed_statuses else "incomplete"
+        normalized_status = status if status in TOOL_CALL_STATUSES else "incomplete"
         result: dict[str, Any] = {
             "type": "function_call_output",
             "id": generate_item_id(),
@@ -620,16 +625,12 @@ class ToolExecutor:
             "call_id": call_id,
             "output": output_text,
         }
-        # Include files/embeds if provided (for tool card HTML attributes)
         if files:
             result["files"] = files
         if embeds:
             result["embeds"] = embeds
         return result
 
-    # ------------------------------------------------------------------
-    # Tool worker loop and batching helpers
-    # ------------------------------------------------------------------
 
     @timed
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
@@ -688,7 +689,6 @@ class ToolExecutor:
                     if flag:
                         context.queue.task_done()
         finally:
-            # Resolve remaining futures if the worker is stopping unexpectedly
             while pending:
                 leftover, from_queue = pending.pop(0)
                 if from_queue:

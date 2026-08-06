@@ -33,6 +33,7 @@ from ...core.errors import (
 )
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
+from ...core.warn_latch import warn_level
 from ...models.registry import normalize_model_id_dotted
 from ...requests.debug import (
     _debug_print_error_response,
@@ -58,6 +59,9 @@ from .responses_adapter import _should_retry_stream
 
 if TYPE_CHECKING:
     from ...pipe import Pipe
+
+_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_warned_chat_chunk_parse: dict[str, float] = {}
 
 
 class ChatCompletionsAdapter:
@@ -338,11 +342,19 @@ class ChatCompletionsAdapter:
                                     break
                                 try:
                                     chunk_obj = json.loads(data_blob.decode("utf-8"))
-                                except (RecursionError, UnicodeDecodeError, ValueError):
+                                except (RecursionError, UnicodeDecodeError, ValueError) as exc:
+                                    self.logger.log(
+                                        warn_level(
+                                            _warned_chat_chunk_parse,
+                                            "chunk_parse",
+                                            cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
+                                        ),
+                                        "Chunk parse failed; the affected event is "
+                                        "discarded: %s",
+                                        exc,
+                                        exc_info=True,
+                                    )
                                     continue
-                                # First decoded event: the yields and accumulator
-                                # updates below make a retry unsafe (it would
-                                # re-stream and duplicate delivered output).
                                 emitted_any = True
 
                                 if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
@@ -893,9 +905,7 @@ class ChatCompletionsAdapter:
             raise
 
 
-    # ======================================================================
     # Tool Context Shutdown
-    # ======================================================================
 
     @staticmethod
     @timed

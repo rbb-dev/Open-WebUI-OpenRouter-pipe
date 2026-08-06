@@ -9,7 +9,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from ...core.warn_latch import warn_level
 from ...storage.persistence import _db_session
+from .usage_store import epoch_from_usage_ts, usage_ts_from_epoch
 
 USAGE_RANGES: dict[str, tuple[int, int]] = {
     "1h": (3600, 60),
@@ -26,7 +28,7 @@ _UQ_MEMO_MAX = 256
 
 logger = logging.getLogger(__name__)
 
-_warned_row_timestamps: set[bool] = set()
+_warned_row_timestamps: set[str] = set()
 
 
 def _new_acc() -> dict[str, float]:
@@ -100,8 +102,6 @@ def query_usage_stats(
     name_fn: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Synchronous aggregation — call inside the store's DB executor."""
-    import datetime
-
     span, bucket_s = USAGE_RANGES[range_key]
     start = now - span
     prev_start = start - span
@@ -121,7 +121,7 @@ def query_usage_stats(
 
         rows = (
             session.query(model)
-            .filter(model.ts >= datetime.datetime.fromtimestamp(prev_start, tz=datetime.UTC).astimezone().replace(tzinfo=None))
+            .filter(model.ts >= usage_ts_from_epoch(prev_start))
             .all()
         )
 
@@ -133,15 +133,15 @@ def query_usage_stats(
 
     for r in rows:
         try:
-            ts = r.ts.timestamp()
+            ts = epoch_from_usage_ts(r.ts)
         except (AttributeError, OSError, OverflowError, ValueError):
-            if not _warned_row_timestamps:
-                _warned_row_timestamps.add(True)
-                logger.warning(
-                    "usage query: a stored row has an unusable timestamp and is being "
-                    "excluded; reported totals will be short",
-                    exc_info=True,
-                )
+            _level = warn_level(_warned_row_timestamps, "unusable_row_timestamp")
+            logger.log(
+                _level,
+                "usage query: a stored row has an unusable timestamp and is being "
+                "excluded; reported totals will be short",
+                exc_info=True,
+            )
             continue
         is_task = (r.kind or "chat") == "task"
         if is_task and not include_tasks:
@@ -220,7 +220,7 @@ def query_usage_stats(
 
     since = None
     try:
-        since = int(min_ts.timestamp()) if min_ts is not None else None
+        since = int(epoch_from_usage_ts(min_ts)) if min_ts is not None else None
     except (AttributeError, OSError, OverflowError, ValueError):
         logger.warning(
             "usage query: could not derive the earliest retained timestamp; "

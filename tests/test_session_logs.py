@@ -158,7 +158,14 @@ def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatc
     assert called["started"] is False
 
 
-def test_session_log_buffer_captures_debug_even_when_console_level_warning(capsys) -> None:
+def test_session_log_buffer_captures_debug_even_when_console_level_warning() -> None:
+    """The buffer keeps DEBUG; the console honours the per-request threshold.
+
+    Observed through a handler attached to the host's root logger rather than through
+    capsys, because the pipe no longer writes to stdout itself -- it forwards records to
+    whatever the host configured, and that forwarding is where the threshold is applied.
+    Asserting on stdout measured the private write that was removed, not the rule.
+    """
     request_id = "req-test-debug-capture"
     tokens = [
         (SessionLogger.request_id, SessionLogger.request_id.set(request_id)),
@@ -166,20 +173,35 @@ def test_session_log_buffer_captures_debug_even_when_console_level_warning(capsy
         (SessionLogger.user_id, SessionLogger.user_id.set("user-1")),
         (SessionLogger.log_level, SessionLogger.log_level.set(30)),  # WARNING
     ]
+    host_records: list[logging.LogRecord] = []
+
+    class _Recording(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            host_records.append(record)
+
+    recorder = _Recording()
+    root = logging.getLogger()
+    root.addHandler(recorder)
     try:
         logger = SessionLogger.get_logger("session-log-test")
         logger.debug("DEBUG_ONLY_TOKEN")
         logger.warning("WARNING_TOKEN")
     finally:
+        root.removeHandler(recorder)
         for var, token in reversed(tokens):
             try:
                 var.reset(token)
             except Exception:
                 pass
 
-    stdout = capsys.readouterr().out
-    assert "WARNING_TOKEN" in stdout
-    assert "DEBUG_ONLY_TOKEN" not in stdout
+    forwarded = " ".join(r.getMessage() for r in host_records)
+    assert "WARNING_TOKEN" in forwarded, (
+        "the warning never reached the host's handler, so an operator sees nothing"
+    )
+    assert "DEBUG_ONLY_TOKEN" not in forwarded, (
+        "a DEBUG record reached the host while the per-request level was WARNING; the "
+        "threshold is what stops a debug session flooding the operator's log"
+    )
 
     lines = list(SessionLogger.logs.get(request_id, []))
     assert any("DEBUG_ONLY_TOKEN" in (line.get("message") or "") for line in lines if isinstance(line, dict))
@@ -472,7 +494,6 @@ class TestConvertJsonlToInternal:
         }
         result = pipe._session_log_manager._convert_jsonl_to_internal(evt)
 
-        # created should be unchanged, ts should remain
         assert result["created"] == 1234567890.0
         assert "ts" in result  # ts is NOT removed when created exists
 
@@ -1041,7 +1062,6 @@ def test_text_format_archive_still_contains_jsonl_and_is_mergeable(tmp_path, pip
         assert "logs.txt" in names, "human-readable text log should still be present"
         assert "logs.jsonl" in names, "canonical jsonl must be written even in text mode"
 
-    # read_archive_events must recover the events so re-assembly can merge them
     settings = (str(tmp_path), password, "lzma", None)
     events = pipe._session_log_manager.read_archive_events(out_path, settings)
     assert any(e.get("message") == "hello-text-mode" for e in events)

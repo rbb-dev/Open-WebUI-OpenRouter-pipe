@@ -181,9 +181,7 @@ def test_send_session_id_and_sticky_coexist(monkeypatch):
         owui_metadata={"session_id": "raw-sess", "chat_id": _STICKY_CHAT_ID},
         owui_user_id="u1",
     )
-    # top-level session_id is the cache pin (hashed chat_id) — never the raw session
     assert payload.get("session_id") == _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)
-    # the raw OWUI session goes to metadata only (observability)
     assert payload["metadata"]["session_id"] == "raw-sess"
 
 
@@ -203,7 +201,6 @@ def test_invalid_metadata_session_dropped_but_sticky_pin_remains(monkeypatch):
         owui_metadata={"session_id": "   ", "chat_id": _STICKY_CHAT_ID},
         owui_user_id="u1",
     )
-    # whitespace session is dropped from metadata...
     assert "session_id" not in payload.get("metadata", {})
     # ...while the cache pin still occupies top-level session_id
     assert payload.get("session_id") == _expected_sticky(_STICKY_CHAT_ID, _STICKY_SECRET)

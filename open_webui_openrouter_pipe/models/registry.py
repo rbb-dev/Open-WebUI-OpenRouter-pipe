@@ -28,11 +28,7 @@ from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUT
 from ..core.timing_logger import timed
 from .blocklists import is_direct_upload_blocklisted
 
-# Lazy imports to avoid circular dependencies (see requests/__init__.py chain).
-
-# -----------------------------------------------------------------------------
 # Model Helper Functions
-# -----------------------------------------------------------------------------
 
 def sanitize_model_id(model_id: str) -> str:
     """Convert `author/model` ids into dot-friendly ids for Open WebUI."""
@@ -53,9 +49,7 @@ PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
 )
 
 
-# -----------------------------------------------------------------------------
 # ModelFamily Class
-# -----------------------------------------------------------------------------
 
 class ModelFamily:
     """
@@ -69,7 +63,6 @@ class ModelFamily:
     )
     _DYNAMIC_SPECS: ClassVar[dict[str, dict[str, Any]]] = {}
 
-    # -- tiny, intuitive helpers ----------------------------------------------
     @classmethod
     def _norm(cls, model_id: str) -> str:
         """Normalize model ids by stripping pipe prefixes and date suffixes.
@@ -79,12 +72,10 @@ class ModelFamily:
         """
         m = (model_id or "").strip()
 
-        # Preserve variant/preset suffix if present (e.g., ":exacto" or ":preset/slug")
         suffix = ""
         if ":" in m:
             m, suffix = m.rsplit(":", 1)
 
-        # Only replace / with . in the base portion
         if "/" in m:
             m = m.replace("/", ".")
 
@@ -95,7 +86,6 @@ class ModelFamily:
 
         base = cls._DATE_RE.sub("", m.lower())
 
-        # Re-attach suffix unchanged (not lowercased, not normalized)
         if suffix:
             return f"{base}:{suffix}"
         return base
@@ -127,7 +117,6 @@ class ModelFamily:
         """Return derived capability checkboxes for the given model."""
         spec = cls._lookup_spec(model_id)
         caps = spec.get("capabilities") or {}
-        # Return a shallow copy so downstream code can mutate safely.
         return dict(caps)
 
     @classmethod
@@ -177,16 +166,14 @@ def supports_phase_model(model_id: str) -> bool:
     key = normalized.removeprefix("~")
     return bool(key) and key in _PHASE_SUPPORTED_MODELS_BASE
 
-# -----------------------------------------------------------------------------
 # OpenRouterModelRegistry Class
-# -----------------------------------------------------------------------------
 
 class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
     _models: ClassVar[list[dict[str, Any]]] = []
     _specs: ClassVar[dict[str, dict[str, Any]]] = {}
-    _id_map: ClassVar[dict[str, str]] = {}  # normalized sanitized id -> original id
+    _id_map: ClassVar[dict[str, str]] = {}
     _zdr_model_ids: set[str] | None = None
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
@@ -230,7 +217,6 @@ class OpenRouterModelRegistry:
                     http_referer=http_referer,
                 )
             except Exception as exc:
-                # Catch all refresh errors (network, JSON, API errors) to use cache if available
                 cls._record_refresh_failure(exc, cache_seconds)
                 if not cls._models:
                     raise
@@ -238,6 +224,7 @@ class OpenRouterModelRegistry:
                     "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
                     exc,
                     len(cls._models),
+                    exc_info=True,
                 )
                 return
             cls._record_refresh_success(cache_seconds)
@@ -254,7 +241,6 @@ class OpenRouterModelRegistry:
         http_referer: str | None = None,
     ) -> None:
         """Fetch and cache the OpenRouter catalog."""
-        # Lazy imports to avoid circular dependencies (via requests/__init__.py)
         from ..requests.debug import _debug_print_error_response, _debug_print_request
 
         url = base_url.rstrip("/") + "/models"
@@ -273,7 +259,7 @@ class OpenRouterModelRegistry:
                 payload = await resp.json()
         except Exception:
             cls._zdr_model_ids = None
-            logger.exception("Failed to load OpenRouter model catalog")
+            logger.debug("Failed to load OpenRouter model catalog", exc_info=True)
             raise
 
         data = payload.get("data") or []
@@ -302,9 +288,6 @@ class OpenRouterModelRegistry:
             sanitized = sanitize_model_id(original_id)
             norm_id = ModelFamily.base_model(sanitized)
 
-            # Store the FULL model object - it's only 3.5MB total for all models
-            # This gives us access to: description, context_length, created, canonical_slug,
-            # hugging_face_id, per_request_limits, default_parameters, and everything else
             raw_specs[norm_id] = dict(item)
 
             id_map[norm_id] = original_id
@@ -317,29 +300,22 @@ class OpenRouterModelRegistry:
                 }
             )
 
-        # Finalize specs shared with ModelFamily (features + max completion tokens).
-        # Now we keep the FULL model object plus derived features for fast lookups
         specs: dict[str, dict[str, Any]] = {}
         for norm_id, full_model in raw_specs.items():
             supported_parameters = set(full_model.get("supported_parameters") or [])
             architecture = full_model.get("architecture") or {}
             pricing = full_model.get("pricing") or {}
 
-            # Derive feature flags from model metadata
             features = cls._derive_features(
                 supported_parameters,
                 architecture,
                 pricing,
             )
 
-            # Apply direct upload blocklist: enable file_input by default,
-            # except for models known to have issues with file uploads.
-            # This overrides OpenRouter's incomplete input_modalities metadata.
             original_id = full_model.get("id") or norm_id
             if is_direct_upload_blocklisted(original_id):
                 features.discard("file_input")
             else:
-                # Default to enabled - most models support direct uploads
                 features.add("file_input")
 
             capabilities = cls._derive_capabilities(
@@ -352,18 +328,14 @@ class OpenRouterModelRegistry:
             if isinstance(top_provider, dict):
                 max_completion_tokens = top_provider.get("max_completion_tokens")
 
-            # Store full model + derived data for downstream use
             specs[norm_id] = {
-                # Derived features for fast capability checks
                 "features": features,
                 "capabilities": capabilities,
                 "max_completion_tokens": max_completion_tokens,
                 "supported_parameters": frozenset(supported_parameters),
 
-                # Keep full model object for any future needs
                 "full_model": full_model,
 
-                # Quick access to commonly used fields
                 "context_length": full_model.get("context_length"),
                 "description": full_model.get("description"),
                 "pricing": pricing,
@@ -556,9 +528,6 @@ class OpenRouterModelRegistry:
         output_modalities = _normalize(architecture.get("output_modalities") or [])
 
         vision_capable = "image" in input_modalities or "video" in input_modalities
-        # Open WebUI uses file uploads for attachments and RAG workflows; if we mark this
-        # as False, the UI blocks uploads entirely (including images) even for vision-capable
-        # models. Keep it enabled for all models exposed by this pipe.
         file_upload_capable = True
         image_generation_capable = "image" in output_modalities
         web_search_capable = OpenRouterModelRegistry._supports_web_search(pricing)
@@ -680,11 +649,6 @@ class OpenRouterModelRegistry:
             new_specs[norm_id] = {
                 "features": features,
                 "capabilities": {
-                    # Video models always advertise vision + file_upload + image_generation
-                    # in OWUI so the chat input renders the upload + image buttons. Models
-                    # that don't actually accept image input (e.g. Sora) reject inside the
-                    # adapter — but the UI affordance is consistent across the family so
-                    # users don't have to inspect each model's capability sheet.
                     "vision": True,
                     "file_upload": True,
                     "web_search": False,
@@ -706,11 +670,6 @@ class OpenRouterModelRegistry:
                 "zdr_capable": False,
             }
 
-        # Sync readers (list_models, spec, is_zdr_capable) access these without
-        # locking. The next four statements (three attribute assignments + the
-        # set_dynamic_specs call) must remain contiguous and synchronous — any
-        # await/yield between them lets a reader observe a model in _models
-        # whose norm_id is not yet in _specs (or vice versa).
         cls._specs = new_specs
         cls._id_map = new_id_map
         cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
@@ -789,7 +748,6 @@ class OpenRouterModelRegistry:
                 new_specs.pop(norm_id, None)
                 new_id_map.pop(norm_id, None)
 
-        # Preserve all non-image-only models (chat + video).
         models_by_norm: dict[str, dict[str, Any]] = {}
         for model in cls._models:
             if not isinstance(model, dict):
@@ -819,12 +777,6 @@ class OpenRouterModelRegistry:
             output_modalities = architecture.get("output_modalities") or []
             accepts_image_input = "image" in input_modalities
 
-            # Skip multimodal text+image models even when chat catalog hasn't
-            # registered them yet — they belong in the chat catalog with the
-            # full chat-style features. `_derive_features` adds `image_output`
-            # to those models via the chat path so the image filter still
-            # auto-attaches. Registering them here would over-write that with
-            # image-only features and lose tool-calling/reasoning capabilities.
             if "text" in output_modalities:
                 continue
 
@@ -888,12 +840,11 @@ class OpenRouterModelRegistry:
             - "anthropic.claude-opus:extended" -> "anthropic/claude-opus:extended"
             - "openai.gpt-4o:preset/email-copywriter" -> "openai/gpt-4o@preset/email-copywriter"
         """
-        # Extract variant/preset suffix if present
         suffix_tag = ""
         if ":" in model_id:
             parts = model_id.rsplit(":", 1)
             model_id_base = parts[0]
-            suffix_tag = parts[1]  # e.g., "exacto" or "preset/email-copywriter"
+            suffix_tag = parts[1]
         else:
             model_id_base = model_id
 
@@ -902,7 +853,6 @@ class OpenRouterModelRegistry:
         provider_id = cls._id_map.get(norm)
 
         if not provider_id:
-            # Non-catalog model: convert dotted format back to slash format
             if "/" in model_id_base:
                 api_base = model_id_base
             elif "." in model_id_base:
@@ -910,7 +860,6 @@ class OpenRouterModelRegistry:
             else:
                 api_base = model_id_base
 
-            # Re-attach suffix with appropriate separator
             if suffix_tag:
                 if suffix_tag.startswith("preset/"):
                     return f"{api_base}@{suffix_tag}"
@@ -918,8 +867,6 @@ class OpenRouterModelRegistry:
                     return f"{api_base}:{suffix_tag}"
             return api_base
 
-        # Re-attach suffix with appropriate separator
-        # Presets use @ separator, variants use : separator
         if suffix_tag:
             if suffix_tag.startswith("preset/"):
                 return f"{provider_id}@{suffix_tag}"
@@ -941,22 +888,46 @@ class OpenRouterModelRegistry:
         return set(cls._zdr_model_ids)
 
     @classmethod
+    def zdr_list_available(cls) -> bool:
+        """Whether the ZDR endpoint list has been loaded at all.
+
+        Separate from `is_zdr_capable`, which answers about one model and returns None
+        for the same condition. Callers that only need to know whether filtering can run
+        used to build a full `set()` copy of the list and test it for None.
+        """
+        return cls._zdr_model_ids is not None
+
+    @classmethod
     def is_zdr_capable(cls, model_id: str) -> bool | None:
         """Return True/False if ZDR list is available, otherwise None.
 
-        Uses strict full-ID matching against the ZDR set (no base fallback);
-        the ZDR_ENFORCE gate strips variant suffixes before calling so routing
-        variants of a ZDR-capable base are admitted there. The video hard-block
-        always evaluates against the suffix-stripped base id.
+        Matched against the suffix-stripped BASE id, because OpenRouter's ZDR endpoint
+        list only ever contains base ids: a routing variant such as `:nitro`, `:floor`
+        or `:online` selects how the same base model is routed, not a different model,
+        and its endpoints are the base model's endpoints.
+
+        The strip lives here rather than at the call sites. It used to be done by the
+        ZDR_ENFORCE gate alone -- issue #56 -- so a ZDR-capable model was accepted for
+        enforcement and simultaneously rejected by ZDR_MODELS_ONLY, which passed the
+        full variant id and got False. One rule in one place is the only arrangement in
+        which the three gates cannot disagree.
         """
         norm = ModelFamily.base_model(model_id)
         base_norm = norm.rsplit(":", 1)[0] if ":" in norm else norm
-        spec = cls._specs.get(base_norm) or {}
+        # The catalog decides, not the string. `:free` and `:thinking` are real,
+        # separately-listed models -- 24 of 372 ids in the last dump -- served by
+        # different providers under their own retention policies, so answering for them
+        # from the paid base would show non-ZDR models under a ZDR-only filter. The base
+        # fallback is for the ids the catalog does NOT know: the routing variants the
+        # pipe itself synthesises (`:nitro`, `:floor`, `:online`), whose endpoints ARE
+        # the base model's.
+        lookup = norm if norm in cls._specs else base_norm
+        spec = cls._specs.get(lookup) or cls._specs.get(base_norm) or {}
         if "video_generation" in set(spec.get("features") or set()):
             return False
         if cls._zdr_model_ids is None:
             return None
-        return norm in cls._zdr_model_ids
+        return lookup in cls._zdr_model_ids
 
     @classmethod
     @timed
@@ -998,9 +969,7 @@ class OpenRouterModelRegistry:
                 model_ids.add(norm)
         return model_ids
 
-# -----------------------------------------------------------------------------
 # Additional Model Helper Functions
-# -----------------------------------------------------------------------------
 
 def normalize_model_id_dotted(model_id: str) -> str:
     """Return a dotted variant of a model id (e.g. 'anthropic/claude' -> 'anthropic.claude')."""
@@ -1033,9 +1002,7 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
             return True
     return False
 
-# -----------------------------------------------------------------------------
 # Anthropic Reasoning Helpers
-# -----------------------------------------------------------------------------
 
 _CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")
 
@@ -1045,9 +1012,7 @@ def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
     return bool(_CLAUDE_REASONING_RE.match((normalized_model_id or "").lower()))
 
 
-# -----------------------------------------------------------------------------
 # Gemini Reasoning Helpers
-# -----------------------------------------------------------------------------
 
 _GEMINI_25_RE = re.compile(r"~?google[./]gemini-2\.5(-|\Z)")
 
@@ -1093,9 +1058,7 @@ def _parse_model_patterns(value: Any) -> list[str]:
     return patterns
 
 
-# -----------------------------------------------------------------------------
 # Pricing Helpers
-# -----------------------------------------------------------------------------
 
 _PRICING_CATEGORY_KEYS = {
     "prompt",

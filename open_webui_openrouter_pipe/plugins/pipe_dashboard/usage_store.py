@@ -59,6 +59,27 @@ USAGE_ROW_FIELDS = (
 )
 
 
+def usage_ts_from_epoch(epoch: float) -> datetime.datetime:
+    """An epoch second as the usage table stores it: naive, in the server's local zone.
+
+    `ts` and `started_at` are `Column(DateTime)` -- no timezone -- so whatever frame the
+    first writer picked is the frame every reader, filter and purge boundary must use.
+    The obvious thing to write, `datetime.now(UTC)`, is a different instant by the UTC
+    offset, and nothing raises: the purge deletes rows from a window shifted by that
+    offset, and the previous-period filter reports the wrong span. Both are silent.
+    """
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.UTC).astimezone().replace(tzinfo=None)
+
+
+def epoch_from_usage_ts(value: datetime.datetime) -> float:
+    """The inverse of `usage_ts_from_epoch`.
+
+    A naive datetime's `.timestamp()` interprets it as local time, which is right only
+    because that is the frame the column holds. Paired here so the two move together.
+    """
+    return value.timestamp()
+
+
 class UsageStore:
     """Per-worker usage writer mirroring the session-log manager thread pattern."""
 
@@ -270,7 +291,7 @@ class UsageStore:
                     exc_info=True,
                 )
         days = max(1, days)
-        return datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+        return usage_ts_from_epoch(time.time() - days * 86400.0)
 
     def _purge_sync(self, cutoff: datetime.datetime) -> None:
         store = self._store

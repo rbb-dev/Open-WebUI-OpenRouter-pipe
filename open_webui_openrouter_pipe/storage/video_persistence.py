@@ -6,7 +6,15 @@ from ..core.utils import _await_if_needed
 
 
 def is_local_chat_id(chat_id: str | None) -> bool:
-    return isinstance(chat_id, str) and chat_id.strip().startswith("local:")
+    """Kept as a name; the decision belongs to owui_files.is_linkable_chat.
+
+    This tested `local:` alone, so it missed both `channel:` and the `temporary:`
+    prefix that replaced `local:` upstream -- a third parallel spelling of a rule that
+    now has one owner.
+    """
+    from .owui_files import is_linkable_chat
+
+    return isinstance(chat_id, str) and bool(chat_id.strip()) and not is_linkable_chat(chat_id)
 
 
 class VideoPersistence:
@@ -27,7 +35,7 @@ class VideoPersistence:
             return None
         try:
             from open_webui.models.chats import Chats  # type: ignore[import-not-found]
-        except ImportError:
+        except Exception:
             self.logger.debug("Open WebUI chats model unavailable", exc_info=True)
             return None
         getter = cast(Any, getattr(Chats, "get_message_by_id_and_message_id", None))

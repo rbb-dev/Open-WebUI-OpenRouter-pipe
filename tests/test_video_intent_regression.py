@@ -243,7 +243,6 @@ class TestExplicitAttachmentsRetarget:
             VIDEO_INTENT_MAX_CALLS_PER_CHAT=0,
             VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=0,
         )
-        # frame_images present + 2-message chat + non-empty prompt → must NOT
         # short-circuit (so the classifier can read "use this as the last frame")
         assert adapter._intent_classifier_should_run(
             valves=valves, persisted_content="", prompt="use this as the last frame",
@@ -313,7 +312,6 @@ class TestClarificationCap:
         assert count_prior_clarifications(msgs) == 0
 
     def test_streak_breaks_at_intervening_user_turn(self):
-        # user → assistant(clarify) → user(reply) → assistant(clarify) → user(current)
         # Most-recent streak before current user is 1, not 2.
         clar = self._clar_text()
         msgs = [

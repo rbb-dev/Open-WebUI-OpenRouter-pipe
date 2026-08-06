@@ -12,16 +12,20 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
-except ImportError:
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
     SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:direct_uploads_filter:v1"
+
+
+class DirectUploadError(Exception):
+    """Rejects a direct upload; Open WebUI shows the message to the user verbatim."""
 
 
 class Filter:
@@ -103,7 +107,7 @@ class Filter:
         self.valves = self.Valves()
 
     @staticmethod
-    def _to_int(value: Any) -> Optional[int]:
+    def _to_int(value: Any) -> int | None:
         if value is None:
             return None
         if isinstance(value, bool):
@@ -248,7 +252,7 @@ class Filter:
 
             size_bytes = self._to_int(item.get("size"))
             if size_bytes is None or size_bytes < 0:
-                raise Exception("Direct uploads: uploaded file missing a valid size.")
+                raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
 
             kind = "files"
             if content_type.startswith("audio/"):
@@ -269,12 +273,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > file_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["files"].append(
@@ -305,12 +309,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > audio_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["audio"].append(
@@ -336,12 +340,12 @@ class Filter:
                     retained.append(item)
                     continue
                 if size_bytes > video_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB)."
                     )
                 total_bytes += size_bytes
                 if total_bytes > total_limit:
-                    raise Exception(
+                    raise DirectUploadError(
                         f"Direct uploads exceed total limit ({self.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB} MB)."
                     )
                 diverted["video"].append(
@@ -357,9 +361,6 @@ class Filter:
             retained.append(item)
 
         diverted_any = bool(diverted["files"] or diverted["audio"] or diverted["video"])
-        # OWUI "File Context" extraction/injection reads `body["metadata"]["files"]`, but OWUI also
-        # rebuilds metadata.files from `body["files"]` after inlet filters. To reliably bypass OWUI
-        # RAG for diverted uploads, update both.
         if diverted_any:
             body["files"] = retained
             if isinstance(__metadata__, dict):

@@ -15,7 +15,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from open_webui.env import SRC_LOG_LEVELS
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {}
 
 OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:image_gen_filter:v1"
 

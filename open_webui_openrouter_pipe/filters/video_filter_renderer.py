@@ -8,25 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
+from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
 from ..core.utils import _clean_str
 
 logger = logging.getLogger(__name__)
 
-_FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
 
-# Every passthrough parameter for which `_render_user_valves_fields` and
-# `_render_param_lines` have a dedicated branch (or which is covered by a
-# top-level field handler under a different name). If a model's catalog dict
-# lists a passthrough name not in this set, the renderer silently drops it
-# from outbound requests. `render_video_filter_source` warns about that
-# state so future model additions don't lose UX silently.
-#
-# `aspectRatio` and `size` appear in some models' `allowed_passthrough_parameters`
-# (Veo trio and Wan 2.6 respectively) but the renderer always emits the
-# normalised top-level fields (`aspect_ratio`/`size`) via `VIDEO_ASPECT_RATIO`
-# and `VIDEO_SIZE`, so the param is not dropped — it just travels as top-level
-# rather than nested under `params`.
 _HANDLED_PASSTHROUGH_PARAMS: frozenset[str] = frozenset({
     "negative_prompt",
     "negativePrompt",
@@ -69,9 +57,6 @@ class VideoFilterSpec:
     size_options: tuple[str, ...]
     seed_capable: bool = False
     audio_capable: bool = False
-    # Video intent classifier — when admin master switch is False, the renderer
-    # omits all four user-tunable intent fields and the inlet write block, so
-    # users see a filter UI free of intent knobs they can't influence.
     intent_classifier_admin_enabled: bool = True
     intent_enabled_default: bool = True
     intent_max_clarifications_default: int = 1
@@ -120,8 +105,8 @@ class VideoFilterSpec:
 
 
 def sanitize_video_filter_id(model_id: str) -> str:
-    raw = model_id.strip().replace("/", "_").replace(".", "_").replace("-", "_")
-    cleaned = _FILTER_ID_RE.sub("_", raw).strip("_").lower()
+    raw = model_id.strip()
+    cleaned = _FILTER_ID_RE.sub("_", raw).lower()
     if not cleaned:
         cleaned = "model"
     if len(cleaned) > 54:
@@ -157,10 +142,6 @@ def build_video_filter_spec(
     frame_types = _safe_literal_tuple(model.get("supported_frame_images"))
     size_options = _safe_literal_tuple(model.get("supported_sizes") or model.get("supported_size_options"))
 
-    # Intent classifier defaults pulled from admin Valves so the rendered
-    # filter source captures the operator's site-wide preferences. When admin
-    # valves are not provided (e.g. tests, or callers that don't have a
-    # Valves instance handy), spec dataclass defaults are used.
     intent_admin_enabled = True
     intent_enabled_default = True
     intent_max_clar = 1
@@ -699,11 +680,6 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
             )
         )
 
-    # Video intent classifier — emitted only when the admin master switch is
-    # on, so users see these knobs only in deployments where the feature is
-    # available. When admin disables the master switch, the next pipes()
-    # refresh content-diffs the new (smaller) source against stored and
-    # rewrites the OWUI filter row in place.
     if spec.intent_classifier_admin_enabled:
         fields.append(
             _field_block(

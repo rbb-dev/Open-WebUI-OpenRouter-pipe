@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import logging
 import re
 import shutil
 import tempfile
 import time
+from collections.abc import Awaitable
 from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -31,6 +33,7 @@ from ..models.registry import OpenRouterModelRegistry
 from ..storage.owui_files import (
     get_file_by_id,
     infer_file_mime_type,
+    is_linkable_chat,
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
@@ -268,7 +271,6 @@ class VideoGenerationAdapter:
                                     "first-failure toast emission raised "
                                     "(suppressed): %s", exc, exc_info=True,
                                 )
-                    # Clarification short-circuit: emit the question, return.
                     if (
                         intent_result.clarification is not None
                         and intent_result.clarification.needs
@@ -280,8 +282,6 @@ class VideoGenerationAdapter:
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                         return clar_content
-                    # Materialise prior-video frames into video_meta["frame_images"]
-                    # so the existing _encode_frame_images path picks them up.
                     overshoot_pref_raw = resolve_intent_user_setting(
                         metadata, "frame_extraction_index",
                         valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
@@ -323,9 +323,6 @@ class VideoGenerationAdapter:
                         pass
                     elif intent_result.prompt:
                         prompt = intent_result.prompt
-                    # Telemetry: emit AFTER materialise has run so
-                    # `frames_extracted` reflects what actually happened, not
-                    # what the classifier asked for.
                     self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                 except asyncio.CancelledError:
                     raise
@@ -414,7 +411,7 @@ class VideoGenerationAdapter:
             if (
                 event_emitter is not None
                 and isinstance(chat_id, str)
-                and not chat_id.startswith("local:")
+                and is_linkable_chat(chat_id)
             ):
                 pending_content = self._build_pending_content(
                     job_id=job_id,
@@ -465,10 +462,63 @@ class VideoGenerationAdapter:
             if not lifecycle_transferred:
                 if global_slot_acquired and global_semaphore is not None:
                     global_semaphore.release()
-                if user_slot_acquired:
-                    await self._release_user_slot(user_id, job_id)
-                if message_lock is not None:
-                    await self._release_message_lock(key, message_lock)
+                await asyncio.shield(
+                    self._release_presubmit_slots(
+                        key,
+                        user_id,
+                        job_id,
+                        message_lock,
+                        release_user_slot=user_slot_acquired,
+                    )
+                )
+
+    async def _cleanup_step(
+        self, phase: str, key: tuple[str, str], what: str, coro: Awaitable[None]
+    ) -> None:
+        """Run one release and swallow its failure so the next release still runs.
+
+        Cancellation propagates; anything else is logged. Two byte-near-identical
+        copies of this lived 250 lines apart, differing only in the word "pre-submit",
+        so changing which exceptions propagate in one left the other on the old
+        contract -- and the symptom is a stranded semaphore that surfaces hours later
+        as a generation that never starts.
+        """
+        try:
+            await coro
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            raise
+        except Exception:
+            self.logger.warning(
+                "Video %s cleanup step '%s' failed for %s; its resource is stranded",
+                phase,
+                what,
+                key,
+                exc_info=True,
+            )
+
+    async def _release_presubmit_slots(
+        self,
+        key: tuple[str, str],
+        user_id: str,
+        job_id: str,
+        message_lock: asyncio.Lock | None,
+        *,
+        release_user_slot: bool,
+    ) -> None:
+        """Release what generate() acquired before handing off to the lifecycle task.
+
+        Each step is independent: a failure in one must not skip the others. Without
+        the isolation the first failure propagates out of the shielded coroutine and
+        every release below it is skipped, stranding those resources for the lifetime
+        of the process.
+        """
+
+        _step = functools.partial(self._cleanup_step, "pre-submit", key)
+
+        if release_user_slot:
+            await _step("user slot", self._release_user_slot(user_id, job_id))
+        if message_lock is not None:
+            await _step("message lock", self._release_message_lock(key, message_lock))
 
     def _create_lifecycle_task(
         self,
@@ -590,8 +640,10 @@ class VideoGenerationAdapter:
                 )
                 output_mime = downloaded.mime_type
             finally:
+                # Shielded: `suppress(Exception)` does not catch CancelledError, so a
+                # cancel delivered here abandons the close and strands the connector.
                 with contextlib.suppress(Exception):
-                    await session.close()
+                    await asyncio.shield(session.close())
 
             elapsed = max(0.0, time.monotonic() - started_at)
             extension = extension_for_video_mime(output_mime)
@@ -670,21 +722,52 @@ class VideoGenerationAdapter:
             )
         finally:
             if downloaded is not None:
-                with contextlib.suppress(Exception):
+                try:
                     downloaded.path.unlink(missing_ok=True)
-            # Remove the per-job temp directory created by mkdtemp; the file
-            # inside is unlinked above, but the directory itself would otherwise
-            # leak one empty dir per generation (inode exhaustion over time).
+                except Exception:
+                    self.logger.warning(
+                        "Could not remove the temp video file %s; it will accumulate",
+                        downloaded.path,
+                        exc_info=True,
+                    )
             if tmp_dir is not None:
-                with contextlib.suppress(Exception):
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                try:
+                    shutil.rmtree(tmp_dir)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    self.logger.warning(
+                        "Could not remove the per-job temp directory %s; these leak one "
+                        "empty directory per generation",
+                        tmp_dir,
+                        exc_info=True,
+                    )
+            global_semaphore.release()
+            await asyncio.shield(
+                self._finalize_generation(
+                    key, user_id, job_id, message_lock, asyncio.current_task()
+                )
+            )
+
+    async def _finalize_generation(
+        self,
+        key: tuple[str, str],
+        user_id: str,
+        job_id: str,
+        message_lock: asyncio.Lock,
+        owner: asyncio.Task | None = None,
+    ) -> None:
+        _step = functools.partial(self._cleanup_step, "lifecycle", key)
+
+        async def _drop_active_task() -> None:
             async with self._pipe._video_active_tasks_dict_lock:
                 current = self._pipe._video_active_tasks.get(key)
-                if current is asyncio.current_task():
+                if current is (owner or asyncio.current_task()):
                     self._pipe._video_active_tasks.pop(key, None)
-            await self._release_user_slot(user_id, job_id)
-            await self._release_message_lock(key, message_lock)
-            global_semaphore.release()
+
+        await _step("active-task entry", _drop_active_task())
+        await _step("user slot", self._release_user_slot(user_id, job_id))
+        await _step("message lock", self._release_message_lock(key, message_lock))
 
     async def _poll_until_terminal(
         self,
@@ -899,9 +982,6 @@ class VideoGenerationAdapter:
         async def _check(url: str, field_name: str) -> None:
             if url.startswith("data:"):
                 return
-            # Use the async safe-URL check so the DNS lookup is offloaded to a
-            # worker thread instead of blocking the shared event loop on the
-            # per-request hot path.
             if not await handler._is_safe_url(url):
                 raise VideoGenerationError(
                     f"Refusing to forward unsafe URL in '{field_name}'. Use https:// or "
@@ -1304,9 +1384,6 @@ class VideoGenerationAdapter:
             target = frame_images[idx]
             if not isinstance(target, dict):
                 continue
-            # frame_images dicts are keyed by "frame_type" (see _encode_frame_images
-            # and the video filter renderer); writing "kind" was a dead field that
-            # nothing read, so "use this as the last frame" was silently ignored.
             existing_frame_type = target.get("frame_type")
             if existing_frame_type != entry.target:
                 target["frame_type"] = entry.target
@@ -1424,9 +1501,6 @@ class VideoGenerationAdapter:
                     thumb_urls.append("")
                     continue
 
-                # Extraction + upload both succeeded — count it for telemetry.
-                # This is the authoritative "did the pipe actually do the
-                # work?" signal, distinct from "did the classifier ask for it".
                 intent.frames_extracted += 1
 
                 if entry.target in ("first_frame", "last_frame"):

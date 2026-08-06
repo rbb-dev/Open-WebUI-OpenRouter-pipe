@@ -2422,7 +2422,6 @@ async def test_use_model_max_output_tokens_disabled():
         assert len(captured_payloads) >= 1
         # Check that max_output_tokens was not set (or is None)
         for payload in captured_payloads:
-            # max_output_tokens should not be present or should be None
             assert payload.get("max_output_tokens") is None or "max_output_tokens" not in payload
 
     finally:
@@ -4882,8 +4881,21 @@ async def test_zdr_enforce_injects_provider_preference():
 
 
 @pytest.mark.asyncio
-async def test_zdr_user_valve_injects_provider_preference():
-    """User Request ZDR should inject provider.zdr when allowed."""
+@pytest.mark.parametrize("as_model", [False, True], ids=["mapping", "UserValves-instance"])
+@pytest.mark.parametrize("requested", [True, False], ids=["opted-in", "opted-out"])
+async def test_zdr_user_valve_injects_provider_preference(as_model, requested):
+    """The user's ZDR preference reaches the payload, in the shape Open WebUI sends.
+
+    Open WebUI does not hand the pipe a mapping. `functions.py` assigns
+    `params["__user__"]["valves"] = function_module.UserValves(**user_valves)` -- a MODEL
+    INSTANCE. A reader gated on `isinstance(raw, dict)` reads nothing in production and
+    still passes a test that hands it a dict, which is exactly how every user who ticked
+    Zero Data Retention came to be routed without `provider.zdr`. Both shapes are driven
+    here so the mapping-only version of that bug cannot come back.
+
+    Parametrised over opted-in AND opted-out so a reader hardcoded to either answer
+    fails one of the two arms; asserting only the True case is satisfied by `return True`.
+    """
     pipe = Pipe()
 
     try:
@@ -4915,6 +4927,11 @@ async def test_zdr_user_valve_injects_provider_preference():
                 repeat=True,
             )
 
+            valves_payload = (
+                Pipe.UserValves(REQUEST_ZDR=requested)
+                if as_model
+                else {"REQUEST_ZDR": requested}
+            )
             body = {
                 "model": "openai/gpt-4o-mini",
                 "messages": [{"role": "user", "content": "test"}],
@@ -4923,7 +4940,7 @@ async def test_zdr_user_valve_injects_provider_preference():
 
             result = await pipe.pipe(
                 body=body,
-                __user__={"id": "user_123", "valves": {"REQUEST_ZDR": True}},
+                __user__={"id": "user_123", "valves": valves_payload},
                 __request__=None,
                 __event_emitter__=event_emitter,
                 __event_call__=None,
@@ -4937,7 +4954,13 @@ async def test_zdr_user_valve_injects_provider_preference():
 
         assert captured_payloads, "Expected a request payload to be captured"
         provider = captured_payloads[-1].get("provider") or {}
-        assert provider.get("zdr") is True
+        assert provider.get("zdr") is (True if requested else None), (
+            f"REQUEST_ZDR={requested} sent as "
+            f"{'a UserValves instance' if as_model else 'a mapping'} produced "
+            f"provider.zdr={provider.get('zdr')!r}. Open WebUI sends the instance shape, "
+            "so a reader that only understands mappings silently drops the user's "
+            "Zero Data Retention preference on every real request."
+        )
     finally:
         await pipe.close()
 
@@ -5831,5 +5854,199 @@ async def test_zdr_user_valve_admits_suffixed_variant_and_stamps_provider():
         assert captured_payloads, "Expected the suffixed variant to be admitted for user-requested ZDR"
         provider = (captured_payloads[-1].get("provider") or {})
         assert provider.get("zdr") is True
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_valves", "expect_zdr"),
+    [
+        ({"REQUEST_ZDR": True}, True),
+        ({"REQUEST_ZDR": "true"}, True),
+        ({"REQUEST_ZDR": False}, False),
+        ({}, False),
+        ({"REQUEST_ZDR": True, "REASONING_EFFORT": "banana"}, True),
+        ({"REQUEST_ZDR": "maybe"}, True),
+    ],
+    ids=["bool-true", "string-true", "bool-false", "absent", "sibling-field-invalid", "unreadable"],
+)
+async def test_an_unreadable_zdr_preference_does_not_route_without_zdr(user_valves, expect_zdr):
+    """The same decision must fail in one direction, not two.
+
+    `UserValves.model_validate` is all-or-nothing, so an unrelated stale field --
+    `REASONING_EFFORT="banana"` -- raised, the pipe logged "proceeding without it" and
+    set `user_requests_zdr = False`. The request then went to OpenRouter with no ZDR
+    routing while the user's REQUEST_ZDR=True was silently dropped, and the user saw a
+    normal answer. Thirty lines below, the same function fails CLOSED on an unknown
+    model capability: one unknown granted the permissive answer, the other refused it.
+
+    Reading the single field means a stale sibling can no longer change the routing,
+    and a value that genuinely cannot be read enforces ZDR rather than dropping it.
+
+    Unreachable gap, recorded rather than omitted: the `_coerce_bool(...) is None`
+    branch cannot be reached through `pipe()` today, because pipe.py validates
+    UserValves unguarded before the ZDR block runs, so an unreadable value fails the
+    request first. The branch is defensive depth and becomes live the moment that
+    validate is guarded.
+    """
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses", callback=callback, repeat=True
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            mock_http.get(
+                "https://openrouter.ai/api/v1/endpoints/zdr",
+                payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                repeat=True,
+            )
+
+            result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "test"}],
+                    "stream": True,
+                },
+                __user__={"id": "user_123", "valves": user_valves},
+                __request__=None,
+                __event_emitter__=event_emitter,
+                __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+            await _consume_stream(result)
+
+        if expect_zdr:
+            # Either the request carried ZDR routing, or it never went out at all --
+            # an invalid sibling valve is rejected upstream at pipe.py's unguarded
+            # UserValves.model_validate. Both outcomes satisfy the property; what must
+            # never happen is the request reaching OpenRouter WITHOUT zdr.
+            routed_without_zdr = [
+                p for p in captured_payloads if not (p.get("provider") or {}).get("zdr")
+            ]
+            assert not routed_without_zdr, (
+                f"valves={user_valves!r} sent {len(routed_without_zdr)} request(s) to "
+                "OpenRouter with no ZDR routing while the user had asked for it"
+            )
+        else:
+            assert captured_payloads, "no request payload was captured"
+            provider = captured_payloads[-1].get("provider") or {}
+            assert not provider.get("zdr"), (
+                f"valves={user_valves!r} enforced ZDR when the user did not ask for it"
+            )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "expect_zdr"),
+    [
+        ({"REQUEST_ZDR": True, "REASONING_EFFORT": "ultra"}, True),
+        ({"REQUEST_ZDR": False, "REASONING_EFFORT": "ultra"}, None),
+    ],
+    ids=["opted-in-with-a-stale-sibling", "opted-out-with-a-stale-sibling"],
+)
+async def test_a_stale_sibling_valve_does_not_drop_the_zdr_preference(stored, expect_zdr):
+    """One unreadable field must not take every other setting down with it.
+
+    Open WebUI builds `UserValves(**stored)` inside a try/except and substitutes a
+    default-constructed instance when pydantic refuses. So a single stale value for one
+    Literal field -- `REASONING_EFFORT="ultra"` is what any past option rename leaves
+    behind -- collapses EVERY setting the user has before the pipe is even called, and
+    the instance that arrives is indistinguishable from a user who set nothing.
+
+    Driven through `Pipe.pipe()` against the real Open WebUI accessor, stubbed to return
+    the stored mapping, because that is the layer the defect lives at. Asserting on
+    `parse_user_valves(mapping)` directly passes today while production routes without
+    ZDR -- the helper was never the broken part.
+
+    Parametrised over opted-in and opted-out so a reader hardcoded to either answer fails
+    one arm.
+    """
+    import open_webui.models.functions as owf
+
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+
+        class _Functions:
+            async def get_user_valves_by_id_and_user_id(self, _id, _user_id, db=None):
+                return dict(stored)
+
+        original = owf.Functions
+        owf.Functions = _Functions()
+
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
+        async def event_emitter(event):
+            pass
+
+        try:
+            with aioresponses() as mock_http:
+                mock_http.post(
+                    "https://openrouter.ai/api/v1/responses", callback=callback, repeat=True
+                )
+                mock_http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                    repeat=True,
+                )
+                mock_http.get(
+                    "https://openrouter.ai/api/v1/endpoints/zdr",
+                    payload={"data": [{"model_id": "openai/gpt-4o-mini"}]},
+                    repeat=True,
+                )
+                result = await pipe.pipe(
+                    body={
+                        "model": "openai/gpt-4o-mini",
+                        "messages": [{"role": "user", "content": "test"}],
+                        "stream": True,
+                    },
+                    # OWUI's shape: the INSTANCE it built, already collapsed to defaults
+                    __user__={"id": "user_123", "valves": Pipe.UserValves()},
+                    __request__=None,
+                    __event_emitter__=event_emitter,
+                    __event_call__=None,
+                    __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
+                    __tools__=None,
+                    __task__=None,
+                    __task_body__=None,
+                )
+                await _consume_stream(result)
+        finally:
+            owf.Functions = original
+
+        assert captured_payloads, "no request payload was captured"
+        provider = captured_payloads[-1].get("provider") or {}
+        assert provider.get("zdr") is expect_zdr, (
+            f"stored REQUEST_ZDR={stored['REQUEST_ZDR']} alongside a stale "
+            f"REASONING_EFFORT produced provider.zdr={provider.get('zdr')!r}. Open WebUI "
+            "has already collapsed the instance to defaults, so reading only what it "
+            "supplies routes the user without Zero Data Retention and says nothing."
+        )
     finally:
         await pipe.close()

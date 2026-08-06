@@ -9,7 +9,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -31,16 +30,25 @@ from ...core.errors import OpenRouterAPIError, _build_openrouter_api_error
 from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
+from ...core.warn_latch import warn_level
 from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
     _debug_print_response,
 )
-from ...streaming.nagle_coalescer import _MAX_DRAIN_PER_CYCLE, NagleCoalescer
+from ...streaming.nagle_coalescer import (
+    _MAX_DRAIN_PER_CYCLE,
+    NagleCoalescer,
+    idle_flush_timeout,
+)
 
 if TYPE_CHECKING:
     from ...pipe import Pipe
+
+_RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_warned_responses_chunk_parse: dict[str, float] = {}
+_warned_queue_backlog: dict[str, float] = {}
 
 
 def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
@@ -133,10 +141,6 @@ class ResponsesAdapter:
 
         @timed
         async def _producer() -> None:
-            # seq is intentionally NOT reset inside the retry loop:
-            # _should_retry_stream forbids retrying once any event was emitted,
-            # so a permitted retry always restarts with seq == 0 and consumer
-            # reordering stays contiguous.
             seq = 0
             first_chunk_received = False
             emitted_any = False
@@ -151,11 +155,27 @@ class ResponsesAdapter:
                 retry=_retry_streaming,
                 reraise=True,
             )
+            recorded_for_attempt = False
+
+            def _record_breaker_failure() -> None:
+                """One breaker failure per attempt, however many handlers observe it.
+
+                A 4xx records at the response check and then raises; the producer
+                handler catches that same exception and recorded it a second time, so a
+                single failed request counted twice and a user was shed at half the
+                configured threshold.
+                """
+                nonlocal recorded_for_attempt
+                if breaker_key and not recorded_for_attempt:
+                    recorded_for_attempt = True
+                    self._pipe._circuit_breaker.record_failure(breaker_key)
+
             try:
                 async for attempt in retryer:
                     if breaker_key and not self._pipe._circuit_breaker.allows(breaker_key):
                         raise RuntimeError("Breaker open for user during stream")
                     with attempt:
+                        recorded_for_attempt = False
                         buf = bytearray()
                         event_data_parts: list[bytes] = []
                         stream_complete = False
@@ -165,8 +185,7 @@ class ResponsesAdapter:
                                 timing_mark("responses_http_headers_received")
                                 if resp.status >= 400:
                                     error_body = await _debug_print_error_response(resp, logger=self.logger)
-                                    if breaker_key:
-                                        self._pipe._circuit_breaker.record_failure(breaker_key)
+                                    _record_breaker_failure()
                                     extra_meta: dict[str, Any] = {}
                                     _apply_retry_after_metadata(extra_meta, resp.headers)
                                     rate_scope = (
@@ -188,7 +207,6 @@ class ResponsesAdapter:
                                 first_event_queued = False
                                 async for chunk in resp.content.iter_chunked(4096):
                                     chunk_count += 1
-                                    # Log chunk with content preview (first 40 chars, sanitized)
                                     preview = chunk[:40].decode("utf-8", errors="replace").replace("\n", "\\n").replace("\r", "\\r")
                                     timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}_[{preview}]")
                                     if not first_chunk_received:
@@ -255,8 +273,7 @@ class ResponsesAdapter:
                                 self.logger.exception(
                                     "Producer encountered error while streaming from OpenRouter"
                                 )
-                            if breaker_key:
-                                self._pipe._circuit_breaker.record_failure(breaker_key)
+                            _record_breaker_failure()
                             raise
                         if stream_complete:
                             break
@@ -271,11 +288,10 @@ class ResponsesAdapter:
                         break
 
         worker_first_event_queued = False
-        chunk_queue_warn_last_ts: float = 0.0
 
         @timed
         async def _worker(worker_idx: int) -> None:
-            nonlocal worker_first_event_queued, chunk_queue_warn_last_ts
+            nonlocal worker_first_event_queued
             first_chunk_got = False
             try:
                 while True:
@@ -284,19 +300,17 @@ class ResponsesAdapter:
                         first_chunk_got = True
                         timing_mark(f"worker_{worker_idx}_first_chunk_got")
                     # Non-spammy chunk queue monitoring
-                    now_cq = time.perf_counter()
                     if self._pipe._should_warn_event_queue_backlog(
-                        chunk_queue.qsize(),
-                        chunk_queue_warn_size,
-                        now_cq,
-                        chunk_queue_warn_last_ts,
+                        chunk_queue.qsize(), chunk_queue_warn_size
                     ):
-                        self.logger.warning(
+                        self.logger.log(
+                            warn_level(
+                                _warned_queue_backlog, "chunk_queue", cooldown_s=30.0
+                            ),
                             "Chunk queue backlog high: %d items (session=%s)",
                             chunk_queue.qsize(),
                             SessionLogger.session_id.get() or "unknown",
                         )
-                        chunk_queue_warn_last_ts = now_cq
                     try:
                         if seq is None:
                             break
@@ -306,8 +320,14 @@ class ResponsesAdapter:
                         try:
                             event = json.loads(data.decode("utf-8"))
                         except Exception as exc:
-                            self.logger.warning(
-                                "Chunk parse failed (seq=%s): %s", seq, exc, exc_info=True
+                            self.logger.log(
+                                warn_level(
+                                    _warned_responses_chunk_parse,
+                                    "chunk_parse",
+                                    cooldown_s=_RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S,
+                                ),
+                                "Chunk parse failed (seq=%s): %s", seq, exc,
+                                exc_info=True,
                             )
                             await event_queue.put((seq, None))
                             continue
@@ -331,15 +351,13 @@ class ResponsesAdapter:
         next_seq = 0
         done_workers = 0
         coalescer = NagleCoalescer(min_flush_chars=nagle_min_chars)
-        event_queue_warn_last_ts: float = 0.0
 
         first_event_from_queue = False
         first_yield_done = False
 
         try:
             while True:
-                # Idle timeout: flush both buffers when producer pauses
-                timeout = idle_flush_seconds if (idle_flush_seconds and coalescer.has_buffered) else None
+                timeout = idle_flush_timeout(coalescer, idle_flush_seconds)
                 timed_out = False
                 seq: int | None = None
                 event: dict[str, Any] | None = None
@@ -356,7 +374,7 @@ class ResponsesAdapter:
 
                 if timed_out:
                     idle_queue: list[dict[str, Any]] = []
-                    coalescer.flush_all_to(idle_queue)  # force=True (default)
+                    coalescer.flush_all_to(idle_queue)
                     for item in idle_queue:
                         if not first_yield_done:
                             first_yield_done = True
@@ -366,20 +384,17 @@ class ResponsesAdapter:
 
                 event_queue.task_done()
 
-                # Non-spammy queue monitoring (once per drain cycle)
-                now = time.perf_counter()
                 if self._pipe._should_warn_event_queue_backlog(
-                    event_queue.qsize(),
-                    event_queue_warn_size,
-                    now,
-                    event_queue_warn_last_ts,
+                    event_queue.qsize(), event_queue_warn_size
                 ):
-                    self.logger.warning(
+                    self.logger.log(
+                        warn_level(
+                            _warned_queue_backlog, "event_queue", cooldown_s=30.0
+                        ),
                         "Event queue backlog high: %d items (session=%s)",
                         event_queue.qsize(),
                         SessionLogger.session_id.get() or "unknown",
                     )
-                    event_queue_warn_last_ts = now
 
                 if seq is None:
                     done_workers += 1
@@ -434,7 +449,6 @@ class ResponsesAdapter:
                 if done_workers >= workers and not pending_events:
                     break
 
-            # Final flush (unconditional)
             final_queue: list[dict[str, Any]] = []
             coalescer.flush_all_to(final_queue)
             for item in final_queue:

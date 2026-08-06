@@ -225,13 +225,11 @@ def test_live_sessions_caps_and_fields():
 
 def test_task_costs_by_chat_excludes_same_worker_folded():
     tracker = SessionTracker()
-    # chat + its task on the SAME worker (both chat_id="c1") fold locally, so the
     # task is NOT reported for cross-worker folding.
     _start(tracker, rid="chat1")
     tracker.finalize("chat1", _usage(cost=0.10), "ok")
     _start(tracker, rid="task1", task="title_generation")
     tracker.finalize("task1", _usage(cost=0.004), "ok")
-    # a task whose parent chat is NOT on this worker (different chat_id, no chat entry)
     _start(tracker, rid="task2", task="tags_generation",
            metadata={"chat_id": "c-other", "session_id": "s1", "user_id": "u1"})
     tracker.finalize("task2", _usage(cost=0.002), "ok")
@@ -252,7 +250,6 @@ def test_live_snapshot_returns_atomic_sessions_and_task_costs():
     assert [r["kind"] for r in rows] == ["chat"]
     assert rows[0]["chat_id"] == "c1"
     assert task_costs == {"c-other": pytest.approx(0.002)}
-    # the single-lock snapshot returns the same content as the two façade getters
     assert rows == tracker.live_sessions()
     assert task_costs == tracker.task_costs_by_chat()
 
@@ -393,5 +390,4 @@ async def test_plugin_on_shutdown_combines_publisher_and_purge():
     assert returned is not None
     await returned
     assert publisher.cancelled()
-    # writer join happens off the event loop (via asyncio.to_thread)
     assert plugin._usage_store.join_writer.called

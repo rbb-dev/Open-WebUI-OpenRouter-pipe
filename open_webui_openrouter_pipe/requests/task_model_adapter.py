@@ -21,7 +21,7 @@ from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
-from ..models.registry import ModelFamily, OpenRouterModelRegistry
+from ..models.registry import OpenRouterModelRegistry
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -62,7 +62,6 @@ class TaskModelAdapter:
                     if content.get("type") == "output_text":
                         text_parts.append(content.get("text", "") or "")
 
-        # Fallback: some providers return a collapsed output_text field
         fallback_text = response.get("output_text")
         if isinstance(fallback_text, str):
             text_parts.append(fallback_text)
@@ -115,14 +114,6 @@ class TaskModelAdapter:
         task_body["model"] = OpenRouterModelRegistry.api_model_id(source_model_id) or source_model_id
         task_body.setdefault("input", "")
         task_body["stream"] = False
-        if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
-            if task_body.get("max_output_tokens") is None:
-                default_max = ModelFamily.max_completion_tokens(source_model_id)
-                if default_max:
-                    task_body["max_output_tokens"] = default_max
-        else:
-            task_body.pop("max_output_tokens", None)
-
         identifier_user_id = str(
             (user_id or "")
             or (
@@ -143,7 +134,7 @@ class TaskModelAdapter:
         task_body = _filter_openrouter_request(task_body)
 
         attempts = 2
-        delay_seconds = 0.2  # keep retries snappy; task models run in latency-sensitive contexts
+        delay_seconds = 0.2
         last_error: Exception | None = None
 
         if session is None:
@@ -215,7 +206,7 @@ class TaskModelAdapter:
                     attempt,
                     attempts,
                     exc,
-                    exc_info=True and (not is_auth_failure),
+                    exc_info=not is_auth_failure,
                 )
                 if is_auth_failure:
                     break
@@ -227,7 +218,7 @@ class TaskModelAdapter:
         error_message = (
             f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
         )
-        self.logger.exception(error_message)
+        self.logger.error(error_message, exc_info=last_error)
         await self._pipe._dispatch_plugin_event(
             "dispatch_on_generation_complete",
             None,

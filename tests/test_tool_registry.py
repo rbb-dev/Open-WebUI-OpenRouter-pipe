@@ -710,7 +710,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert len(tools) == 1
         # But registry should be empty (passthrough means no pipeline execution)
         assert registry == {}
-        # exposed_to_origin should still be populated
         assert "pass_tool" in exposed_to_origin
 
     def test_tool_cfg_without_callable_not_in_registry(self):
@@ -1327,7 +1326,6 @@ class TestAdditionalCoverage:
         assert tools[0]["name"] == "pass_tool"
         # But registry should be empty (passthrough skips registry population)
         assert registry == {}
-        # exposed_to_origin should still be populated
         assert "pass_tool" in exposed_to_origin
 
     def test_direct_entry_with_passthrough_includes_without_callable(self):

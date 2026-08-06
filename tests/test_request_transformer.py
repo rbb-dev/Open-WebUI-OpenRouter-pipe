@@ -2738,7 +2738,6 @@ class TestAudioProcessingEdgeCases:
         result = await transform_messages_to_input(pipe_instance, messages)
 
         audio_block = result[0]["content"][0]
-        # wma is not an OpenRouter-accepted input_audio format -> defaults to mp3
         assert audio_block["input_audio"]["format"] == "mp3"
 
 
@@ -3920,7 +3919,6 @@ class TestFileDataRemainsAfterProcessing:
         result = await transform_messages_to_input(pipe_instance, messages)
 
         file_block = result[0]["content"][0]
-        # file_data should be preserved since SAVE_FILE_DATA_CONTENT is False
         assert file_block.get("file_data") == raw_data
 
 

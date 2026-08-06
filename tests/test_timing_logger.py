@@ -324,7 +324,6 @@ class TestFormatTimingJsonl:
 
                 buffer.append({"label": "bad", "data": NonSerializable()})
 
-        # format_timing_jsonl should skip the malformed event
         result = tl.format_timing_jsonl("req-malformed")
 
         # Should contain the normal mark but not crash

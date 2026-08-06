@@ -79,7 +79,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission, graceful degradation. 5200+ pytest tests, both readable and compressed bundle variants.
+Rate limiting, circuit breakers, request admission, graceful degradation. 5900+ pytest tests, all four generated bundles (readable and compressed, each with and without plugins).
 
 🔐 **Security First**
 Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).
@@ -202,7 +202,7 @@ Plus [`CHANGELOG.md`](CHANGELOG.md) — audit trail of changes.
 
 ## Contributing & forking
 
-If you fork this, run the same checks CI does before pushing: `ruff check`, `pyright`, and `pytest`. CI validates the source plus both generated bundles (readable + compressed) on every push.
+If you fork this, run the same checks CI does before pushing: `ruff check`, `pyright`, and `pytest`. CI validates the source plus all four generated bundles (readable and compressed, each with and without plugins) across five test modes on every push.
 
 For code review, start with the pytest suite in `tests/` — broad coverage across chat, image, video, tools, filters, persistence, and the streaming pipeline.
 

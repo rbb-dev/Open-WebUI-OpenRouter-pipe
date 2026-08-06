@@ -1047,9 +1047,10 @@ This handles:
 
 What does NOT survive:
 
-- **`local:` chats** (chat IDs starting with `local:`): Open WebUI does
+- **Chats with no stored row** (chat IDs starting with `temporary:`, `local:` or `channel:`): Open WebUI does
   not persist these to chat storage, so markers can't be written. The
-  on-submit `'message'` emit is skipped explicitly for `local:` chats.
+  on-submit `'message'` emit is skipped for all three. `local:` is Open WebUI's legacy
+  spelling of `temporary:`; `channel:` is an ordinary channel invocation, not an edge case.
   They complete in-process but aren't recoverable across process
   restarts.
 - **OpenRouter job expiry**: OpenRouter videos expire after a

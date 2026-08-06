@@ -16,6 +16,13 @@ try:
     from open_webui.models.users import Users
 except ImportError:
     Users = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.users failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    Users = None  # type: ignore
 
 
 @timed

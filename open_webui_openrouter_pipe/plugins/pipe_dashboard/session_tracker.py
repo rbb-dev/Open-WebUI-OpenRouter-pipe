@@ -19,6 +19,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from ...core.warn_latch import warn_level
+from .usage_store import usage_ts_from_epoch
+
 logger = logging.getLogger(__name__)
 
 _ST_ACTIVE_CAP = 30
@@ -60,7 +63,7 @@ class SessionTracker:
         self._recent: list[dict[str, Any]] = []
         self._pricing_fn = pricing_fn
         self._name_fn = name_fn
-        self._warned_name_fn = False
+        self._warned_name_fn: set[str] = set()
         self._pid = os.getpid()
         self.on_finalize: Callable[[dict[str, Any]], None] | None = None
 
@@ -125,13 +128,12 @@ class SessionTracker:
         try:
             return str(fn(model_id) or model_id)
         except Exception:
-            if not self._warned_name_fn:
-                self._warned_name_fn = True
-                logger.warning(
-                    "pipe_dashboard: model-name resolver failed; sessions will show raw "
-                    "model ids",
-                    exc_info=True,
-                )
+            logger.log(
+                warn_level(self._warned_name_fn, "model_name_resolver_failed"),
+                "pipe_dashboard: model-name resolver failed; sessions will show raw "
+                "model ids",
+                exc_info=True,
+            )
             return model_id
 
     def mark_streaming(self, request_id: str) -> None:
@@ -317,13 +319,11 @@ class SessionTracker:
 
     def db_row(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Map a finalized entry to the UsageStore row schema."""
-        import datetime
-
         done = float(entry.get("done") or time.time())
         started = float(entry.get("started") or done)
         return {
-            "ts": datetime.datetime.fromtimestamp(done, tz=datetime.UTC).astimezone().replace(tzinfo=None),
-            "started_at": datetime.datetime.fromtimestamp(started, tz=datetime.UTC).astimezone().replace(tzinfo=None),
+            "ts": usage_ts_from_epoch(done),
+            "started_at": usage_ts_from_epoch(started),
             "kind": entry.get("kind") or "chat",
             "user_id": entry.get("user_id") or "",
             "user_name": entry.get("user_name") or "",

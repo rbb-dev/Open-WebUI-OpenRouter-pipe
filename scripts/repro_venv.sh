@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Reproduce this repo's Python virtualenv for other users.
-# Uses latest available versions (no pins).
+# Latest available versions except the two gating tools, which are pinned to CI's.
 
 VENV_DIR="${VENV_DIR:-.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -30,8 +30,8 @@ fi
 
 # --- installs (append as we go) ---
 "$VENV_DIR/bin/python" -m pip install --upgrade --prefer-binary open-webui
-"$VENV_DIR/bin/python" -m pip install --upgrade -e .
-"$VENV_DIR/bin/python" -m pip install --upgrade pytest pytest-asyncio pytest-cov aioresponses
-"$VENV_DIR/bin/python" -m pip install --upgrade ruff pyright vulture pyflakes
+"$VENV_DIR/bin/python" -m pip install --upgrade -e ".[test]"
+"$VENV_DIR/bin/python" -m pip install --upgrade pytest-cov
+"$VENV_DIR/bin/python" -m pip install --upgrade ruff==0.16.0 pyright==1.1.408 vulture pyflakes
 "$VENV_DIR/bin/python" -m pip install --upgrade git-filter-repo
 "$VENV_DIR/bin/python" -m pip install --upgrade cairosvg

@@ -19,6 +19,8 @@ import logging
 import shutil
 import tempfile
 import uuid
+from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -28,15 +30,30 @@ from starlette.datastructures import Headers
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
 from ..core.errors import RequiredInternalFileError
 from ..core.timing_logger import timed
+from ..core.warn_latch import warn_level
 
 try:
     from open_webui.models.files import Files  # type: ignore[import-not-found]
 except ImportError:
     Files = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.files failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    Files = None  # type: ignore
 
 try:
     from open_webui.models.users import Users  # type: ignore[import-not-found]
 except ImportError:
+    Users = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.users failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     Users = None  # type: ignore
 
 try:
@@ -44,6 +61,13 @@ try:
         upload_file_handler,  # type: ignore[import-not-found]
     )
 except ImportError:
+    upload_file_handler = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.routers.files failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     upload_file_handler = None  # type: ignore
 
 try:
@@ -82,7 +106,7 @@ async def get_file_by_id(file_id: str, logger: logging.Logger) -> Any | None:
         return None
 
 
-_warned_storage_provider: set[bool] = set()
+_warned_storage_provider: set[str] = set()
 
 
 def get_owui_storage() -> Any | None:
@@ -94,12 +118,11 @@ def get_owui_storage() -> Any | None:
 
         return Storage
     except Exception:
-        if not _warned_storage_provider:
-            _warned_storage_provider.add(True)
-            logging.getLogger(__name__).warning(
-                "Open WebUI storage provider unavailable; file attachments will fail",
-                exc_info=True,
-            )
+        logging.getLogger(__name__).log(
+            warn_level(_warned_storage_provider, "storage_provider_unavailable"),
+            "Open WebUI storage provider unavailable; file attachments will fail",
+            exc_info=True,
+        )
         return None
 
 
@@ -157,16 +180,110 @@ def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
     return temp_path
 
 
+async def _linked_ok(result: Any, chat_id: str, message_id: str, file_id: str) -> bool:
+    """Decide whether a file is linked, given insert_chat_files' ambiguous return.
+
+    Open WebUI returns None from four places -- empty input, every requested file
+    already linked, no read access, and a caught exception around the DB write -- and
+    its success path returns a list built from a non-empty id list, so it never returns
+    an empty one. The return value therefore separates nothing: reading None as failure
+    warns on every benign re-link, and reading it as success discards every real failure.
+
+    Asking whether the link now exists distinguishes them. Note the already-linked
+    branch is unreachable in practice -- Open WebUI compares the requested file ids
+    against chat_file *row* ids, which never match -- so a re-link reaches the INSERT
+    and returns None from the unique-constraint failure instead. Both land here.
+
+    The lookup is scoped to one message, matching where the caller wants the file to
+    appear; the same file linked under a different message in the chat is reported as
+    not linked here, which is correct for that caller.
+    """
+    if result:
+        return True
+    try:
+        from open_webui.models.chats import Chats  # type: ignore[import-not-found]
+
+        linked = await Chats.get_chat_files_by_chat_id_and_message_id(chat_id, message_id)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Could not confirm chat-link state for file %s", file_id, exc_info=True
+        )
+        return False
+    return any(getattr(item, "file_id", None) == file_id for item in linked or [])
+
+
+_UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", "channel:")
+
+
+@lru_cache(maxsize=1)
+def _unlinkable_chat_prefixes() -> tuple[str, ...]:
+    """Open WebUI's own list where it publishes one, the literal above otherwise.
+
+    Upstream owns this set (`utils.chat_id.NON_SAVED_CHAT_ID_PREFIXES`), and the copy
+    here has already drifted from it twice -- `local:` -> `temporary:`, and the separate
+    addition of `channel:`, which reached exactly one of the gates that needed it. The
+    next prefix Open WebUI adds would be silently uncovered.
+
+    Guarded because `utils.chat_id` does not exist in every supported Open WebUI: it is
+    absent from the 0.10.x line and the manifest requires only 0.9.1, so an unguarded
+    import would kill this module at import time on a deployment that works today.
+
+    Cached because the answer cannot change inside a process and the miss is the
+    expensive case -- a failed import re-walks sys.path, and this runs on every upload.
+    `cache_clear()` is the reset seam.
+
+    A published value is only adopted once it survives being useless. Taking one at face
+    value fails open in two ways that both silently delete the gate: a bare string is
+    iterable, so `"temporary:"` becomes the characters `t`, `e`, `m` ... and any chat id
+    starting with `t` reads as unlinkable; and `""` makes `startswith` true for
+    everything, so nothing is linkable at all.
+    """
+    try:
+        from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
+            NON_SAVED_CHAT_ID_PREFIXES,
+        )
+
+        published = NON_SAVED_CHAT_ID_PREFIXES
+    except ImportError:
+        return _UNLINKABLE_CHAT_PREFIXES
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.utils.chat_id failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        return _UNLINKABLE_CHAT_PREFIXES
+    if isinstance(published, str) or not isinstance(published, Iterable):
+        return _UNLINKABLE_CHAT_PREFIXES
+    upstream = tuple(p for p in published if isinstance(p, str) and p.strip())
+    # UNION, not replace. The local tuple is this pipe's own record of which chat ids
+    # have no `chat` row -- not an approximation of upstream's list. Upstream maintains
+    # theirs for their own reasons, and `local:` is named LEGACY_TEMPORARY_CHAT_ID_PREFIX
+    # there, so the day they retire it a replace would silently retire it here too and
+    # every upload in a temporary chat would start reaching the chat_files INSERT.
+    return _UNLINKABLE_CHAT_PREFIXES + tuple(
+        p for p in upstream if p not in _UNLINKABLE_CHAT_PREFIXES
+    )
+
+
 def is_linkable_chat(chat_id: Any) -> bool:
     """True when a chat id can actually carry a chat_files link.
 
-    Temporary Chats use ``local:`` ids that exist only in the browser, so there is
-    nothing to link and a failed link there is expected, not a fault.
+    Every prefix above names a conversation with no ``chat`` row. Temporary Chats exist
+    only in the browser; a channel invocation runs the whole chat pipeline with
+    ``chat_id = f"channel:{channel.id}"``. Anything that treats one of them as linkable
+    reaches an INSERT whose foreign key cannot resolve -- logging a spurious "was not
+    linked" on every upload where the FK is enforced, and accruing an orphan
+    ``chat_file`` row per upload where it is not.
+
+    This is the single gate: every other chat-id check in the package delegates here so
+    a fourth prefix is one edit. They used to test ``local:`` individually, which is how
+    ``channel:`` reached exactly one of them.
     """
     if not isinstance(chat_id, str):
         return False
     normalized = chat_id.strip()
-    return bool(normalized) and not normalized.startswith("local:")
+    return bool(normalized) and not normalized.startswith(_unlinkable_chat_prefixes())
 
 
 def is_real_owui_file_record(file_obj: Any) -> bool:
@@ -685,7 +802,7 @@ class OwuiFileGateway:
             upload_metadata: dict[str, Any] = {"mime_type": mime_type}
             if isinstance(chat_id, str):
                 normalized_chat_id = chat_id.strip()
-                if normalized_chat_id and not normalized_chat_id.startswith("local:"):
+                if is_linkable_chat(normalized_chat_id):
                     upload_metadata["chat_id"] = normalized_chat_id
             if isinstance(message_id, str):
                 normalized_message_id = message_id.strip()
@@ -775,7 +892,7 @@ class OwuiFileGateway:
             upload_metadata: dict[str, Any] = {"mime_type": mime_type}
             if isinstance(chat_id, str):
                 normalized_chat_id = chat_id.strip()
-                if normalized_chat_id and not normalized_chat_id.startswith("local:"):
+                if is_linkable_chat(normalized_chat_id):
                     upload_metadata["chat_id"] = normalized_chat_id
             if isinstance(message_id, str):
                 normalized_message_id = message_id.strip()
@@ -886,28 +1003,39 @@ class OwuiFileGateway:
 
         try:
             from open_webui.models.chats import Chats  # type: ignore[import-not-found]
-        except ImportError:
+        except Exception:
             self.logger.debug("Chat-link skipped: open_webui.models.chats unavailable", exc_info=True)
             return False
 
         if not hasattr(Chats, "insert_chat_files"):
             return False
 
+        target = file_id.strip()
         try:
-            return bool(await Chats.insert_chat_files(
-                chat_id=normalized_chat_id,
-                message_id=normalized_message_id or "",
-                file_ids=[file_id.strip()],
-                user_id=normalized_user_id,
-            ))
+            return await _linked_ok(
+                await Chats.insert_chat_files(
+                    chat_id=normalized_chat_id,
+                    message_id=normalized_message_id or "",
+                    file_ids=[target],
+                    user_id=normalized_user_id,
+                ),
+                normalized_chat_id,
+                normalized_message_id or "",
+                target,
+            )
         except TypeError:
             try:
-                return bool(await Chats.insert_chat_files(
+                return await _linked_ok(
+                    await Chats.insert_chat_files(
+                        normalized_chat_id,
+                        normalized_message_id or "",
+                        [target],
+                        normalized_user_id,
+                    ),
                     normalized_chat_id,
                     normalized_message_id or "",
-                    [file_id.strip()],
-                    normalized_user_id,
-                ))
+                    target,
+                )
             except Exception:
                 self.logger.warning(
                     "Chat-link failed for file %s (positional call)", file_id, exc_info=True

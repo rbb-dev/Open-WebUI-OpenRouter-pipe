@@ -25,12 +25,10 @@ from typing import TYPE_CHECKING, Any, Literal
 import aiohttp
 from fastapi import Request
 
-# Import parent module classes that are needed at runtime
 if TYPE_CHECKING:
     from ..api.transforms import ResponsesBody
     from ..pipe import Pipe
 else:
-    # At runtime, avoid circular imports
     Pipe = Any
     ResponsesBody = Any
 
@@ -74,11 +72,15 @@ from ..core.utils import (
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
+    SERVER_TOOL_FAILURE_STATUSES,
+    SERVER_TOOL_IN_FLIGHT_STATUSES,
+    SERVER_TOOL_SUCCESS_STATUSES,
     _redact_payload_blobs,
     _render_error_template,
     _safe_json_loads,
     _serialize_marker,
     _serialize_phase_marker,
+    citation_access_stamp,
     merge_usage_stats,
     wrap_code_block,
 )
@@ -115,27 +117,42 @@ try:
     from open_webui.models.chats import Chats  # type: ignore[import-not-found]
 except ImportError:
     Chats = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.chats failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    Chats = None  # type: ignore
 
-# Import citation extraction function (OpenWebUI >= 0.7.0)
 try:
     from open_webui.utils.middleware import (
         get_citation_source_from_tool_result,  # type: ignore[import-not-found]
     )
 except ImportError:
     get_citation_source_from_tool_result = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    get_citation_source_from_tool_result = None  # type: ignore
 
-# Import OWUI's apply_source_context_to_messages for source context injection
-# This is the authoritative implementation - we use adapter transforms to support Responses API
 try:
     from open_webui.utils.middleware import (
         apply_source_context_to_messages as _owui_apply_source_context,  # type: ignore[import-not-found]
     )
 except ImportError:
     _owui_apply_source_context = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_apply_source_context = None  # type: ignore
 
-# Detect whether OWUI supports include_content param (added in v0.8.4 to avoid
-# duplicating tool result content inside <source> tags when it's already in the
-# tool result message). Checked once at import time — zero per-request cost.
 try:
     _OWUI_SUPPORTS_INCLUDE_CONTENT = (
         _owui_apply_source_context is not None
@@ -144,7 +161,6 @@ try:
 except (TypeError, ValueError):
     _OWUI_SUPPORTS_INCLUDE_CONTENT = False
 
-# Import our transform function for Responses API → Chat Completions conversion
 from ..api.transforms import _responses_input_to_chat_messages
 
 _monotonic = time.monotonic
@@ -230,16 +246,13 @@ def _chat_messages_to_responses_input(messages: list) -> list:
                 btype = block.get("type", "")
 
                 if btype == "text":
-                    # Transform text → input_text, preserving ALL other fields
-                    transformed = dict(block)  # Copy everything
-                    transformed["type"] = "input_text"  # Only change type
+                    transformed = dict(block)
+                    transformed["type"] = "input_text"
                     content_blocks.append(transformed)
 
                 elif btype == "image_url":
-                    # Transform image_url → input_image, flatten nested url
-                    transformed = dict(block)  # Copy everything
+                    transformed = dict(block)
                     transformed["type"] = "input_image"
-                    # Flatten nested {"url": "..."} to just the url string
                     img_url = transformed.pop("image_url", {})
                     if isinstance(img_url, dict):
                         transformed["image_url"] = img_url.get("url", "")
@@ -251,9 +264,7 @@ def _chat_messages_to_responses_input(messages: list) -> list:
                     content_blocks.append(transformed)
 
                 elif btype == "file":
-                    # Transform file → input_file (reverse of _responses_input_to_chat_messages)
-                    # This ensures round-trip integrity when source context injection modifies messages
-                    transformed = dict(block)  # Copy everything
+                    transformed = dict(block)
                     transformed["type"] = "input_file"
                     file_payload = transformed.pop("file", {})
                     if isinstance(file_payload, dict):
@@ -264,14 +275,12 @@ def _chat_messages_to_responses_input(messages: list) -> list:
                     content_blocks.append(transformed)
 
                 else:
-                    # Pass through ALL other block types unchanged
                     content_blocks.append(block)
 
         if content_blocks:
-            # Start with original message, add/update only what we need
-            out_msg = dict(msg)  # Copy ALL fields from original
-            out_msg["type"] = "message"  # Ensure type is set
-            out_msg["content"] = content_blocks  # Replace with transformed content
+            out_msg = dict(msg)
+            out_msg["type"] = "message"
+            out_msg["content"] = content_blocks
             result.append(out_msg)
 
     return result
@@ -297,7 +306,7 @@ async def _apply_source_context_responses_api(
     OWUI round-trip changes the number of message items, the original input is
     returned unchanged to avoid corrupting the request structure.
     """
-    _logger = logging.getLogger("open_webui_openrouter_pipe.streaming.source_context")
+    _logger = logging.getLogger(f"{__name__}.source_context")
 
     if not sources or not user_message:
         return input_items
@@ -310,7 +319,6 @@ async def _apply_source_context_responses_api(
         _logger.warning("request_context is None - cannot apply source context")
         return input_items
 
-    # Step 1: Collect message items and preserve their original indices.
     messages_only: list[dict[str, Any]] = []
     message_indices: list[int] = []
 
@@ -326,16 +334,11 @@ async def _apply_source_context_responses_api(
     )
 
     if not messages_only:
-        # No messages to process - return original
         return input_items
 
-    # Step 2: Convert Responses API messages → Chat Completions messages
     chat_messages = _responses_input_to_chat_messages(messages_only, allow_unknown_fields=True)
     _logger.debug("Converted %d Responses API messages → %d Chat Completions messages", len(messages_only), len(chat_messages))
 
-    # Step 3: Apply OWUI's source context injection (handles RAG template, citation formatting)
-    # Pass include_content=False (OWUI ≥0.8.4) to avoid duplicating tool result
-    # content inside <source> tags — the content is already in the tool result message.
     modified_chat_messages = await _owui_apply_source_context(
         request_context,
         chat_messages,
@@ -345,7 +348,6 @@ async def _apply_source_context_responses_api(
     )
     _logger.debug("Applied source context via OWUI adapter")
 
-    # Step 4: Convert back Chat Completions → Responses API input
     modified_messages = _chat_messages_to_responses_input(modified_chat_messages)
     _logger.debug("Converted %d Chat Completions messages → %d Responses API messages", len(modified_chat_messages), len(modified_messages))
 
@@ -357,7 +359,6 @@ async def _apply_source_context_responses_api(
         )
         return input_items
 
-    # Step 5: Reinsert transformed messages into their original slots.
     result = list(input_items)
     for idx, message in zip(message_indices, modified_messages):
         result[idx] = message
@@ -369,6 +370,34 @@ async def _apply_source_context_responses_api(
     )
 
     return result
+
+
+def _server_tool_status(item: dict[str, Any]) -> str:
+    """Card status for a server-side tool result.
+
+    The item carries its own outcome. Hardcoding "completed" labels a tool that
+    returned an error, or a non-2xx httpStatus, as a call that worked -- and Open
+    WebUI appends the card verbatim onto the persisted assistant message.
+    """
+    reported = item.get("status")
+    if isinstance(reported, str) and reported:
+        if reported in SERVER_TOOL_IN_FLIGHT_STATUSES:
+            return "in_progress"
+        if reported in SERVER_TOOL_FAILURE_STATUSES:
+            return "incomplete"
+        if reported not in SERVER_TOOL_SUCCESS_STATUSES:
+            return "incomplete"
+    if item.get("error"):
+        return "incomplete"
+    http_status = item.get("httpStatus")
+    if http_status is not None:
+        try:
+            code = int(http_status)
+        except (TypeError, ValueError):
+            return "incomplete"
+        if not 200 <= code < 300:
+            return "incomplete"
+    return "completed"
 
 
 class StreamingHandler:
@@ -393,7 +422,7 @@ class StreamingHandler:
         logger: logging.Logger,
         valves: Any,
         model_registry: Any,
-        pipe_instance: Any,  # Reference to Pipe instance for helper methods
+        pipe_instance: Any,
     ):
         """Initialize StreamingHandler with dependencies.
 
@@ -451,9 +480,6 @@ class StreamingHandler:
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
-        # The streaming emitter wrapper passes a missing emitter through as None,
-        # so normalize to a no-op here: the loop emits at many sites and most are
-        # unguarded, and a None emitter would crash mid-stream on the first delta.
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
 
@@ -466,9 +492,6 @@ class StreamingHandler:
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS and (not owui_tool_passthrough)
-        # In OWUI passthrough mode, each tool iteration is a separate pipe call.
-        # Detect continuation calls (input already has function_call_output items)
-        # to suppress redundant status emissions (thinking bubbles, cost stats).
         is_continuation = False
         if owui_tool_passthrough and isinstance(body.input, list):
             is_continuation = any(
@@ -636,7 +659,7 @@ class StreamingHandler:
                     "document": [title or url],
                     "metadata": [{
                         "source": url,
-                        "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
+                        "date_accessed": citation_access_stamp(),
                     }],
                 }
                 try:
@@ -862,8 +885,15 @@ class StreamingHandler:
             result_text: str,
             files: list | None = None,
             embeds: list | None = None,
+            status: str,
         ) -> None:
-            """Emit a completed tool result card. Used by both pipeline and server tools."""
+            """Emit a tool result card. Used by both pipeline and server tools.
+
+            The status is a parameter, not a constant: this is the display card for
+            EVERY output, including the failure stubs built when a tool raises or the
+            call loop is cut short. Open WebUI appends the item verbatim into the
+            persisted message, so hardcoding "completed" stores a failure as a success.
+            """
             nonlocal emitted_response_output_items
             if not event_emitter or not call_id or call_id in emitted_tool_output_items:
                 return
@@ -874,7 +904,7 @@ class StreamingHandler:
                 "id": f"fco-{uuid.uuid4().hex}",
                 "call_id": call_id,
                 "output": [{"type": "input_text", "text": result_text}],
-                "status": "completed",
+                "status": status,
             }
             if files:
                 output_item["files"] = files
@@ -1045,9 +1075,6 @@ class StreamingHandler:
             if not pending_items:
                 return
             rows = pending_items[:]
-            # Clear immediately so a failure here does not cause the same rows
-            # to be re-attempted during later flushes. Callers report the error
-            # to the UI instead of silently retrying.
             pending_items.clear()
             try:
                 ulids = await self._pipe._artifact_store._db_persist(rows)
@@ -1174,7 +1201,7 @@ class StreamingHandler:
                     "document": [content[:citation_excerpt_max] if content else title],
                     "metadata": [{
                         "source": url,
-                        "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
+                        "date_accessed": citation_access_stamp(),
                     }],
                 }
                 try:
@@ -1185,7 +1212,6 @@ class StreamingHandler:
 
         request_started_at = perf_counter()
 
-        # Send OpenAI Responses API request, parse and emit response
         error_occurred = False
         was_cancelled = False
         loop_limit_reached = False
@@ -1201,9 +1227,6 @@ class StreamingHandler:
 
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
-                # The +1 iteration is reserved exclusively for the synthesis
-                # turn after stub injection.  If we reach it without having
-                # injected stubs, exit the loop normally.
                 if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:
                     break
 
@@ -1299,9 +1322,6 @@ class StreamingHandler:
                     if etype == "openrouter_pipe.chat_fallback":
                         fell_back_to_chat = True
                         continue
-                    # Note: Don't call note_model_activity() here for ALL events.
-                    # We only want to cancel thinking tasks when actual output or action starts,
-                    # not during reasoning phases. Moved to specific event handlers below.
 
                     is_delta_event = bool(etype and etype.endswith(".delta"))
                     if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
@@ -1312,7 +1332,6 @@ class StreamingHandler:
                         )
 
                     if etype:
-                        # Track the most-recent reasoning item id so unkeyed reasoning deltas can be associated.
                         if etype == "response.output_item.added":
                             item_raw = event.get("item")
                             item = item_raw if isinstance(item_raw, dict) else {}
@@ -1336,7 +1355,6 @@ class StreamingHandler:
                         )
                         if is_reasoning_event or is_reasoning_part_event:
                             reasoning_stream_active = True
-                            # Stop "Thinking..." placeholders when reasoning starts
                             note_model_activity()
 
                             key = _reasoning_stream_key(event, etype)
@@ -1446,9 +1464,8 @@ class StreamingHandler:
                             await _emit_fusion_event(event)
                             retry_barrier_crossed = True
 
-                    # --- Emit partial delta assistant message
                     if etype == "response.output_text.delta":
-                        note_model_activity()  # Cancel thinking tasks when actual output starts
+                        note_model_activity()
                         if reasoning_display:
                             _close_open_reasoning_windows()
                             for reasoning_key in list(reasoning_display):
@@ -1555,7 +1572,6 @@ class StreamingHandler:
                                 elif args_text.startswith(prev_args):
                                     suffix = args_text[len(prev_args) :]
                                 if not suffix:
-                                    # If we cannot safely compute a suffix, fall back to completion payload later.
                                     continue
 
                                 streamed_tool_call_ids.add(call_id)
@@ -1626,7 +1642,6 @@ class StreamingHandler:
                                     )
                         continue
 
-                    # --- Citations from inline annotations (emit metadata only) ---------------
                     if etype == "response.output_text.annotation.added":
                         ann = event.get("annotation") or {}
                         await _notify_unhandled_citations([ann])
@@ -1649,7 +1664,7 @@ class StreamingHandler:
                                 "document": [ann_content[:citation_excerpt_max] if ann_content else title],
                                 "metadata": [{
                                     "source": url,
-                                    "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
+                                    "date_accessed": citation_access_stamp(),
                                 }],
                             }
                             try:
@@ -1661,7 +1676,6 @@ class StreamingHandler:
                         continue
 
 
-                    # --- Emit status updates for in-progress items ----------------------
                     if etype == "response.output_item.added":
                         item_raw = event.get("item")
                         item = item_raw if isinstance(item_raw, dict) else {}
@@ -1720,7 +1734,6 @@ class StreamingHandler:
                                 event_emitter, tool_label, done=False
                             )
 
-                    # --- Emit detailed tool status upon completion ------------------------
                     if etype == "response.output_item.done":
                         item_raw = event.get("item")
                         item = item_raw if isinstance(item_raw, dict) else {}
@@ -1747,15 +1760,10 @@ class StreamingHandler:
                             should_persist = valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
 
                         elif item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
-                            # Never persist non-replayable artifacts (images, searches, etc.)
                             should_persist = False
 
                         elif item_type == "function_call":
-                            # Defer persistence until the corresponding tool result is stored
                             should_persist = False
-                            # Count calls in stream (generation) order so reasoning
-                            # can be sided relative to them -- this fires whether or
-                            # not the tool later succeeds or fails.
                             reasoning_anchor_state["stream_calls"] += 1
 
                         else:
@@ -1767,17 +1775,9 @@ class StreamingHandler:
                                 if item_type == "reasoning":
                                     normalized_item[REASONING_ANCHOR_SEQ_KEY] = reasoning_anchor_state["seq"]
                                     reasoning_anchor_state["seq"] += 1
-                                    # Defer the call-ordinal anchor to response.completed.
-                                    # Pair the payload with how many calls preceded it in
-                                    # the stream -- kept in this side list, NOT on the
-                                    # payload, so no scratch key can ever be persisted if
-                                    # the stream ends before the anchor is derived.
                                     reasoning_anchor_state["awaiting"].append(
                                         (normalized_item, reasoning_anchor_state["stream_calls"])
                                     )
-                                # NOTE: _make_db_row stores this payload BY REFERENCE
-                                # (persistence.py), so the anchor back-filled at
-                                # response.completed reaches the persisted row before flush.
                                 row = self._pipe._artifact_store._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_item
                                 )
@@ -1789,13 +1789,9 @@ class StreamingHandler:
                         content = ""
                         image_markdowns: list[str] = []
 
-                        # Prepare detailed content per item_type
                         if item_type == "function_call":
                             title = f"Running the {item_name} tool…"
                             raw_arguments = item.get("arguments")
-                            # OpenRouter `/responses` quirk: tool call items may be marked done with
-                            # `arguments: ""` (or arguments only appearing later in `response.completed`).
-                            # Avoid logging a misleading invocation like `tool_name()` in that case.
                             if isinstance(raw_arguments, str) and not raw_arguments.strip():
                                 title = f"Tool call requested: {item_name} (arguments pending)"
                                 content = ""
@@ -1941,8 +1937,7 @@ class StreamingHandler:
                             title = "Let me skim those files…"
                         elif item_type in ("image_generation_call", "openrouter:image_generation"):
                             title = "Let me create that image…"
-                            item_status = item.get("status")
-                            if item_status == "error":
+                            if _server_tool_status(item) == "incomplete":
                                 error_msg = item.get("error") or "Image generation failed"
                                 self.logger.warning("Image generation error: %s", error_msg)
                                 await self._pipe._event_emitter_handler._emit_notification(
@@ -1984,9 +1979,13 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="datetime",
                                     arguments="{}",
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_search":
                             title = None
@@ -1996,9 +1995,13 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="web_search",
                                     arguments="{}",
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             action = item.get("action") if isinstance(item.get("action"), dict) else {}
                             search_urls: list[str] = []
                             for u in (action.get("sources") or []):
@@ -2034,9 +2037,13 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="web_fetch",
                                     arguments=args_text,
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:advisor":
                             title = None
@@ -2050,9 +2057,13 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="advisor",
                                     arguments="{}",
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:subagent":
                             title = None
@@ -2066,9 +2077,13 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name="subagent",
                                     arguments="{}",
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
                             title = None
@@ -2092,14 +2107,18 @@ class StreamingHandler:
                                     call_id=item.get("id", ""),
                                     name=tool_name,
                                     arguments="{}",
-                                    status="completed",
+                                    status=_server_tool_status(item),
                                 )
-                                await _emit_tool_result(call_id=effective_id, result_text=result_text)
+                                await _emit_tool_result(
+                                    call_id=effective_id,
+                                    result_text=result_text,
+                                    status=_server_tool_status(item),
+                                )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
                         elif item_type == "reasoning":
-                            title = None # Don't emit a title for reasoning items
+                            title = None
                             key = _reasoning_stream_key(event, etype)
                             snapshot = _extract_reasoning_text_from_item(item)
                             normalized_snapshot = (
@@ -2120,7 +2139,6 @@ class StreamingHandler:
                                 await _maybe_emit_reasoning_status("", force=True)
                             await _emit_reasoning_item(key)
 
-                        # Log the status with prepared title and detailed content instead of emitting it
                         if title:
                             desc = title if not content else f"{title}\n{content}"
                             if thinking_tasks:
@@ -2140,7 +2158,6 @@ class StreamingHandler:
 
                         continue
 
-                    # --- Capture final response payload for this loop
                     if etype in ("response.completed", "response.done"):
                         if reasoning_display:
                             _close_open_reasoning_windows()
@@ -2161,7 +2178,7 @@ class StreamingHandler:
                             if fusion_state.record(event):
                                 await _emit_fusion_embed_once()
                                 await _emit_fusion_event(event)
-                        note_model_activity()  # Ensure thinking tasks are cancelled when response completes
+                        note_model_activity()
                         final_response = event.get("response", {})
                         response_completed_at = perf_counter()
                         if generation_started_at is not None:
@@ -2216,7 +2233,6 @@ class StreamingHandler:
                         level="warning",
                     )
 
-                # Extract usage information from OpenAI response and pass-through to Open WebUI
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
 
@@ -2228,8 +2244,6 @@ class StreamingHandler:
                         if isinstance(i, dict) and i.get("type") == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
-                    # Pass content=None on tool-only turns (assistant_message=="")
-                    # to avoid overwriting displayed reasoning/tool cards in OWUI.
                     intermediate_content = None if fusion_armed else (assistant_message if assistant_message else None)
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
@@ -2261,10 +2275,6 @@ class StreamingHandler:
                     kind="generation",
                 )
 
-                # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
-                # Per Responses API spec: the full output (reasoning, messages, function_calls)
-                # must be passed back on tool continuations to preserve the model's context.
-                # See: https://cookbook.openai.com/examples/responses_api/reasoning_items
                 continuation_input_items: list[dict[str, Any]] = []
                 reasoning_count = 0
                 message_count = 0
@@ -2298,14 +2308,31 @@ class StreamingHandler:
                             reason = "Tool call missing arguments"
                         else:
                             reason = "Invalid tool call"
-                        output_item = {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": reason,
-                            "status": "completed",
-                        }
-                        normalized_output = normalize_persisted_item(output_item)
+                        repaired_call = None
+                        if item.get("name"):
+                            repaired_call = normalize_persisted_item(
+                                {
+                                    "type": "function_call",
+                                    "call_id": call_id,
+                                    "name": item["name"],
+                                    "arguments": (
+                                        item["arguments"]
+                                        if isinstance(item.get("arguments"), str)
+                                        else "{}"
+                                    ),
+                                }
+                            )
+                        normalized_output = normalize_persisted_item(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": reason,
+                                "status": "incomplete",
+                            }
+                        )
                         if normalized_output:
+                            if repaired_call:
+                                continuation_input_items.append(repaired_call)
                             invalid_call_outputs.append(normalized_output)
                         else:
                             self.logger.warning(
@@ -2313,16 +2340,6 @@ class StreamingHandler:
                                 call_id,
                             )
 
-                # Derive each pending reasoning's ordering anchor from this
-                # response's output order. The anchor is the call's ORDINAL within
-                # the assistant turn (0,1,2...), which stays unique even when a
-                # provider reuses call_ids across rounds. Pending reasoning and the
-                # output's reasoning items are both in generation order, so they
-                # are matched by item id (the robust key, present on both the
-                # stream and the completed output), falling back to position for
-                # id-less items. Pending reasoning the output did NOT echo is sided
-                # by how many calls preceded it in the stream (when that count is
-                # trustworthy), then by the round's call context -- never dropped.
                 _ordered = final_response.get("output", [])
                 _fc_local = [
                     _j for _j, _o in enumerate(_ordered)
@@ -2345,7 +2362,7 @@ class StreamingHandler:
                         elif _calls_seen > 0:
                             _entry = ("preceding", _calls_seen - 1)
                         else:
-                            _entry = ("", -1)  # no call context yet; leave un-anchored
+                            _entry = ("", -1)
                     _derived.append(_entry)
                     _rid = _o.get("id")
                     if _rid:
@@ -2362,9 +2379,6 @@ class StreamingHandler:
                             _carried["format"] = _fmt
                         if _carried:
                             _signed_by_id[_rid] = _carried
-                # The stream call count is only trustworthy when it matches the
-                # authoritative count from the completed output; when it does, an
-                # un-echoed reasoning is sided by how many calls preceded it.
                 _stream_total = reasoning_anchor_state["stream_calls"]
                 _stream_consistent = _stream_total == _calls_seen + len(_fc_local)
                 for _idx, (_pending_reasoning, _stream_pos) in enumerate(reasoning_anchor_state["awaiting"]):
@@ -2383,9 +2397,6 @@ class StreamingHandler:
                     elif _idx < len(_derived):
                         _mode, _ordinal = _derived[_idx]
                     elif _calls_seen > 0:
-                        # Un-echoed and the stream count is unreliable: anchor after the
-                        # last known call rather than guessing it precedes one (a wrong
-                        # "following" guess could collapse it onto a real pre-call block).
                         _mode, _ordinal = "preceding", _calls_seen - 1
                     else:
                         _mode, _ordinal = "", -1
@@ -2397,8 +2408,7 @@ class StreamingHandler:
                 reasoning_anchor_state["calls_seen"] = _calls_seen + len(_fc_local)
 
                 if (call_items or invalid_call_outputs) and not owui_tool_passthrough:
-                    note_model_activity()  # Cancel thinking tasks when function calls begin
-                    # Preserve retained provider output items in their original order.
+                    note_model_activity()
                     if continuation_input_items:
                         body.input.extend(continuation_input_items)
                     if reasoning_count:
@@ -2587,6 +2597,7 @@ class StreamingHandler:
                                             "call not executed, so no output is available. "
                                             "Respond to the user using existing context (no further tool calls)."
                                         ),
+                                        "status": "incomplete",
                                     }
                                 )
                         else:
@@ -2609,11 +2620,11 @@ class StreamingHandler:
                                             call_id=call_id,
                                             name=tool_name,
                                             arguments=args_text,
+                                            status="in_progress",
                                         )
                                 except Exception as exc:
                                     self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
 
-                            # Set up per-tool completion callback for incremental card emission.
                             _tool_ctx = self._pipe._TOOL_CONTEXT.get()
                             if show_tool_cards and event_emitter and body.stream and _tool_ctx:
                                 async def _on_tool_complete(call: dict, result: dict) -> None:
@@ -2628,6 +2639,7 @@ class StreamingHandler:
                                         result_text=result_str,
                                         files=result.get("files") or None,
                                         embeds=result.get("embeds") or None,
+                                        status=str(result.get("status") or "completed"),
                                     )
 
                                 _tool_ctx.on_complete = _on_tool_complete
@@ -2651,6 +2663,7 @@ class StreamingHandler:
                                             "type": "function_call_output",
                                             "call_id": call_id,
                                             "output": f"Tool execution failed before completion: {exc}",
+                                            "status": "incomplete",
                                         }
                                     )
                             finally:
@@ -2665,8 +2678,6 @@ class StreamingHandler:
                             logger=self.logger,
                         )
 
-                        # Build call_id-keyed dicts for reliable downstream lookups
-                        # (replaces fragile positional zip/index matching).
                         call_by_id: dict[str, dict] = {}
                         for call in call_items:
                             cid = _extract_call_id(call)
@@ -2678,8 +2689,6 @@ class StreamingHandler:
                             if cid:
                                 output_by_call_id[cid] = output
 
-                        # Fallback card emission for any outputs not already emitted
-                        # incrementally by the on_complete callback (e.g. exception/limit paths).
                         if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
                                 for cid, output in output_by_call_id.items():
@@ -2691,11 +2700,11 @@ class StreamingHandler:
                                         result_text=result_str,
                                         files=output.get("files") or None,
                                         embeds=output.get("embeds") or None,
+                                        status=str(output.get("status") or "completed"),
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
 
-                        # Extract citations from successful tool results.
                         collected_sources: list[dict[str, Any]] = []
                         for cid, output in output_by_call_id.items():
                             if cid in omitted_call_ids:
@@ -2746,7 +2755,7 @@ class StreamingHandler:
                                         "document": [(snippet or title or url)[:citation_excerpt_max]],
                                         "metadata": [{
                                             "source": url,
-                                            "date_accessed": datetime.datetime.now(datetime.UTC).date().isoformat(),
+                                            "date_accessed": citation_access_stamp(),
                                         }],
                                     }
                                     emitted_citations.append(citation)
@@ -2763,7 +2772,6 @@ class StreamingHandler:
                                     exc_info=True,
                                 )
 
-                        # RAG-style source context injection for non-native function calling.
                         is_native_fc = metadata.get("params", {}).get("function_calling") == "native"
                         self.logger.debug(
                             "Source context check: collected_sources=%d, native_fc=%s",
@@ -2887,7 +2895,6 @@ class StreamingHandler:
                         body.input.extend(all_function_outputs)
                         _sanitize_request_input(self._pipe, body)
                     elif invalid_call_outputs:
-                        # No valid tool calls, but we still pass error outputs to the model only.
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
                         tool_loops_executed = True
@@ -2932,7 +2939,6 @@ class StreamingHandler:
                         }
                     )
 
-        # Catch any exceptions during the streaming loop and emit an error
         except asyncio.CancelledError:
             was_cancelled = True
             session_log_reason = "cancelled"
@@ -2970,7 +2976,6 @@ class StreamingHandler:
             error_occurred = True
             session_log_reason = str(e)
             self.logger.exception("Unexpected error in streaming loop")
-            # Detect server errors (e.g. aiohttp.ClientResponseError with 5xx status)
             exc_status = getattr(e, "status", None)
             if isinstance(exc_status, int) and exc_status >= 500:
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
@@ -3001,9 +3006,6 @@ class StreamingHandler:
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
-            # Compute terminal early — needed for both status emission and
-            # completion signalling.  In passthrough mode, intermediate
-            # iterations (tool turns) are non-terminal.
             has_function_calls = False
             if owui_tool_passthrough and final_response and isinstance(final_response.get("output"), list):
                 with contextlib.suppress(Exception):
@@ -3045,9 +3047,6 @@ class StreamingHandler:
                     duration = max(0.0, last_generation_stamp - effective_start)
                     if duration > 0:
                         stream_window = duration
-                # Only emit the final cost/stats status on terminal iterations.
-                # In passthrough mode, intermediate iterations would spam the
-                # status area with per-iteration stats — only show the last one.
                 if terminal:
                     description = self._pipe._ensure_error_formatter()._format_final_status_description(
                         elapsed=elapsed,
@@ -3087,8 +3086,6 @@ class StreamingHandler:
                 elif owui_tool_passthrough and has_function_calls:
                     segment_status = "needs_tool"
                 try:
-                    # Persist synchronously (shielded) so session logs aren't dropped on
-                    # cancellation, generator close, or event loop timing quirks.
                     await asyncio.shield(
                         self._pipe._session_log_manager.persist_segment_to_db(
                             valves,
@@ -3219,8 +3216,6 @@ class StreamingHandler:
 
             if (not error_occurred) and (not was_cancelled):
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
-                # Emit completion (middleware.py also does this so this just covers if there is a downstream error)
-                # Avoid overwriting OWUI-rendered tool cards when we streamed response.output_item events.
                 if terminal:
                     final_content = None if emitted_response_output_items else assistant_message
                     await self._pipe._event_emitter_handler._emit_completion(
@@ -3230,9 +3225,6 @@ class StreamingHandler:
                         done=True,
                     )
                 else:
-                    # Non-terminal iteration (passthrough tool turn): forward usage
-                    # only, no content replacement and no done=True that would
-                    # cause the frontend to finalize the chat prematurely.
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=None,
@@ -3297,10 +3289,8 @@ class StreamingHandler:
                 log_label="reasoning_details", notify_label="reasoning details"
             )
 
-        # Return the final output to ensure persistence (unless cancelled, in which case the exception propagates).
         _record_outcome()
         return assistant_message
-
 
 
     @timed
@@ -3330,7 +3320,6 @@ class StreamingHandler:
         """
         metadata = {} if metadata is None else metadata
 
-        # Pass through status / citations / usage, but do NOT emit partial text
         wrapped_emitter = _wrap_event_emitter(
             event_emitter,
             suppress_chat_messages=True,
@@ -3358,7 +3347,6 @@ class StreamingHandler:
         )
 
 
-
     @timed
     async def _cleanup_replayed_reasoning(self, body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Delete once-used reasoning artifacts when retention is limited to the next reply."""
@@ -3367,10 +3355,8 @@ class StreamingHandler:
         refs = getattr(body, "_replayed_reasoning_refs", None)
         if not refs:
             return
-        setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - dynamic attribute not declared on ResponsesBody
+        setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - undeclared dynamic attribute; setattr keeps pyright quiet
         await self._pipe._artifact_store._delete_artifacts(refs)
-
-
 
 
     def _select_llm_endpoint(
@@ -3431,7 +3417,6 @@ class StreamingHandler:
         return self._select_llm_endpoint(model_id, valves=valves), False
 
 
-
     @staticmethod
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
         """Heuristic: detect 'model doesn't support /responses' so we can retry via /chat/completions."""
@@ -3476,7 +3461,6 @@ class StreamingHandler:
         return bool(any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")))
 
 
-
 def _wrap_event_emitter(
     emitter: EventEmitter | None,
     *,
@@ -3500,12 +3484,10 @@ def _wrap_event_emitter(
     async def _wrapped(event: dict[str, Any]) -> None:
         """Proxy emitter that suppresses selected event types."""
         etype = (event or {}).get("type")
-        # Suppress BOTH chat:message AND chat:message:delta for non-streaming
-        # Tool cards use chat:message:delta which would leak through otherwise
         if suppress_chat_messages and etype in ("chat:message", "chat:message:delta"):
-            return  # swallow incremental deltas
+            return
         if suppress_completion and etype == "chat:completion":
-            return  # optionally swallow completion frames
+            return
         await emitter(event)
 
     return _wrapped

@@ -47,8 +47,7 @@ Install the package in editable mode (this installs runtime dependencies from `p
 
 ```bash
 (.venv) pip install --upgrade pip setuptools wheel
-(.venv) pip install -e .
-(.venv) pip install pytest pytest-asyncio
+(.venv) pip install -e ".[test]"
 ```
 
 Optional:

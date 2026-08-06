@@ -15,25 +15,24 @@ Note: this is a working example, not production ready
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
 import sys
 import time
-import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Dict, Optional, Tuple
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import psycopg
 import redis
 
-
 LOGGER = logging.getLogger("usage_ingest")
 
-def load_env_file(path: Optional[str]) -> None:
+def load_env_file(path: str | None) -> None:
     if not path:
         return
 
@@ -56,7 +55,6 @@ def load_env_file(path: Optional[str]) -> None:
         LOGGER.debug("Failed to read env file %s: %s", path, exc)
 
 
-# ── Redis configuration ──────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_SCAN_PATTERN = os.getenv("REDIS_COST_PATTERN", "costs:openrouter_responses_api_pipe:*")
 REDIS_SCAN_COUNT = int(os.getenv("REDIS_SCAN_COUNT", "200"))
@@ -69,7 +67,6 @@ POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA")
 POSTGRES_CONNECT_TIMEOUT = int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "10"))
 
 
-# ── Postgres configuration (placeholders for future use) ─────────────────────
 @dataclass(frozen=True)
 class PostgresConfig:
     host: str = os.getenv("POSTGRES_HOST", "localhost")
@@ -78,19 +75,19 @@ class PostgresConfig:
     user: str = os.getenv("POSTGRES_USER", "username")
     password: str = os.getenv("POSTGRES_PASSWORD", "password")
     ssl_mode: str = os.getenv("POSTGRES_SSL_MODE", "require")
-    ssl_root_cert: Optional[str] = os.getenv("POSTGRES_SSL_ROOT_CERT")
+    ssl_root_cert: str | None = os.getenv("POSTGRES_SSL_ROOT_CERT")
 
 
 POSTGRES = PostgresConfig()
 
-_PG_CONN: Optional[psycopg.Connection] = None
+_PG_CONN: psycopg.Connection | None = None
 
 
 def _format_decimal(value: Any, places: str = "0.0001") -> Decimal:
     try:
         dec_value = Decimal(str(value))
     except (ValueError, TypeError, ArithmeticError):
-        return Decimal("0").quantize(Decimal(places), rounding=ROUND_HALF_UP)
+        return Decimal(0).quantize(Decimal(places), rounding=ROUND_HALF_UP)
     return dec_value.quantize(Decimal(places), rounding=ROUND_HALF_UP)
 
 
@@ -143,7 +140,7 @@ def postgres_cursor():
         raise
 
 
-def extract_identity(snapshot: Dict[str, Any]) -> Tuple[str, str, str]:
+def extract_identity(snapshot: dict[str, Any]) -> tuple[str, str, str]:
     user_id = snapshot.get("guid")
     if not user_id:
         raise ValueError("Snapshot missing required 'guid' field for user id")
@@ -152,7 +149,7 @@ def extract_identity(snapshot: Dict[str, Any]) -> Tuple[str, str, str]:
     return str(user_id), str(email), str(name)
 
 
-def parse_tokens(usage: Dict[str, Any]) -> Tuple[int, int]:
+def parse_tokens(usage: dict[str, Any]) -> tuple[int, int]:
     def _as_int(value: Any) -> int:
         try:
             return int(value)
@@ -175,24 +172,24 @@ def parse_tokens(usage: Dict[str, Any]) -> Tuple[int, int]:
 
 def parse_use_time(raw_ts: Any) -> datetime:
     if raw_ts is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     try:
         if isinstance(raw_ts, (int, float)):
-            return datetime.fromtimestamp(raw_ts, tz=timezone.utc)
+            return datetime.fromtimestamp(raw_ts, tz=UTC)
         raw_str = str(raw_ts).strip()
         if raw_str.isdigit():
-            return datetime.fromtimestamp(int(raw_str), tz=timezone.utc)
+            return datetime.fromtimestamp(int(raw_str), tz=UTC)
         if raw_str.replace(".", "", 1).isdigit():
-            return datetime.fromtimestamp(float(raw_str), tz=timezone.utc)
+            return datetime.fromtimestamp(float(raw_str), tz=UTC)
         if raw_str.endswith("Z"):
             raw_str = raw_str[:-1] + "+00:00"
         parsed = datetime.fromisoformat(raw_str)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except Exception:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    except Exception:  # noqa: BLE001 - a malformed timestamp must not abort a bulk
         LOGGER.warning("Failed to parse timestamp %s; defaulting to now", raw_ts)
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
 
 def upsert_user(cur: psycopg.Cursor, user_id: str, email: str, name: str) -> None:
@@ -266,11 +263,22 @@ def insert_usage_record(
 
 
 def configure_logging(debug: bool = False) -> None:
+    """Set the root level from LOG_LEVEL, falling back to ERROR on anything unusable.
+
+    `getattr(logging, name, ERROR)` would return any attribute of the module, so
+    LOG_LEVEL=BASIC_FORMAT yields a format string and basicConfig raises
+    `ValueError: Unknown level` -- this drain dies at startup on a typo instead of
+    logging at ERROR. NOTSET resolves to 0, which is "inherit", not a threshold.
+
+    The equivalent of `core.logging_system.resolve_level`, inlined: this script imports
+    nothing from the pipe package so that it stays runnable on its own.
+    """
     level_name = os.getenv("LOG_LEVEL", "ERROR").upper()
     if debug:
         level_name = "DEBUG"
 
-    level = getattr(logging, level_name, logging.ERROR)
+    resolved = logging.getLevelName(level_name.strip())
+    level = resolved if isinstance(resolved, int) and resolved > logging.NOTSET else logging.ERROR
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)-8s | %(message)s",
@@ -292,13 +300,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ── Redis helpers ────────────────────────────────────────────────────────────
 def get_redis_client() -> redis.Redis:
     """Return a Redis client using the configured URL."""
     return redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
-# ── Postgres placeholders ────────────────────────────────────────────────────
 def describe_postgres_target() -> str:
     """Return a human-readable description of the configured Postgres target."""
     ssl_bits = f"sslmode={POSTGRES.ssl_mode}"
@@ -310,14 +316,14 @@ def describe_postgres_target() -> str:
     )
 
 
-def process_snapshot(snapshot: Dict[str, Any], redis_key: str) -> None:
+def process_snapshot(snapshot: dict[str, Any], redis_key: str) -> None:
     """Persist a single snapshot inside a Postgres transaction."""
     usage = snapshot.get("usage") or {}
     user_id, email, nickname = extract_identity(snapshot)
 
     input_tokens, output_tokens = parse_tokens(usage)
     total_cost = _format_decimal(usage.get("cost", 0))
-    if total_cost < Decimal("0"):
+    if total_cost < Decimal(0):
         total_cost = Decimal("0.0000")
 
     model_name = snapshot.get("model") or "unknown"

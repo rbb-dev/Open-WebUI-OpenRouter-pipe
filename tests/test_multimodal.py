@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import httpx
+from typing import Any
+
 import pytest
 import pytest_asyncio
 
@@ -34,9 +36,7 @@ from open_webui_openrouter_pipe.storage.owui_files import (
 from open_webui_openrouter_pipe.storage import owui_files as owui_files_module
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -82,9 +82,7 @@ def mock_user():
     return user
 
 
-# ---------------------------------------------------------------------------
 # Test _guess_image_mime_type
-# ---------------------------------------------------------------------------
 
 
 class TestGuessImageMimeType:
@@ -249,9 +247,7 @@ class TestGuessImageMimeType:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test _extract_openrouter_og_image
-# ---------------------------------------------------------------------------
 
 
 class TestExtractOpenrouterOgImage:
@@ -303,9 +299,7 @@ class TestExtractOpenrouterOgImage:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test _extract_internal_file_id
-# ---------------------------------------------------------------------------
 
 
 class TestExtractInternalFileId:
@@ -334,9 +328,7 @@ class TestExtractInternalFileId:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test _is_internal_file_url
-# ---------------------------------------------------------------------------
 
 
 class TestIsInternalFileUrl:
@@ -360,11 +352,6 @@ class TestIsInternalFileUrl:
     def test_returns_false_for_external_url(self):
         """Should return False for external URLs."""
         assert _is_internal_file_url("https://example.com/image.png") is False
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._get_file_by_id
-# ---------------------------------------------------------------------------
 
 
 class TestGetFileById:
@@ -404,11 +391,6 @@ class TestGetFileById:
             owui_files_module.Files = original_files
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._infer_file_mime_type
-# ---------------------------------------------------------------------------
-
-
 class TestInferFileMimeType:
     """Tests for MIME type inference from file objects."""
 
@@ -444,11 +426,6 @@ class TestInferFileMimeType:
         )
         result = owui_files_module.infer_file_mime_type(file_obj)
         assert result == "image/png"
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._read_file_record_base64
-# ---------------------------------------------------------------------------
 
 
 class TestReadFileRecordBase64:
@@ -604,11 +581,6 @@ class TestReadFileRecordBase64:
         assert result == base64.b64encode(b"fallback content").decode("ascii")
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._encode_file_path_base64
-# ---------------------------------------------------------------------------
-
-
 class TestEncodeFilePathBase64:
     """Tests for file path encoding to base64."""
 
@@ -622,11 +594,6 @@ class TestEncodeFilePathBase64:
             await owui_files_module.encode_file_path_base64(
                 test_file, chunk_size=64, max_bytes=100
             )
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._inline_owui_file_id
-# ---------------------------------------------------------------------------
 
 
 class TestInlineOwuiFileId:
@@ -704,11 +671,6 @@ class TestInlineOwuiFileId:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._inline_internal_file_url
-# ---------------------------------------------------------------------------
-
-
 class TestInlineInternalFileUrl:
     """Tests for inlining internal file URLs."""
 
@@ -744,11 +706,6 @@ class TestInlineInternalFileUrl:
 
         expected_b64 = base64.b64encode(test_content).decode("ascii")
         assert result == InlinedFile(data_url=f"data:application/octet-stream;base64,{expected_b64}", filename="test.bin")
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._inline_internal_responses_input_files_inplace
-# ---------------------------------------------------------------------------
 
 
 class TestInlineInternalResponsesInputFilesInplace:
@@ -975,47 +932,113 @@ class TestInlineInternalResponsesInputFilesInplace:
         assert body["input"][0]["content"] == ["string block", 123, None]
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._try_link_file_to_chat
-# ---------------------------------------------------------------------------
-
-
 class TestTryLinkFileToChat:
     """Tests for linking files to chat in OWUI database."""
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_owui_declines_the_link(self, pipe_instance_async, monkeypatch):
-        """OWUI returns None (it does not raise) when the file is not linkable.
+    async def test_already_linked_is_not_reported_as_a_failure(
+        self, pipe_instance_async, monkeypatch
+    ):
+        """OWUI returns None when every requested file is already linked.
 
-        Reporting True regardless left a failed link unobservable at every layer.
+        That is a success, and reading it as a failure warns on every benign re-link.
         """
+        from open_webui.models.chats import Chats
+
+        args = dict(
+            chat_id="chat-123", message_id="msg-1", file_id="file-1", user_id="user-1"
+        )
+        assert await pipe_instance_async._file_gateway.try_link_file_to_chat(**args)
+
+        result = await pipe_instance_async._file_gateway.try_link_file_to_chat(**args)
+
+        assert await Chats.insert_chat_files("chat-123", "msg-1", ["file-1"], "u") is None
+        assert result is True, "an already-linked file was reported as a failure"
+
+    @pytest.mark.asyncio
+    async def test_a_different_file_already_linked_is_not_mistaken_for_success(
+        self, pipe_instance_async, monkeypatch
+    ):
+        """The confirming lookup must check WHICH file is linked, not merely that any is.
+
+        Every other case here sets up a message holding zero rows or exactly the
+        requested file, so `return bool(linked)` passes all of them -- and then any
+        later failed link under a message that already holds something reports
+        success, which is the failure this whole helper exists to make observable.
+        """
+        import open_webui.models.chats as owui_chats
+
+        gateway = pipe_instance_async._file_gateway
+        args = dict(chat_id="chat-x", message_id="msg-x", user_id="user-1")
+
+        assert await gateway.try_link_file_to_chat(file_id="other-file", **args)
+
+        monkeypatch.setattr(
+            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False
+        )
+        result = await gateway.try_link_file_to_chat(file_id="wanted-file", **args)
+
+        assert result is False, (
+            "a refused link was reported as success because another file was already "
+            "linked under the same message"
+        )
+
+    @pytest.mark.asyncio
+    async def test_access_denied_is_reported_as_a_failure(
+        self, pipe_instance_async, monkeypatch
+    ):
+        """OWUI returns None when the caller cannot read the file. Nothing is linked."""
         import open_webui.models.chats as owui_chats
 
         monkeypatch.setattr(
             owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False
         )
         result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
-            chat_id="chat-123",
-            message_id="msg-1",
-            file_id="file-1",
-            user_id="user-1",
+            chat_id="chat-123", message_id="msg-1", file_id="file-1", user_id="user-1"
         )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_returns_true_when_owui_links(self, pipe_instance_async, monkeypatch):
+    async def test_db_write_failure_is_reported_as_a_failure(
+        self, pipe_instance_async, monkeypatch
+    ):
+        """OWUI catches its own DB exception and returns None, indistinguishable by value."""
         import open_webui.models.chats as owui_chats
 
         monkeypatch.setattr(
-            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=["file-1"]), raising=False
+            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False
+        )
+        monkeypatch.setattr(
+            owui_chats.Chats,
+            "get_chat_files_by_chat_id_and_message_id",
+            AsyncMock(return_value=[]),
+            raising=False,
         )
         result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
-            chat_id="chat-123",
-            message_id="msg-1",
-            file_id="file-1",
-            user_id="user-1",
+            chat_id="chat-123", message_id="msg-1", file_id="file-1", user_id="user-1"
         )
-        assert result is True
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unconfirmable_link_state_is_reported_as_a_failure(
+        self, pipe_instance_async, monkeypatch
+    ):
+        """If the confirming lookup itself fails, the link cannot be claimed."""
+        import open_webui.models.chats as owui_chats
+
+        monkeypatch.setattr(
+            owui_chats.Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False
+        )
+        monkeypatch.setattr(
+            owui_chats.Chats,
+            "get_chat_files_by_chat_id_and_message_id",
+            AsyncMock(side_effect=RuntimeError("db down")),
+            raising=False,
+        )
+        result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
+            chat_id="chat-123", message_id="msg-1", file_id="file-1", user_id="user-1"
+        )
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_returns_false_for_non_string_chat_id(self, pipe_instance_async):
@@ -1085,7 +1108,15 @@ class TestTryLinkFileToChat:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_chats_import_fails(self, pipe_instance_async):
-        """Should return False when open_webui.models.chats import fails."""
+        """An unlinkable file must be REPORTED unlinked, not reported as success.
+
+        The result used to be discarded. Both upload call sites gate the operator
+        diagnostic on it -- `if not linked and is_linkable_chat(chat_id): warning(...)`
+        -- so a `return True` here means the file is not linked, the upload reports
+        success, and the "shared-chat viewers may not load it" warning never fires.
+        Stated as a bool like every sibling in this class, so an import failure cannot
+        become the one path with its own notion of "failed".
+        """
         chats_module = sys.modules.get("open_webui.models.chats")
 
         try:
@@ -1093,7 +1124,7 @@ class TestTryLinkFileToChat:
                 del sys.modules["open_webui.models.chats"]
 
             with patch.dict(sys.modules, {"open_webui.models.chats": None}):
-                await pipe_instance_async._file_gateway.try_link_file_to_chat(
+                result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
                     chat_id="chat-123",
                     message_id="msg-456",
                     file_id="file-789",
@@ -1102,6 +1133,12 @@ class TestTryLinkFileToChat:
         finally:
             if chats_module:
                 sys.modules["open_webui.models.chats"] = chats_module
+
+        assert result is False, (
+            "the chat-link was reported as succeeding while open_webui.models.chats "
+            "was unimportable, so nothing was linked and the caller's 'was not linked' "
+            "warning is suppressed"
+        )
 
     @pytest.mark.asyncio
     async def test_calls_insert_with_keyword_args(self, pipe_instance_async):
@@ -1270,10 +1307,46 @@ class TestTryLinkFileToChat:
         finally:
             chats_mod.Chats = original_chats
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chat_id", "linkable"),
+        [
+            ("local:abc123", False),
+            ("temporary:abc123", False),
+            ("channel:0f3a-4c11", False),
+            ("0f3a-4c11", True),
+        ],
+    )
+    async def test_ids_without_a_chat_row_never_reach_the_insert(
+        self, pipe_instance_async, monkeypatch, chat_id, linkable
+    ):
+        """A channel invocation has no ``chat`` row, exactly like a Temporary Chat.
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._resolve_storage_context
-# ---------------------------------------------------------------------------
+        Open WebUI runs the whole chat pipeline for a channel with
+        ``chat_id = f"channel:{channel.id}"``, and ``chat_file.chat_id`` is a foreign
+        key onto ``chat.id``. Reaching the INSERT there fails the constraint where it
+        is enforced -- logging the spurious "was not linked" this guard exists to
+        prevent -- and where it is not (Open WebUI never enables SQLite's foreign_keys
+        pragma) it succeeds, leaving an orphan row per upload that no cascade can
+        collect.
+
+        Asserts the call is never attempted rather than that it returned False, because
+        returning False after a failed INSERT is the bug, not the fix.
+        """
+        import open_webui.models.chats as owui_chats
+
+        attempted = AsyncMock(return_value=None)
+        monkeypatch.setattr(owui_chats.Chats, "insert_chat_files", attempted, raising=False)
+
+        await pipe_instance_async._file_gateway.try_link_file_to_chat(
+            chat_id=chat_id, message_id="msg-1", file_id="file-1", user_id="user-1"
+        )
+
+        assert attempted.called is linkable, (
+            f"chat_id {chat_id!r}: insert_chat_files was "
+            f"{'called' if attempted.called else 'not called'}, expected the opposite. "
+            "An id with no chat row must be rejected before the INSERT."
+        )
 
 
 class TestResolveStorageContext:
@@ -1324,11 +1397,6 @@ class TestResolveStorageContext:
 
         assert request is mock_request
         assert user is fallback_user
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._ensure_storage_user
-# ---------------------------------------------------------------------------
 
 
 class TestEnsureStorageUser:
@@ -1551,11 +1619,6 @@ class TestEnsureStorageUser:
             assert result is created_user
         finally:
             owui_files_module.Users = original_users
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._download_remote_url
-# ---------------------------------------------------------------------------
 
 
 class TestDownloadRemoteUrl:
@@ -1830,51 +1893,46 @@ class TestDownloadRemoteUrl:
             assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._is_safe_url_blocking
-# ---------------------------------------------------------------------------
-
-
-class TestIsSafeUrlBlocking:
+class TestRequestIpsBlocking:
     """Tests for SSRF protection."""
 
     def test_returns_false_for_empty_hostname(self, pipe_instance):
         """Should return False for URL with no hostname."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("file:///local/path")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("file:///local/path")
+        assert result is None
 
     def test_honors_ssrf_valve_like_async_wrapper(self, pipe_instance):
         """The blocking validator must sequence the same gate as _is_safe_url:
         with SSRF protection disabled it allows without resolving, keeping the
         pre-flight and connect-time policy decisions consistent."""
         pipe_instance.valves.ENABLE_SSRF_PROTECTION = False
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
-        assert result is True
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://127.0.0.1/file")
+        assert result is not None
 
     def test_blocks_loopback_ip(self, pipe_instance):
         """Should block loopback IP addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://127.0.0.1/file")
+        assert result is None
 
     def test_blocks_link_local_ip(self, pipe_instance):
         """Should block link-local IP addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://169.254.1.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://169.254.1.1/file")
+        assert result is None
 
     def test_blocks_multicast_ip(self, pipe_instance):
         """Should block multicast IP addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://224.0.0.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://224.0.0.1/file")
+        assert result is None
 
     def test_blocks_reserved_ipv6(self, pipe_instance):
         """Should block reserved IPv6 addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://[::1]/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://[::1]/file")
+        assert result is None
 
     def test_blocks_unspecified_ipv6(self, pipe_instance):
         """Should block unspecified address ::."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://[::]/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://[::]/file")
+        assert result is None
 
     def test_returns_false_on_dns_failure(self, pipe_instance, monkeypatch):
         """Should return False when DNS resolution fails."""
@@ -1882,8 +1940,8 @@ class TestIsSafeUrlBlocking:
             raise socket.gaierror("DNS error")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://nonexistent.invalid/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://nonexistent.invalid/file")
+        assert result is None
 
     def test_returns_false_on_unicode_error(self, pipe_instance, monkeypatch):
         """Should return False on UnicodeError during DNS resolution."""
@@ -1891,8 +1949,8 @@ class TestIsSafeUrlBlocking:
             raise UnicodeError("Invalid hostname encoding")
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
     def test_returns_false_when_no_ips_resolved(self, pipe_instance, monkeypatch):
         """Should return False when hostname resolves to empty IP list."""
@@ -1900,8 +1958,8 @@ class TestIsSafeUrlBlocking:
             return []
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
     def test_returns_false_for_invalid_ip_in_response(self, pipe_instance, monkeypatch):
         """Should return False when sockaddr contains invalid IP."""
@@ -1909,8 +1967,8 @@ class TestIsSafeUrlBlocking:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("not-an-ip", 80))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
     def test_handles_empty_sockaddr(self, pipe_instance, monkeypatch):
         """Should handle empty sockaddr in DNS response."""
@@ -1921,26 +1979,39 @@ class TestIsSafeUrlBlocking:
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is True
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is not None
 
     def test_blocks_private_ipv4(self, pipe_instance):
         """Should block private IPv4 addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://10.0.0.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://10.0.0.1/file")
+        assert result is None
 
     def test_blocks_private_192_168(self, pipe_instance):
         """Should block 192.168.x.x private addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://192.168.1.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://192.168.1.1/file")
+        assert result is None
 
     def test_returns_false_on_unexpected_exception(self, pipe_instance, monkeypatch):
-        """Should return False on unexpected exception."""
+        """A URL whose address validation raised must be BLOCKED, not merely logged.
+
+        The result used to be discarded, so the catch-all in `_request_ips_blocking`
+        could return `[]` -- documented as "allowed, with no IP pin" -- and the whole
+        SSRF gate failed open with the suite green. That is the DNS-rebinding and
+        private-range class this module exists to stop.
+        """
         def raise_exception(*args, **kwargs):
             raise Exception("Unexpected error")
 
         with patch("ipaddress.ip_address", side_effect=raise_exception):
-            pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
+            result = pipe_instance._multimodal_handler._request_ips_blocking(
+                "https://example.com/file"
+            )
+
+        assert result is None, (
+            "the SSRF gate reported a URL as safe after its own address validation "
+            "raised, so a URL that was never checked gets downloaded unpinned"
+        )
 
     def test_blocks_reserved_ip(self, pipe_instance, monkeypatch):
         """Should block reserved IP addresses (240.0.0.0/4 class E)."""
@@ -1948,13 +2019,8 @@ class TestIsSafeUrlBlocking:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("240.0.0.1", 80))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._is_youtube_url
-# ---------------------------------------------------------------------------
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
 
 class TestIsYoutubeUrl:
@@ -1985,11 +2051,6 @@ class TestIsYoutubeUrl:
         assert pipe_instance._multimodal_handler._is_youtube_url("https://vimeo.com/123456") is False
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._validate_base64_size
-# ---------------------------------------------------------------------------
-
-
 class TestValidateBase64Size:
     """Tests for base64 size validation."""
 
@@ -2007,11 +2068,6 @@ class TestValidateBase64Size:
         pipe_instance.valves.BASE64_MAX_SIZE_MB = 0.00001
         large_b64 = "A" * 100000
         assert pipe_instance._file_gateway.validate_base64_size(large_b64) is False
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._parse_data_url
-# ---------------------------------------------------------------------------
 
 
 class TestParseDataUrl:
@@ -2063,11 +2119,6 @@ class TestParseDataUrl:
         """Should return None for invalid base64 data."""
         result = pipe_instance._multimodal_handler._parse_data_url("data:image/png;base64,!!!invalid!!!")
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._fetch_image_as_data_url
-# ---------------------------------------------------------------------------
 
 
 class TestFetchImageAsDataUrl:
@@ -2301,11 +2352,6 @@ class TestFetchImageAsDataUrl:
                 assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._fetch_maker_profile_image_url
-# ---------------------------------------------------------------------------
-
-
 class TestFetchMakerProfileImageUrl:
     """Tests for fetching maker profile image URLs."""
 
@@ -2410,9 +2456,7 @@ class TestFetchMakerProfileImageUrl:
                 assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test MultimodalHandler._is_safe_url
-# ---------------------------------------------------------------------------
 
 
 class TestIsSafeUrlAsync:
@@ -2431,11 +2475,6 @@ class TestIsSafeUrlAsync:
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
         result = await pipe_instance_async._multimodal_handler._is_safe_url("https://127.0.0.1/file")
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Test _get_effective_remote_file_limit_mb
-# ---------------------------------------------------------------------------
 
 
 class TestGetEffectiveRemoteFileLimit:
@@ -2486,11 +2525,6 @@ class TestGetEffectiveRemoteFileLimit:
         ):
             result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 30
-
-
-# ---------------------------------------------------------------------------
-# Test MultimodalHandler._upload_to_owui_storage
-# ---------------------------------------------------------------------------
 
 
 class TestUploadToOwuiStorage:
@@ -2794,9 +2828,7 @@ def _set_aiter_bytes(mock_response, chunks):
     mock_response.aiter_bytes = _iterator
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Helper Method Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestDataURLParsing:
@@ -2898,7 +2930,7 @@ class TestFileEncoding:
     ):
         """Chunked base64 encoding should match the standard encoder output."""
 
-        data = os.urandom(100_000)  # ensure multiple read iterations with remainder bytes
+        data = os.urandom(100_000)
         file_path = tmp_path / "blob.bin"
         file_path.write_bytes(data)
 
@@ -3186,6 +3218,29 @@ class TestRetryHelpers:
         delay = _retry_after_seconds(header)
         assert delay is not None and delay <= 4.0
 
+    def test_retry_wait_survives_a_cancelled_outcome(self):
+        """A cancelled tenacity Future raises from .exception(); the wait must not.
+
+        The handler exists for exactly this: concurrent.futures.Future.exception()
+        RAISES CancelledError when the future was cancelled, rather than returning it.
+        It is concurrent.futures.CancelledError, not asyncio's -- unrelated classes,
+        and the asyncio one can never arrive here because a future merely *holding* it
+        returns it. Deleting the whole try/except left the suite green.
+        """
+        import concurrent.futures
+
+        from open_webui_openrouter_pipe.core.errors import _RetryWait
+
+        cancelled = concurrent.futures.Future()
+        cancelled.cancel()
+        with pytest.raises(concurrent.futures.CancelledError):
+            cancelled.exception()
+
+        wait = _RetryWait(base_wait=lambda _state: 1.5)
+        delay = wait(SimpleNamespace(outcome=cancelled))
+
+        assert delay == 1.5, "a cancelled outcome must fall back to the base delay"
+
     def test_retry_wait_honors_retry_after(self):
         from open_webui_openrouter_pipe.core.errors import _RetryWait, _RetryableHTTPStatusError
 
@@ -3248,7 +3303,6 @@ class TestStorageContext:
     ):
         fallback_user = Mock()
         fallback_user.email = "fallback@example.com"
-        # Mock the handler's method directly (not the pipe's delegation method)
         pipe_instance._file_gateway.ensure_storage_user = AsyncMock(return_value=fallback_user)
 
         request, user = await pipe_instance._file_gateway.resolve_storage_context(mock_request, None)
@@ -3268,9 +3322,7 @@ class TestStorageContext:
         pipe_instance._file_gateway.ensure_storage_user.assert_not_called()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Image Transformer Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestImageTransformer:
@@ -3429,9 +3481,7 @@ class TestImageTransformer:
         assert image_block["detail"] == "auto"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # File Transformer Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestFileTransformer:
@@ -3651,9 +3701,7 @@ class TestFileTransformer:
         notification_mock.assert_awaited()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Audio Transformer Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestAudioTransformer:
@@ -3838,9 +3886,7 @@ class TestAudioTransformer:
         assert audio_block["input_audio"]["data"] == sample_audio_base64
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Higher-level Conversation Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestConversationRebuild:
@@ -3907,7 +3953,6 @@ class TestConversationRebuild:
                 },
             }
 
-        # Use real ModelFamily.supports with dynamic specs for vision support
         ModelFamily.set_dynamic_specs({
             "demo-model": {
                 "id": "demo-model",
@@ -3943,9 +3988,7 @@ class TestConversationRebuild:
         assert image_blocks and image_blocks[0]["image_url"] == expected_image
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Integration Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestMultimodalIntegration:
@@ -4128,16 +4171,10 @@ class TestMultimodalIntegration:
 
         blocks = transformed[0]["content"]
         assert [b["type"] for b in blocks] == ["input_image", "input_file"]
-        # Image failure should fall back to original data URL.
         assert blocks[0]["image_url"] == "data:image/png;base64,AAAA"
         # File should still be processed.
         assert blocks[1]["file_id"] == "file-ok"
         assert "file_url" not in blocks[1]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Additional Coverage Tests for 97%+ Coverage
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestSSRFBlockingSpecificIPTypes:
@@ -4145,29 +4182,29 @@ class TestSSRFBlockingSpecificIPTypes:
 
     def test_blocks_loopback_ipv4_directly(self, pipe_instance):
         """Should block loopback 127.x.x.x addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://127.0.0.1/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://127.0.0.1/file")
+        assert result is None
 
     def test_blocks_link_local_ipv4_directly(self, pipe_instance):
         """Should block link-local 169.254.x.x addresses."""
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://169.254.169.254/metadata")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://169.254.169.254/metadata")
+        assert result is None
 
     def test_blocks_reserved_class_e_ipv4(self, pipe_instance, monkeypatch):
         """Should block reserved class E (240.0.0.0/4) addresses."""
         def fake_getaddrinfo(*args, **kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("240.0.0.1", 80))]
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
     def test_blocks_unspecified_ipv4(self, pipe_instance, monkeypatch):
         """Should block unspecified address 0.0.0.0."""
         def fake_getaddrinfo(*args, **kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("0.0.0.0", 80))]
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        result = pipe_instance._multimodal_handler._is_safe_url_blocking("https://example.com/file")
-        assert result is False
+        result = pipe_instance._multimodal_handler._request_ips_blocking("https://example.com/file")
+        assert result is None
 
 
 class TestDownloadRetryTimeoutExceeded:
@@ -4177,10 +4214,9 @@ class TestDownloadRetryTimeoutExceeded:
     async def test_download_retry_timeout_exceeded(self, pipe_instance_async):
         """Should return None when retry timeout is exceeded."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
-        # Set very short timeout so it expires quickly
         pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRIES = 3
         pipe_instance_async.valves.REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS = 0.01
-        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 0.001  # 1ms - will be exceeded
+        pipe_instance_async.valves.REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS = 0.001
 
         url = "https://example.com/slow.png"
         request = httpx.Request("GET", url)
@@ -4223,10 +4259,8 @@ class TestEnsureStorageUserCacheLock:
         """Should return cached user when cache is already set."""
         cached_user = SimpleNamespace(id="cached-during-wait", email="cached@test.local")
 
-        # Set the cache directly on the handler
         pipe_instance_async._file_gateway._storage_user_cache = cached_user
 
-        # Should return cached user without going to DB
         result = await pipe_instance_async._file_gateway.ensure_storage_user()
         assert result is cached_user
 
@@ -4241,13 +4275,11 @@ class TestSignatureInspectionException:
 
         created_user = SimpleNamespace(id="created-user", email="created@test.local")
 
-        # Create a callable that raises TypeError when inspected
         class BadSignature:
             async def __call__(self, *args, **kwargs):
                 return created_user
 
         bad_insert = BadSignature()
-        # Make signature() raise TypeError
         original_signature = inspect.signature
 
         def mock_signature(fn):
@@ -4268,7 +4300,6 @@ class TestSignatureInspectionException:
             with patch.object(inspect, "signature", mock_signature):
                 result = await pipe_instance_async._file_gateway.ensure_storage_user()
 
-            # Should still create user even if signature inspection failed
             assert result is created_user
         finally:
             owui_files_module.Users = original_users
@@ -4293,7 +4324,6 @@ class TestFetchImageSVGEdgeCases:
                 )
 
                 mock_cairosvg = Mock()
-                # Return a non-bytes type (e.g., a string)
                 mock_cairosvg.svg2png = Mock(return_value="not bytes")
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
@@ -4337,7 +4367,6 @@ class TestFetchImageSVGEdgeCases:
         from aioresponses import aioresponses
 
         svg_data = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
-        # Create oversized PNG bytes (> 2MB)
         large_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (3 * 1024 * 1024)
 
         async with aiohttp.ClientSession() as session:
@@ -4359,13 +4388,6 @@ class TestFetchImageSVGEdgeCases:
                 assert result is None
 
 
-# Note: PIL image processing paths (lines 1272-1303) are tested by existing tests:
-# - TestFetchImageAsDataUrl::test_converts_non_rgb_image covers P-mode to RGBA conversion
-# - TestFetchImageAsDataUrl::test_returns_png_data_url covers successful PNG conversion
-# Additional edge case tests for non-bytes output, bytearray conversion, and oversized
-# converted images are covered via the SVG rasterization tests which share similar code paths.
-
-
 class TestFetchMakerProfileNonStringHTML:
     """Tests for non-string HTML response in maker profile fetch."""
 
@@ -4381,7 +4403,6 @@ class TestFetchMakerProfileNonStringHTML:
                 pass
 
             async def text(self):
-                # Return non-string (e.g., bytes instead of string)
                 # This tests line 1333-1339
                 return b"<html></html>"
 
@@ -4416,7 +4437,6 @@ class TestEnsureStorageUserCacheInsideLock:
 
         try:
             mock_users = Mock()
-            # Return an existing user (so no creation happens)
             mock_users.get_user_by_email = AsyncMock(return_value=existing_user)
 
             owui_files_module.Users = mock_users
@@ -4431,23 +4451,12 @@ class TestEnsureStorageUserCacheInsideLock:
             assert result1 is existing_user
             assert handler._storage_user_cache is existing_user
 
-            # Second call should hit line 759-760 (cache check inside lock)
-            # But first, clear the initial cache check
-            # We need to bypass line 752-753 and get into the lock
 
-            # Actually, line 760 can only be hit in a true race condition.
-            # For testing purposes, we verify that once cache is set,
-            # subsequent calls return the cached value (line 752-753)
             result2 = await pipe_instance_async._file_gateway.ensure_storage_user()
             assert result2 is existing_user
 
         finally:
             owui_files_module.Users = original_users
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SSRF DNS-rebinding: connection pinning tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestSSRFConnectionPinning:
@@ -4480,14 +4489,14 @@ class TestSSRFConnectionPinning:
         )
         assert request_url == "http://93.184.216.34/a"
         assert headers == {"Host": "example.com"}
-        assert extensions == {}  # no TLS -> no SNI override
+        assert extensions == {}
 
     @pytest.mark.asyncio
     async def test_prepare_passthrough_when_ssrf_disabled(self, pipe_instance_async):
         handler = pipe_instance_async._multimodal_handler
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = False
         result = await handler._prepare_pinned_request("https://example.com/x")
-        assert result == ("https://example.com/x", {}, {})  # unchanged, no pin
+        assert result == ("https://example.com/x", {}, {})
 
     @pytest.mark.asyncio
     async def test_prepare_pins_validated_ip_when_ssrf_enabled(self, pipe_instance_async):
@@ -4505,7 +4514,7 @@ class TestSSRFConnectionPinning:
     async def test_prepare_blocks_when_resolution_unsafe(self, pipe_instance_async):
         handler = pipe_instance_async._multimodal_handler
         pipe_instance_async.valves.ENABLE_SSRF_PROTECTION = True
-        handler._resolve_validated_ips = Mock(return_value=None)  # rebound/private
+        handler._resolve_validated_ips = Mock(return_value=None)
         result = await handler._prepare_pinned_request("https://example.com/img.jpg")
         assert result is None
 
@@ -4531,27 +4540,132 @@ class TestSSRFConnectionPinning:
             result = await handler._download_remote_url("https://example.com/img.png")
 
         assert result is not None
-        assert result["url"] == "https://example.com/img.png"  # original url preserved for callers
+        assert result["url"] == "https://example.com/img.png"
         args, kwargs = client_instance.stream.call_args
         assert args[0] == "GET"
-        assert args[1] == "https://93.184.216.34/img.png"  # pinned IP, not the hostname
+        assert args[1] == "https://93.184.216.34/img.png"
         assert kwargs["headers"] == {"Host": "example.com"}
         assert kwargs["extensions"] == {"sni_hostname": "example.com"}
 
     def test_resolve_validated_ips_accepts_public_blocks_private(self, pipe_instance):
         handler = pipe_instance._multimodal_handler
-        # literal public IP -> returned for pinning
         assert handler._resolve_validated_ips("https://93.184.216.34/x") == ["93.184.216.34"]
-        # literal private / loopback / cloud-metadata -> blocked
         assert handler._resolve_validated_ips("https://127.0.0.1/x") is None
         assert handler._resolve_validated_ips("https://10.0.0.5/x") is None
         assert handler._resolve_validated_ips("https://169.254.169.254/meta") is None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Documentation Compliance Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestUploadToOwuiStorageFromPath:
+    """The streaming twin of TestUploadToOwuiStorage, driven through its real body.
+
+    Every test that reached this function replaced it (`monkeypatch.setattr(
+    pipe._file_gateway, "upload_to_owui_storage_from_path", ...)`), so `return None`
+    at the top left all 5772 tests green while every line from the handler call to the
+    return was never executed. Its byte-based twin took the same edits in the same
+    changeset and is fully covered; this one had nothing.
+
+    `integrations/video.py` turns a None from here into "Generated video could not be
+    stored in Open WebUI" — after the generation has already been billed.
+    """
+
+    @pytest.fixture
+    def recording_handler(self):
+        seen: dict[str, Any] = {}
+
+        async def handler(*, request, file, metadata, user, **_kw):
+            seen["metadata"] = dict(metadata or {})
+            seen["filename"] = file.filename
+            seen["bytes"] = file.file.read()
+            return SimpleNamespace(id="streamed-file-id")
+
+        original = owui_files_module.upload_file_handler
+        owui_files_module.upload_file_handler = handler
+        try:
+            yield seen
+        finally:
+            owui_files_module.upload_file_handler = original
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chat_id", "carries_chat"),
+        [
+            ("chat-1", True),
+            ("temporary:abc", False),
+            ("channel:abc", False),
+            ("local:abc", False),
+        ],
+    )
+    async def test_only_a_linkable_chat_reaches_the_upload_metadata(
+        self, pipe_instance_async, mock_request, mock_user, tmp_path,
+        recording_handler, chat_id, carries_chat, monkeypatch,
+    ):
+        """Parametrised so `is_linkable_chat` is load-bearing.
+
+        A single "chat-1" case is satisfied by `if normalized_chat_id:` — the gate has
+        to be given an id it must refuse.
+        """
+        async def _linked(**_kw):
+            return True
+
+        monkeypatch.setattr(pipe_instance_async._file_gateway, "try_link_file_to_chat", _linked)
+
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"\x00" * 32)
+
+        file_id = await pipe_instance_async._file_gateway.upload_to_owui_storage_from_path(
+            mock_request, mock_user, src, "clip.mp4", "video/mp4",
+            chat_id=chat_id, message_id="msg-1", owui_user_id="user123",
+        )
+
+        assert file_id == "streamed-file-id", (
+            "the streaming upload returned no file id; video.py turns that into "
+            "'Generated video could not be stored in Open WebUI' after billing"
+        )
+        assert recording_handler["bytes"] == b"\x00" * 32, "the file contents never reached the handler"
+        assert ("chat_id" in recording_handler["metadata"]) is carries_chat, (
+            f"chat_id={chat_id!r} produced metadata {recording_handler['metadata']!r}; a "
+            "conversation with no chat row reaches an INSERT whose foreign key cannot "
+            "resolve"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_link_warns_but_keeps_the_file(
+        self, pipe_instance_async, mock_request, mock_user, tmp_path,
+        recording_handler, monkeypatch, caplog,
+    ):
+        import logging
+
+        async def _refuse(**_kw):
+            return False
+
+        monkeypatch.setattr(pipe_instance_async._file_gateway, "try_link_file_to_chat", _refuse)
+        src = tmp_path / "a.mp4"
+        src.write_bytes(b"x")
+
+        with caplog.at_level(logging.WARNING):
+            file_id = await pipe_instance_async._file_gateway.upload_to_owui_storage_from_path(
+                mock_request, mock_user, src, "a.mp4", "video/mp4",
+                chat_id="chat-1", message_id="msg-1", owui_user_id="user123",
+            )
+
+        assert file_id == "streamed-file-id", "a link failure discarded a stored file"
+        assert any("was not linked to chat" in m for m in caplog.messages), (
+            "the file is in storage but absent from the chat, and nothing says so"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_missing_source_file_is_refused(
+        self, pipe_instance_async, mock_request, mock_user, tmp_path, recording_handler
+    ):
+        result = await pipe_instance_async._file_gateway.upload_to_owui_storage_from_path(
+            mock_request, mock_user, tmp_path / "nope.mp4", "nope.mp4", "video/mp4",
+        )
+        assert result is None
+        assert "bytes" not in recording_handler, "a nonexistent path was streamed anyway"

@@ -15,18 +15,11 @@ from __future__ import annotations
 
 import inspect
 import sys
-from typing import Any, Callable
 
 
 def check_function_exists(module_path: str, function_name: str) -> bool:
     """Check if a function exists in the specified module."""
     try:
-        parts = module_path.rsplit(".", 1)
-        if len(parts) == 2:
-            module_name, _ = parts
-        else:
-            module_name = module_path
-
         module = __import__(module_path, fromlist=[function_name])
         func = getattr(module, function_name, None)
         return callable(func)
@@ -49,13 +42,12 @@ def check_function_signature(
         sig = inspect.signature(func)
         actual_params = list(sig.parameters.keys())
 
-        # Check if all expected params are present (allows extra params)
         missing = [p for p in expected_params if p not in actual_params]
         if missing:
             return False, f"Missing parameters: {missing}. Found: {actual_params}"
 
         return True, "OK"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a compatibility probe reports every
         return False, str(e)
 
 
@@ -65,7 +57,6 @@ def check_all() -> tuple[int, list[str]]:
     checks_passed = 0
     checks_total = 0
 
-    # Check 1: get_citation_source_from_tool_result exists
     checks_total += 1
     if not check_function_exists(
         "open_webui.utils.middleware",
@@ -78,7 +69,6 @@ def check_all() -> tuple[int, list[str]]:
         checks_passed += 1
         print("PASS: get_citation_source_from_tool_result exists")
 
-    # Check 2: get_citation_source_from_tool_result signature
     checks_total += 1
     ok, msg = check_function_signature(
         "open_webui.utils.middleware",
@@ -91,7 +81,6 @@ def check_all() -> tuple[int, list[str]]:
         checks_passed += 1
         print("PASS: get_citation_source_from_tool_result has expected parameters")
 
-    # Check 3: apply_source_context_to_messages exists
     checks_total += 1
     if not check_function_exists(
         "open_webui.utils.middleware",
@@ -104,7 +93,6 @@ def check_all() -> tuple[int, list[str]]:
         checks_passed += 1
         print("PASS: apply_source_context_to_messages exists")
 
-    # Check 4: apply_source_context_to_messages signature
     checks_total += 1
     ok, msg = check_function_signature(
         "open_webui.utils.middleware",
@@ -117,7 +105,6 @@ def check_all() -> tuple[int, list[str]]:
         checks_passed += 1
         print("PASS: apply_source_context_to_messages has expected parameters")
 
-    # Check 5: process_tool_result exists (for future use)
     checks_total += 1
     if not check_function_exists(
         "open_webui.utils.middleware",
@@ -130,7 +117,6 @@ def check_all() -> tuple[int, list[str]]:
         checks_passed += 1
         print("PASS: process_tool_result exists")
 
-    # Check 6: get_file_url_from_base64 exists (for future use)
     checks_total += 1
     if not check_function_exists(
         "open_webui.utils.files",
@@ -153,7 +139,6 @@ def main() -> int:
     print("=" * 40)
     print()
 
-    # First check if OpenWebUI can be imported at all
     try:
         import open_webui  # noqa: F401
     except ImportError:

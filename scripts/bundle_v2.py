@@ -29,10 +29,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).parent.parent
 PACKAGE_DIR = PROJECT_ROOT / "open_webui_openrouter_pipe"
@@ -46,21 +43,45 @@ DEFAULT_OUTPUT_COMPRESSED_NO_PLUGINS = PROJECT_ROOT / "open_webui_openrouter_pip
 ANYIO_WORKAROUND_FILE = PROJECT_ROOT / "scripts" / "anyio_1111_workaround.py"
 
 
+ANYIO_WORKAROUND_MARKER = "_apply_anyio_1111_workaround"
+
+NAME_COLLISIONS: list[tuple[str, str, str]] = []
+
+
+def split_physical_lines(text: str) -> list[str]:
+    """Split on ``\\n`` only, keeping the terminator.
+
+    ``str.splitlines`` also breaks on ``\\v \\f \\x1c \\x1d \\x1e \\x85 \\u2028
+    \\u2029``, and ``ast``/``tokenize`` line numbers count none of them. The package
+    contains U+2028 and U+2029 as literals -- ``core/utils.py`` lists them in the
+    separators it forbids in a rendered body -- so that one line reads as three, and
+    every line below it in the same file is displaced. Indexing a token position or an
+    AST ``lineno`` into ``splitlines`` output then addresses the wrong line, which in
+    this program means deleting or rewriting the wrong one, in the shipped artifact
+    only.
+    """
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 def _load_anyio_workaround_block() -> str:
     if not ANYIO_WORKAROUND_FILE.exists():
+        print(
+            "bundling without the anyio #1111 workaround (source not present)",
+            file=sys.stderr,
+        )
         return ""
     return ANYIO_WORKAROUND_FILE.read_text(encoding="utf-8").rstrip()
 
-# Modules known to be stdlib (Python 3.11+).  We use sys.stdlib_module_names
-# at runtime, but keep a fallback for safety.
 STDLIB_NAMES: set[str] = set(getattr(sys, "stdlib_module_names", set()))
 
 SKIP_FILES = {"pytest_bootstrap.py"}
 
 
-# ---------------------------------------------------------------------------
 # Data structures
-# ---------------------------------------------------------------------------
 
 @dataclass
 class LineRange:
@@ -81,20 +102,20 @@ class AliasedImport:
 @dataclass
 class TryExceptImport:
     """A try/except ImportError block that imports an optional dependency."""
-    source_lines: list[str]  # verbatim lines to preserve
-    imported_names: set[str]  # names introduced (for dedup)
+    source_lines: list[str]
+    imported_names: set[str]
     line_range: LineRange
 
 
 @dataclass
 class TypeCheckingBlock:
     """An `if TYPE_CHECKING:` block."""
-    has_internal: bool  # references internal modules?
-    has_external: bool  # references external modules?
-    external_import_lines: list[str]  # external import lines to hoist
-    else_lines: list[str]  # else-branch lines (if any)
+    has_internal: bool
+    has_external: bool
+    external_import_lines: list[str]
+    else_lines: list[str]
     has_else: bool
-    line_range: LineRange  # covers the entire if/else
+    line_range: LineRange
 
 
 @dataclass
@@ -106,25 +127,18 @@ class ModuleInfo:
     tree: ast.Module
     # Dependency tracking
     internal_deps: set[str] = field(default_factory=set)
-    # Lines to delete (1-indexed)
     delete_ranges: list[LineRange] = field(default_factory=list)
-    # Alias mappings: alias_name → original_name (for text replacement, no assignments emitted)
     alias_mappings: dict[str, str] = field(default_factory=dict)
-    # External imports (stdlib + third-party)
     external_import_lines: list[str] = field(default_factory=list)
+    dropped_import_comments: list[str] = field(default_factory=list)
     # Optional try/except blocks
     try_except_blocks: list[TryExceptImport] = field(default_factory=list)
     # TYPE_CHECKING blocks
     type_checking_blocks: list[TypeCheckingBlock] = field(default_factory=list)
-    # Is this an __init__.py?
     is_init: bool = False
     # Top-level names defined
     top_level_names: set[str] = field(default_factory=set)
 
-
-# ---------------------------------------------------------------------------
-# Step 1: Discovery
-# ---------------------------------------------------------------------------
 
 def discover_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dict[str, ModuleInfo]:
     """Walk the package directory and create ModuleInfo for each .py file.
@@ -151,7 +165,7 @@ def discover_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dic
             parts = parts[:-1]
             dotted = PACKAGE_NAME if not parts else f"{PACKAGE_NAME}.{'.'.join(parts)}"
         else:
-            parts[-1] = parts[-1][:-3]  # strip .py
+            parts[-1] = parts[-1][:-3]
             dotted = f"{PACKAGE_NAME}.{'.'.join(parts)}"
 
         source = py_file.read_text(encoding="utf-8")
@@ -161,17 +175,13 @@ def discover_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dic
             dotted_name=dotted,
             file_path=py_file,
             raw_source=source,
-            source_lines=source.splitlines(keepends=True),
+            source_lines=split_physical_lines(source),
             tree=tree,
             is_init=is_init,
         )
 
     return modules
 
-
-# ---------------------------------------------------------------------------
-# Step 2: Import classification & analysis
-# ---------------------------------------------------------------------------
 
 def _is_stdlib(module_name: str) -> bool:
     top = module_name.split(".")[0]
@@ -186,9 +196,7 @@ def _resolve_relative_import(node: ast.ImportFrom, module_dotted: str) -> str | 
     """Resolve a relative import to an absolute dotted name."""
     if node.level == 0:
         return node.module
-    # Compute the base package from the importing module's dotted name
     parts = module_dotted.split(".")
-    # Go up `level` packages
     if node.level > len(parts):
         return None
     base_parts = parts[: -node.level] if node.level <= len(parts) else []
@@ -209,9 +217,6 @@ def _find_try_except_import_blocks(tree: ast.Module, source_lines: list[str]) ->
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.Try):
             continue
-        # Check if any handler catches ImportError or ModuleNotFoundError.
-        # We intentionally exclude bare `except:` and `except Exception:` —
-        # those are not optional-import guards.
         catches_import_error = False
         for handler in node.handlers:
             if isinstance(handler.type, ast.Name) and handler.type.id in ("ImportError", "ModuleNotFoundError"):
@@ -224,7 +229,6 @@ def _find_try_except_import_blocks(tree: ast.Module, source_lines: list[str]) ->
         if not catches_import_error:
             continue
 
-        # Check if the try body contains an import
         has_import = False
         imported_names: set[str] = set()
         for child in ast.walk(node):
@@ -237,7 +241,6 @@ def _find_try_except_import_blocks(tree: ast.Module, source_lines: list[str]) ->
                     for alias in child.names:
                         imported_names.add(alias.asname or alias.name)
 
-        # Also capture names assigned in except handler (e.g., `lz4frame = None`)
         for handler in node.handlers:
             for child in ast.walk(handler):
                 if isinstance(child, ast.Assign):
@@ -265,6 +268,7 @@ def _find_type_checking_blocks(
     tree: ast.Module,
     source_lines: list[str],
     module_dotted: str,
+    dropped_comments: list[str] | None = None,
 ) -> list[TypeCheckingBlock]:
     """Find `if TYPE_CHECKING:` blocks at the module top level."""
     blocks: list[TypeCheckingBlock] = []
@@ -272,13 +276,13 @@ def _find_type_checking_blocks(
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.If):
             continue
-        # Check if test is `TYPE_CHECKING`
-        is_tc = False
-        if isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
-            is_tc = True
-        elif isinstance(node.test, ast.Attribute) and isinstance(node.test.value, ast.Name):
-            if node.test.attr == "TYPE_CHECKING":
-                is_tc = True
+        is_tc = (
+            isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"
+        ) or (
+            isinstance(node.test, ast.Attribute)
+            and isinstance(node.test.value, ast.Name)
+            and node.test.attr == "TYPE_CHECKING"
+        )
         if not is_tc:
             continue
 
@@ -290,25 +294,40 @@ def _find_type_checking_blocks(
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 if isinstance(child, ast.ImportFrom):
                     resolved = _resolve_relative_import(child, module_dotted)
-                    if resolved and _is_internal(resolved):
+                    if (resolved and _is_internal(resolved)) or child.level > 0:
                         has_internal = True
-                    elif child.level > 0:
-                        has_internal = True  # relative import = internal
                     else:
                         has_external = True
-                        # Capture the raw source lines for this import
-                        istart = child.lineno
-                        iend = child.end_lineno or child.lineno
-                        external_lines.extend(source_lines[istart - 1: iend])
+                        _n = ", ".join(
+                            a.name + (f" as {a.asname}" if a.asname else "")
+                            for a in child.names
+                        )
+                        _stmt = f"from {'.' * child.level}{child.module or ''} import {_n}"
+                        _c = _trailing_comment(
+                            source_lines, child.lineno, child.end_lineno or child.lineno
+                        )
+                        if _c and _is_directive_comment(_c):
+                            _stmt = f"{_stmt}{_c}"
+                        elif _c and dropped_comments is not None:
+                            dropped_comments.append(f"{_stmt}{_c}")
+                        external_lines.append(_stmt)
                 elif isinstance(child, ast.Import):
                     has_external = True
-                    istart = child.lineno
-                    iend = child.end_lineno or child.lineno
-                    external_lines.extend(source_lines[istart - 1: iend])
+                    _stmt = "import " + ", ".join(
+                        a.name + (f" as {a.asname}" if a.asname else "")
+                        for a in child.names
+                    )
+                    _c = _trailing_comment(
+                        source_lines, child.lineno, child.end_lineno or child.lineno
+                    )
+                    if _c and _is_directive_comment(_c):
+                        _stmt = f"{_stmt}{_c}"
+                    elif _c and dropped_comments is not None:
+                        dropped_comments.append(f"{_stmt}{_c}")
+                    external_lines.append(_stmt)
             elif isinstance(child, ast.Pass):
-                pass  # skip `pass` statements
+                pass
             else:
-                # Non-import code in TYPE_CHECKING — treat as internal
                 has_internal = True
 
         has_else = bool(node.orelse)
@@ -316,14 +335,11 @@ def _find_type_checking_blocks(
         if has_else:
             else_body_start = node.orelse[0].lineno
             else_body_end = node.orelse[-1].end_lineno or node.orelse[-1].lineno
-            # Find the actual `else:` keyword by scanning backwards from the
-            # first else-body statement.  This handles comments or blank lines
-            # between `else:` and the body.
             if_body_end = node.body[-1].end_lineno or node.body[-1].lineno
-            else_kw_line = else_body_start - 1  # fallback: line before body
+            else_kw_line = else_body_start - 1
             for scan in range(else_body_start - 2, if_body_end - 1, -1):
                 if source_lines[scan].strip().startswith("else"):
-                    else_kw_line = scan + 1  # convert 0-indexed to 1-indexed
+                    else_kw_line = scan + 1
                     break
             else_lines = source_lines[else_kw_line - 1: else_body_end]
 
@@ -347,12 +363,13 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
     tree = mod.tree
     lines = mod.source_lines
 
-    # Find try/except ImportError blocks FIRST (so we can exclude their ranges)
     mod.try_except_blocks = _find_try_except_import_blocks(tree, lines)
     te_ranges = {(b.line_range.start, b.line_range.end) for b in mod.try_except_blocks}
 
     # Find TYPE_CHECKING blocks
-    mod.type_checking_blocks = _find_type_checking_blocks(tree, lines, mod.dotted_name)
+    mod.type_checking_blocks = _find_type_checking_blocks(
+        tree, lines, mod.dotted_name, mod.dropped_import_comments
+    )
     tc_ranges = {(b.line_range.start, b.line_range.end) for b in mod.type_checking_blocks}
 
     def _in_special_block(lineno: int) -> bool:
@@ -361,12 +378,10 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
                 return True
         return False
 
-    # Determine which nodes are top-level (direct children of the module)
     top_level_nodes: set[int] = set()
     for node in ast.iter_child_nodes(tree):
         top_level_nodes.add(id(node))
 
-    # Walk the ENTIRE AST to find imports at any depth
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if _in_special_block(node.lineno):
@@ -374,15 +389,12 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
 
             is_top_level = id(node) in top_level_nodes
 
-            # from __future__ import annotations
             if node.module == "__future__":
                 mod.delete_ranges.append(LineRange(node.lineno, node.end_lineno or node.lineno))
                 continue
 
-            # Relative imports (level > 0) or absolute internal imports
             resolved = _resolve_relative_import(node, mod.dotted_name)
             if node.level > 0 or (resolved and _is_internal(resolved)):
-                # Track dependency (only from top-level imports for ordering)
                 if resolved and is_top_level:
                     dep = resolved
                     while dep and dep not in all_modules and "." in dep:
@@ -390,10 +402,6 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
                     if dep and dep in all_modules:
                         mod.internal_deps.add(dep)
 
-                # Record aliases for text replacement in the module body.
-                # Instead of emitting `alias = original` assignments (which
-                # can overwrite same-named globals from other modules), we
-                # replace references to the alias with the original name.
                 for alias in node.names:
                     if alias.asname and alias.asname != alias.name:
                         mod.alias_mappings[alias.asname] = alias.name
@@ -402,16 +410,22 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
                 mod.delete_ranges.append(LineRange(node.lineno, node.end_lineno or node.lineno))
                 continue
 
-            # External import — only hoist if top-level
             if is_top_level:
                 if resolved and resolved.startswith("open_webui."):
-                    # Open WebUI imports outside try/except — keep in place
                     pass
                 else:
                     start = node.lineno
                     end = node.end_lineno or node.lineno
-                    # Join multi-line imports into one statement string
-                    stmt = "".join(lines[start - 1: end]).strip()
+                    _names = ", ".join(
+                        a.name + (f" as {a.asname}" if a.asname else "")
+                        for a in node.names
+                    )
+                    stmt = f"from {'.' * node.level}{node.module or ''} import {_names}"
+                    comment = _trailing_comment(lines, start, end)
+                    if comment and _is_directive_comment(comment):
+                        stmt = f"{stmt}{comment}"
+                    elif comment:
+                        mod.dropped_import_comments.append(f"{stmt}{comment}")
                     mod.external_import_lines.append(stmt)
                     mod.delete_ranges.append(LineRange(start, end))
 
@@ -422,7 +436,15 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
             if is_top_level:
                 start = node.lineno
                 end = node.end_lineno or node.lineno
-                stmt = "".join(lines[start - 1: end]).strip()
+                stmt = "import " + ", ".join(
+                    a.name + (f" as {a.asname}" if a.asname else "")
+                    for a in node.names
+                )
+                comment = _trailing_comment(lines, start, end)
+                if comment and _is_directive_comment(comment):
+                    stmt = f"{stmt}{comment}"
+                elif comment:
+                    mod.dropped_import_comments.append(f"{stmt}{comment}")
                 mod.external_import_lines.append(stmt)
                 mod.delete_ranges.append(LineRange(start, end))
 
@@ -443,19 +465,21 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
 
     # Collect top-level names
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ClassDef):
-            mod.top_level_names.add(node.name)
-        elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             mod.top_level_names.add(node.name)
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     mod.top_level_names.add(target.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            mod.top_level_names.add(node.target.id)
+        elif isinstance(node, ast.Try):
+            mod.top_level_names |= _try_block_bindings(node)
 
-
-# ---------------------------------------------------------------------------
-# Step 3: Topological sort
-# ---------------------------------------------------------------------------
 
 def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
     """Kahn's algorithm — returns modules in dependency order (leaves first)."""
@@ -476,7 +500,6 @@ def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
 
     ordered: list[str] = []
     while queue:
-        # Sort for determinism within same level
         current = sorted(queue)
         queue.clear()
         for name in current:
@@ -490,15 +513,9 @@ def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
         missing = set(modules) - set(ordered)
         print(f"WARNING: Circular dependency detected involving: {missing}", file=sys.stderr)
         # Add remaining modules anyway
-        for name in sorted(missing):
-            ordered.append(name)
+        ordered.extend(sorted(missing))
 
     return [modules[name] for name in ordered]
-
-
-# ---------------------------------------------------------------------------
-# Step 4: Process module body
-# ---------------------------------------------------------------------------
 
 
 def _replace_name_token(source: str, old_name: str, new_name: str) -> str:
@@ -511,11 +528,8 @@ def _replace_name_token(source: str, old_name: str, new_name: str) -> str:
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except tokenize.TokenError:
-        # Malformed source — fall back to regex (best-effort)
         return re.sub(rf"\b{re.escape(old_name)}\b", new_name, source)
 
-    # Collect (row_1indexed, col_0indexed) of NAME tokens to replace.
-    # Process in reverse order so earlier replacements don't shift offsets.
     positions: list[tuple[int, int]] = []
     for tok in tokens:
         if tok.type == tokenize.NAME and tok.string == old_name:
@@ -524,7 +538,7 @@ def _replace_name_token(source: str, old_name: str, new_name: str) -> str:
     if not positions:
         return source
 
-    lines = source.splitlines(True)
+    lines = split_physical_lines(source)
     for row, col in reversed(positions):
         line = lines[row - 1]
         lines[row - 1] = line[:col] + new_name + line[col + len(old_name):]
@@ -534,16 +548,14 @@ def _replace_name_token(source: str, old_name: str, new_name: str) -> str:
 
 def process_module_body(mod: ModuleInfo) -> str:
     """Strip imports and return the processed module body."""
-    lines = mod.source_lines[:]  # copy
+    lines = mod.source_lines[:]
     n = len(lines)
 
-    # Build a set of line numbers to delete
     delete_lines: set[int] = set()
     for r in mod.delete_ranges:
         for ln in range(r.start, r.end + 1):
             delete_lines.add(ln)
 
-    # Also delete try/except blocks that will be hoisted
     for te in mod.try_except_blocks:
         for ln in range(te.line_range.start, te.line_range.end + 1):
             delete_lines.add(ln)
@@ -555,50 +567,126 @@ def process_module_body(mod: ModuleInfo) -> str:
 
     result_lines: list[str] = []
     for i in range(n):
-        lineno = i + 1  # 1-indexed
+        lineno = i + 1
         if lineno not in delete_lines:
             result_lines.append(lines[i])
 
-    # Apply alias replacements (alias → original_name) using the tokenizer.
-    # Only NAME tokens are touched — strings, comments, and docstrings are
-    # never modified.
     text = "".join(result_lines)
     for alias_name, original_name in mod.alias_mappings.items():
         text = _replace_name_token(text, alias_name, original_name)
 
-    # Clean up orphaned comment lines that remain after import removal.
-    # Strategy: mark a standalone comment line as orphaned if the next
-    # non-blank line is ALSO a standalone comment (not a code line).
-    # Multi-line comment blocks that precede code are preserved.
-    src_lines = text.splitlines(keepends=True)
+    src_lines = split_physical_lines(text)
+    in_string = _lines_inside_multiline_strings(text)
     keep = [True] * len(src_lines)
     for i, line in enumerate(src_lines):
         stripped = line.strip()
         if not stripped or not stripped.startswith("#"):
             continue
-        # Standalone comment line — look ahead past blanks
+        if (i + 1) in in_string:
+            continue
         j = i + 1
         while j < len(src_lines) and not src_lines[j].strip():
             j += 1
-        if j >= len(src_lines):
-            keep[i] = False  # comment at EOF with nothing after → orphaned
-        elif src_lines[j].strip().startswith("#"):
-            # Next non-blank is also a comment — but only mark as orphaned
-            # if there's a blank line between them (import section pattern)
-            if j > i + 1:
-                keep[i] = False
+        if j >= len(src_lines) or (
+            src_lines[j].strip().startswith("#") and j > i + 1
+        ):
+            keep[i] = False
     text = "".join(line for line, k in zip(src_lines, keep) if k)
 
-    # Collapse 3+ consecutive blank lines to 2
-    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    text = _collapse_blank_runs_outside_strings(text)
 
     text = text.strip("\n")
     return text
 
 
-# ---------------------------------------------------------------------------
-# Step 5: External import hoisting and deduplication
-# ---------------------------------------------------------------------------
+def _lines_inside_multiline_strings(text: str) -> set[int]:
+    """1-indexed line numbers spanned by a multi-line string literal."""
+    import tokenize
+    from io import StringIO
+
+    spans: set[int] = set()
+    fstring_kinds = {
+        getattr(tokenize, name)
+        for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END")
+        if hasattr(tokenize, name)
+    }
+    try:
+        for tok in tokenize.generate_tokens(StringIO(text).readline):
+            if tok.type in {tokenize.STRING, *fstring_kinds} and tok.end[0] > tok.start[0]:
+                spans.update(range(tok.start[0], tok.end[0] + 1))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return set()
+    return spans
+
+
+def _collapse_blank_runs_outside_strings(text: str) -> str:
+    """Collapse 3+ consecutive blank lines to 2, but never inside a string literal.
+
+    A plain ``re.sub`` over the source rewrote the *contents* of embedded templates:
+    filter_manager renders the Open WebUI filters it installs from triple-quoted
+    source held in this package, and a run of blank lines inside one of those strings
+    was silently shortened. The flat bundle then installed a filter whose source
+    differed from the one the package installs -- invisible unless something compares
+    them byte for byte, and unbounded in principle, since any embedded template may
+    depend on its own whitespace.
+    """
+    in_string = _lines_inside_multiline_strings(text)
+
+    lines = split_physical_lines(text)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip():
+            out.append(lines[i])
+            i += 1
+            continue
+        run_start = i
+        while i < len(lines) and not lines[i].strip():
+            i += 1
+        run = lines[run_start:i]
+        # 1-indexed line numbers for the run
+        touches_string = any(n in in_string for n in range(run_start + 1, i + 1))
+        out.extend(run if touches_string or len(run) <= 2 else run[:2])
+    return "".join(out)
+
+
+def _is_directive_comment(comment: str) -> bool:
+    """A trailing comment that instructs a tool rather than describing the code.
+
+    These must survive hoisting: the bundle is linted and type-checked in CI, so a
+    suppression that holds for the package and vanishes from the artifact produces a
+    bundle-only failure with no obvious cause.
+    """
+    return bool(_DIRECTIVE_COMMENT_RE.search(comment))
+
+
+_DIRECTIVE_COMMENT_RE = re.compile(
+    r"#\s*(noqa|type:\s*ignore|pragma|pyright:|mypy:|pylint:|ruff:|flake8:)",
+    re.IGNORECASE,
+)
+
+
+def _trailing_comment(lines: list[str], start: int, end: int) -> str:
+    """Return the trailing comments on a hoisted import, or an empty string.
+
+    Scans every physical line of the statement, not just the last: a parenthesised
+    import ends on ``)``, so reading only that line misses a suppression written on
+    the opening line or on any member line -- exactly the multi-line case the
+    dropped-comment warning exists to surface.
+    """
+    found: list[str] = []
+    for raw in lines[start - 1 : end]:
+        text = raw.rstrip("\n")
+        idx = text.find("#")
+        if idx == -1:
+            continue
+        if text.count('"', 0, idx) % 2 or text.count("'", 0, idx) % 2:
+            continue
+        comment = text[idx:].strip()
+        if comment not in found:
+            found.append(comment)
+    return "  " + " ".join(found) if found else ""
+
 
 def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tuple[list[str], list[str], set[str]]:
     """Collect all external imports, merge names per module, split into stdlib/third-party.
@@ -612,9 +700,9 @@ def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tup
     third element is the set of all local names brought into scope by the
     rendered imports (used to filter redundant TYPE_CHECKING imports).
     """
-    # {module_path: {name_or_alias, ...}}  for "from X import a, b as c" style
     from_imports: dict[str, set[str]] = defaultdict(set)
-    # set of full "import X" / "import X as Y" tokens
+    import_directives: dict[str, str] = {}
+    bare_directives: dict[str, str] = {}
     bare_imports: set[str] = set()
 
     for mod in ordered_modules:
@@ -622,25 +710,48 @@ def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tup
             line = raw_line.strip()
             if not line:
                 continue
-            # Parse "from X import a, b as c"
             m = re.match(r"^from\s+(\S+)\s+import\s+(.+)$", line)
             if m:
                 module_path = m.group(1)
                 names_part = m.group(2).strip()
-                # Handle parenthesised form (shouldn't occur, but be safe)
+                # Split the directive off BEFORE the comma split. Left inline, it
+                # travels with whichever name it followed; the names are then re-sorted,
+                # and if that name no longer sorts last the comment swallows every name
+                # after it -- the header binds fewer names than the module bodies lost,
+                # and the build fails naming an unrelated module.
+                comment = ""
+                hash_at = names_part.find("#")
+                if hash_at != -1:
+                    comment = names_part[hash_at:].strip()
+                    names_part = names_part[:hash_at].rstrip().rstrip(",").rstrip()
                 names_part = names_part.strip("()")
+                if comment:
+                    existing = import_directives.get(module_path, "")
+                    if comment not in existing:
+                        import_directives[module_path] = (existing + " " + comment).strip()
                 for token in names_part.split(","):
                     token = token.strip()
                     if token:
                         from_imports[module_path].add(token)
                 continue
-            # Parse "import X, Y as Z"
             m2 = re.match(r"^import\s+(.+)$", line)
             if m2:
                 for token in m2.group(1).split(","):
                     token = token.strip()
-                    if token:
-                        bare_imports.add(token)
+                    if not token:
+                        continue
+                    # Split the directive off BEFORE storing. The token is the key the
+                    # local name is derived from, and a trailing `# type: ignore` rode
+                    # into it -- so `bare_local` read `iio  # type: ignore[...]` and
+                    # could never match a colliding `from` import. The header still
+                    # emitted both lines and the collision report stayed silent.
+                    head, sep, comment = token.partition("#")
+                    token = head.strip()
+                    if not token:
+                        continue
+                    if sep and _is_directive_comment(sep + comment):
+                        bare_directives[token] = (sep + comment).strip()
+                    bare_imports.add(token)
                 continue
 
     def _top_module(module_path: str) -> str:
@@ -653,31 +764,56 @@ def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tup
         """Sort imported names: plain names first, then aliases, case-insensitive."""
         return name.lower()
 
-    # Render "from X import ..." lines (merged), deduplicating local names
-    # across modules (e.g., `Request` from both fastapi and starlette).
     stdlib_lines: list[str] = []
     third_party_lines: list[str] = []
-    seen_local_names: set[str] = set()
+    seen_local_names: dict[str, str] = {}
+    NAME_COLLISIONS.clear()
+    seen_local_sections: dict[str, bool] = {}
     for module_path in sorted(from_imports):
         unique_names: list[str] = []
         for token in sorted(from_imports[module_path], key=_sort_key_for_name):
-            # "X as Y" → local name is Y; "X" → local name is X
             local = token.split(" as ")[-1].strip()
+            origin = f"from {module_path} import {token.strip()}"
             if local not in seen_local_names:
-                seen_local_names.add(local)
+                seen_local_names[local] = origin
+                seen_local_sections[local] = _is_stdlib(module_path)
                 unique_names.append(token)
+            else:
+                NAME_COLLISIONS.append((local, seen_local_names[local], origin))
         if not unique_names:
             continue
         rendered = f"from {module_path} import {', '.join(unique_names)}"
+        directive = import_directives.get(module_path, "")
+        if directive:
+            rendered = f"{rendered}  {directive}"
         if _is_stdlib(module_path):
             stdlib_lines.append(rendered)
         else:
             third_party_lines.append(rendered)
 
-    # Render bare "import X" lines
     for token in sorted(bare_imports):
-        rendered = f"import {token}"
-        top = token.split(".")[0].split()[0]  # handle "X as Y"
+        directive = bare_directives.get(token, "")
+        rendered = f"import {token}" + (f"  {directive}" if directive else "")
+        if " as " in token:
+            bare_local = token.split(" as ")[-1].strip()
+        else:
+            bare_local = token.split(".")[0].strip()
+        origin = f"import {token.strip()}"
+        bare_is_stdlib = token.split(".")[0].split()[0] in STDLIB_NAMES
+        if bare_local in seen_local_names:
+            prior_is_stdlib = seen_local_sections.get(bare_local, bare_is_stdlib)
+            if bare_is_stdlib != prior_is_stdlib:
+                bare_wins = not bare_is_stdlib
+            else:
+                bare_wins = True
+            if bare_wins:
+                NAME_COLLISIONS.append((bare_local, origin, seen_local_names[bare_local]))
+            else:
+                NAME_COLLISIONS.append((bare_local, seen_local_names[bare_local], origin))
+        else:
+            seen_local_names[bare_local] = origin
+            seen_local_sections[bare_local] = bare_is_stdlib
+        top = token.split(".")[0].split()[0]
         if top in STDLIB_NAMES:
             stdlib_lines.append(rendered)
         else:
@@ -686,11 +822,9 @@ def collect_and_dedup_external_imports(ordered_modules: list[ModuleInfo]) -> tup
     stdlib_lines.sort()
     third_party_lines.sort()
 
-    # Build the set of all local names introduced by these imports.
     all_imported_names: set[str] = set()
     for names_set in from_imports.values():
         for token in names_set:
-            # "X as Y" → local name is Y; "X" → local name is X
             parts = token.split(" as ")
             all_imported_names.add(parts[-1].strip())
     for token in bare_imports:
@@ -710,10 +844,9 @@ def collect_and_dedup_try_except(ordered_modules: list[ModuleInfo]) -> list[str]
             # Check if any of the names are new
             new_names = te.imported_names - seen_names
             if not new_names:
-                continue  # All names already defined
+                continue
             seen_names |= te.imported_names
 
-            # Check if any import inside is internal (from .X or from open_webui_openrouter_pipe.X)
             is_internal = False
             for line in te.source_lines:
                 stripped = line.strip()
@@ -724,7 +857,7 @@ def collect_and_dedup_try_except(ordered_modules: list[ModuleInfo]) -> list[str]
                     break
 
             if is_internal:
-                continue  # Skip internal try/except blocks
+                continue
 
             # Emit the block
             block_text = "".join(te.source_lines)
@@ -760,7 +893,6 @@ def collect_external_type_checking(
                     continue
                 seen.add(normalized)
 
-                # Parse the import to extract local names and check redundancy.
                 m = re.match(r"^from\s+\S+\s+import\s+(.+)$", normalized)
                 if m:
                     names_part = m.group(1).strip().strip("()")
@@ -769,11 +901,10 @@ def collect_external_type_checking(
                         token = token.strip()
                         if not token:
                             continue
-                        # "X as Y" → local name is Y; "X" → local name is X
                         parts = token.split(" as ")
                         local_names.add(parts[-1].strip())
                     if local_names and local_names <= runtime_imported_names:
-                        continue  # all names already available at runtime
+                        continue
 
                 tc_import_lines.append(f"    {normalized}")
 
@@ -785,10 +916,6 @@ def collect_external_type_checking(
 
     return tc_import_lines, else_lines
 
-
-# ---------------------------------------------------------------------------
-# Step 6: Output assembly
-# ---------------------------------------------------------------------------
 
 def _read_stub_version(stub_path: Path) -> str:
     content = stub_path.read_text(encoding="utf-8")
@@ -814,29 +941,35 @@ license: MIT
 
 def _render_package_alias_shim(all_submodules: list[str]) -> str:
     """Generate the sys.modules shim so `from open_webui_openrouter_pipe.X import Y` works."""
-    # Build the list of all sub-module dotted paths
     sub_list = ", ".join(repr(s) for s in sorted(all_submodules))
 
-    # Collect all unique path components so `import X.Y as alias` works.
-    # Python's IMPORT_FROM opcode does getattr(parent, "child") — the child
-    # must be an attribute on the parent module.  Since all submodules point
-    # to the same flat module we use a module-level __getattr__ (PEP 562) to
-    # return the module itself for any submodule component name.
     component_names: set[str] = set()
     for sub in all_submodules:
         for part in sub.split("."):
             component_names.add(part)
     attr_set = ", ".join(repr(n) for n in sorted(component_names))
 
-    # Find intermediate package names (not leaf modules) for proxy generation.
-    # These are components that have children: "core" in "core.config".
     intermediate_names: set[str] = set()
     for sub in all_submodules:
         parts = sub.split(".")
         for i in range(len(parts) - 1):
             intermediate_names.add(parts[i])
-    # Also add top-level names that represent packages (have dot-separated children)
     intermediate_set = ", ".join(repr(n) for n in sorted(intermediate_names))
+
+    # Children of each intermediate package, so a proxy answers from what the package
+    # ACTUALLY contains rather than from the package-wide name set. `_SUBMODULE_ATTRS`
+    # is every path component anywhere in the tree, so it holds "config" (from
+    # core/config.py) and a `logging` proxy consulting it hands back the monolith for
+    # `logging.config`, shadowing the stdlib module.
+    children: dict[str, set[str]] = {}
+    for sub in all_submodules:
+        parts = sub.split(".")
+        for i in range(len(parts) - 1):
+            children.setdefault(parts[i], set()).add(parts[i + 1])
+    children_map = ", ".join(
+        f"{n!r}: frozenset({{{', '.join(repr(c) for c in sorted(cs))}}})"
+        for n, cs in sorted(children.items())
+    )
 
     return f'''
 # =============================================================================
@@ -856,6 +989,7 @@ def _render_package_alias_shim(all_submodules: list[str]) -> str:
 
 _SUBMODULE_ATTRS: frozenset[str] = frozenset({{{attr_set}}})
 _INTERMEDIATE_PACKAGES: frozenset[str] = frozenset({{{intermediate_set}}})
+_PACKAGE_CHILDREN: dict = {{{children_map}}}
 
 def __getattr__(name: str):
     """Allow attribute access for submodule names (PEP 562).
@@ -879,8 +1013,9 @@ class _PackageProxy(types.ModuleType):
     ``import open_webui_openrouter_pipe.logging.session_log_manager``
     to work correctly.
     """
-    def __init__(self, fullname: str, flat_mod: types.ModuleType, shadowed: types.ModuleType):
+    def __init__(self, fullname: str, flat_mod: types.ModuleType, shadowed: types.ModuleType, children=frozenset()):
         super().__init__(fullname)
+        self._children = children
         self.__path__ = []
         self.__package__ = fullname
         self.__file__ = "<bundled-proxy>"
@@ -888,7 +1023,10 @@ class _PackageProxy(types.ModuleType):
         self._shadowed = shadowed
 
     def __getattr__(self, name: str):
-        if name in _SUBMODULE_ATTRS:
+        # Only this package's OWN children resolve to the monolith. Consulting the
+        # package-wide component set instead shadowed every stdlib attribute that
+        # happened to share a name with any module anywhere in the tree.
+        if name in self._children:
             return self._flat
         return getattr(self._shadowed, name)
 
@@ -909,7 +1047,9 @@ def _install_package_alias() -> None:
     for _name in _INTERMEDIATE_PACKAGES:
         _existing = _this.__dict__.get(_name)
         if _existing is not None and isinstance(_existing, types.ModuleType) and _existing is not _this:
-            _proxy = _PackageProxy(f"{{_pkg}}.{{_name}}", _this, _existing)
+            _proxy = _PackageProxy(
+                f"{{_pkg}}.{{_name}}", _this, _existing, _PACKAGE_CHILDREN.get(_name, frozenset())
+            )
             sys.modules[f"{{_pkg}}.{{_name}}"] = _proxy
             setattr(_this, _name, _proxy)
 
@@ -946,7 +1086,7 @@ def assemble(
     optional_imports: list[str],
     tc_import_lines: list[str],
     tc_else_lines: list[str],
-    module_blocks: list[tuple[str, str]],  # (short_name, processed_body)
+    module_blocks: list[tuple[str, str]],
     submodule_list: list[str],
 ) -> str:
     """Assemble the final output."""
@@ -956,13 +1096,11 @@ def assemble(
     parts.append(_render_header(version=version, compressed=compressed))
     parts.append("")
 
-    # 2. Future annotations + version
     parts.append("from __future__ import annotations")
     parts.append("")
     parts.append(f'__version__ = "{version}"')
     parts.append("")
 
-    # 2b. anyio #1111 workaround (must run BEFORE any third-party import touches anyio)
     workaround = _load_anyio_workaround_block()
     if workaround:
         parts.append(workaround)
@@ -974,8 +1112,8 @@ def assemble(
         parts.append("# STDLIB IMPORTS")
         parts.append("# =============================================================================")
         parts.append("")
-        for line in stdlib_imports:
-            parts.append(line)
+        for _i, line in enumerate(stdlib_imports):
+            parts.append(line + ("  # noqa: I001" if _i == 0 else ""))
         parts.append("")
 
     # 4. Third-party imports
@@ -984,8 +1122,7 @@ def assemble(
         parts.append("# THIRD-PARTY IMPORTS")
         parts.append("# =============================================================================")
         parts.append("")
-        for line in third_party_imports:
-            parts.append(line)
+        parts.extend(third_party_imports)
         parts.append("")
 
     # 5. Optional dependencies
@@ -994,22 +1131,18 @@ def assemble(
         parts.append("# OPTIONAL DEPENDENCIES")
         parts.append("# =============================================================================")
         parts.append("")
-        for line in optional_imports:
-            parts.append(line)
+        parts.extend(optional_imports)
         parts.append("")
 
-    # 6. TYPE_CHECKING (external only)
     if tc_import_lines:
         parts.append("# =============================================================================")
         parts.append("# TYPE_CHECKING (external types only)")
         parts.append("# =============================================================================")
         parts.append("")
         parts.append("if TYPE_CHECKING:")
-        for line in tc_import_lines:
-            parts.append(line)
+        parts.extend(tc_import_lines)
         if tc_else_lines:
-            for line in tc_else_lines:
-                parts.append(line)
+            parts.extend(tc_else_lines)
         parts.append("")
 
     # 7. Module bodies
@@ -1034,20 +1167,16 @@ def assemble(
     return "\n".join(parts) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Step 7: Compressed bundle (zlib+base64 string blobs)
-# ---------------------------------------------------------------------------
-# When --compress is used, each module's source is zlib-compressed and
-# base64-encoded into a dict.  A lightweight sys.meta_path import hook
-# decompresses and executes modules on demand at import time.
-
-
 def _collect_all_modules(package_dir: Path, *, exclude_plugins: bool = False) -> dict[str, str]:
     """Collect all Python modules under *package_dir* as ``{dotted_name: source}``.
 
     Includes ``__init__.py`` files. When ``exclude_plugins`` is set, files inside
     a plugin sub-package (``plugins/<name>/...``) are skipped; the framework
     (``plugins/*.py``) stays — so the bundle manifest simply lists no plugins.
+
+    Sources are embedded verbatim and executed only when first imported, so each is
+    parsed here. Without that, a module with a syntax error produces a bundle whose
+    own ``ast.parse`` succeeds, which is the only gate release publishing applies.
     """
     modules: dict[str, str] = {}
     package_name = package_dir.name
@@ -1062,14 +1191,25 @@ def _collect_all_modules(package_dir: Path, *, exclude_plugins: bool = False) ->
         if exclude_plugins and len(parts) >= 3 and parts[0] == "plugins":
             continue
 
+        if py_file.name in SKIP_FILES:
+            continue
+
         if parts[-1] == "__init__.py":
             parts = parts[:-1]
             module_path = package_name if not parts else f"{package_name}.{'.'.join(parts)}"
         else:
-            parts[-1] = parts[-1][:-3]  # Remove .py
+            parts[-1] = parts[-1][:-3]
             module_path = f"{package_name}.{'.'.join(parts)}"
 
-        modules[module_path] = py_file.read_text(encoding="utf-8")
+        source = py_file.read_text(encoding="utf-8")
+        try:
+            ast.parse(source, filename=str(py_file))
+        except SyntaxError as exc:
+            raise SyntaxError(
+                f"{py_file} does not parse, so the compressed bundle would embed a "
+                f"module that fails only when first imported: {exc}"
+            ) from exc
+        modules[module_path] = source
 
     return modules
 
@@ -1088,7 +1228,7 @@ def _b64_chunks_expr(b64_text: str, *, chunk_size: int = 120) -> str:
     chunks = [b64_text[i : i + chunk_size] for i in range(0, len(b64_text), chunk_size)]
     lines = ["("]
     for chunk in chunks:
-        lines.append(f"    {repr(chunk)}")
+        lines.append(f"    {chunk!r}")
     lines.append(")")
     return "\n".join(lines)
 
@@ -1118,12 +1258,13 @@ def _generate_compressed_runtime() -> str:
     lines.append("")
     lines.append("from __future__ import annotations")
     lines.append("")
+    lines.append("import base64")
+    lines.append("import io")
     lines.append("import linecache")
     lines.append("import sys")
+    lines.append("import zlib")
     lines.append("from importlib.abc import Loader, MetaPathFinder")
     lines.append("from importlib.machinery import ModuleSpec")
-    lines.append("import base64")
-    lines.append("import zlib")
     lines.append("")
     lines.append("_BUNDLED_SOURCES_Z: dict[str, str] = {}")
     lines.append("_BUNDLED_SOURCES: dict[str, str] = {}  # decompressed cache")
@@ -1186,12 +1327,15 @@ def _generate_compressed_runtime() -> str:
     lines.append("        linecache.cache[module.__file__] = (")
     lines.append("            len(source),")
     lines.append("            None,")
-    lines.append("            source.splitlines(True),")
+    lines.append("            io.StringIO(source).readlines(),")
     lines.append("            module.__file__,")
     lines.append("        )")
     lines.append("")
     lines.append('        code = compile(source, module.__file__, \"exec\")')
-    lines.append("        exec(code, module.__dict__)")
+    lines.append(
+        "        exec(code, module.__dict__)  # noqa: S102 - executing the embedded "
+        "modules is the whole mechanism of the compressed bundle"
+    )
     lines.append("")
     lines.append("def _install_bundled_finder() -> None:")
     lines.append("    sys.meta_path[:] = [")
@@ -1209,25 +1353,22 @@ def _generate_compressed_runtime() -> str:
 
 
 def _generate_compressed_entry_point() -> str:
-    return "\n".join(
-        [
-            "# =============================================================================",
-            "# ENTRY POINT",
-            "# =============================================================================",
-            "# Import and export the Pipe class for Open WebUI",
-            "",
-            "from open_webui_openrouter_pipe import Pipe as BasePipe",
-            "",
-            '_MODULE_PREFIX = "function_"',
-            "_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id",
-            "",
-            "class Pipe(BasePipe):",
-            "    id = _runtime_id",
-            "",
-            '__all__ = ["Pipe"]',
-            "",
-        ]
-    )
+    return """\
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+# Import and export the Pipe class for Open WebUI
+
+from open_webui_openrouter_pipe import Pipe as BasePipe
+
+_MODULE_PREFIX = "function_"
+_runtime_id = __name__[len(_MODULE_PREFIX):] if __name__.startswith(_MODULE_PREFIX) else BasePipe.id
+
+class Pipe(BasePipe):
+    id = _runtime_id
+
+__all__ = ["Pipe"]
+"""
 
 
 def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = False) -> None:
@@ -1239,8 +1380,6 @@ def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = Fa
     parts.append("")
     parts.append(_generate_compressed_runtime())
 
-    # anyio #1111 workaround - runs AFTER the import hook is installed (so anyio
-    # imports work) and BEFORE the entry point pulls in our package modules.
     workaround = _load_anyio_workaround_block()
     if workaround:
         parts.append(workaround)
@@ -1268,12 +1407,142 @@ def _bundle_compressed(*, output_path: Path, version: str, no_plugins: bool = Fa
     print(f"Wrote {output_path} (compressed, {size_kb:.1f} KB)")
 
 
-# ---------------------------------------------------------------------------
-# Step 8: Validation
-# ---------------------------------------------------------------------------
+def _try_block_bindings(node: ast.Try) -> set[str]:
+    """Names a module-level try/except binds when the module body runs.
+
+    The collection above walks `ast.iter_child_nodes`, so a name bound inside a
+    module-level `try` is a grandchild and was never seen -- which meant the collision
+    gate could not fire for any optional-import guard. That hole was invisible while
+    the guards were spelled `except ImportError`, because those blocks were hoisted
+    into the bundle header and deduplicated on the way; respelling the handlers as
+    `except Exception` left them inline, still binding names, still uncollected.
+    """
+    bound: set[str] = set()
+
+    def _walk(stmts: list[ast.stmt]) -> None:
+        # NOT ast.walk: that descends into nested defs, so a fallback helper written
+        # inside an `except` contributed its LOCALS as module-level names -- and since
+        # the collision report became a raise, a local shared by two modules hard-fails
+        # the build with "Rename one of them" pointing at nothing.
+        for sub in stmts:
+            if isinstance(sub, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                bound.add(sub.name)
+                continue
+            if isinstance(sub, ast.Assign):
+                bound.update(t.id for t in sub.targets if isinstance(t, ast.Name))
+            elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name):
+                bound.add(sub.target.id)
+            elif isinstance(sub, ast.Import | ast.ImportFrom):
+                bound.update((a.asname or a.name).split(".")[0] for a in sub.names)
+            elif isinstance(sub, ast.If | ast.While | ast.For | ast.AsyncFor):
+                _walk(sub.body)
+                _walk(sub.orelse)
+            elif isinstance(sub, ast.With | ast.AsyncWith):
+                _walk(sub.body)
+            elif isinstance(sub, ast.Try):
+                _walk(sub.body)
+                for handler in sub.handlers:
+                    _walk(handler.body)
+                _walk(sub.orelse)
+                _walk(sub.finalbody)
+
+    _walk(node.body)
+    for handler in node.handlers:
+        _walk(handler.body)
+    _walk(node.orelse)
+    _walk(node.finalbody)
+    return bound
+
+
+def _binding_signatures(mod: ModuleInfo, name: str) -> set[tuple] | None:
+    """What *name* is bound TO in *mod*, canonically -- or None if not classifiable.
+
+    Compared instead of source text because the guards differ only in type-checker
+    suppression comments, which cannot change what object the name receives. Two
+    modules that both run `from open_webui.models.files import Files` with a `None`
+    fallback bind the same object in the collapsed namespace no matter how either is
+    annotated; two that import the same NAME from different modules do not, and that
+    difference survives here.
+
+    Returning None means "no opinion" -- the caller falls back to the stricter textual
+    rule rather than guessing.
+    """
+    # Abstain if anything OUTSIDE a top-level `try` also binds the name: this scan sees
+    # only Try nodes, so a later `name = ...` at module scope is invisible to it and two
+    # modules with matching guards were declared equivalent while the flat bundle bound
+    # the rebound value for both. None means "no opinion"; the caller falls back to the
+    # stricter textual rule.
+    for child in ast.iter_child_nodes(mod.tree):
+        if isinstance(child, ast.Try):
+            continue
+        if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            rebinds = child.name == name
+        elif isinstance(child, ast.Assign):
+            rebinds = any(isinstance(t, ast.Name) and t.id == name for t in child.targets)
+        elif isinstance(child, ast.AnnAssign):
+            rebinds = isinstance(child.target, ast.Name) and child.target.id == name
+        elif isinstance(child, ast.Import | ast.ImportFrom):
+            rebinds = any((a.asname or a.name).split(".")[0] == name for a in child.names)
+        else:
+            rebinds = False
+        if rebinds:
+            return None
+
+    signatures: set[tuple] = set()
+    for parent in ast.iter_child_nodes(mod.tree):
+        if not isinstance(parent, ast.Try):
+            continue
+        for sub in ast.walk(parent):
+            if isinstance(sub, ast.ImportFrom):
+                for alias in sub.names:
+                    if (alias.asname or alias.name) == name:
+                        signatures.add(("from", sub.module, sub.level, alias.name))
+            elif isinstance(sub, ast.Import):
+                for alias in sub.names:
+                    if (alias.asname or alias.name).split(".")[0] == name:
+                        signatures.add(("import", alias.name, alias.asname))
+            elif isinstance(sub, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in sub.targets
+            ):
+                if not isinstance(sub.value, ast.Constant):
+                    return None
+                signatures.add(("const", repr(sub.value.value)))
+            elif (
+                isinstance(sub, ast.AnnAssign)
+                and isinstance(sub.target, ast.Name)
+                and sub.target.id == name
+            ):
+                return None
+    return signatures or None
+
+
+def _bindings_are_equivalent(
+    name: str,
+    origins: list[str],
+    mods_by_short: dict[str, ModuleInfo],
+) -> bool:
+    """True when every module binds *name* to demonstrably the same thing."""
+    seen: list[set[tuple]] = []
+    for origin in origins:
+        signatures = _binding_signatures(mods_by_short[origin], name)
+        if signatures is None:
+            return False
+        seen.append(signatures)
+    return all(s == seen[0] for s in seen)
+
 
 def _is_idempotent_definition(node: ast.AST) -> bool:
-    """Only assignments whose value is a `logging.getLogger(...)` call are safe to re-execute in one namespace."""
+    """Assignments safe to re-execute in one namespace.
+
+    Only a `logging.getLogger(...)` call qualifies: it returns the same object for the
+    same name, so re-executing it in one namespace is a no-op.
+
+    A bare `None` sentinel deliberately does NOT qualify. It looks idempotent, but it
+    is the canonical shape for a module global that is later reassigned via `global`
+    -- precisely the case where the flat bundle collapses two modules into one slot
+    and the last writer silently wins for both. AnnAssign is covered by the same rule:
+    it is not an ast.Assign, so it falls out below.
+    """
     if not isinstance(node, ast.Assign):
         return False
     value = node.value
@@ -1289,18 +1558,26 @@ def _is_idempotent_definition(node: ast.AST) -> bool:
 def _definitions_textually_identical(
     name: str,
     origins: list[str],
-    mods_by_short: dict[str, "ModuleInfo"],
+    mods_by_short: dict[str, ModuleInfo],
 ) -> bool:
     """True when every top-level definition of *name* across *origins* is idempotent and textually identical."""
     texts: set[str] = set()
     for origin in origins:
         mod = mods_by_short[origin]
+        # An origin this loop cannot classify -- a module-level `try` binding the name,
+        # which _try_block_bindings does register -- must make the answer False, not sit
+        # the vote out. Otherwise the surviving origins agree with themselves and a real
+        # collision is reported benign.
+        seen_here = False
         for node in ast.iter_child_nodes(mod.tree):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name != name:
                     continue
             elif isinstance(node, ast.Assign):
                 if not any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+                    continue
+            elif isinstance(node, ast.AnnAssign):
+                if not (isinstance(node.target, ast.Name) and node.target.id == name):
                     continue
             else:
                 continue
@@ -1309,8 +1586,100 @@ def _definitions_textually_identical(
             segment = ast.get_source_segment(mod.raw_source, node)
             if not segment:
                 return False
+            seen_here = True
             texts.add(segment)
+        if not seen_here:
+            return False
+    if not texts:
+        return False
     return len(texts) == 1
+
+
+
+def _report_name_collisions() -> None:
+    """Surface every external name the header could bind only once.
+
+    Benign when both modules re-export the same object (``fastapi.Request`` *is*
+    ``starlette.requests.Request``); silently wrong otherwise, and silently wrong is
+    the failure mode with no NameError to catch it. Proving identity needs the
+    dependency installed, which a repo build has and the gh-pages in-browser builder
+    does not, so the proof lives in test_bundle_name_collisions.py and this only
+    reports.
+    """
+    if not NAME_COLLISIONS:
+        return
+    print(
+        f"Deduplicated {len(NAME_COLLISIONS)} external name(s) in the shared header:",
+        file=sys.stderr,
+    )
+    for name, kept, dropped in NAME_COLLISIONS:
+        print(f"  {name}: kept from {kept}, dropped from {dropped}", file=sys.stderr)
+
+
+def _report_dropped_import_comments(ordered_modules: list[ModuleInfo]) -> None:
+    """Warn when a hoisted import's trailing comment will not reach the bundle.
+
+    Tool directives (``# noqa``, ``# type: ignore``, ...) ride along with the hoisted
+    statement -- see ``_is_directive_comment``. What reaches this report is descriptive
+    prose, which a deduplicated header cannot carry.  That is fine as long
+    as it is visible: otherwise a suppression that works in package mode silently
+    disappears and resurfaces as a bundle-only CI failure with no obvious cause.
+    """
+    dropped = [(m.dotted_name, line) for m in ordered_modules for line in m.dropped_import_comments]
+    if dropped:
+        print(
+            f"Dropped {len(dropped)} trailing comment(s) on hoisted imports "
+            "(the bundle header cannot carry them):",
+            file=sys.stderr,
+        )
+        for name, line in dropped:
+            print(f"  {name}: {line}", file=sys.stderr)
+
+
+def _assert_hoisted_imports_rebound(
+    ordered_modules: list[ModuleInfo], rendered_lines: list[str]
+) -> None:
+    """Fail the build if a hoisted import was deleted but never re-emitted.
+
+    The bundler removes top-level external imports from each module body and collects
+    them into a shared header.  If a statement is lost in between, the bundle still
+    parses and still imports -- it only raises NameError when the affected code path
+    first runs.  The comparison is against the names actually bound by the RENDERED
+    header, so it covers capture, parsing, and the renderer's duplicate-name dedup.
+    """
+    bound_by_header: set[str] = set()
+    for line in rendered_lines:
+        try:
+            hdr = ast.parse(line.split("  #")[0]).body[0]
+        except SyntaxError:
+            continue
+        if isinstance(hdr, ast.ImportFrom):
+            bound_by_header.update(a.asname or a.name for a in hdr.names)
+        elif isinstance(hdr, ast.Import):
+            bound_by_header.update(a.asname or a.name.split(".")[0] for a in hdr.names)
+
+    missing: dict[str, str] = {}
+    for mod in ordered_modules:
+        for stmt in mod.external_import_lines:
+            try:
+                node = ast.parse(stmt).body[0]
+            except SyntaxError:
+                raise RuntimeError(f"bundler: unparsable hoisted import {stmt!r}") from None
+            if isinstance(node, ast.ImportFrom):
+                bound = [a.asname or a.name for a in node.names]
+            elif isinstance(node, ast.Import):
+                bound = [a.asname or a.name.split(".")[0] for a in node.names]
+            else:
+                continue
+            for name in bound:
+                if name not in bound_by_header:
+                    missing.setdefault(name, f"{mod.dotted_name}: {stmt}")
+    if missing:
+        detail = "\n".join(f"  {n}  <- {src}" for n, src in sorted(missing.items()))
+        raise RuntimeError(
+            "bundler: these imports were removed from module bodies but never re-emitted "
+            f"in the header:\n{detail}"
+        )
 
 
 def validate_output(source: str, output_path: Path) -> bool:
@@ -1324,14 +1693,13 @@ def validate_output(source: str, output_path: Path) -> bool:
         errors.append(f"Syntax error at line {e.lineno}: {e.msg}")
 
     # 2. No leftover internal imports
-    for i, line in enumerate(source.splitlines(), 1):
+    for i, line in enumerate(split_physical_lines(source), 1):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         # Check for relative imports
         if re.match(r"^\s*from\s+\.\S*\s+import", stripped):
             errors.append(f"Line {i}: leftover relative import: {stripped}")
-        # Check for absolute internal imports (but not in the shim or string literals)
         if (re.match(rf"^\s*from\s+{PACKAGE_NAME}\.\S+\s+import", stripped)
             and "_sys.modules" not in line
             and "sys.modules" not in line
@@ -1356,40 +1724,31 @@ def validate_output(source: str, output_path: Path) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
 # Main bundler
-# ---------------------------------------------------------------------------
 
 def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> None:
     version = _read_stub_version(STUB_FILE)
 
-    # Compressed mode: completely separate code path (string blobs + import hook)
     if compressed:
         _bundle_compressed(output_path=output_path, version=version, no_plugins=no_plugins)
         return
 
-    # --- Flat monolith (default) ---
 
-    # Step 1: Discover
     all_modules = discover_modules(PACKAGE_DIR, exclude_plugins=no_plugins)
     print(f"Discovered {len(all_modules)} modules")
 
-    # Step 2: Analyze
     for mod in all_modules.values():
         analyze_module(mod, all_modules)
 
-    # Filter out __init__.py files — they are pure re-exports
     content_modules = {
         name: mod for name, mod in all_modules.items()
         if not mod.is_init
     }
     print(f"Content modules (non-__init__): {len(content_modules)}")
 
-    # Step 3: Topological sort
     ordered = topological_sort(content_modules)
     print(f"Topological order: {[m.dotted_name.removeprefix(PACKAGE_NAME + '.') for m in ordered]}")
 
-    # Name collision detection: warn about top-level names defined in multiple modules
     name_origins: dict[str, list[str]] = defaultdict(list)
     mods_by_short: dict[str, ModuleInfo] = {}
     for mod in ordered:
@@ -1402,6 +1761,7 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
         name: origins
         for name, origins in collisions.items()
         if _definitions_textually_identical(name, origins, mods_by_short)
+        or _bindings_are_equivalent(name, origins, mods_by_short)
     }
     for name in benign:
         collisions.pop(name)
@@ -1409,21 +1769,31 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
         summary = ", ".join(f"{name} x{len(benign[name])}" for name in sorted(benign))
         print(f"Identical redefinitions (benign): {summary}")
     if collisions:
-        print(f"WARNING: {len(collisions)} name collision(s) detected:", file=sys.stderr)
-        for name, origins in sorted(collisions.items()):
-            print(f"  {name}: defined in {', '.join(origins)}", file=sys.stderr)
+        detail = "\n".join(
+            f"  {name}: defined in {', '.join(origins)}"
+            for name, origins in sorted(collisions.items())
+        )
+        raise RuntimeError(
+            f"{len(collisions)} top-level name(s) are defined by more than one module and "
+            f"are not textually identical:\n{detail}\n"
+            "The flat bundle collapses every module into one namespace, so the last "
+            "definition wins and every call site that meant the other one silently "
+            "changes behaviour -- with no NameError to catch it, and only in the shipped "
+            "artifact, never in the package the tests import. Rename one of them."
+        )
 
-    # Step 5: Collect external imports
     stdlib_imports, third_party_imports, runtime_names = collect_and_dedup_external_imports(ordered)
+
+    _assert_hoisted_imports_rebound(ordered, stdlib_imports + third_party_imports)
+    _report_dropped_import_comments(ordered)
+    _report_name_collisions()
     optional_imports = collect_and_dedup_try_except(ordered)
     tc_import_lines, tc_else_lines = collect_external_type_checking(ordered, runtime_names)
 
-    # Ensure `types` is available (used by the package alias shim)
     if not any("import types" in line for line in stdlib_imports):
         stdlib_imports.append("import types")
         stdlib_imports.sort()
 
-    # Step 4: Process module bodies
     module_blocks: list[tuple[str, str]] = []
     for mod in ordered:
         body = process_module_body(mod)
@@ -1438,7 +1808,6 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
             continue
         sub = name.removeprefix(PACKAGE_NAME + ".")
         submodule_list.append(sub)
-        # Also add intermediate packages (e.g., "core" for "core.config")
         parts = sub.split(".")
         for i in range(1, len(parts)):
             parent = ".".join(parts[:i])
@@ -1446,7 +1815,6 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
                 submodule_list.append(parent)
     submodule_list = sorted(set(submodule_list))
 
-    # Step 6: Assemble
     output = assemble(
         version=version,
         compressed=False,
@@ -1459,10 +1827,8 @@ def bundle(*, output_path: Path, compressed: bool, no_plugins: bool = False) -> 
         submodule_list=submodule_list,
     )
 
-    # Step 8: Validate
     ok = validate_output(output, output_path)
 
-    # Write (even on failure, for debugging)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(output, encoding="utf-8")
 

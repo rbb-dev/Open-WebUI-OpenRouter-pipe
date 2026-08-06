@@ -2647,7 +2647,6 @@ async def test_send_openrouter_streaming_response_failed_visible(pipe_instance_a
             status=200,
         )
 
-        # response.failed causes an exception
         with pytest.raises(Exception) as exc_info:
             events = []
             async for event in pipe.send_openrouter_streaming_request(
@@ -2687,7 +2686,6 @@ async def test_send_openrouter_streaming_response_error_visible(pipe_instance_as
             status=200,
         )
 
-        # response.error causes an exception
         with pytest.raises(Exception) as exc_info:
             events = []
             async for event in pipe.send_openrouter_streaming_request(

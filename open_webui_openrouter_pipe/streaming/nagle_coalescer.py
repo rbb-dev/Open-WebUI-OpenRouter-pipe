@@ -180,6 +180,24 @@ class NagleCoalescer:
 # ---------------------------------------------------------------------------
 
 
+def idle_flush_timeout(coalescer: Any, idle_flush_seconds: float | None) -> float | None:
+    """How long to wait for the next upstream event before flushing what is buffered.
+
+    None means "block indefinitely" -- correct only when there is nothing to flush.
+    Returning None while text is buffered holds it until the next upstream event, so a
+    model that pauses leaves the user watching a stalled reply; the final flush at
+    end-of-stream still delivers every byte, which is why asserting the concatenation
+    cannot detect it.
+
+    Shared because this decision is made in two consumer loops -- here and in
+    api/gateway/responses_adapter.py, which serves /responses, the default endpoint --
+    and the surrounding loops differ enough that only the decision is worth unifying.
+    """
+    if idle_flush_seconds and coalescer.has_buffered:
+        return idle_flush_seconds
+    return None
+
+
 async def nagle_coalesce_stream(
     source: AsyncGenerator[dict[str, Any], None],
     *,
@@ -212,11 +230,7 @@ async def nagle_coalesce_stream(
     try:
         while True:
             # Idle timeout when buffers have content
-            timeout = (
-                idle_flush_seconds
-                if (idle_flush_seconds and coalescer.has_buffered)
-                else None
-            )
+            timeout = idle_flush_timeout(coalescer, idle_flush_seconds)
             timed_out = False
 
             if timeout is not None:

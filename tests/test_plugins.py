@@ -11,9 +11,6 @@ from open_webui_openrouter_pipe.plugins.base import PluginBase, PluginContext
 from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
 
 
-# ── Fixtures ──
-
-
 @pytest.fixture(autouse=True)
 def _clean_registry():
     """Reset class-level registry between tests."""
@@ -50,9 +47,6 @@ def _make_mock_pipe():
     return pipe
 
 
-# ── Registration Tests ──
-
-
 class TestPluginRegistration:
     def test_register_decorator(self):
         """@PluginRegistry.register registers the plugin class."""
@@ -81,9 +75,6 @@ class TestPluginRegistration:
 
         PluginRegistry.register(MyPlugin)
         assert MyPlugin in PluginRegistry._plugin_classes
-
-
-# ── Initialization Tests ──
 
 
 class TestPluginInit:
@@ -133,9 +124,6 @@ class TestPluginInit:
         assert len(registry._plugins) == 0
 
 
-# ── Hook Subscription Tests ──
-
-
 class TestHookSubscription:
     @pytest.mark.asyncio
     async def test_only_subscribed_hooks_dispatched(self):
@@ -157,11 +145,9 @@ class TestHookSubscription:
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # on_models is subscribed
         await registry.dispatch_on_models([])
         assert "on_models" in calls
 
-        # on_request is NOT subscribed — should not be dispatched
         result = await registry.dispatch_on_request({}, {}, {}, None, None)
         assert "on_request" not in calls
         assert result is None
@@ -173,7 +159,7 @@ class TestHookSubscription:
         @PluginRegistry.register
         class MyPlugin(PluginBase):
             plugin_id = "my-plugin"
-            hooks = {}  # No subscriptions
+            hooks = {}
 
             def on_models(self, models, **kwargs):
                 called.append(True)
@@ -183,11 +169,7 @@ class TestHookSubscription:
         models = [{"id": "test"}]
         asyncio.run(registry.dispatch_on_models(models))
         assert not called
-        # Models list unchanged since no plugin ran
         assert models == [{"id": "test"}]
-
-
-# ── Priority Tests ──
 
 
 class TestPriorityOrdering:
@@ -215,9 +197,6 @@ class TestPriorityOrdering:
         registry.init_plugins(_make_mock_pipe())
         asyncio.run(registry.dispatch_on_models([]))
         assert order == ["high", "low"]
-
-
-# ── Dispatch Strategy Tests ──
 
 
 class TestDispatchStrategies:
@@ -278,7 +257,6 @@ class TestDispatchStrategies:
 
         # Both called in priority order
         assert calls == ["high", "low"]
-        # Chain semantics: last writer wins (low runs after high)
         assert result == {"response": "from-low"}
 
     @pytest.mark.asyncio
@@ -291,7 +269,7 @@ class TestDispatchStrategies:
             hooks = {"on_request": 50}
 
             async def on_request(self, body, user, metadata, event_emitter, task, **kwargs):
-                return None  # Skip
+                return None
 
         @PluginRegistry.register
         class ResponsePlugin(PluginBase):
@@ -333,9 +311,6 @@ class TestDispatchStrategies:
         assert body["original"] is True
         assert body["added_by_a"] is True
         assert body["added_by_b"] is True
-
-
-# ── Error Isolation Tests ──
 
 
 class TestErrorIsolation:
@@ -443,9 +418,6 @@ class TestErrorIsolation:
         assert body["transformed"] is True
 
 
-# ── Chain Dispatch Tests (new semantics) ──
-
-
 class TestChainDispatch:
     @pytest.mark.asyncio
     async def test_on_request_chain_all_plugins_run(self):
@@ -478,7 +450,7 @@ class TestChainDispatch:
 
             async def on_request(self, body, user, metadata, event_emitter, task, **kwargs):
                 calls.append("c")
-                return None  # Pass through
+                return None
 
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
@@ -486,7 +458,6 @@ class TestChainDispatch:
 
         # All three ran in priority order
         assert calls == ["a", "b", "c"]
-        # B received A's result via current_result and built on it; C returned None so B's result persists
         assert result == {"response": "modified-by-b(saw:{'response': 'from-a'})"}
 
     @pytest.mark.asyncio
@@ -534,7 +505,7 @@ class TestChainDispatch:
 
             async def on_request(self, body, user, metadata, event_emitter, task, **kwargs):
                 side_effects.append("fired")
-                return None  # Observe only
+                return None
 
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
@@ -542,9 +513,6 @@ class TestChainDispatch:
 
         assert result == {"response": "intercepted"}
         assert side_effects == ["fired"]
-
-
-# ── Zombie Plugin / Init Safety Tests ──
 
 
 class TestInitSafety:
@@ -572,7 +540,6 @@ class TestInitSafety:
         assert "bad-init" not in plugin_ids
         assert "good-init" in plugin_ids
 
-        # Hook subscribers should not contain the bad plugin
         subscriber_ids = [
             p.plugin_id for p, _ in registry._hook_subscribers.get("on_models", [])
         ]
@@ -604,7 +571,6 @@ class TestInitSafety:
 
         assert "alpha" in loggers
         assert "beta" in loggers
-        # Logger names should contain the plugin ID
         assert "alpha" in loggers["alpha"].name
         assert "beta" in loggers["beta"].name
         # Loggers should be different objects
@@ -622,12 +588,8 @@ class TestInitSafety:
         registry.init_plugins(pipe)
         registry.init_plugins(pipe)
 
-        # Idempotency guard: second call is a no-op
         plugin_ids = [p.plugin_id for p in registry._plugins]
         assert plugin_ids.count("re-init-test") == 1
-
-
-# ── Priority Edge Case Tests ──
 
 
 class TestPriorityEdgeCases:
@@ -706,7 +668,7 @@ class TestPriorityEdgeCases:
             hooks = {"on_models": 10}
 
             def on_models(self, models, **kwargs):
-                pass  # Void — no return needed
+                pass
 
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
@@ -723,27 +685,21 @@ class TestPriorityEdgeCases:
         @PluginRegistry.register
         class NoHooksPlugin(PluginBase):
             plugin_id = "no-hooks"
-            hooks = {}  # Subscribes to nothing
+            hooks = {}
 
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # on_models: void dispatch, models unchanged
         models = [{"id": "test"}]
         await registry.dispatch_on_models(models)
         assert models == [{"id": "test"}]
 
-        # on_request returns None
         result = await registry.dispatch_on_request({}, {}, {}, None, None)
         assert result is None
 
-        # on_request_transform: void dispatch, body unchanged
         body = {"model": "test"}
         await registry.dispatch_on_request_transform(body, "test", None)
         assert body == {"model": "test"}
-
-
-# ── Multi-Hook Subscription Tests ──
 
 
 class TestMultiHookSubscription:
@@ -762,7 +718,6 @@ class TestMultiHookSubscription:
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # Verify correct priority in each subscriber list
         for hook_name, expected_priority in [
             ("on_models", 90),
             ("on_request", 30),
@@ -775,9 +730,6 @@ class TestMultiHookSubscription:
             assert priority == expected_priority
 
 
-# ── Lifecycle Invariant Tests ──
-
-
 class TestLifecycleInvariants:
     def test_on_shutdown_called_with_empty_hooks(self):
         """on_shutdown is lifecycle — called on ALL plugins, regardless of hooks dict."""
@@ -786,7 +738,7 @@ class TestLifecycleInvariants:
         @PluginRegistry.register
         class NoHooksPlugin(PluginBase):
             plugin_id = "no-hooks"
-            hooks = {}  # No subscribable hooks
+            hooks = {}
 
             def on_shutdown(self, **kwargs):
                 calls.append("no-hooks")
@@ -803,7 +755,6 @@ class TestLifecycleInvariants:
         registry.init_plugins(_make_mock_pipe())
         registry.dispatch_on_shutdown()
 
-        # Both plugins receive on_shutdown regardless of hooks subscription
         assert "no-hooks" in calls
         assert "with-hooks" in calls
 
@@ -848,7 +799,7 @@ class TestTransformNonePassthrough:
             hooks = {"on_request_transform": 50}
 
             async def on_request_transform(self, body, model, valves, **kwargs):
-                pass  # Void — no mutation
+                pass
 
         @PluginRegistry.register
         class ModifyPlugin(PluginBase):
@@ -862,12 +813,8 @@ class TestTransformNonePassthrough:
         registry.init_plugins(_make_mock_pipe())
         body = {"original": True}
         await registry.dispatch_on_request_transform(body, "test", None)
-        # Original body passes through no-op plugin unchanged, modifier adds key
         assert body["original"] is True
         assert body["modified"] is True
-
-
-# ── Timeout Isolation Tests (4.1) ──
 
 
 class TestTimeoutIsolation:
@@ -897,15 +844,10 @@ class TestTimeoutIsolation:
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # Patch timeout to 0.01s so the slow plugin times out quickly
         with patch("open_webui_openrouter_pipe.plugins.registry._PR_DISPATCH_TIMEOUT", 0.01):
             result = await registry.dispatch_on_request({}, {}, {}, None, None)
 
-        # Fast plugin still ran and its result is returned
         assert result == "fast-response"
-
-
-# ── Kwarg Forwarding Tests (4.2) ──
 
 
 class TestKwargForwarding:
@@ -953,9 +895,6 @@ class TestKwargForwarding:
         assert received_kwargs.get("metadata") is meta_obj
 
 
-# ── Async on_models Detection Test (4.10) ──
-
-
 class TestAsyncOnModelsGuard:
     def test_async_on_models_runs(self):
         """Plugin with async def on_models is awaited and runs (async-hook contract)."""
@@ -966,7 +905,6 @@ class TestAsyncOnModelsGuard:
             hooks = {"on_models": 50}
 
             async def on_models(self, models, **kwargs):  # type: ignore[override]
-                # async on_models is awaited by the registry (async-hook contract)
                 models.clear()
                 models.append({"id": "corrupted"})
 
@@ -983,14 +921,9 @@ class TestAsyncOnModelsGuard:
         models = [{"id": "original"}]
         asyncio.run(registry.dispatch_on_models(models))
         ids = [m["id"] for m in models]
-        # Async on_models is now awaited and RUNS: it clears then appends "corrupted".
         assert "corrupted" in ids
-        # The async plugin (priority 50) cleared the list before the normal plugin (10) appended.
         assert "original" not in ids
         assert "normal-added" in ids
-
-
-# ── Duplicate plugin_id Warning Test (4.12) ──
 
 
 class TestDuplicatePluginIdWarning:
@@ -1015,27 +948,16 @@ class TestDuplicatePluginIdWarning:
 
         registry = PluginRegistry()
 
-        with pytest.raises(Exception) if False else \
-                pytest.warns(None) if False else \
-                _noop_context():
-            pass  # Just ensuring we can detect the warning
-
-        # Use caplog-style detection via logging
         with _capture_warnings() as warnings:
             registry.init_plugins(_make_mock_pipe())
 
-        # Both plugins should be initialized and functional
         models = []
         asyncio.run(registry.dispatch_on_models(models))
         ids = [m["id"] for m in models]
         assert "from-a" in ids
         assert "from-b" in ids
 
-        # Verify a duplicate warning was logged
         assert any("Duplicate plugin_id" in w for w in warnings)
-
-
-# ── current_result Chaining Tests ──
 
 
 class TestCurrentResultChaining:
@@ -1067,11 +989,6 @@ class TestCurrentResultChaining:
 
         assert len(captured) == 1
         assert captured[0] == {"response": "from-a"}
-
-
-# ── current_result Kwarg Forwarding Test ──
-# (added to TestKwargForwarding via standalone class to avoid
-#  reopening the existing class definition)
 
 
 class TestCurrentResultKwargForwarding:
@@ -1106,9 +1023,6 @@ class TestCurrentResultKwargForwarding:
         assert captured[0] == "produced-value"
 
 
-# ── Model Tracking Tests ──
-
-
 class TestModelTracking:
     @pytest.mark.asyncio
     async def test_model_tracks_body_changes(self):
@@ -1141,9 +1055,6 @@ class TestModelTracking:
         assert captured_models[0] == "new-model"
 
 
-# ── Void Dispatch Tests ──
-
-
 class TestVoidDispatch:
     def test_void_dispatch_returns_none(self):
         """All three void dispatchers return None."""
@@ -1165,7 +1076,6 @@ class TestVoidDispatch:
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # dispatch_on_models returns None
         result = asyncio.run(registry.dispatch_on_models([]))
         assert result is None
 
@@ -1186,7 +1096,6 @@ class TestVoidDispatch:
         registry = PluginRegistry()
         registry.init_plugins(_make_mock_pipe())
 
-        # dispatch_on_request_transform returns None
         result = await registry.dispatch_on_request_transform({}, "model", None)
         assert result is None
 
@@ -1227,16 +1136,8 @@ class TestBodyMutationInPlace:
         assert body["temperature"] == 0.5
 
 
-# ── Helpers for warning capture ──
-
-
 import contextlib
 import logging as _logging
-
-
-@contextlib.contextmanager
-def _noop_context():
-    yield
 
 
 @contextlib.contextmanager
@@ -1246,18 +1147,12 @@ def _capture_warnings():
     handler = _logging.Handler()
     handler.emit = lambda record: warnings.append(record.getMessage())  # type: ignore[assignment]
     handler.setLevel(_logging.WARNING)
-    # Use PluginRegistry.__module__ to get the correct logger name in both
-    # package mode ("open_webui_openrouter_pipe.plugins.registry") and
-    # bundle mode ("owui_pipe_bundle").
     registry_logger = _logging.getLogger(PluginRegistry.__module__)
     registry_logger.addHandler(handler)
     try:
         yield warnings
     finally:
         registry_logger.removeHandler(handler)
-
-
-# ── Plugin-Exported Valves Tests ──
 
 
 class TestBuildExtendedValves:
@@ -1434,13 +1329,11 @@ class TestValveFieldCollision:
                     "SHARED_FIELD": (int, Field(default=99)),
                 }
 
-        # Should have been renamed, not raised
         assert "SHARED_FIELD" in PluginRegistry._pending_valve_fields
         assert "SHARED_FIELD_2" in PluginRegistry._pending_valve_fields
         # Warning was logged
         assert any("renamed" in w and "SHARED_FIELD_2" in w for w in warnings)
 
-        # Both fields work in the extended class
         class BaseValves(BaseModel):
             pass
 
@@ -1526,7 +1419,6 @@ class TestPluginValvesIsolation:
         class PluginB(PluginBase):
             plugin_id = "b"
 
-        # B should have empty dict, not A's
         assert "A_FIELD" not in PluginB.plugin_valves
         assert len(PluginB.plugin_valves) == 0
 
@@ -1611,6 +1503,5 @@ class TestRegistryAccumulation:
 
     def test_fixture_cleans_pending_fields(self):
         """The _clean_registry fixture resets _pending_valve_fields between tests."""
-        # If the fixture works, this test starts with empty pending fields
         assert len(PluginRegistry._pending_valve_fields) == 0
         assert len(PluginRegistry._pending_user_valve_fields) == 0

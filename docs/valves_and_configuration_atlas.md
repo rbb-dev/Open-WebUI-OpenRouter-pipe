@@ -67,11 +67,12 @@ Defaults and valve names are verified against the source code and are intended t
 | --- | --- | --- | --- |
 | `MODEL_ID` | `str` | `auto` | Comma-separated OpenRouter model IDs to expose in Open WebUI. `auto` imports every available Responses-capable model. |
 | `MODEL_CATALOG_REFRESH_SECONDS` | `int` | `3600` | How long to cache the OpenRouter model catalog (seconds) before refreshing. |
+| `VARIANT_MODELS` | `str` | `""` (empty) | Comma-separated virtual routing variants, each `base_id:variant_tag` — e.g. `openai/gpt-4o:exacto,anthropic/claude-sonnet-4.5:extended`. Each adds a picker model that reuses the base model's description, icon and capabilities with the tag appended to the display name, and sends the full `base_id:tag` upstream so OpenRouter applies that routing. Documented tags: `free`, `thinking`, `online`, `nitro`, `exacto`, `extended` (the tag is lower-cased and passed through, not validated against that list). A case-sensitive `base_id@preset/slug` form adds an OpenRouter preset instead. An entry whose base model is absent from the catalog is skipped, with a warning naming it. |
 | `NEW_MODEL_ACCESS_CONTROL` | `Literal["public","admins"]` | `admins` | Default access grants for **new** OpenRouter model overlays inserted into Open WebUI (existing access grants are preserved on update). `public` grants read access to all users (wildcard access grant). `admins` creates no access grants (private) and relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access; otherwise admins must be granted access explicitly. |
 | `FREE_MODEL_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on summed OpenRouter pricing fields. `all` disables filtering; `only` restricts to free models (sum==0 and at least one numeric pricing value); `exclude` hides free models. |
 | `TOOL_CALLING_FILTER` | `Literal["all","only","exclude"]` | `all` | Filter models based on tool calling support (supported_parameters includes `tools` or `tool_choice`). `all` disables filtering; `only` restricts to tool-capable models; `exclude` hides tool-capable models. |
-| `ZDR_MODELS_ONLY` | `bool` | `False` | Hide models that are not ZDR-capable (based on `/endpoints/zdr`). Catalog filter only; does not enforce ZDR on requests. |
-| `ZDR_ENFORCE` | `bool` | `False` | Enforce ZDR on every request by sending `provider.zdr=true` and rejecting non‑ZDR models. Variant suffixes (`:nitro`, `:free`, …) are checked against their base model; `provider.zdr=true` then restricts routing to ZDR endpoints server-side. |
+| `ZDR_MODELS_ONLY` | `bool` | `False` | Hide models that are not ZDR-capable (based on `/endpoints/zdr`). Catalog filter and request admission: a hidden model is also refused if requested directly. Never sends `provider.zdr=true`. |
+| `ZDR_ENFORCE` | `bool` | `False` | Enforce ZDR on every request by sending `provider.zdr=true` and rejecting non‑ZDR models. Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model, while a suffix OpenRouter lists as its own model (`:free`, `:thinking`) is judged on its own endpoints; `provider.zdr=true` then restricts routing to ZDR endpoints server-side. |
 | `ALLOW_USER_ZDR_OVERRIDE` | `bool` | `True` | Allow users to request ZDR per chat via `REQUEST_ZDR` (ignored when `ZDR_ENFORCE` is enabled). |
 | `UPDATE_MODEL_IMAGES` | `bool` | `True` | When enabled, sync OpenRouter model icons into Open WebUI model metadata (`meta.profile_image_url`) as PNG data URLs. Disabling avoids extra outbound fetches and model-metadata writes. |
 | `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Disabling avoids model-metadata writes. |
@@ -145,7 +146,7 @@ Behavior note (no valve):
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_REDIS_CACHE` | `bool` | `True` | Enable Redis write-behind cache when `REDIS_URL` and multi-worker mode are detected. |
+| `ENABLE_REDIS_CACHE` | `bool` | `True` | Buffer artifact writes through Redis when `REDIS_URL` and multi-worker mode are detected. |
 | `REDIS_CACHE_TTL_SECONDS` | `int` | `600` | TTL (seconds) for cached artifacts/state stored in Redis. |
 | `REDIS_PENDING_WARN_THRESHOLD` | `int` | `100` | Warn when Redis write-behind backlog exceeds this many pending items. |
 | `REDIS_FLUSH_FAILURE_LIMIT` | `int` | `5` | Alert threshold: after this many consecutive flush failures the pipe logs a critical alert; write-behind is not disabled — the flusher backs off and keeps retrying, resuming when flushes succeed. |
@@ -287,10 +288,10 @@ Three filter functions are installed:
 Notes:
 - Generated videos are not buffered as full Python `bytes`; they go through the canonical helpers (`MultimodalHandler._download_remote_url_streaming` → `OwuiFileGateway.upload_to_owui_storage_from_path` → `OwuiFileGateway.try_link_file_to_chat`), which apply the SSRF gate, exponential-backoff retry, size cap, MIME sniff, OWUI `upload_file_handler` insert, and chat-file link in one shot. The same helpers are reused by image generation.
 - The adapter persists a hidden `videojob` marker into the assistant message immediately after `submit()` returns a job_id, by emitting an OWUI socket `'message'` event (which routes through `Chats.upsert_message_to_chat_by_id_and_message_id`). A later request for the same message resumes polling that job instead of submitting a second job.
-- Local/transient chats (`chat_id` beginning with `local:`) cannot persist markers or final assistant content to Open WebUI chat storage. The on-submit `'message'` emit is skipped for them. They remain in-process only.
+- Chats with no stored row (`chat_id` beginning with `temporary:`, `local:` or `channel:`) cannot persist markers or final assistant content to Open WebUI chat storage. The on-submit `'message'` emit is skipped for them. They remain in-process only.
 - `Pipe.close()` cancels in-process video lifecycles. OpenRouter has no cancel endpoint here; the on-submit `videojob` marker is what allows the next user request for that message to resume polling rather than submit a duplicate job.
 - Video filters are generated per model from OpenRouter video metadata. Unsupported controls are not exposed: for example Sora text-only models do not show frame controls, and models without seed/audio/negative-prompt support do not show those controls.
-- User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) are validated against `MultimodalHandler._is_safe_url_blocking` before forwarding to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
+- User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) are validated against `MultimodalHandler._is_safe_url` before forwarding to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
 
 See: [OpenRouter Video Generation](openrouter_video_generation.md).
 
@@ -437,7 +438,7 @@ Each generated provider routing filter has these valves (admin and/or user depen
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `USE_MODEL_MAX_OUTPUT_TOKENS` | `bool` | `False` | When enabled, forwards provider-advertised `max_output_tokens` automatically. |
+| `USE_MODEL_MAX_OUTPUT_TOKENS` | `bool` | `False` | When enabled **and the request carries no limit of its own**, fills `max_output_tokens` from the provider-advertised `max_completion_tokens` in the catalog; a model that advertises none is left unchanged. Disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged in either state. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and this valve's automatic ceiling then applies if it is on. |
 | `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing/cost/tokens in the final status message. |
 | `FINAL_USAGE_STATUS_STYLE` | `Literal["text","icons"]` | `text` | Choose text labels or icons for the final usage status line. |
 | `USAGE_STATUS_ICON_SET` | `str` | `⧗,$,⇅,▲,▼,↺,▽` | CSV icon set for final usage status fields (time,cost,total,input,output,cached,reasoning). Used only when `FINAL_USAGE_STATUS_STYLE="icons"`. |
@@ -487,6 +488,7 @@ Notes:
 | `INSUFFICIENT_CREDITS_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter “insufficient credits” failures. |
 | `RATE_LIMIT_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rate limits. |
 | `SERVER_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for upstream/provider timeouts. |
+| `PAYLOAD_TOO_LARGE_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter HTTP 413 responses, when the request payload exceeds the size OpenRouter accepts. Supports `{error_id}`, `{timestamp}`, `{openrouter_code}`, `{openrouter_message}`, `{model_identifier}` and `{support_email}`, plus Handlebars-style `{{#if name}}...{{/if}}` blocks that render only when the value is present. |
 | `NETWORK_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for network timeouts. |
 | `CONNECTION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for connection failures. |
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |

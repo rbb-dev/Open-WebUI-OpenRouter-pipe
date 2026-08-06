@@ -2,46 +2,46 @@ name: Bundle Pipe
 
 on:
   push:
-    branches: ['*']      # Build on all branch pushes (artifacts only)
+    branches: ['**']     # all branches, including ones containing a slash
     tags: ['v*']         # Create release on version tags (v2.0.3, v2.1.0, etc.)
   workflow_dispatch:     # Manual trigger
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write        # Required for creating releases
+  contents: read
 
 jobs:
+  verify:
+    name: Verify
+    uses: ./.github/workflows/verify.yml
+
   bundle:
+    name: Build
+    needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # No rebuild here. This republishes the artifacts the verify job built and ran the
+      # five-mode suite against, so what ships is byte-for-byte what was tested -- the
+      # previous shape rebuilt them in a different environment and nothing compared the
+      # two.
+      - name: Download the verified bundles
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0  # Full history needed for release notes generation
+          name: verified-bundles-${{ github.run_id }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Run bundler
+      - name: Slugify the ref name
+        id: slug
         run: |
-          python scripts/bundle_v2.py
-          python scripts/bundle_v2.py --compress
-          python scripts/bundle_v2.py --no-plugins
-          python scripts/bundle_v2.py --compress --no-plugins
+          echo "ref=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify bundled files
-        run: |
-          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled.py', encoding='utf-8').read()); print('✓ bundled.py syntax valid')"
-          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled_compressed.py', encoding='utf-8').read()); print('✓ bundled_compressed.py syntax valid')"
-          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled_no_plugins.py', encoding='utf-8').read()); print('✓ bundled_no_plugins.py syntax valid')"
-          python -c "import ast; ast.parse(open('open_webui_openrouter_pipe_bundled_compressed_no_plugins.py', encoding='utf-8').read()); print('✓ bundled_compressed_no_plugins.py syntax valid')"
-
-      # Always upload artifact (for testing/debugging)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: open_webui_openrouter_pipe_bundled-${{ github.ref_name }}
+          name: open_webui_openrouter_pipe_bundled-${{ steps.slug.outputs.ref }}
           path: |
             open_webui_openrouter_pipe_bundled.py
             open_webui_openrouter_pipe_bundled_compressed.py
@@ -49,7 +49,30 @@ jobs:
             open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
           retention-days: 90
 
-      # Generate release notes with commit links for versioned releases
+  publish:
+    name: Publish
+    needs: [verify, bundle]
+    timeout-minutes: 20
+    if: github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for release notes generation
+
+      - name: Slugify the ref name
+        id: slug
+        run: |
+          echo "ref=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the verified bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: open_webui_openrouter_pipe_bundled-${{ steps.slug.outputs.ref }}
+
       - name: Generate release notes
         if: startsWith(github.ref, 'refs/tags/v')
         id: release_notes

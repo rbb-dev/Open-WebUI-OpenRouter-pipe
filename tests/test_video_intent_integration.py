@@ -215,8 +215,23 @@ class TestShortCircuit:
             body={"messages": [{}, {}]}, video_meta={},
         )
 
-    def test_happy_path_returns_true(self):
+    @pytest.mark.parametrize("chat_id", [None, "chat1"])
+    def test_happy_path_returns_true(self, chat_id):
+        """Parametrised over the chat id because the default cap is 0 = unlimited.
+
+        Every previous happy-path case passed no chat_id, and the only case that did
+        pass one used a non-zero cap. So `cap_chat > 0` could be relaxed to `>= 0` with
+        the suite green -- and under the shipped default that makes `0 >= 0` true and
+        `counts.get(chat_id, 0) >= 0` always true, so the classifier refuses to run for
+        every request that has a chat id. Which is every real request: natural-language
+        video generation would silently stop working out of the box.
+
+        The pre-seeded count is what forces the comparison against the counter to be
+        evaluated rather than short-circuited by an absent key.
+        """
         adapter = self._make_adapter()
+        if chat_id:
+            adapter._intent_call_counts_per_chat[chat_id] = 7
         assert adapter._intent_classifier_should_run(
             valves=_make_valves(),
             persisted_content="", prompt="make a video",
@@ -226,6 +241,10 @@ class TestShortCircuit:
                 {"role": "user", "content": "make a video"},
             ]},
             video_meta={},
+            chat_id=chat_id,
+        ), (
+            "the classifier refused to run under the default cap of 0, which the valve "
+            "documents as unlimited"
         )
 
 
@@ -300,7 +319,6 @@ class TestMaterialiseFramePlan:
                 request=None, user_obj=SimpleNamespace(id="u1"),
                 chat_id="c1", message_id="m1",
             )
-        # input_reference target should NOT be added to frame_images
         # (those are hard-anchor slots in OR's API).
         assert "frame_images" not in video_meta or len(video_meta.get("frame_images", [])) == 0
         # It SHOULD be added to input_references (the OR top-level

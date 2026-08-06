@@ -7,8 +7,9 @@ import logging
 from typing import Any
 
 from ..models.registry import ModelFamily
-from .config import LOGGER
 from .utils import _coerce_positive_int
+
+logger = logging.getLogger(__name__)
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
@@ -109,7 +110,7 @@ def apply_live_tool_output_budget(
     *,
     existing_input_items: Any,
     model_id: str,
-    logger: logging.Logger = LOGGER,
+    logger: logging.Logger = logger,
 ) -> set[str]:
     """Mutate live tool outputs in-place when they exceed remaining context budget."""
     omitted_call_ids: set[str] = set()
@@ -165,7 +166,7 @@ def apply_replay_tool_output_budget(
     items: list[Any],
     *,
     model_id: str,
-    logger: logging.Logger = LOGGER,
+    logger: logging.Logger = logger,
 ) -> set[str]:
     """Mutate replayed function_call_output entries that exceed remaining budget."""
     omitted_call_ids: set[str] = set()

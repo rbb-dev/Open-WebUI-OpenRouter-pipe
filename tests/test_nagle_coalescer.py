@@ -552,3 +552,197 @@ async def test_nagle_stream_propagates_exception_not_silently_completed():
 
     assert raised, "Exception should have propagated"
     assert not completed_normally, "Stream should NOT have completed normally"
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+@pytest.mark.parametrize("min_flush_chars", [1, 3], ids=["floor-1", "floor-3"])
+async def test_a_delta_reaches_the_consumer_while_the_producer_is_still_idle(
+    min_flush_chars,
+):
+    """Arrival TIME, not eventual arrival -- at the production floor.
+
+    `test_nagle_stream_idle_flush` asserts only `combined == "AB"`, which the final flush
+    at end-of-stream delivers whether or not an idle flush ever happens.
+
+    The first version of this test left `min_flush_chars` at the SIGNATURE default of 1,
+    and a floor of 1 empties the buffer on every drain cycle -- so `has_buffered` was
+    always False, `idle_flush_timeout` correctly returned None, and the idle branch was
+    never entered. Coverage over the whole suite confirmed it: nagle_coalescer.py lines
+    237-243 and 249-253 were executed by ZERO of 5852 tests, and setting `timeout = None`
+    in the loop left everything green. The assertion was satisfied by the ordinary
+    per-event flush landing before the producer's third yield.
+
+    `STREAMING_NAGLE_MIN_FLUSH_CHARS` defaults to 3 in production, so a 1- or 2-character
+    tail IS held and the idle timeout is the only thing that releases it. Parametrised
+    over both floors so the passing-for-free case stays covered and cannot be mistaken
+    for the real one.
+    """
+    resumed = asyncio.Event()
+    source_resumed = False
+
+    async def source():
+        nonlocal source_resumed
+        yield _text_delta("A")
+        try:
+            await asyncio.wait_for(resumed.wait(), timeout=2.0)
+        except TimeoutError:
+            pass
+        source_resumed = True
+        yield _text_delta("BCD")
+
+    arrived_while_idle = None
+    async for event in nagle_coalesce_stream(
+        source(), idle_flush_seconds=0.02, min_flush_chars=min_flush_chars
+    ):
+        if event.get("type") == "response.output_text.delta" and arrived_while_idle is None:
+            arrived_while_idle = not source_resumed
+            resumed.set()
+
+    assert arrived_while_idle is True, (
+        f"with min_flush_chars={min_flush_chars}, no delta reached the consumer while "
+        "the producer was paused. A sub-floor tail is held until the next upstream "
+        "event, so the reply appears stalled whenever the model pauses."
+    )
+
+
+class TestIdleFlushTimeout:
+    """The decision both consumer loops share.
+
+    `/responses` — the default endpoint — has its own loop in
+    api/gateway/responses_adapter.py. It was a hand-copy, and the same mutation left
+    the suite green there too, so the guard above covered neither shipped path.
+    """
+
+    def test_no_timeout_when_there_is_nothing_buffered(self):
+        from types import SimpleNamespace
+
+        from open_webui_openrouter_pipe.streaming.nagle_coalescer import idle_flush_timeout
+
+        assert idle_flush_timeout(SimpleNamespace(has_buffered=False), 0.03) is None
+
+    @pytest.mark.parametrize("interval", [0.03, 0.25])
+    def test_the_configured_timeout_when_text_is_waiting(self, interval):
+        """Two intervals, and neither may be the only one asserted.
+
+        0.03 alone is exactly STREAMING_IDLE_FLUSH_MS's default, so `return 0.03` in
+        production satisfied this and both siblings -- an operator raising the valve to
+        250 ms got 30 ms with the suite green. Asserting identity with the input over two
+        values makes a constant unsatisfiable while staying indifferent to what the
+        default happens to be, so retuning the valve is not a test failure.
+        """
+        from types import SimpleNamespace
+
+        from open_webui_openrouter_pipe.streaming.nagle_coalescer import idle_flush_timeout
+
+        assert idle_flush_timeout(SimpleNamespace(has_buffered=True), interval) == interval
+
+    def test_disabled_by_a_falsy_interval(self):
+        from types import SimpleNamespace
+
+        from open_webui_openrouter_pipe.streaming.nagle_coalescer import idle_flush_timeout
+
+        assert idle_flush_timeout(SimpleNamespace(has_buffered=True), 0) is None
+        assert idle_flush_timeout(SimpleNamespace(has_buffered=True), None) is None
+
+    def test_both_consumer_loops_ask_the_same_function(self):
+        """Guards the dedup: a re-copied inline expression is the original defect."""
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
+        callers = set()
+        for rel in ("streaming/nagle_coalescer.py", "api/gateway/responses_adapter.py"):
+            tree = ast.parse((root / rel).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "idle_flush_timeout":
+                    callers.add(rel)
+        assert callers == {"streaming/nagle_coalescer.py", "api/gateway/responses_adapter.py"}, (
+            f"only {sorted(callers)} consult the shared idle-flush decision; the other "
+            "loop has its own copy again, which is how it went unguarded the first time"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nagle_min_chars", [1, 3], ids=["floor-1", "floor-3"])
+async def test_the_responses_loop_also_flushes_while_the_producer_is_idle(
+    nagle_min_chars,
+):
+    """The /responses consumer loop, which is the DEFAULT endpoint.
+
+    Its loop is a second implementation of the same decision. The unit test on
+    `idle_flush_timeout` proves the helper returns the right number, and the AST scan
+    proves both loops call it -- neither shows a loop ACTS on the answer. Setting
+    `timeout = idle_flush_timeout(...) and None` here left all 5852 tests green, and
+    coverage confirmed responses_adapter.py lines 372-375 and 383-390 were executed by
+    none of them.
+
+    Driven through the real `send_openai_responses_streaming_request` against a fake
+    session whose body stalls mid-stream, because that is the only way to reach the
+    branch: it needs a producer that goes quiet while the coalescer holds a sub-floor
+    tail. `workers=1` keeps chunk ordering deterministic.
+    """
+    import asyncio as _asyncio
+
+    from open_webui_openrouter_pipe import Pipe
+
+    resumed = _asyncio.Event()
+    state = {"resumed": False}
+
+    def _sse(payload: str) -> bytes:
+        return f"data: {payload}\n\n".encode()
+
+    class _Content:
+        async def iter_chunked(self, _size):
+            yield _sse('{"type":"response.output_text.delta","delta":"A"}')
+            try:
+                await _asyncio.wait_for(resumed.wait(), timeout=2.0)
+            except TimeoutError:
+                pass
+            state["resumed"] = True
+            yield _sse('{"type":"response.output_text.delta","delta":"BCD"}')
+            yield _sse("[DONE]")
+
+    class _Resp:
+        status = 200
+        headers: dict[str, str] = {}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class _Session:
+        def post(self, *_a, **_kw):
+            return _Resp()
+
+    pipe = Pipe()
+    try:
+        arrived_while_idle = None
+        async for event in pipe.send_openai_responses_streaming_request(
+            _Session(),
+            {"model": "openai/gpt-4o", "stream": True, "input": []},
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            valves=pipe.valves,
+            workers=1,
+            idle_flush_ms=20,
+            nagle_min_chars=nagle_min_chars,
+        ):
+            if (
+                event.get("type") == "response.output_text.delta"
+                and arrived_while_idle is None
+            ):
+                arrived_while_idle = not state["resumed"]
+                resumed.set()
+    finally:
+        resumed.set()
+        await pipe.close()
+
+    assert arrived_while_idle is True, (
+        f"with nagle_min_chars={nagle_min_chars}, the /responses loop held a sub-floor "
+        "tail until the model spoke again. That is the default endpoint, so a pause "
+        "mid-answer shows the user a stalled reply."
+    )

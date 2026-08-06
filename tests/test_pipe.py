@@ -332,33 +332,17 @@ class TestLazyInitialization:
 class TestStaticAndClassMethods:
     """Tests for static and class methods."""
 
-    def test_should_warn_event_queue_backlog_logic(self):
-        """Test the _should_warn_event_queue_backlog helper."""
-        # Below threshold - no warning
-        assert not Pipe._should_warn_event_queue_backlog(
-            qsize=50,
-            warn_size=100,
-            now=100.0,
-            last_warn_ts=0.0,
-        )
+    def test_should_warn_event_queue_backlog_is_threshold_only(self):
+        """Threshold only. The "have I said this recently" half is warn_level's.
 
-        # At threshold, but within cooldown - no warning
-        assert not Pipe._should_warn_event_queue_backlog(
-            qsize=100,
-            warn_size=100,
-            now=20.0,
-            last_warn_ts=10.0,
-            cooldown_seconds=30.0,
-        )
-
-        # At threshold and cooldown expired - warning
-        assert Pipe._should_warn_event_queue_backlog(
-            qsize=100,
-            warn_size=100,
-            now=100.0,
-            last_warn_ts=50.0,
-            cooldown_seconds=30.0,
-        )
+        It used to be a timestamp cooldown here, which meant a repeat inside the window
+        was dropped at every level rather than demoted to DEBUG -- and spelled as a
+        plain call, so no warn-latch census could see it. `warn_level`'s cooldown
+        behaviour is asserted by TestWarnLevel; this asserts only the boundary.
+        """
+        assert not Pipe._should_warn_event_queue_backlog(qsize=50, warn_size=100)
+        assert Pipe._should_warn_event_queue_backlog(qsize=100, warn_size=100)
+        assert Pipe._should_warn_event_queue_backlog(qsize=101, warn_size=100)
 
     def test_supports_tool_calling_checks_parameters(self):
         """Test that supports_tool_calling checks model supported_parameters."""
@@ -1032,8 +1016,14 @@ class TestVariantEnforcement:
             OpenRouterModelRegistry._specs = original_specs
             pipe.shutdown()
 
-    def test_restriction_reasons_zdr_strict_no_base_fallback(self):
-        """ZDR check should be strict on full ID, no base fallback."""
+    def test_restriction_reasons_admits_a_routing_variant_of_a_zdr_base(self):
+        """Issue #56, at the gate the reporter actually hit on v2.7.4.
+
+        This asserted the opposite and pinned the bug: with the base in the ZDR list,
+        the `:nitro` variant was expected to be restricted. The reporter saw exactly
+        that as `Restricted by: ZDR_MODELS_ONLY` while ZDR_ENFORCE admitted the same
+        model -- two gates over one rule, disagreeing.
+        """
         pipe = Pipe()
         pipe.valves.MODEL_ID = "auto"
         pipe.valves.FREE_MODEL_FILTER = "all"
@@ -1052,7 +1042,11 @@ class TestVariantEnforcement:
                 catalog_norm_ids={"openai.gpt-4o"},
                 virtual_variant_bases={"openai.gpt-4o:nitro": "openai.gpt-4o"},
             )
-            assert "ZDR_MODELS_ONLY" in reasons
+            assert "ZDR_MODELS_ONLY" not in reasons, (
+                "the :nitro variant of a ZDR-capable base was restricted by "
+                f"ZDR_MODELS_ONLY: {reasons}. That is the error in issue #56's second "
+                "report -- the same model that ZDR_ENFORCE admits."
+            )
         finally:
             OpenRouterModelRegistry._zdr_model_ids = original_zdr
             pipe.shutdown()
@@ -2704,37 +2698,62 @@ class TestPipeEntryPointEdgeCases:
             await pipe.close()
 
     @pytest.mark.asyncio
-    async def test_pipe_entry_user_valves_validation_error_caught(self):
-        """Test that UserValves validation error is caught by pre-enqueue safety net."""
+    async def test_pipe_entry_survives_a_user_valve_it_cannot_parse(self):
+        """An unparseable user-valve field must not end the request.
+
+        This used to patch `UserValves.model_validate` to raise and assert the
+        pre-enqueue safety net returned a "retry" message. `parse_user_valves` is total
+        now -- it rejects the offending field, keeps every other one, and never raises --
+        so that net is unreachable for this input and the old assertion was pinning a
+        path that no longer exists.
+
+        Driven with real bad data rather than a patched validator, so it exercises the
+        parse instead of the mock: the request must get PAST valve handling, which is
+        proven here by it failing on the missing API key instead.
+        """
         pipe = Pipe()
 
         try:
-            # Patch model_validate to raise a ValidationError
-            with patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("bad valves")):
-                result = await pipe.pipe(
-                    body={},
-                    __user__={"valves": {"invalid_field": "x"}},
-                    __request__=None,
-                    __event_emitter__=None,
-                    __event_call__=None,
-                    __metadata__={},
-                    __tools__=None,
-                )
+            result = await pipe.pipe(
+                body={},
+                __user__={"valves": {"REQUEST_ZDR": {"not": "a boolean"}}},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__={},
+                __tools__=None,
+            )
 
-                assert isinstance(result, str)
-                assert "retry" in result.lower()
+            if isinstance(result, dict):
+                text = str(result["choices"][0]["message"]["content"])
+            else:
+                text = str(result)
+            assert "retry" not in text.lower(), (
+                f"a single unparseable valve field aborted the whole request: {text!r}"
+            )
+            assert "api key" in text.lower(), (
+                "the request did not reach the API-key check, so something before it "
+                f"rejected the user's valves: {text!r}"
+            )
         finally:
             await pipe.close()
 
     @pytest.mark.asyncio
     async def test_pipe_entry_cleanup_failure_suppressed_in_except(self):
-        """Test that SessionLogger.cleanup() failure in except handler is suppressed."""
+        """A cleanup failure inside the pre-enqueue except handler must be suppressed.
+
+        The pre-enqueue exception is forced through `_merge_valves`, a collaborator the
+        entry point calls out to. It used to be forced by making
+        `UserValves.model_validate` raise -- which stopped working once user-valve
+        parsing became total, because nothing on that path raises any more. Patching the
+        parser itself would only re-mock the seam that was hardened; this stubs one level
+        lower, at a call the entry point makes regardless of how valves are read.
+        """
         pipe = Pipe()
 
         try:
-            # Force a pre-enqueue exception and also make cleanup fail
             with (
-                patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("boom")),
+                patch.object(pipe, "_merge_valves", side_effect=ValueError("boom")),
                 patch(
                     "open_webui_openrouter_pipe.pipe.SessionLogger.cleanup",
                     side_effect=RuntimeError("cleanup broken"),
@@ -2758,15 +2777,33 @@ class TestPipeEntryPointEdgeCases:
 
     @pytest.mark.asyncio
     async def test_pipe_entry_emit_error_failure_suppressed_in_except(self):
-        """Test that _emit_error failure in except handler is suppressed."""
+        """An _emit_error failure inside the pre-enqueue except handler must be suppressed.
+
+        The failure is injected into `_emit_error` itself. Handing in a raising
+        `__event_emitter__` does NOT reach this handler: `_wrap_safe_event_emitter`
+        swallows transport errors before `_emit_error` returns, so the emitter never
+        raises and the `except` under test never runs. That version passed with the
+        suppression deleted -- verified by mutation -- which is to say it asserted
+        nothing about the thing its name describes.
+
+        The pre-enqueue exception is forced through `_merge_valves` for the same reason
+        as its sibling above: user-valve parsing no longer raises, so the old trigger
+        silently stopped triggering anything.
+        """
         pipe = Pipe()
 
         async def _broken_emitter(event):
             raise RuntimeError("emitter broken")
 
+        formatter = pipe._ensure_error_formatter()
+
         try:
-            # Force a pre-enqueue exception AND provide a broken emitter
-            with patch.object(pipe.UserValves, "model_validate", side_effect=ValueError("boom")):
+            with (
+                patch.object(pipe, "_merge_valves", side_effect=ValueError("boom")),
+                patch.object(
+                    type(formatter), "_emit_error", side_effect=RuntimeError("emit broken")
+                ),
+            ):
                 # Should NOT raise — _emit_error failure must be suppressed
                 result = await pipe.pipe(
                     body={},
@@ -7154,7 +7191,6 @@ def test_merge_valves_with_next_reply_alias():
 
         merged = pipe._merge_valves(global_valves, user_valves)
 
-        # next_reply should map to PERSIST_REASONING_TOKENS
         assert merged.PERSIST_REASONING_TOKENS is True
     finally:
         pipe.shutdown()
@@ -8526,7 +8562,7 @@ class TestRunSessionLogAssemblerOnce:
 # =============================================================================
 
 
-class TestToolTypeBreaker:
+class TestToolBreakerNotification:
     """Tests for tool type breaker functionality."""
 
     @pytest.mark.asyncio
@@ -9213,8 +9249,9 @@ class TestTimingLogConfiguration2:
     def test_timing_log_startup_reopens_the_file(self, tmp_path):
         """A fresh pipe load must re-open the log, not reuse a stale handle."""
         from open_webui_openrouter_pipe.core import timing_logger
+        from open_webui_openrouter_pipe.pipe import _warned_timing_file
 
-        Pipe._timing_file_warned_path = None
+        _warned_timing_file.clear()
         log_file = tmp_path / "timing.jsonl"
         timing_logger.configure_timing_file(str(log_file))
         first_handle = timing_logger._timing_file_handle
@@ -9244,8 +9281,9 @@ class TestTimingLogConfiguration2:
     def test_timing_log_runtime_path_reuses_an_open_handle(self, tmp_path):
         """The per-request path must not churn the file handle."""
         from open_webui_openrouter_pipe.core import timing_logger
+        from open_webui_openrouter_pipe.pipe import _warned_timing_file
 
-        Pipe._timing_file_warned_path = None
+        _warned_timing_file.clear()
         log_file = tmp_path / "timing.jsonl"
         timing_logger.configure_timing_file(str(log_file))
         first_handle = timing_logger._timing_file_handle
@@ -9264,8 +9302,9 @@ class TestTimingLogConfiguration2:
     def test_timing_log_runtime_failure_warns_once_per_path(self, caplog):
         """A valve flipped on at runtime must report an unwritable timing path, once."""
         from open_webui_openrouter_pipe.core import timing_logger
+        from open_webui_openrouter_pipe.pipe import _warned_timing_file
 
-        Pipe._timing_file_warned_path = None
+        _warned_timing_file.clear()
         pipe = Pipe()
         try:
             pipe.valves.ENABLE_TIMING_LOG = True
@@ -9288,8 +9327,9 @@ class TestTimingLogConfiguration2:
     def test_timing_log_runtime_recovery_rearms_the_warning(self, caplog):
         """Once the path becomes writable again, a later outage warns afresh."""
         from open_webui_openrouter_pipe.core import timing_logger
+        from open_webui_openrouter_pipe.pipe import _warned_timing_file
 
-        Pipe._timing_file_warned_path = None
+        _warned_timing_file.clear()
         pipe = Pipe()
         try:
             pipe.valves.ENABLE_TIMING_LOG = True
@@ -9303,7 +9343,7 @@ class TestTimingLogConfiguration2:
                     timing_logger, "ensure_timing_file_configured", return_value=True
                 ):
                     assert pipe._maybe_configure_timing_file() is True
-                    assert Pipe._timing_file_warned_path is None
+                    assert not _warned_timing_file
                 with patch.object(
                     timing_logger, "ensure_timing_file_configured", return_value=False
                 ):
@@ -10226,7 +10266,6 @@ class TestImportFallbackGuards:
     def test_aioredis_none_graceful_handling(self):
         """Test that code handles aioredis being None gracefully."""
         from open_webui_openrouter_pipe import pipe as pipe_module
-        # aioredis might be available or None
         assert hasattr(pipe_module, "aioredis") or pipe_module.aioredis is None
 
     def test_pyzipper_none_graceful_handling(self):

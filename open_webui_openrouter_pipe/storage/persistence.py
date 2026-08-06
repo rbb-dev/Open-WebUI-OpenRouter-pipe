@@ -67,9 +67,7 @@ from ..core.config import (
     ULID_TIME_LENGTH,
 )
 
-# -----------------------------------------------------------------------------
 # Persistence Constants
-# -----------------------------------------------------------------------------
 
 # Payload compression flags
 _PAYLOAD_FLAG_PLAIN = 0
@@ -79,7 +77,6 @@ _PAYLOAD_FLAG_LZ4 = 1
 _ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
-# Redis pub/sub channel for cache invalidation
 _REDIS_FLUSH_CHANNEL = "db-flush"
 
 # Type alias for Redis client
@@ -87,11 +84,6 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
 else:
     _RedisClient = Any
-
-
-# -----------------------------------------------------------------------------
-# Helper Functions (Module-level)
-# -----------------------------------------------------------------------------
 
 
 def _encode_crockford(value: int, length: int) -> str:
@@ -191,9 +183,7 @@ def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str,
     return redis_url, websocket_manager, websocket_redis_url, candidate
 
 
-# -----------------------------------------------------------------------------
 # ArtifactStore Class
-# -----------------------------------------------------------------------------
 
 
 class ArtifactStore:
@@ -216,7 +206,7 @@ class ArtifactStore:
         self,
         pipe_id: str,
         logger: logging.Logger,
-        valves: Any,  # Pipe.Valves reference
+        valves: Any,
         emit_notification_callback: Callable | None = None,
         tool_context_var: ContextVar | None = None,
         user_id_context_var: ContextVar | None = None,
@@ -238,7 +228,6 @@ class ArtifactStore:
         self._TOOL_CONTEXT = tool_context_var
         self._user_id_context = user_id_context_var
 
-        # Initialize all instance state from valves/environment
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()
         self._initialize_redis_state()
@@ -247,7 +236,6 @@ class ArtifactStore:
 
     def _initialize_encryption_state(self):
         """Initialize encryption and compression state."""
-        # Import EncryptedStr locally to avoid circular dependency
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
         decrypted_encryption_key = EncryptedStr.decrypt(self.valves.ARTIFACT_ENCRYPTION_KEY)
@@ -312,14 +300,10 @@ class ArtifactStore:
         """Initialize cleanup worker state."""
         self._cleanup_task: asyncio.Task | None = None
 
-    # -----------------------------------------------------------------------------
-    # 1. ARTIFACT STORE INITIALIZATION (5 methods)
-    # -----------------------------------------------------------------------------
 
     @timed
     def _ensure_artifact_store(self, valves: Any, pipe_identifier: str | None = None) -> None:
         """Configure encryption/compression + ensure the backing table exists."""
-        # Import EncryptedStr locally to avoid circular dependency
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
         decrypted_encryption_key = EncryptedStr.decrypt(valves.ARTIFACT_ENCRYPTION_KEY)
@@ -426,7 +410,14 @@ class ArtifactStore:
 
         try:
             from open_webui.internal import db as owui_db  # type: ignore
-        except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
+        except ImportError:
+            owui_db = None
+        except Exception:  # pragma: no cover - open_webui present but its import raised
+            logging.getLogger(__name__).warning(
+                "open_webui.internal failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
             owui_db = None
 
         if owui_db is not None:
@@ -542,19 +533,25 @@ class ArtifactStore:
             try:
                 size_attr = getattr(engine.pool, "size", None)
                 if callable(size_attr):
-                    val = size_attr()  # QueuePool.size()
+                    val = size_attr()
                     if isinstance(val, int) and val > 0:
                         pool_workers = val
                 elif isinstance(size_attr, int) and size_attr > 0:
-                    pool_workers = size_attr  # SingletonThreadPool.size
+                    pool_workers = size_attr
                 try:
                     from open_webui.env import (
                         DATABASE_POOL_MAX_OVERFLOW,  # type: ignore
                     )
                     if isinstance(DATABASE_POOL_MAX_OVERFLOW, int) and DATABASE_POOL_MAX_OVERFLOW > 0:
                         pool_workers += DATABASE_POOL_MAX_OVERFLOW
-                except (ImportError, ModuleNotFoundError):
+                except ImportError:
                     pass
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "open_webui.env failed to import for a reason other than absence; "
+                        "the features that depend on it are now disabled",
+                        exc_info=True,
+                    )
             except Exception:
                 self.logger.debug("Failed to read DB pool size from engine, using default", exc_info=True)
             self._db_executor = ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="responses-db")
@@ -597,11 +594,6 @@ class ArtifactStore:
             table.create(bind=engine, checkfirst=True)
             return True
         except Exception as exc:  # pragma: no cover - database-specific errors
-            # Orphaned-index duplicates ("index ix_... already exists") also
-            # contain "already exists", so the heal attempt (self-gated on
-            # "ix_") must run BEFORE the generic table-exists short-circuit or
-            # the heal path becomes unreachable and a rolled-back CREATE
-            # (Postgres transactional DDL) would be declared success.
             if self._maybe_heal_index_conflict(engine, table, exc):
                 try:
                     table.create(bind=engine, checkfirst=True)
@@ -695,12 +687,8 @@ class ArtifactStore:
         if failed_any:
             return False
 
-        # Targets were found but none were dropped (e.g., not mentioned and already gone).
         return False
 
-    # -----------------------------------------------------------------------------
-    # 2. ENCRYPTION/COMPRESSION (9 methods)
-    # -----------------------------------------------------------------------------
 
     def _get_fernet(self) -> Fernet | None:
         """Return (and cache) the Fernet helper derived from the encryption key."""
@@ -811,9 +799,6 @@ class ArtifactStore:
         encrypted = self._encrypt_payload(payload)
         return {"ciphertext": encrypted, "enc_v": _ENCRYPTED_PAYLOAD_VERSION}, True
 
-    # -----------------------------------------------------------------------------
-    # 3. DATABASE OPERATIONS (11 methods)
-    # -----------------------------------------------------------------------------
 
     def _prepare_rows_for_storage(self, rows: Iterable[dict[str, Any]]) -> None:
         """Normalize row payloads so Redis/DB always receive the stored schema."""
@@ -972,7 +957,6 @@ class ArtifactStore:
         if not self._item_model or not self._session_factory or not self._engine:
             return False
 
-        # Determine dialect for appropriate upsert syntax
         dialect_name = self._engine.dialect.name
 
         # Prepare row data
@@ -1001,7 +985,6 @@ class ArtifactStore:
         }
 
         with _db_session(self._session_factory) as session:
-            # Use dialect-specific INSERT ON CONFLICT DO NOTHING
             if dialect_name == "postgresql":
                 from sqlalchemy.dialects.postgresql import insert as pg_insert
                 stmt = pg_insert(self._item_model.__table__).values(**values)
@@ -1011,7 +994,6 @@ class ArtifactStore:
                 stmt = sqlite_insert(self._item_model.__table__).values(**values)
                 stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
             else:
-                # Fallback for other dialects: try plain insert, catch duplicate key
                 try:
                     instance = self._item_model(**values)  # type: ignore[call-arg]
                     session.add(instance)
@@ -1028,9 +1010,6 @@ class ArtifactStore:
             result = session.execute(stmt)
             session.commit()
 
-            # rowcount == 1 means the row was inserted (we got the lock)
-            # rowcount == 0 means conflict occurred (lock held by another worker)
-            # Use getattr for type safety (CursorResult has rowcount, Result typing doesn't expose it)
             return getattr(result, "rowcount", 0) == 1
 
     @timed
@@ -1039,7 +1018,6 @@ class ArtifactStore:
         if not rows:
             return []
 
-        # Import SessionLogger locally to avoid circular dependency
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
         user_id = SessionLogger.user_id.get() or ""
@@ -1136,8 +1114,6 @@ class ArtifactStore:
                 query = query.filter(model.message_id == message_id)
             rows = query.all()
 
-        # Best-effort "touch" for retention: update created_at on DB access (not on Redis hits).
-        # This must never crash the read path.
         if rows:
             try:
                 touched_ids = [getattr(row, "id", None) for row in rows]
@@ -1216,7 +1192,6 @@ class ArtifactStore:
         if not (self._db_executor and self._item_model and self._session_factory):
             return cached
 
-        # Import SessionLogger locally to avoid circular dependency
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
         user_id = SessionLogger.user_id.get() or ""
@@ -1230,9 +1205,6 @@ class ArtifactStore:
                     level="warning",
                 )
             self._record_failure(user_id)
-            # Return the Redis hits already fetched above, not {} — discarding
-            # them when the DB breaker is open silently drops artifacts that
-            # were available (every other early-return here returns `cached`).
             return cached
 
         try:
@@ -1310,9 +1282,6 @@ class ArtifactStore:
                 except Exception as exc:
                     self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=True)
 
-    # -----------------------------------------------------------------------------
-    # 4. REDIS CACHE (8 methods)
-    # -----------------------------------------------------------------------------
 
     @timed
     async def _redis_pubsub_listener(self) -> None:
@@ -1330,6 +1299,7 @@ class ArtifactStore:
             return
         backoff = 1.0
         failure_reason = ""
+        last_flush_failure = ""
         while self._redis_enabled and self._redis_client:
             pubsub = None
             try:
@@ -1347,7 +1317,22 @@ class ArtifactStore:
                         continue
                     if message.get("type") != "message":
                         continue
-                    await self._flush_redis_queue()
+                    try:
+                        await self._flush_redis_queue()
+                    except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                        raise
+                    except Exception as flush_exc:
+                        flush_reason = f"{type(flush_exc).__name__}: {flush_exc}"
+                        if flush_reason != last_flush_failure:
+                            last_flush_failure = flush_reason
+                            self.logger.warning(
+                                "Redis flush failed after a wake-up (%s); the "
+                                "subscription is healthy and the timer flush continues",
+                                flush_reason,
+                                exc_info=True,
+                            )
+                    else:
+                        last_flush_failure = ""
                 return
             except asyncio.CancelledError:  # pragma: no cover - shutdown path
                 raise
@@ -1397,7 +1382,7 @@ class ArtifactStore:
                 consecutive_failures += 1
                 self.logger.exception("Periodic flush failed (%d consecutive failures)", consecutive_failures)
                 if consecutive_failures == failure_limit:
-                    self.logger.critical("🚨 Redis flush has failed %d times consecutively; write-behind is backing off and will resume when writes succeed (new writes fall back to direct DB meanwhile).", failure_limit)
+                    self.logger.critical("🚨 Writing buffered artifacts to the database has failed %d times in a row; the pipe is waiting longer between attempts and will resume when writes succeed (new writes go straight to the database meanwhile).", failure_limit)
 
             if consecutive_failures:
                 delay = min(10 * (2 ** min(consecutive_failures - 1, 5)), 300)
@@ -1507,7 +1492,6 @@ class ArtifactStore:
                             self._redis_flush_lock_key,
                         )
                 except Exception:
-                    # Redis errors during lock release are non-fatal - continue pipe operation
                     self.logger.debug("Failed to release Redis flush lock", exc_info=True)
 
     def _redis_cache_key(self, chat_id: str | None, row_id: str | None) -> str | None:
@@ -1623,9 +1607,6 @@ class ArtifactStore:
                 cached[item_id] = payload
         return cached
 
-    # -----------------------------------------------------------------------------
-    # 5. CLEANUP WORKERS (3 methods)
-    # -----------------------------------------------------------------------------
 
     @timed
     async def _artifact_cleanup_worker(self) -> None:
@@ -1667,9 +1648,6 @@ class ArtifactStore:
             if deleted:
                 self.logger.debug("Cleanup removed %s rows older than %s", deleted, cutoff)
 
-    # -----------------------------------------------------------------------------
-    # 6. CIRCUIT BREAKERS (3 methods)
-    # -----------------------------------------------------------------------------
 
     def _db_breaker_allows(self, user_id: str) -> bool:
         if not user_id:
@@ -1694,9 +1672,7 @@ class ArtifactStore:
             return
         self._breaker_records[user_id].append(time.time())
 
-    # -----------------------------------------------------------------------------
     # 7. LIFECYCLE MANAGEMENT
-    # -----------------------------------------------------------------------------
 
     def close(self) -> None:
         """Close background resources cleanly (formerly 'shutdown')."""
@@ -1714,9 +1690,7 @@ class ArtifactStore:
                 )
 
 
-# -----------------------------------------------------------------------------
 # Helper Functions
-# -----------------------------------------------------------------------------
 
 def normalize_persisted_item(
     item: dict[str, Any] | None,
@@ -1765,7 +1739,6 @@ def normalize_persisted_item(
             try:
                 normalized["arguments"] = json.dumps(arguments)
             except (TypeError, ValueError):
-                # Fallback to str() if arguments aren't JSON serializable
                 normalized["arguments"] = str(arguments)
         normalized["call_id"] = normalized.get("call_id") or generate_item_id()
         _ensure_identity()

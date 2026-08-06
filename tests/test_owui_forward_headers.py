@@ -64,7 +64,6 @@ def user():
 
 
 def test_noop_when_forwarding_unavailable(monkeypatch, user):
-    # A working fn is present but OWUI's env module was not importable -> no-op.
     monkeypatch.setattr(config, "_owui_env", None)
     monkeypatch.setattr(config, "_owui_include_user_info_headers", _fake_plain_include)
     base = {"Authorization": "Bearer x"}
@@ -89,7 +88,6 @@ def test_stamps_user_headers_when_enabled(enabled, user):
 
 
 def test_adds_chat_id_with_configured_name(monkeypatch, enabled, user):
-    # Custom header name (e.g. AWS Bedrock AgentCore prefix) must be respected.
     monkeypatch.setattr(
         config._owui_env,
         "FORWARD_SESSION_INFO_HEADER_CHAT_ID",
@@ -111,7 +109,6 @@ def test_none_user_is_noop(enabled):
 
 
 def test_dict_user_is_noop_no_exception(enabled):
-    # Proven: OWUI's function does getattr(user, "name") -> AttributeError on a dict.
     dict_user = {"id": "uuid-123", "email": "a@b.com", "name": "Alice", "role": "user"}
     out = config._apply_owui_forward_user_headers({"Authorization": "Bearer x"}, dict_user, chat_id="c1")
     assert out == {"Authorization": "Bearer x"}
@@ -121,7 +118,7 @@ def test_jwt_mode_passthrough(monkeypatch, enabled, user):
     monkeypatch.setattr(config, "_owui_include_user_info_headers", _fake_jwt_include)
     out = config._apply_owui_forward_user_headers({"Authorization": "Bearer x"}, user, chat_id="c1")
     assert out["X-OpenWebUI-User-Jwt"] == "signed.jwt.token"
-    assert "X-OpenWebUI-User-Id" not in out  # collapsed into the JWT
+    assert "X-OpenWebUI-User-Id" not in out
     assert out["X-OpenWebUI-Chat-Id"] == "c1"
 
 
@@ -135,16 +132,56 @@ def test_swallows_owui_exception(monkeypatch, enabled, user):
     assert out == {"Authorization": "Bearer x"}
 
 
+def test_the_failure_warning_is_deduped_per_exception_type(monkeypatch, caplog, enabled, user):
+    """Warn once per cause, not once ever and not once per request.
+
+    Every request takes this path, so an undeduped warning floods the log with one
+    line per call; a global latch hides a second, different failure behind the first.
+    The sibling test only asserts the exception is swallowed, so deleting the whole
+    warning changes nothing it can see.
+    """
+    import logging
+
+    def _boom(headers, user):
+        raise RuntimeError("owui blew up")
+
+    def _other_boom(headers, user):
+        raise KeyError("different cause")
+
+    config._warned_forward_headers.clear()
+    monkeypatch.setattr(config, "_owui_include_user_info_headers", _boom)
+
+    with caplog.at_level(logging.DEBUG, logger=config.logger.name):
+        config._apply_owui_forward_user_headers({}, user, chat_id="c1")
+        config._apply_owui_forward_user_headers({}, user, chat_id="c1")
+        config._apply_owui_forward_user_headers({}, user, chat_id="c1")
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, (
+        f"expected exactly one warning for three identical failures, got "
+        f"{len(warnings)}. Every outbound request takes this path."
+    )
+    assert any(r.levelno == logging.DEBUG for r in caplog.records), (
+        "the repeats vanish entirely; a persistent failure becomes invisible after "
+        "the first line, with nothing to find at DEBUG either"
+    )
+
+    caplog.clear()
+    monkeypatch.setattr(config, "_owui_include_user_info_headers", _other_boom)
+    with caplog.at_level(logging.DEBUG, logger=config.logger.name):
+        config._apply_owui_forward_user_headers({}, user, chat_id="c1")
+
+    assert [r for r in caplog.records if r.levelno == logging.WARNING], (
+        "a different exception type is suppressed by the first one's latch, so the "
+        "second, unrelated failure is never reported at all"
+    )
+
+
 def test_does_not_mutate_caller_headers(enabled, user):
     base = {"Authorization": "Bearer x"}
     config._apply_owui_forward_user_headers(base, user, chat_id="c1")
-    assert base == {"Authorization": "Bearer x"}  # original untouched
+    assert base == {"Authorization": "Bearer x"}
 
-
-# ============================================================================
-# Adapter integration: the four send_* functions stamp the headers on the
-# actual outbound request (captured at the aiohttp boundary via aioresponses).
-# ============================================================================
 
 import json  # noqa: E402
 
@@ -242,7 +279,6 @@ async def test_chat_nonstreaming_stamps_headers(pipe_instance_async, enabled, us
 
 @pytest.mark.asyncio
 async def test_no_headers_when_forwarding_disabled(pipe_instance_async, user):
-    # No `enabled` fixture -> forwarding off by default -> nothing stamped.
     pipe = pipe_instance_async
     session = pipe._create_http_session(pipe.valves)
     store: dict = {}
@@ -256,11 +292,6 @@ async def test_no_headers_when_forwarding_disabled(pipe_instance_async, user):
         await session.close()
     assert not any(k.startswith("X-OpenWebUI") for k in store["headers"])
 
-
-# ============================================================================
-# Video client: separate header builder (submit/status/list + content download)
-# must forward identity too, since video gen doesn't go through the text adapters.
-# ============================================================================
 
 import logging  # noqa: E402
 
@@ -297,11 +328,6 @@ def test_video_client_headers_noop_without_user(enabled):
     assert not any(k.startswith("X-OpenWebUI") for k in h)
 
 
-# ============================================================================
-# End-to-end: chat_id threaded through the streaming dispatcher reaches the header.
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_dispatcher_threads_chat_id_to_headers(pipe_instance_async, enabled, user):
     pipe = pipe_instance_async
@@ -318,11 +344,6 @@ async def test_dispatcher_threads_chat_id_to_headers(pipe_instance_async, enable
         await session.close()
     assert store["headers"]["X-OpenWebUI-User-Id"] == "uuid-123"
     assert store["headers"]["X-OpenWebUI-Chat-Id"] == "e2e-chat"
-
-
-# ============================================================================
-# Fix 1: debug/session logging must not leak forwarded PII or the signed JWT.
-# ============================================================================
 
 
 class _CaptureLogger:
@@ -351,9 +372,9 @@ def test_debug_redacts_default_identity_headers(enabled):
     blob = "\n".join(log.messages)
     assert "alice@example.com" not in blob
     assert "sig.jwt.tok" not in blob
-    assert "Bearer sk-supersecretkey" not in blob  # Authorization still redacted
-    assert "keep-me" in blob  # non-identity header preserved
-    assert "X-OpenWebUI-User-Email" in blob  # key retained, value redacted
+    assert "Bearer sk-supersecretkey" not in blob
+    assert "keep-me" in blob
+    assert "X-OpenWebUI-User-Email" in blob
 
 
 def test_debug_redacts_custom_prefixed_identity_headers(monkeypatch):

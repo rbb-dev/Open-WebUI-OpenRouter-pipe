@@ -386,7 +386,6 @@ class TestSelectBestEffortFallback:
     def test_all_supported_unrecognized(self):
         """All unrecognized supported values returns first."""
         result = _select_best_effort_fallback("medium", ["custom1", "custom2"])
-        # indexed list empty, falls back to supported_lower[0]
         assert result == "custom1"
 
     def test_whitespace_trimmed(self):
@@ -1210,15 +1209,9 @@ def _install_logger(monkeypatch):
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler)
-    # Patch at config and registry level (all import LOGGER from config)
-    monkeypatch.setattr(ow, "LOGGER", logger, raising=False)
-    monkeypatch.setattr(ow_config, "LOGGER", logger, raising=False)
-    # Also patch registry since test_debug_print_error_response uses it
-    try:
-        from open_webui_openrouter_pipe.models import registry as ow_registry
-        monkeypatch.setattr(ow_registry, "LOGGER", logger, raising=False)
-    except:
-        pass
+    # requests/debug takes its logger as a required keyword argument and states it
+    # falls back to no global one, so this is the only seam the helpers read.
+    monkeypatch.setattr(ow, "logger", logger, raising=False)
     return stream
 
 
@@ -1333,7 +1326,7 @@ def test_sanitize_model_id():
 def test_debug_print_request_redacts(monkeypatch):
     stream = _install_logger(monkeypatch)
     headers = {"Authorization": "abcdefghijk"}
-    ow._debug_print_request(headers, {"a": 1}, logger=ow.LOGGER)
+    ow._debug_print_request(headers, {"a": 1}, logger=ow.logger)
     assert "abcdefghij..." in stream.getvalue()
 
 
@@ -1349,7 +1342,7 @@ async def test_debug_print_error_response(monkeypatch):
             return "body"
 
     resp = cast("ClientResponse", FakeResponse())
-    body = await ow._debug_print_error_response(resp, logger=ow.LOGGER)
+    body = await ow._debug_print_error_response(resp, logger=ow.logger)
     assert body == "body"
     assert "OpenRouter error response" in stream.getvalue()
 
@@ -1384,7 +1377,6 @@ def test_extract_openrouter_error_details_non_dict_metadata():
         payload = json.dumps({"error": {"message": "x", "code": 429, "metadata": bad_metadata}})
         details = ow._extract_openrouter_error_details(payload)  # must not raise
         assert details["request_id"] is None
-        # the builder wraps the same path — must not raise either
         err = ow._build_openrouter_api_error(429, "Rate limited", payload, requested_model="demo")
         assert isinstance(err, ow.OpenRouterAPIError)
 
@@ -1398,7 +1390,6 @@ def test_extract_openrouter_error_details_non_dict_error_section():
         assert details["openrouter_message"] is None
         assert details["openrouter_code"] is None
         assert details["metadata"] == {}
-        # the builder wraps the same path — must not raise either
         err = ow._build_openrouter_api_error(400, "Bad request", payload, requested_model="demo")
         assert isinstance(err, ow.OpenRouterAPIError)
 
@@ -1970,12 +1961,10 @@ def test_apply_retry_after_metadata_records_raw_and_parsed_seconds():
     assert meta2["retry_after"] == "Wed, 21 Oct 2015 07:28:00 GMT"
     assert meta2["retry_after_seconds"] == 0
 
-    # lowercase header variant
     meta3: dict[str, Any] = {}
     _apply_retry_after_metadata(meta3, {"retry-after": "5"})
     assert meta3["retry_after_seconds"] == 5
 
-    # absent header -> untouched; junk -> raw only
     meta4: dict[str, Any] = {}
     _apply_retry_after_metadata(meta4, {})
     assert meta4 == {}

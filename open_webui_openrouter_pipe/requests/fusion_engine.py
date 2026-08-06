@@ -26,7 +26,6 @@ from ..structured_task.schema import (
     build_response_format,
     downgrade_strict_for_provider,
 )
-from ..tools.tool_executor import _ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +134,11 @@ class FusionInnerInvocation:
     catalog_norm_ids: set = field(default_factory=set)
     features: dict = field(default_factory=dict)
     user_id: str = ""
+    # Carried from the outer request so every inner call sees the SAME snapshot of the
+    # user's valves. Without them each member re-read the row, so a valve saved mid-run
+    # could leave one panel member routing with ZDR and another without it, in one turn.
+    user_valves: Any = None
+    rejected_user_valves: list = field(default_factory=list)
 
 
 async def run_fusion_member(
@@ -186,6 +190,8 @@ async def run_fusion_member(
             captured_files.extend(f for f in files if isinstance(f, dict))
 
     if outer_ctx is not None:
+        from ..tools.tool_executor import _ToolExecutionContext
+
         ctx = _ToolExecutionContext(
             queue=asyncio.Queue(maxsize=50),
             per_request_semaphore=outer_ctx.per_request_semaphore,
@@ -230,6 +236,8 @@ async def run_fusion_member(
             dict(invocation.features or {}),
             user_id=invocation.user_id,
             outcome_sink=sink,
+            user_valves=invocation.user_valves,
+            rejected_user_valves=list(invocation.rejected_user_valves),
         )
         content = result if isinstance(result, str) else ""
         if captured_files:

@@ -5,8 +5,10 @@ Ports patterns from `.external/seedream.py:325-399, 752-790`.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
+_logger = logging.getLogger(__name__)
 
 def normalise_model_content(value: Any) -> str:
     """Best-effort conversion of model content fragments to string.
@@ -49,6 +51,7 @@ def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
+        _logger.debug("Structured-task chunk parse failed", exc_info=True)
         return
     for choice in data.get("choices", []):
         delta = choice.get("delta") or choice.get("message")
@@ -116,9 +119,6 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"task_model_invalid_json: {exc}") from exc
 
-    # Plain string from adapters that already extracted output_text (e.g.
-    # this pipe's own TaskModelAdapter when OWUI's task model points back
-    # at this pipe). Trim, size-cap, and json-parse with the same envelope.
     if isinstance(response, str):
         text = response.strip()
         if not text:

@@ -157,7 +157,7 @@ def build_model_name_map() -> dict[str, str]:
                 mid = m.get(key)
                 if mid:
                     id_to_name[mid] = name
-    except (AttributeError, TypeError):
+    except (AttributeError, ImportError, TypeError):
         logger.debug("model id->name map build failed", exc_info=True)
     return id_to_name
 
@@ -176,15 +176,12 @@ def resolve_model_name(model_id: str, name_map: dict[str, str]) -> str:
     name = name_map.get(model_id)
     if name:
         return name
-    # Strip known pipe prefixes (e.g. "open_webui_openrouter_pipe.openai.gpt-5.2")
-    # by progressively removing the first dot-segment until we match.
     candidate = model_id
     while "." in candidate:
         candidate = candidate.split(".", 1)[1]
         name = name_map.get(candidate)
         if name:
             return name
-        # Also try slash form (author/model)
         slash_form = candidate.replace(".", "/", 1)
         name = name_map.get(slash_form)
         if name:

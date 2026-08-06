@@ -36,7 +36,7 @@ class ReasoningStatusThrottle:
         should_emit = force
         now = perf_counter()
         if not should_emit:
-            if delta.rstrip().endswith(REASONING_STATUS_PUNCTUATION) or len(text) >= REASONING_STATUS_MAX_CHARS:
+            if delta.rstrip(" \t").endswith(REASONING_STATUS_PUNCTUATION) or len(text) >= REASONING_STATUS_MAX_CHARS:
                 should_emit = True
             else:
                 elapsed = None if self._last_emit is None else (now - self._last_emit)

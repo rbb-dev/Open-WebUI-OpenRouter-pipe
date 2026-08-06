@@ -84,6 +84,30 @@ async def test_http_blocked_by_default(pipe_instance_async, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_master_switch_blocks_even_an_allowlisted_host(pipe_instance_async, monkeypatch):
+    """A one-variable delta from test_http_allowlist_allows_host below.
+
+    test_http_blocked_by_default turns the switch off AND empties the allowlist, so the
+    block was attributable to either -- replacing `if not self.valves.ALLOW_INSECURE_HTTP`
+    with `if False` left the suite green. With the same inputs the sibling proves True,
+    so the switch is the only thing this pair isolates.
+    """
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP = False
+    pipe_instance_async.valves.ALLOW_INSECURE_HTTP_HOSTS = "example.com"
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _addrinfo_for_ip("8.8.8.8"),
+    )
+    assert await pipe_instance_async._multimodal_handler._is_safe_url(
+        "http://example.com/resource"
+    ) is False, (
+        "an allowlisted host was fetched over plaintext HTTP with ALLOW_INSECURE_HTTP "
+        "off; the operator's master switch does nothing"
+    )
+
+
+@pytest.mark.asyncio
 async def test_http_allowlist_allows_host(pipe_instance_async, monkeypatch):
     """Allowlisted HTTP hosts should pass the HTTP gate before SSRF checks."""
     pipe_instance_async.valves.ALLOW_INSECURE_HTTP = True

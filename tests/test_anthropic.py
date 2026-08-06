@@ -553,7 +553,6 @@ def test_existing_cache_control_without_ttl_gets_ttl_added(pipe_instance):
         valves=valves,
     )
 
-    # ttl should be added to existing cache_control
     cc = input_items[0]["content"][0].get("cache_control")
     assert cc == {"type": "ephemeral", "ttl": "5m"}  # ttl was added
 
@@ -695,7 +694,6 @@ def test_empty_ttl_omits_ttl_field(pipe_instance):
         valves=valves,
     )
 
-    # cache_control should only have type, no ttl
     cc = _get_last_input_text_cache_control(input_items[0])
     assert cc == {"type": "ephemeral"}
     assert "ttl" not in cc
@@ -725,7 +723,6 @@ def test_non_string_ttl_omits_ttl_field(pipe_instance):
         valves=valves,
     )
 
-    # cache_control should only have type, no ttl (since TTL wasn't a string)
     cc = _get_last_input_text_cache_control(input_items[0])
     assert cc == {"type": "ephemeral"}
 

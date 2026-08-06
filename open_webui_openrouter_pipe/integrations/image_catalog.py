@@ -14,8 +14,11 @@ from typing import Any
 import aiohttp
 
 from ..core.config import _select_openrouter_http_referer
+from ..core.warn_latch import warn_level
 from ..models.registry import OpenRouterModelRegistry
 from .image_client import OpenRouterImageClient
+
+_warned_image_catalog: set[str] = set()
 
 
 async def ensure_image_catalog_loaded(
@@ -56,7 +59,8 @@ async def ensure_image_catalog_loaded(
         models = await client.list_models()
     except (TimeoutError, aiohttp.ClientError, OSError) as exc:
         OpenRouterModelRegistry.record_image_attempt()
-        logger.warning(
+        logger.log(
+            warn_level(_warned_image_catalog, type(exc).__name__),
             "Image catalog fetch failed (/models?output_modalities=image): %s — chat catalog kept, image-only models will not appear.",
             exc,
         )

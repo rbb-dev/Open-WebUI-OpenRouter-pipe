@@ -12,6 +12,7 @@ import asyncio
 import logging
 from typing import Any
 
+from ...core.warn_latch import warn_level
 from .authz import can_view, resolve_socket_user_id, resolve_user
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,14 @@ async def emit_config_changed(rev: Any) -> bool:
     try:
         from open_webui.socket.main import sio
     except ImportError:
-        return False  # the 2s cfgRev backstop covers the instant path
+        return False
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.socket.main failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        return False
     try:
         await sio.emit(CONFIG_EVENT, {"rev": rev}, room=VIEWERS_ROOM)
         return True
@@ -109,12 +117,12 @@ def register_valve_event_sink() -> bool:
     try:
         from open_webui.events import EVENT_SINKS
     except Exception:
-        if "events" not in _warned_import_sites:
-            _warned_import_sites.add("events")
-            logger.warning(
-                "pipe_dashboard: valve event sink unavailable; instant config push disabled",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_import_sites, 'events')
+        logger.log(
+            _level,
+            "pipe_dashboard: valve event sink unavailable; instant config push disabled",
+            exc_info=True,
+        )
         return False
     try:
         EVENT_SINKS[:] = [s for s in EVENT_SINKS if type(s).__name__ != "_ValveEventSink"]
@@ -135,12 +143,12 @@ def register_socket_handler(get_pipe: Any = None) -> bool:
     try:
         from open_webui.socket.main import sio
     except Exception:
-        if "register" not in _warned_import_sites:
-            _warned_import_sites.add("register")
-            logger.warning(
-                "pipe_dashboard: OWUI socket unavailable; the live dashboard cannot start",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_import_sites, 'register')
+        logger.log(
+            _level,
+            "pipe_dashboard: OWUI socket unavailable; the live dashboard cannot start",
+            exc_info=True,
+        )
         return False
     try:
         sio.on(SUB_EVENT, _pipe_dashboard_sub)
@@ -163,12 +171,12 @@ def local_viewer_sids() -> list[str]:
     try:
         from open_webui.socket.main import get_session_ids_from_room
     except Exception:
-        if "viewer_sids" not in _warned_import_sites:
-            _warned_import_sites.add("viewer_sids")
-            logger.warning(
-                "pipe_dashboard: viewer lookup unavailable; no dashboard payloads will be emitted",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_import_sites, 'viewer_sids')
+        logger.log(
+            _level,
+            "pipe_dashboard: viewer lookup unavailable; no dashboard payloads will be emitted",
+            exc_info=True,
+        )
         return []
     try:
         return list(get_session_ids_from_room(VIEWERS_ROOM) or [])
@@ -180,13 +188,13 @@ def local_viewer_sids() -> list[str]:
 async def emit_dashboard(payload: dict[str, Any]) -> bool:
     try:
         from open_webui.socket.main import sio
-    except ImportError:
-        if "emit" not in _warned_import_sites:
-            _warned_import_sites.add("emit")
-            logger.warning(
-                "pipe_dashboard: OWUI socket unavailable; dashboard payloads are being dropped",
-                exc_info=True,
-            )
+    except Exception:
+        _level = warn_level(_warned_import_sites, 'emit')
+        logger.log(
+            _level,
+            "pipe_dashboard: OWUI socket unavailable; dashboard payloads are being dropped",
+            exc_info=True,
+        )
         return False
     try:
         await sio.emit(DASHBOARD_EVENT, payload, room=VIEWERS_ROOM, ignore_queue=True)
@@ -200,13 +208,13 @@ async def reauthorize_local_viewers() -> None:
     pipe = _get_pipe() if _get_pipe else None
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
-    except ImportError:
-        if "reauth" not in _warned_import_sites:
-            _warned_import_sites.add("reauth")
-            logger.warning(
-                "pipe_dashboard: OWUI socket unavailable; viewer revocation checks are disabled",
-                exc_info=True,
-            )
+    except Exception:
+        _level = warn_level(_warned_import_sites, 'reauth')
+        logger.log(
+            _level,
+            "pipe_dashboard: OWUI socket unavailable; viewer revocation checks are disabled",
+            exc_info=True,
+        )
         return
     for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
         user = await resolve_user(resolve_socket_user_id(sid))

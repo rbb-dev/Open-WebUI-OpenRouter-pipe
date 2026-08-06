@@ -15,10 +15,18 @@ import hashlib
 import logging
 import os
 import re
+from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetCoreSchemaHandler,
+    ValidationError,
+    model_validator,
+)
 from pydantic_core import core_schema
 
 from .fusion_defaults import (
@@ -26,6 +34,7 @@ from .fusion_defaults import (
     DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
 )
+from .warn_latch import warn_level
 
 try:
     from open_webui import env as _owui_env
@@ -35,14 +44,21 @@ try:
 except ImportError:
     _owui_env = None
     _owui_include_user_info_headers = None
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_env = None
+    _owui_include_user_info_headers = None
 
 logger = logging.getLogger(__name__)
 
-LOGGER = logging.getLogger("open_webui_openrouter_pipe")
+_warned_forward_headers: set[str] = set()
 
-# -----------------------------------------------------------------------------
+
 # Constants
-# -----------------------------------------------------------------------------
 
 _OPENROUTER_TITLE = "Open WebUI plugin for OpenRouter Responses API"
 _OPENROUTER_CATEGORIES = "general-chat"
@@ -58,7 +74,6 @@ _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
 _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
-# Metadata namespace key — used by all filters to communicate with the pipe via __metadata__
 _PIPE_METADATA_KEY = "openrouter_pipe"
 
 # OpenRouter Web Tools filter
@@ -72,15 +87,8 @@ _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID = "openrouter_image_gen"
 # OpenRouter Video Generation filter
 _OPENROUTER_VIDEO_GEN_FILTER_MARKER = "openrouter_pipe:video_filter:v1"
 
-# OpenRouter Image Generation per-model filters (generic / gemini / sourceful).
-# Distinct namespace from `_OPENROUTER_IMAGE_GEN_FILTER_MARKER` which
-# wires the OpenAI Responses-API `image_generation_call` server-side TOOL onto
-# chat models. The new image filters configure NATIVE OpenRouter image-output
-# models via `body.image_config` request fields per image-generation.md.
 _OPENROUTER_IMAGE_FILTER_MARKER = "openrouter_pipe:image_filter:v1"
 
-# OpenRouter Fusion filter — configures the openrouter/fusion multi-model judge
-# panel via body.plugins ({"id": "fusion", ...}); see docs/openrouter_fusion.md.
 _OPENROUTER_FUSION_FILTER_MARKER = "openrouter_pipe:fusion_filter:v1"
 _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID = "openrouter_fusion"
 
@@ -532,9 +540,7 @@ DEFAULT_STREAM_INTERRUPTED_TEMPLATE = (
 )
 
 
-# -----------------------------------------------------------------------------
 # EncryptedStr and Helper Functions
-# -----------------------------------------------------------------------------
 
 class EncryptedStr(str):
     """String wrapper that automatically encrypts/decrypts valve values."""
@@ -594,12 +600,10 @@ class EncryptedStr(str):
             decrypted = fernet.decrypt(encrypted_part.encode())
             return decrypted.decode()
         except InvalidToken:
-            # Invalid encryption key or corrupted data - return original value
-            LOGGER.warning("Failed to decrypt value: invalid token or key mismatch")
+            logger.warning("Failed to decrypt value: invalid token or key mismatch")
             return value
         except (ValueError, UnicodeDecodeError) as e:
-            # Decoding or encoding error - return original value
-            LOGGER.warning(f"Failed to decrypt value: {type(e).__name__}: {e}")
+            logger.warning(f"Failed to decrypt value: {type(e).__name__}: {e}")
             return value
 
     @classmethod
@@ -637,8 +641,27 @@ def _default_artifact_encryption_key() -> EncryptedStr:
 
 
 def _resolve_log_level_default() -> Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
-    """Normalize env-provided log level to the allowed literal set."""
-    value = (os.getenv("GLOBAL_LOG_LEVEL") or "INFO").strip().upper()
+    """The GLOBAL_LOG_LEVEL env var as a valve value, via the one resolver.
+
+    Open WebUI gates the same variable on `logging.getLevelNamesMapping()`, which
+    contains `WARN` and `FATAL`. A membership test against the five canonical names
+    rejected both and fell back to INFO, so an operator who set `WARN` -- a spelling the
+    host accepts -- got a WARNING floor at import and an INFO floor once the pipe read
+    its own valve. Routing through `resolve_level` and naming the result maps the
+    aliases onto their canonical spelling instead of discarding them.
+
+    The membership test stays as the last step: a level registered by a third party
+    through `addLevelName` resolves to a name outside the valve's Literal, and the UI
+    dropdown only offers these five.
+
+    Imported inside the function because `logging_system` reaches `core.utils`, which
+    imports this module: at module scope the chain closes into a cycle. `default_factory`
+    runs at `Valves()` instantiation, long after imports settle.
+    """
+    from .logging_system import resolve_level
+
+    raw = (os.getenv("GLOBAL_LOG_LEVEL") or "INFO").strip().upper()
+    value = logging.getLevelName(resolve_level(raw, logging.INFO))
     if value not in _ALLOWED_LOG_LEVELS:
         value = "INFO"
     return cast(Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], value)
@@ -658,12 +681,8 @@ def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
     return default
 
 
-# Runtime pipe ID (computed at module import time)
 _PIPE_RUNTIME_ID = _detect_runtime_pipe_id()
 
-# -----------------------------------------------------------------------------
-# Valves and UserValves Configuration Classes
-# -----------------------------------------------------------------------------
 
 class Valves(BaseModel):
     """Global valve configuration shared across sessions."""
@@ -676,8 +695,8 @@ class Valves(BaseModel):
         default="responses",
         description=(
             "Which OpenRouter endpoint to use by default. "
-            "`responses` uses /responses (best feature coverage; Anthropic prompt caching is applied via a top-level cache_control). "
-            "`chat_completions` uses /chat/completions (per-block cache_control breakpoints; needed for Bedrock/Vertex-routed Claude caching and some provider features)."
+            "`responses` uses /responses (best feature coverage; the whole prompt is cached as one unit). "
+            "`chat_completions` uses /chat/completions (cache markers placed on individual message blocks; needed for Bedrock/Vertex-routed Claude caching and some provider features)."
         ),
     )
     FORCE_CHAT_COMPLETIONS_MODELS: str = Field(
@@ -813,9 +832,9 @@ class Valves(BaseModel):
     ALLOW_UNKNOWN_SIZE_CLOUD_READS: bool = Field(
         default=False,
         description=(
-            "Allow reading an OWUI file from a cloud/unknown storage provider when its declared "
-            "meta['size'] is missing or invalid. Default false to avoid an unbounded "
-            "download. When true, the file is still copied to a private temp and capped by "
+            "Allow reading an Open WebUI file from a cloud or unrecognised storage provider when its "
+            "recorded file size is missing or invalid. Default false to avoid an unbounded "
+            "download. When true, the file is still copied to a private temporary file and capped by "
             "BASE64_MAX_SIZE_MB after download. Operator recovery path for legacy rows without size "
             "metadata; not an authorization bypass."
         ),
@@ -837,11 +856,11 @@ class Valves(BaseModel):
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
         default="admins",
         description=(
-            "Default access grants for new OpenRouter model overlays inserted into Open WebUI. "
+            "Default access grants for new OpenRouter model entries added to Open WebUI. "
             "'public' grants read access to all users (wildcard access grant). "
             "'admins' creates no access grants (private) and relies on Open WebUI's "
             "BYPASS_ADMIN_ACCESS_CONTROL for admin access; otherwise admins must be granted access explicitly. "
-            "Applies only on insert; existing access grants are preserved on update."
+            "Applies only when a model is first added; existing access grants are kept when it is refreshed."
         ),
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
@@ -869,7 +888,8 @@ class Valves(BaseModel):
         title="ZDR models only",
         description=(
             "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
-            "This is a catalog filter only; it does not enforce ZDR on requests."
+            "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
+            "use Enforce ZDR for that -- and filtering is skipped if the ZDR list cannot be loaded, except video models, which have no ZDR endpoints and stay hidden."
         ),
     )
     ZDR_ENFORCE: bool = Field(
@@ -912,7 +932,7 @@ class Valves(BaseModel):
         description=(
             "Controls where in-progress thinking is surfaced while a response is being generated. "
             "'open_webui' streams reasoning in the Open WebUI reasoning box only; "
-            "'status' emits thinking as status events only; "
+            "'status' shows thinking only as status messages; "
             "'both' enables both outputs."
         ),
     )
@@ -921,8 +941,8 @@ class Valves(BaseModel):
         title="Anthropic interleaved thinking",
         description=(
             "When True, enables Claude's interleaved thinking mode by sending "
-            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models "
-            "(including `~anthropic/...` router aliases)."
+            "on Claude models that support it "
+            "(including the `~anthropic/...` router aliases)."
         ),
     )
     ENABLE_ANTHROPIC_PROMPT_CACHING: bool = Field(
@@ -932,8 +952,8 @@ class Valves(BaseModel):
             "When True and the selected model is `anthropic/...` (including `~anthropic/...` router aliases), "
             "enable Claude prompt caching to reduce "
             "per-turn costs for large stable prefixes (system prompts, tools, RAG context). On /responses a "
-            "top-level cache_control is sent (routes Anthropic-direct, excluding Bedrock/Vertex); on "
-            "/chat/completions per-block cache_control breakpoints are used (works across all providers)."
+            "the whole prompt is cached as one unit (routes Anthropic-direct, excluding Bedrock/Vertex); on "
+            "/chat/completions cache markers placed on individual message blocks are used (works across all providers)."
         ),
     )
     ANTHROPIC_PROMPT_CACHE_TTL: Literal["5m", "1h"] = Field(
@@ -958,7 +978,7 @@ class Valves(BaseModel):
         default=False,
         title="Enable plugin system",
         description=(
-            "Master switch for the plugin system. When False, all plugin hooks are skipped. "
+            "Master switch for the plugin system. When False, plugins are never called at all. "
             "Takes effect immediately without restart."
         ),
     )
@@ -1003,7 +1023,7 @@ class Valves(BaseModel):
         default="low",
         title="Task reasoning effort",
         description=(
-            "Reasoning effort requested for Open WebUI task payloads (titles, tags, etc.) when they target this pipe's models. "
+            "Reasoning effort requested for Open WebUI background tasks (titles, tags, etc.) when they target this pipe's models. "
             "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs, "
             "or use medium/high for progressively deeper background reasoning at higher cost."
         ),
@@ -1015,8 +1035,8 @@ class Valves(BaseModel):
         title="Tool execution mode",
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe "
-            "(batching/breakers/special backends). 'Open-WebUI' bypasses the internal executor and "
-            "passes tool calls through so Open WebUI executes them and renders the native tool UI."
+            "(with its own batching, failure limits, and special tool handling). 'Open-WebUI' hands tool calls back rather than "
+            "running them here, so Open WebUI executes them and renders the native tool UI."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
@@ -1061,8 +1081,8 @@ class Valves(BaseModel):
             "TOOL_EXECUTION_MODE is 'Pipeline'. Each loop involves the model generating "
             "one or more function/tool calls, executing all requested functions, and feeding "
             "the results back into the model. When the limit is reached, pending tool calls "
-            "receive stub responses so the model can synthesize a final answer. "
-            "Has no effect when TOOL_EXECUTION_MODE is 'Open-WebUI' (loop control is managed "
+            "are returned to the model marked as skipped so it can write a final answer. "
+            "Has no effect when TOOL_EXECUTION_MODE is 'Open-WebUI' (the round limit is managed "
             "by Open WebUI in that mode)."
         )
     )
@@ -1075,7 +1095,7 @@ class Valves(BaseModel):
     SESSION_LOG_STORE_ENABLED: bool = Field(
         default=False,
         description=(
-            "When True, persist per-request SessionLogger output to encrypted zip files on disk. "
+            "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
             "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id)."
         ),
@@ -1090,7 +1110,7 @@ class Valves(BaseModel):
     SESSION_LOG_ZIP_PASSWORD: EncryptedStr = Field(
         default=EncryptedStr(""),
         description=(
-            "Password used to encrypt session log zip files (pyzipper AES). "
+            "Password used to encrypt session log zip files (AES-encrypted zip). "
             "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY)."
         ),
     )
@@ -1121,7 +1141,7 @@ class Valves(BaseModel):
         default=20000,
         ge=100,
         le=200000,
-        description="Maximum number of in-memory SessionLogger records retained per request (older entries are dropped).",
+        description="Maximum number of log records held in memory per request (older entries are dropped).",
     )
     SESSION_LOG_FORMAT: Literal["jsonl", "text", "both"] = Field(
         default="jsonl",
@@ -1133,25 +1153,25 @@ class Valves(BaseModel):
     SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS: int = Field(
         default=30,
         ge=1,
-        description="How often (in seconds) to scan staged DB session-log segments and assemble per-message zip archives.",
+        description="How often (in seconds) to check the database for log pieces waiting to be packed and build one zip per message.",
     )
     SESSION_LOG_ASSEMBLER_JITTER_SECONDS: int = Field(
         default=10,
         ge=0,
-        description="Random jitter (0..N seconds) added to assembler sleeps so multiple workers do not run in lockstep.",
+        description="Random extra delay (0..N seconds) added to each wait between archiving passes so multiple workers do not run in lockstep.",
     )
     SESSION_LOG_ASSEMBLER_BATCH_SIZE: int = Field(
         default=25,
         ge=1,
         le=500,
-        description="Maximum number of message bundles to assemble per assembler cycle.",
+        description="Maximum number of message bundles to assemble per archiving pass.",
     )
     SESSION_LOG_STALE_FINALIZE_SECONDS: int = Field(
         default=6 * 7200,
         ge=60,
         description=(
-            "If a message has staged session-log segments but never reaches a terminal state "
-            "(crash/kill), finalize an incomplete zip after this many seconds since the last segment."
+            "If a message has staged session-log segments but never signals that it finished "
+            "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece."
         ),
     )
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
@@ -1162,7 +1182,7 @@ class Valves(BaseModel):
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
         description=(
-            "When True, capture function entrance/exit timing data. "
+            "When True, record how long each internal step of a request takes. "
             "Writes to TIMING_LOG_FILE path directly (not session archives). "
             "Useful for performance profiling and debugging latency issues."
         ),
@@ -1185,56 +1205,56 @@ class Valves(BaseModel):
         default=4,
         ge=1,
         le=8,
-        description="Number of per-request SSE worker tasks that parse streamed chunks.",
+        description="Number of per-request workers that decode the streamed chunks of one reply.",
     )
     STREAMING_CHUNK_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of raw SSE chunks buffered before applying backpressure to the OpenRouter stream. 0=unbounded (deadlock-proof, recommended); bounded values &lt;500 risk hangs on tool-heavy loads or slow DB/emit (drain block -> event full -> workers block -> chunk full -> producer halt).",
+        description="Maximum number of raw SSE chunks buffered before the pipe stops reading from OpenRouter until the backlog clears. 0=unbounded (cannot stall, recommended); bounded values &lt;500 risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter).",
     )
     STREAMING_EVENT_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of parsed SSE events buffered ahead of downstream processing. 0=unbounded (deadlock-proof, recommended); bounded values &lt;500 risk hangs on tool-heavy loads or slow DB/emit (drain block -> event full -> workers block -> chunk full -> producer halt).",
+        description="Maximum number of decoded events buffered before the rest of the pipe handles them. 0=unbounded (cannot stall, recommended); bounded values &lt;500 risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter).",
 
     )
     STREAMING_CHUNK_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
-        description="Log warning when chunk_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
+        description="Log a warning when the raw-chunk backlog reaches this many chunks, so an unbounded buffer is still watched. The minimum of 100 avoids flooding the log under sustained high load; raise it on busy servers.",
     )
     STREAMING_EVENT_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
-        description="Log warning when event_queue.qsize() hits this threshold (unbounded queue monitoring); ge=100 avoids spam on sustained high load. Tune higher for noisy envs.",
+        description="Log a warning when the decoded-event backlog reaches this many events, so an unbounded buffer is still watched. The minimum of 100 avoids flooding the log under sustained high load; raise it on busy servers.",
     )
     STREAMING_DELTA_CHAR_LIMIT: int = Field(
         default=256,
         ge=0,
         description=(
-            "Nagle coalescing toggle for the streaming pipeline. "
-            "When > 0 (default 256) Nagle-style adaptive batching is active — only whether the value exceeds 0 matters, its magnitude has no effect on batch size. Deltas are buffered "
-            "and coalesced based on consumer backpressure, with STREAMING_NAGLE_MIN_FLUSH_CHARS "
+            "On/off switch for batching streamed output. "
+            "When > 0 (default 256) batching is active — only whether the value exceeds 0 matters, its magnitude has no effect on batch size. Small pieces of streamed text are held back "
+            "and combined whenever the browser cannot keep up, with STREAMING_NAGLE_MIN_FLUSH_CHARS "
             "controlling the minimum batch size. "
-            "When 0 (and STREAMING_IDLE_FLUSH_MS is also 0), passthrough mode: deltas emit 1:1."
+            "When 0 (and STREAMING_IDLE_FLUSH_MS is also 0), no batching: every piece is sent exactly as it arrives."
         ),
     )
     STREAMING_IDLE_FLUSH_MS: int = Field(
         default=30,
         ge=0,
         description=(
-            "Idle flush timeout (ms) for the Nagle coalescer. When the upstream producer pauses, "
-            "buffered deltas are flushed after this interval to prevent stale content. "
-            "0 disables time-based flushing (not recommended — buffers only flush on backpressure drain)."
+            "How long buffered text waits (ms) when the model pauses. "
+            "Anything held back is sent after this interval so nothing sits on screen half-finished. "
+            "0 turns off the time-based send (not recommended — buffered text is then only sent when the next chunk arrives or the reply ends)."
         ),
     )
     STREAMING_NAGLE_MIN_FLUSH_CHARS: int = Field(
         default=3,
         ge=1,
         description=(
-            "Minimum buffered chars before the Nagle coalescer will yield a batch at the end of "
-            "a drain cycle. Default 3 smooths out single-character jitter in low-backpressure phases. "
-            "Set to 1 for pure Nagle, 5-10 for aggressive event reduction. The idle timeout "
+            "Minimum buffered characters before a batch is sent at the end of "
+            "each send pass. Default 3 avoids sending one character at a time when traffic is light. "
+            "Set to 1 to send whatever has built up on every pass; 5-10 to batch harder and cut update events. The idle timeout "
             "(STREAMING_IDLE_FLUSH_MS) still guarantees delivery within its interval."
         ),
     )
@@ -1242,7 +1262,7 @@ class Valves(BaseModel):
         default=0,
         ge=0,
         description=(
-            "Maximum number of per-request items buffered for the Open WebUI middleware streaming bridge. "
+            "Maximum number of per-request items buffered for the Open WebUI layer that streams the reply to the browser. "
             "0=unbounded (default behavior)."
         ),
     )
@@ -1250,8 +1270,8 @@ class Valves(BaseModel):
         default=1.0,
         ge=0,
         description=(
-            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while enqueueing a stream item before dropping that single item and continuing the stream. "
-            "0 disables the timeout (not recommended; a stalled client can hang producers)."
+            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while adding one item to that buffer before dropping that single item and continuing the stream. "
+            "0 disables the timeout (not recommended; a stalled browser can hold up the pipe indefinitely)."
         ),
     )
     OPENROUTER_ERROR_TEMPLATE: str = Field(
@@ -1266,7 +1286,7 @@ class Valves(BaseModel):
             "{native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {streaming_provider}, {streaming_model}, "
             "{retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. "
             "Lines containing placeholders are omitted automatically when the referenced value is missing or empty. "
-            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         ),
     )
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
@@ -1280,7 +1300,7 @@ class Valves(BaseModel):
         default=DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE,
         description=(
             "Markdown template used when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations, "
-            "missing storage objects, or other pre-flight validation failures)."
+            "missing stored files, or other checks that fail before the request is sent)."
         ),
     )
 
@@ -1288,7 +1308,7 @@ class Valves(BaseModel):
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         description=(
             "Markdown template for HTTP 401 errors. Available placeholders include {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, "
-            "{session_id}, {user_id}, {support_email}, {support_url}, plus the shared OpenRouter error-context fields such as {metadata_json}, {provider}, and {request_id}. Arbitrary payload keys are not placeholders."
+            "{session_id}, {user_id}, {support_email}, {support_url}, plus the shared OpenRouter error-context fields such as {metadata_json}, {provider}, and {request_id}. Only the names listed here are substituted; other fields from the error response are not."
         ),
     )
 
@@ -1348,7 +1368,7 @@ class Valves(BaseModel):
             "Markdown template for network timeout errors. "
             "Available variables: {error_id}, {timeout_seconds}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}. "
-            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
@@ -1358,7 +1378,7 @@ class Valves(BaseModel):
             "Markdown template for connection failures. "
             "Available variables: {error_id}, {error_type}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}. "
-            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
@@ -1368,7 +1388,7 @@ class Valves(BaseModel):
             "Markdown template for OpenRouter 5xx errors. "
             "Available variables: {error_id}, {status_code}, {reason}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}. "
-            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
@@ -1378,7 +1398,7 @@ class Valves(BaseModel):
             "Markdown template for unexpected internal errors. "
             "Available variables: {error_id}, {error_type}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}, {support_url}. "
-            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to render only when truthy."
+            "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
@@ -1417,7 +1437,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures allowed per breaker window before requests, tools, or DB ops are temporarily blocked. "
+            "Number of failures allowed per breaker window before that user's requests, tools, or database writes are temporarily blocked. "
             "Set higher to reduce trip frequency in noisy environments."
         ),
     )
@@ -1448,7 +1468,7 @@ class Valves(BaseModel):
             "Number of most recent logical turns whose tool outputs are sent in full. "
             "A turn starts when a user speaks and includes the assistant/tool responses "
             "that follow until the next user message. Older turns have their persisted "
-            "tool outputs pruned to save tokens. Set to 0 to keep every tool output."
+            "tool outputs shortened to save tokens. Set to 0 to keep every tool output in full."
         ),
     )
     TOOL_TIMEOUT_SECONDS: int = Field(
@@ -1471,13 +1491,13 @@ class Valves(BaseModel):
         default=10.0,
         ge=0,
         description=(
-            "Maximum seconds to wait for per-request tool workers to drain/stop during request cleanup. "
+            "Maximum seconds to wait for that request's running tools to finish and stop during cleanup. "
             "0 disables the graceful wait and cancels workers immediately."
         ),
     )
     ENABLE_REDIS_CACHE: bool = Field(
         default=True,
-        description="Enable Redis write-behind cache when REDIS_URL + multi-worker detected.",
+        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected.",
     )
     REDIS_CACHE_TTL_SECONDS: int = Field(
         default=600,
@@ -1495,7 +1515,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=50,
-        description="Log a critical alert after this many consecutive Redis flush failures. Write-behind is not disabled: the flusher backs off and keeps retrying, resuming when writes succeed (new writes fall back to direct DB meanwhile).",
+        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed (new writes fall back to direct DB meanwhile).",
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,
@@ -1511,7 +1531,7 @@ class Valves(BaseModel):
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its created_at is refreshed on every DB read, so retention runs from last access, not creation.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every database read, so retention runs from last access, not creation.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,
@@ -1527,7 +1547,7 @@ class Valves(BaseModel):
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, automatically include the provider's max_output_tokens in each request. Disable to omit the parameter entirely.",
+        description="When enabled, and the request does not already set a limit, fill in the provider's advertised max_output_tokens. Disable to send no limit of the pipe's own. This valve controls the automatic value, not yours: A `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
@@ -1547,29 +1567,29 @@ class Valves(BaseModel):
     )
     SEND_END_USER_ID: bool = Field(
         default=False,
-        description="When True, send OpenRouter `user` (value chosen by END_USER_ID_SOURCE), and also include `metadata.user_id` with the OWUI user GUID.",
+        description="When True, send OpenRouter `user` (value chosen by END_USER_ID_SOURCE), and also include `metadata.user_id` with the Open WebUI user GUID.",
     )
     END_USER_ID_SOURCE: Literal["id", "email", "name"] = Field(
         default="id",
-        description="What the OpenRouter `user` field carries when SEND_END_USER_ID is on: the OWUI GUID, the user's email, or their display name. Email/name fall back to the GUID when empty. Sending email or name shares PII with OpenRouter.",
+        description="What the OpenRouter `user` field carries when SEND_END_USER_ID is on: the Open WebUI GUID, the user's email, or their display name. Email/name fall back to the GUID when empty. Sending email or name shares PII with OpenRouter.",
     )
     SEND_SESSION_ID: bool = Field(
         default=False,
-        description="When True, include OWUI session_id as `metadata.session_id` (metadata only).",
+        description="When True, include the Open WebUI session_id as `metadata.session_id` (metadata only).",
     )
     SEND_CHAT_ID: bool = Field(
         default=False,
-        description="When True, include OWUI chat_id as `metadata.chat_id` (metadata only).",
+        description="When True, include the Open WebUI chat_id as `metadata.chat_id` (metadata only).",
     )
     SEND_MESSAGE_ID: bool = Field(
         default=False,
-        description="When True, include OWUI message_id as `metadata.message_id` (metadata only).",
+        description="When True, include the Open WebUI message_id as `metadata.message_id` (metadata only).",
     )
     MAX_INPUT_IMAGES_PER_REQUEST: int = Field(
         default=5,
         ge=1,
         le=20,
-        description="Maximum number of image inputs (user attachments plus assistant fallbacks) to include in a single provider request.",
+        description="Maximum number of image inputs (images attached by the user, plus reused images from earlier replies) to include in a single provider request.",
     )
     IMAGE_INPUT_SELECTION: Literal["user_turn_only", "user_then_assistant"] = Field(
         default="user_then_assistant",
@@ -1596,9 +1616,6 @@ class Valves(BaseModel):
             "Disable to manage model descriptions manually (or set per-model disable_description_updates)."
         ),
     )
-    # ── Server Tool Gates ──
-    # These control which OpenRouter server tools are available in the generated filters.
-    # When disabled, the tool's UserValves are excluded from the filter source entirely.
     ENABLE_WEB_SEARCH: bool = Field(
         default=True,
         description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users.",
@@ -1630,12 +1647,11 @@ class Valves(BaseModel):
     ENABLE_VIDEO_GENERATION: bool = Field(
         default=True,
         description=(
-            "Expose OpenRouter async video-generation models as chat models. "
+            "Add OpenRouter's video-generation models, which render in the background, to the model list. "
             "Video models are never treated as ZDR-capable."
         ),
     )
 
-    # ── Web Tools Filter ──
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
         default=True,
         description="Automatically install/update the OpenRouter Web Tools filter function in Open WebUI.",
@@ -1646,10 +1662,9 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OR Web Tools filter as a Default Filter on all pipe models (pre-enabled per chat; users can still turn it off).",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on all pipe models (pre-enabled per chat; users can still turn it off).",
     )
 
-    # ── Image Generation Filter ──
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
         default=True,
         description="Automatically install/update the OpenRouter Image Generation filter function in Open WebUI.",
@@ -1658,18 +1673,13 @@ class Valves(BaseModel):
         default=True,
         description="Automatically attach the OpenRouter Image Generation filter to all pipe models.",
     )
-    # ── Native OpenRouter Image Filters (generic / Gemini / Sourceful) ──
-    # NOTE: Distinct from `AUTO_*_IMAGE_GEN_FILTER` valves above which control
-    # the LEGACY OpenAI Responses-API `image_generation_call` tool filter.
-    # These valves control the new per-family filters that configure native
-    # OpenRouter image-output models via `body.image_config`.
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
         description=(
             "Expose OpenRouter native image-output models (Sourceful, Flux, "
             "Seedream, etc.) as chat models. Multimodal text+image models "
             "(gpt-5-image, gemini-image variants) stay in the chat catalog "
-            "and get the generic image filter attached for image_config knobs."
+            "and get the generic image filter attached for their image settings."
         ),
     )
     AUTO_INSTALL_IMAGE_FILTERS: bool = Field(
@@ -1692,7 +1702,7 @@ class Valves(BaseModel):
         default=True,
         description=(
             "Always keep the attached image filters enabled by default on "
-            "image-output models. Re-asserted on every sync."
+            "image-output models. Reapplied at every catalog refresh."
         ),
     )
 
@@ -1706,12 +1716,11 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Always keep the per-model video filter enabled by default on its video model. Re-asserted on every sync. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
+        description="Always keep the per-model video filter enabled by default on its video model. Reapplied at every catalog refresh. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
     )
-    # ── OpenRouter Fusion filter (multi-model judge panel) ──
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
-        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and auto-wires it to the openrouter/fusion model.",
+        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the openrouter/fusion model automatically.",
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
         default=True,
@@ -1723,12 +1732,12 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Re-asserted on every sync.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
         title="Fusion Backend",
-        description="Which engine runs deliberation for the dedicated fusion models. 'openrouter': requests go to OpenRouter's hosted Fusion — the panel and judge execute on their servers. 'internal': the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls, so panel members inherit the user's full Open WebUI tool surface (knowledge bases, tool servers, pipe server tools), every dial (ZDR, reasoning effort, cost attribution) applies per member, and a single failed member degrades gracefully instead of killing the whole stream. The live panel UI is identical on both backends.",
+        description="Which engine runs deliberation for the dedicated fusion models. 'openrouter': requests go to OpenRouter's hosted Fusion — the panel and judge execute on their servers. 'internal': the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls, so panel members can use every Open WebUI tool that user has (knowledge bases, tool servers, pipe server tools), every dial (ZDR, reasoning effort, cost attribution) applies per member, and one member failing does not kill the whole stream. The live panel UI is identical on both backends.",
     )
     FUSION_PANEL_SYSTEM_PROMPT: str = Field(
         default=DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
@@ -1738,7 +1747,7 @@ class Valves(BaseModel):
     FUSION_JUDGE_SYSTEM_PROMPT: str = Field(
         default=DEFAULT_FUSION_JUDGE_SYSTEM_PROMPT,
         title="Fusion Judge System Prompt",
-        description="System prompt for the internal fusion judge (runs at temperature 0). CAUTION: the judge must emit a single strict JSON object with exactly the five keys consensus / contradictions / partial_coverage / unique_insights / blind_spots — the live Analysis panel and the synthesis stage are built on that exact JSON contract. Keep the output-contract rules intact when editing; if the judge stops producing valid JSON the run degrades to no-analysis mode.",
+        description="System prompt for the internal fusion judge (runs at temperature 0). CAUTION: the judge must emit a single strict JSON object with exactly the five keys consensus / contradictions / partial_coverage / unique_insights / blind_spots — the live Analysis panel and the synthesis stage are depend on exactly that JSON. Keep the output-format rules intact when editing; if the judge stops producing valid JSON the run continues without the analysis.",
     )
     FUSION_SYNTHESIS_SYSTEM_PROMPT: str = Field(
         default=DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
@@ -1761,7 +1770,7 @@ class Valves(BaseModel):
         default=1.2,
         ge=1.0,
         le=4.0,
-        description="Backoff multiplier applied after each non-terminal video status poll.",
+        description="Backoff multiplier applied after each status check that reports the job is still running.",
     )
     VIDEO_POLL_INTERVAL_MAX_SECONDS: float = Field(
         default=20.0,
@@ -1779,7 +1788,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=25,
-        description="Maximum consecutive video status polling errors before the lifecycle is failed visibly.",
+        description="Maximum consecutive video status polling errors before the job is marked failed in the chat.",
     )
     REMOTE_VIDEO_MAX_SIZE_MB: int = Field(
         default=500,
@@ -1797,13 +1806,13 @@ class Valves(BaseModel):
         default=2,
         ge=1,
         le=100,
-        description="Maximum number of active video generation lifecycles per pipe process.",
+        description="Maximum number of video generation jobs running per pipe process.",
     )
     MAX_CONCURRENT_VIDEO_GENS_PER_USER: int = Field(
         default=2,
         ge=1,
         le=25,
-        description="Maximum number of active video generation lifecycles per user per pipe process.",
+        description="Maximum number of video generation jobs running per user per pipe process.",
     )
     VIDEO_FRAME_IMAGE_MAX_BYTES: int = Field(
         default=12 * 1024 * 1024,
@@ -1823,14 +1832,8 @@ class Valves(BaseModel):
     )
     VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
         default="video/mp4,video/webm",
-        description="Comma-separated MIME allowlist for generated video downloads after content sniffing.",
+        description="Comma-separated MIME allowlist for generated video downloads after the format is identified from the downloaded file.",
     )
-    # -------------------------------------------------------------------------
-    # Video intent classifier — analyses chat history and attachments to decide
-    # what the next video request should reference (prior video frame, attached
-    # image, fresh text-to-video, etc.) and optionally asks one clarifying
-    # question when the user's intent is genuinely ambiguous.
-    # -------------------------------------------------------------------------
     VIDEO_INTENT_ENABLED: bool = Field(
         default=True,
         description=(
@@ -1872,7 +1875,7 @@ class Valves(BaseModel):
         description=(
             "Per-session cap on consecutive clarifying questions. 0 disables the "
             "clarification loop entirely (always proceeds with best-guess interpretation). "
-            "Default 1 = at most one question, then degrade to best-guess."
+            "Default 1 = at most one question, then it proceeds with its best guess."
         ),
     )
     VIDEO_INTENT_FRAME_EXTRACTION_INDEX: Literal["first", "last"] = Field(
@@ -1897,8 +1900,8 @@ class Valves(BaseModel):
     VIDEO_INTENT_CONFIRM_MODE: Literal["always", "on_reference", "low_confidence", "never"] = Field(
         default="on_reference",
         description=(
-            "When to surface the Intent Disclosure Block confirmation footer. 'always' = "
-            "every gen; 'on_reference' (default) = only when reusing a prior video's frame "
+            "When to show the confirmation footer under a generated video. 'always' = "
+            "every generation; 'on_reference' (default) = only when reusing a prior video's frame "
             "or attached image; 'low_confidence' = only when classifier confidence is low; "
             "'never' = no confirmation."
         ),
@@ -1960,7 +1963,7 @@ class Valves(BaseModel):
         description=(
             "Comma-separated list of model slugs (e.g., 'meta-llama/llama-3.2-3b-instruct') for which "
             "to generate user-configurable provider routing filters. Users can toggle these filters per-chat "
-            "and configure their own provider preferences via UserValves. "
+            "and configure their own provider preferences in their per-user settings. "
             "Leave empty to disable user provider routing filters."
         ),
     )
@@ -2024,8 +2027,8 @@ class UserValves(BaseModel):
         title="Interleaved thinking (Claude)",
         description=(
             "When enabled, request Claude's interleaved thinking stream by sending "
-            "`x-anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/...` models "
-            "(including `~anthropic/...` router aliases)."
+            "on Claude models that support it "
+            "(including the `~anthropic/...` router aliases)."
         ),
     )
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
@@ -2053,7 +2056,7 @@ class UserValves(BaseModel):
         title="Tool execution mode",
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
-            "'Open-WebUI' bypasses the internal executor and lets Open WebUI run tools."
+            "'Open-WebUI' hands tool calls to Open WebUI to run instead."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
@@ -2068,6 +2071,59 @@ class UserValves(BaseModel):
     )
 
 
+def parse_user_valves(
+    raw: Any, *, model: type[UserValves] = UserValves
+) -> tuple[UserValves, list[str]]:
+    """The one place `__user__["valves"]` becomes a UserValves. Never raises.
+
+    Open WebUI hands this over as a MODEL INSTANCE, not a mapping -- `functions.py`
+    assigns `params["__user__"]["valves"] = function_module.UserValves(**user_valves)`.
+    A reader that gates on `isinstance(raw, dict)` therefore reads nothing in
+    production while passing every test that hands it a dict.
+
+    `model` is a parameter because `Pipe.UserValves` may be a plugin-extended SUBCLASS
+    that `PluginRegistry` builds from `_pending_user_valve_fields`. This module sits below
+    `pipe.py` and cannot see it, so hardcoding the base class here would silently drop
+    any plugin-contributed field arriving as a mapping -- and report it as absent rather
+    than rejected, which is the one distinction this function exists to preserve.
+
+    Validation here is per-field rather than all-or-nothing. `model_validate` on the
+    whole payload discards every setting the user has when any ONE of them is stale,
+    which is how a REQUEST_ZDR=True got dropped -- and, at the pipe entry point, how a
+    single unreadable field failed the request outright with a generic message. Fields
+    that cannot be read are dropped and NAMED, so a caller that cares about a specific
+    one can tell "the user did not set it" from "we could not read it" and decide for
+    itself which way to fail.
+    """
+    if isinstance(raw, model):
+        return raw, []
+    if isinstance(raw, BaseModel):
+        # exclude_unset: a bare model_dump() emits defaults too, and model_validate then
+        # marks every one of them explicitly set. _merge_valves reads model_fields_set,
+        # so one user-set field would override eleven admin valves.
+        raw = raw.model_dump(exclude_unset=True)
+    if not isinstance(raw, Mapping):
+        return model(), []
+
+    candidate = dict(raw)
+    rejected: list[str] = []
+    for _ in range(len(candidate) + 1):
+        try:
+            return model.model_validate(candidate), rejected
+        except ValidationError as exc:
+            bad = {
+                str(err["loc"][0])
+                for err in exc.errors()
+                if err.get("loc") and str(err["loc"][0]) in candidate
+            }
+            if not bad:
+                return model(), sorted(set(rejected) | set(candidate))
+            rejected.extend(sorted(bad))
+            for name in bad:
+                candidate.pop(name, None)
+    return model(), sorted(set(rejected))
+
+
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
@@ -2077,7 +2133,7 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
 
 
 def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:
-    """Stamp Open WebUI user-identity headers (and Chat-Id) on an outbound request, matching a native OWUI connection; no-op unless Open WebUI is present with ENABLE_FORWARD_USER_INFO_HEADERS set."""
+    """Stamp Open WebUI user-identity headers (and Chat-Id) on an outbound request, matching a native OWUI connection; does nothing unless Open WebUI is present with ENABLE_FORWARD_USER_INFO_HEADERS set."""
     if _owui_env is None or _owui_include_user_info_headers is None:
         return headers
     if not getattr(_owui_env, "ENABLE_FORWARD_USER_INFO_HEADERS", False):
@@ -2089,9 +2145,10 @@ def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = No
         if chat_id:
             name = getattr(_owui_env, "FORWARD_SESSION_INFO_HEADER_CHAT_ID", "X-OpenWebUI-Chat-Id")
             headers[name] = str(chat_id)
-    except Exception:
-        logger.warning(
-            "Could not attach Open WebUI session info headers; the request will be "
+    except Exception as exc:
+        logger.log(
+            warn_level(_warned_forward_headers, type(exc).__name__),
+            "Could not attach Open WebUI session info headers; requests will be "
             "sent without them",
             exc_info=True,
         )

@@ -383,11 +383,28 @@ def test_transform_drops_unrenderable_content_block_without_aborting():
     assert [p.get("text") for p in parts] == ["kept"], parts
 
 
-def test_transform_preserves_a_dict_shaped_user_content():
-    """A dict `content` must yield the user's text, not the dict's keys."""
-    messages = [
-        {"role": "user", "content": {"type": "text", "text": "the real user question"}}
-    ]
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"type": "text", "text": "the real user question"},
+        {"content": "the real user question"},
+        {"type": "text", "text": None, "content": "the real user question"},
+        {"type": "text", "text": 123, "content": "the real user question"},
+    ],
+    ids=["text-key", "content-key", "text-key-is-none", "text-key-is-not-a-string"],
+)
+def test_transform_preserves_a_dict_shaped_user_content(content):
+    """A dict `content` must yield the user's text, not the dict's keys.
+
+    One shape is satisfied by reading one key: with only the `text` case, deleting the
+    `content` fallback left the whole suite green while a user message nested under
+    that key became an empty block list — the model then answers a turn it cannot see.
+
+    The third id is the one that separates `not isinstance(text_val, str)` from
+    `text_val is None`; a `text` key holding None is what a partially-built message
+    dict looks like.
+    """
+    messages = [{"role": "user", "content": content}]
 
     result = _run_transform(messages, {})
 
@@ -417,3 +434,56 @@ def test_transform_drops_a_set_shaped_user_content():
         if isinstance(part, dict)
     ]
     assert "a-set-member" not in texts, f"set members leaked into the payload: {texts!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "allow", "hosts", "kept"),
+    [
+        ("http://images.example.test/a.png", False, "", False),
+        ("http://images.example.test/a.png", True, "images.example.test", True),
+        ("https://images.example.test/a.png", False, "", True),
+    ],
+)
+async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
+    pipe_instance_async, url, allow, hosts, kept
+):
+    """The enforcement, not the predicate.
+
+    `test_http_blocked_by_default` exercises `_is_insecure_http_allowed` in isolation.
+    Nothing checked that any caller consults it: neutering all six sites in
+    transform_messages_to_input -- `and False and pipe._multimodal_handler.
+    _is_insecure_http_allowed(url)` -- left the whole suite green, and the block branch
+    had never executed.
+
+    Three rows on purpose. The blocking row alone is satisfied by a production edit
+    that drops every image; the allowed and https rows are what make it a gate rather
+    than a wall.
+    """
+    pipe = pipe_instance_async
+    pipe.valves.ALLOW_INSECURE_HTTP = allow
+    pipe.valves.ALLOW_INSECURE_HTTP_HOSTS = hosts
+    ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision"}}})
+
+    async def _emitter(_event):
+        return None
+
+    transformed = await transform_messages_to_input(
+        pipe,
+        [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}],
+        model_id="vision-model",
+        valves=pipe.valves,
+        event_emitter=_emitter,
+    )
+
+    blocks = transformed[0]["content"] if transformed else []
+    images = [
+        b for b in blocks
+        if isinstance(b, dict) and b.get("type") in {"input_image", "image_url"}
+    ]
+    assert bool(images) is kept, (
+        f"url={url} ALLOW_INSECURE_HTTP={allow} hosts={hosts!r}: expected the image to "
+        f"be {'kept' if kept else 'dropped'}, got blocks={blocks!r}. A plaintext URL "
+        "reaching the outbound payload is fetched by OpenRouter over the network the "
+        "operator disabled."
+    )

@@ -28,7 +28,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
@@ -46,19 +46,40 @@ from tenacity import (
     wait_exponential,
 )
 
-# Open WebUI internals (available when running as a pipe)
 try:
     from open_webui.models.chats import Chats
 except ImportError:
+    Chats = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.chats failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     Chats = None  # type: ignore
 try:
     from open_webui.models.models import ModelForm, Models
 except ImportError:
     ModelForm = None  # type: ignore
     Models = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.models failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    ModelForm = None  # type: ignore
+    Models = None  # type: ignore
 try:
     from open_webui.models.files import Files
 except ImportError:
+    Files = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.files failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     Files = None  # type: ignore
 
 # Optional Redis support
@@ -71,7 +92,6 @@ except ImportError:
 from .core.timing_logger import timed, timing_mark
 from .storage.persistence import _detect_redis_config, _RedisClient
 
-# Optional pyzipper support for session log encryption
 try:
     import pyzipper  # pyright: ignore[reportMissingImports]
 except ImportError:
@@ -79,8 +99,6 @@ except ImportError:
 
 # Import subsystems
 from .core.circuit_breaker import CircuitBreaker
-
-# Import configuration and core modules
 from .core.config import (
     _OPENROUTER_CATEGORIES,
     _OPENROUTER_REFERER,
@@ -90,6 +108,7 @@ from .core.config import (
     UserValves,
     Valves,
     _select_openrouter_http_referer,
+    parse_user_valves,
 )
 
 # Import error handling
@@ -99,13 +118,14 @@ from .core.errors import (
     RequiredInternalFileError,
     _build_openrouter_api_error,
 )
-from .core.logging_system import SessionLogger
+from .core.logging_system import SessionLogger, resolve_level
 from .core.utils import (
     _apply_retry_after_metadata,
     _await_if_needed,
     _extract_feature_flags,
     _render_error_template,
 )
+from .core.warn_latch import warn_level
 
 # Import vendor integrations
 from .integrations.anthropic import _is_anthropic_model_id
@@ -200,9 +220,13 @@ def _get_lifecycle_registry():
     return reg
 
 
-# -----------------------------------------------------------------------------
+_warned_plugin_dispatch: set[str] = set()
+_warned_pipes_maintenance: set[str] = set()
+_warned_user_valves: set[str] = set()
+_warned_timing_file: set[str] = set()
+
+
 # Data Classes
-# -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class _PipeJob:
@@ -222,6 +246,10 @@ class _PipeJob:
     future: asyncio.Future
     stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
     request_id: str = field(default_factory=lambda: secrets.token_hex(8))
+    # Parsed once at the entry point and carried, so the orchestrator does not repeat a
+    # full user-row read -- and so one request sees ONE snapshot of the user's valves.
+    user_valves: Pipe.UserValves | None = None
+    rejected_user_valves: list[str] = field(default_factory=list)
 
     @property
     @timed
@@ -236,9 +264,7 @@ class _PipeJob:
         return str(self.user.get("id") or self.metadata.get("user_id") or "")
 
 
-# -----------------------------------------------------------------------------
 # Main Pipe Class
-# -----------------------------------------------------------------------------
 
 class Pipe:
     """Main orchestration class for OpenRouter pipe with subsystem delegation.
@@ -267,14 +293,11 @@ class Pipe:
     - _refresh_model_catalog() - model catalog management
     """
 
-    # Class variables (shared across instances)
     id: str = _PIPE_RUNTIME_ID or "open_webui_openrouter_pipe"
 
-    # Valve classes (must be defined as nested classes for Open WebUI discovery)
     Valves = Valves
     UserValves = UserValves
 
-    # Shared concurrency primitives (class-level for global rate limiting)
     _QUEUE_MAXSIZE = 1000
     _global_semaphore: asyncio.Semaphore | None = None
     _semaphore_limit: int = 0
@@ -282,20 +305,11 @@ class Pipe:
     _tool_global_limit: int = 0
     _video_global_semaphore: asyncio.Semaphore | None = None
     _video_global_limit: int = 0
-    _timing_file_warned_path: str | None = None
     _TOOL_CONTEXT: ContextVar[_ToolExecutionContext | None] = ContextVar(
         "openrouter_tool_context",
         default=None,
     )
-    # Strong references to in-flight job tasks.  Without this, the only
-    # reference is the local variable in _request_worker_loop; when OWUI's
-    # session teardown drops *its* end of the chain the GC destroys the task
-    # via GeneratorExit (context-destroying) instead of CancelledError
-    # (context-preserving), which breaks ContextVar.reset() in finally blocks.
     _active_jobs: ClassVar[set[asyncio.Task[None]]] = set()
-    # Note: Worker-related state (_request_queue, _queue_worker_task, _queue_worker_lock,
-    # _log_queue, _log_queue_loop, _log_worker_task, _log_worker_lock, _cleanup_task)
-    # are now INSTANCE-level to prevent event loop contamination across tests.
 
     @timed
     def __init__(self):
@@ -319,18 +333,16 @@ class Pipe:
             self._init_minimal_for_tests()
             return
 
-        # Core pipe identity and configuration
         self.type = "manifold"
         self.valves = self.Valves()
+        self._refresh_process_log_level()
         self.logger = SessionLogger.get_logger(__name__.split(".")[0])
 
-        # Instance variables that will be lazy-initialized
         self._http_session: aiohttp.ClientSession | None = None
         self._initialized = False
         self._closed = False
         self._shutdown_lock: asyncio.Lock | None = None
 
-        # Instance-level worker state (prevents event loop contamination across tests)
         self._request_queue: asyncio.Queue[_PipeJob] | None = None
         self._queue_worker_task: asyncio.Task | None = None
         self._queue_worker_lock: asyncio.Lock | None = None
@@ -341,17 +353,14 @@ class Pipe:
         self._log_worker_start_task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
 
-        # Subsystem instances (created in __init__, configured later)
         pipe_id = getattr(self, "id", "openrouter")
 
-        # Initialize EventEmitterHandler first (provides notification callback)
         self._event_emitter_handler: EventEmitterHandler = EventEmitterHandler(
             logger=self.logger,
             valves=self.valves,
             pipe_instance=self,
         )
 
-        # Create ArtifactStore with notification callback from EventEmitterHandler
         self._artifact_store = ArtifactStore(
             pipe_id=pipe_id,
             logger=self.logger,
@@ -361,20 +370,19 @@ class Pipe:
             user_id_context_var=SessionLogger.user_id,
         )
 
-        # Initialize subsystem handlers synchronously (http_session=None, will be set in async init)
         self._file_gateway = OwuiFileGateway(logger=self.logger, valves=self.valves)
         self._multimodal_handler: MultimodalHandler = MultimodalHandler(
             logger=self.logger,
             valves=self.valves,
-            http_session=None,  # Will be set in _ensure_async_subsystems_initialized
-            artifact_store=None,  # Will be set after artifact store initialization
+            http_session=None,
+            artifact_store=None,
             emit_status_callback=None,
             file_gateway=self._file_gateway,
         )
         self._streaming_handler: StreamingHandler = StreamingHandler(
             logger=self.logger,
             valves=self.valves,
-            model_registry=OpenRouterModelRegistry,  # Pass the class itself
+            model_registry=OpenRouterModelRegistry,
             pipe_instance=self,
         )
         self._catalog_manager: ModelCatalogManager | None = None
@@ -399,18 +407,15 @@ class Pipe:
         self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._video_message_lock_refs: dict[tuple[str, str], int] = {}
 
-        # Circuit breaker state (per-user error tracking)
         self._circuit_breaker = CircuitBreaker(
             threshold=self.valves.BREAKER_MAX_FAILURES,
             window_seconds=self.valves.BREAKER_WINDOW_SECONDS,
         )
-        # Synchronize circuit breaker config with ArtifactStore
         self._artifact_store.configure_breaker(
             threshold=self.valves.BREAKER_MAX_FAILURES,
             window_seconds=self.valves.BREAKER_WINDOW_SECONDS,
         )
 
-        # One-time stale filter ID pruning (runs on first pipes() call)
         self._stale_filter_ids_pruned = False
 
         # Startup check coordination
@@ -420,7 +425,6 @@ class Pipe:
         self._startup_checks_complete = False
         self._warmup_failed = False
 
-        # Redis configuration (detected from environment)
         self._redis_url, self._websocket_manager, self._websocket_redis_url, self._redis_candidate = (
             _detect_redis_config(self.valves, self.logger)
         )
@@ -439,7 +443,6 @@ class Pipe:
         # Cleanup tasks
         self._cleanup_task: asyncio.Task | None = None
 
-        # Session logging (thread-based background archival)
         self._session_log_manager = SessionLogManager(
             logger=self.logger,
             pipe=self,
@@ -464,7 +467,6 @@ class Pipe:
         if self._initialized:
             return
 
-        # Initialize HTTP session if not already created
         if not self._http_session:
             timeout = aiohttp.ClientTimeout(total=30)
             connector = aiohttp.TCPConnector(limit=100, limit_per_host=10)
@@ -473,7 +475,6 @@ class Pipe:
                 connector=connector,
             )
 
-        # Update subsystem handlers with async resources
         if self._multimodal_handler:
             self._multimodal_handler.set_http_session(self._http_session)
             self._multimodal_handler.set_artifact_store(self._artifact_store)
@@ -496,9 +497,7 @@ class Pipe:
         self._initialized = True
         self.logger.debug("Async subsystems initialized")
 
-    # =============================================================================
     # LIFECYCLE & STARTUP HELPERS
-    # =============================================================================
 
     @timed
     def _maybe_start_startup_checks(self) -> None:
@@ -520,7 +519,6 @@ class Pipe:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop (import-time). Defer until the first async entrypoint.
             self._startup_checks_pending = True
             return
 
@@ -541,14 +539,12 @@ class Pipe:
         except RuntimeError:
             return
 
-        # Check if existing lock is bound to a different (stale) event loop
         if self._log_worker_lock is not None:
             try:
                 lock_loop = getattr(cast(Any, self._log_worker_lock), "_get_loop", lambda: None)()
                 if lock_loop is not loop:
                     self._log_worker_lock = None
             except RuntimeError:
-                # Lock is bound to a closed/different loop
                 self._log_worker_lock = None
 
         if self._log_worker_lock is None:
@@ -587,7 +583,6 @@ class Pipe:
                         name="openrouter-log-worker",
                     )
             except Exception:
-                # Never let background startup tasks create noisy "Task exception was never retrieved"
                 pipe.logger.debug("Log worker startup task failed", exc_info=True)
 
         prev_start_task = self._log_worker_start_task
@@ -596,14 +591,121 @@ class Pipe:
         self._log_worker_start_task = loop.create_task(_ensure_worker(), name="openrouter-log-worker-start")
         self._log_worker_start_task.add_done_callback(_consume_background_task_exception)
 
+    async def _stored_user_valves(self, __user__: dict[str, Any]) -> Any:
+        """The user's valves as STORED, because Open WebUI destroys them on the way in.
+
+        `functions.py` builds `UserValves(**stored)` inside a try/except and substitutes a
+        default-constructed instance when pydantic refuses -- so a single stale value for
+        one Literal field, left behind by any past option rename, silently collapses EVERY
+        setting the user has, including REQUEST_ZDR. By the time the pipe is called, which
+        field failed and what the others held is already gone: `parse_user_valves` gets an
+        instance whose fields all equal their defaults and cannot tell that from a user
+        who set nothing.
+
+        Reading the row ourselves is the only place the per-field information still
+        exists. The instance Open WebUI supplied is the fallback for when that read is
+        unavailable or fails.
+        """
+        supplied = __user__.get("valves")
+        user_id = str(__user__.get("id") or "")
+        if not user_id:
+            return supplied
+        try:
+            from open_webui.models.functions import Functions
+
+            reader = getattr(Functions, "get_user_valves_by_id_and_user_id", None)
+            if reader is None:
+                # An Open WebUI whose Functions API does not offer this. Nothing to
+                # recover, and no diagnostic: the supplied instance is the documented
+                # input, not a failure -- so this is readable, not unreadable.
+                return supplied
+            # `_await_if_needed` rather than a bare await: this reader is `async` in
+            # every Open WebUI the manifest supports that I can check, but the floor is
+            # 0.9.1 and a sync one would raise TypeError here -- which lands in the
+            # except below and silently swaps every setting the user has for its
+            # default. The tolerant call keeps a sync reader from doing that.
+            stored = await _await_if_needed(reader(self.id, user_id))
+        except Exception:
+            self.logger.log(
+                warn_level(_warned_user_valves, "stored_read"),
+                "Could not read the stored user valves; falling back to what Open WebUI "
+                "supplied, which cannot report a field it failed to parse",
+                exc_info=True,
+            )
+            return supplied
+        return stored if isinstance(stored, Mapping) else supplied
+
+    def _user_valve_blob_is_unreadable(self, __user__: dict[str, Any], stored: Any) -> bool:
+        """True when this user HAS a saved valve blob for this pipe that did not decode.
+
+        `decrypt_valves` returns `{}` on InvalidToken exactly as it does for a row with
+        nothing stored, so the decoded value cannot tell a user who never opened the
+        valve panel from one whose settings a WEBUI_SECRET_KEY rotation made unreadable.
+        The still-encrypted blob can: Open WebUI builds `__user__` as
+        `UserModel.model_dump()` and `UserSettings` allows extra keys, so the ciphertext
+        travels on `settings.functions.valves.<pipe id>` and no second user-row fetch is
+        needed to tell the two apart.
+
+        A non-empty STRING is the only positive evidence. With valve encryption off the
+        column holds a plain dict and `decrypt_valves` returns it unchanged, so an empty
+        decode there really is an empty row. A blob under some other pipe id reads as
+        absent, which degrades to the previous behaviour rather than enforcing ZDR on a
+        user who never asked for it.
+        """
+        if stored != {}:
+            return False
+        settings = __user__.get("settings")
+        if not isinstance(settings, Mapping):
+            return False
+        functions = settings.get("functions")
+        if not isinstance(functions, Mapping):
+            return False
+        valves = functions.get("valves")
+        if not isinstance(valves, Mapping):
+            return False
+        blob = valves.get(self.id)
+        return isinstance(blob, str) and bool(blob.strip())
+
+    async def _read_user_valves(self, __user__: dict[str, Any]) -> tuple[Any, list[str]]:
+        """The one place a request turns `__user__` into (UserValves, rejected).
+
+        One return statement, on purpose. An earlier version of this pair returned a
+        2-tuple from one of four paths inside `_stored_user_valves` and a scalar from
+        the other three; `parse_user_valves` recognised the tuple as neither a model nor
+        a Mapping and every user valve silently reverted to its default.
+        `_stored_user_valves` keeps its single-value contract and the classification
+        happens here.
+
+        A blob that will not decode is reported as EVERY field rejected, because that is
+        what happened: the row was read and nothing in it could be recovered. Callers
+        that fail closed on a specific field -- the orchestrator's
+        `"REQUEST_ZDR" in rejected` -- then do so with no new signal to thread through
+        the job.
+        """
+        stored = await self._stored_user_valves(__user__)
+        user_valves, rejected = parse_user_valves(stored, model=self.UserValves)
+        if self._user_valve_blob_is_unreadable(__user__, stored):
+            self.logger.log(
+                warn_level(_warned_user_valves, "undecodable_blob"),
+                "The stored user valves did not decode (a rotated WEBUI_SECRET_KEY does "
+                "this); every setting is falling back to its default and preferences "
+                "that fail closed will do so",
+            )
+            rejected = sorted(set(rejected) | set(self.UserValves.model_fields))
+        return user_valves, rejected
+
     def _maybe_configure_timing_file(self, *, reopen: bool = False) -> bool:
         """Open the timing log file when ENABLE_TIMING_LOG is on, warning once per bad path.
 
         ``reopen`` forces a close and re-open, which is what a fresh pipe load needs so an
         externally rotated or deleted log file is not written to through a stale handle.
+
+        The latch is keyed on the path and cleared on success, so a corrected path warns
+        again if it breaks again, and a still-broken path repeats at DEBUG rather than
+        going silent at every level.
         """
         if not self.valves.ENABLE_TIMING_LOG:
-            Pipe._timing_file_warned_path = None
+            _warned_timing_file.clear()
             return False
 
         from .core.timing_logger import (
@@ -614,15 +716,14 @@ class Pipe:
         timing_path = self.valves.TIMING_LOG_FILE
         opener = configure_timing_file if reopen else ensure_timing_file_configured
         if opener(timing_path):
-            Pipe._timing_file_warned_path = None
+            _warned_timing_file.clear()
             return True
-        if Pipe._timing_file_warned_path != timing_path:
-            Pipe._timing_file_warned_path = timing_path
-            self.logger.warning(
-                "Failed to open timing log file: %s. ENABLE_TIMING_LOG is on but no timing "
-                "data will be recorded until TIMING_LOG_FILE points at a writable path.",
-                timing_path,
-            )
+        self.logger.log(
+            warn_level(_warned_timing_file, str(timing_path)),
+            "Failed to open timing log file: %s. ENABLE_TIMING_LOG is on but no timing "
+            "data will be recorded until TIMING_LOG_FILE points at a writable path.",
+            timing_path,
+        )
         return False
 
     @timed
@@ -678,7 +779,12 @@ class Pipe:
             return
         client: _RedisClient | None = None
         try:
-            client = aioredis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+            client = aioredis.from_url(
+                self._redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                health_check_interval=30,
+            )
             if client is None:
                 self.logger.warning("Redis client initialization returned None; Redis cache remains disabled.")
                 return
@@ -847,8 +953,9 @@ class Pipe:
             if registry is None:
                 return
             await getattr(registry, method)(*args, **kwargs)
-        except Exception:
-            self.logger.debug("Plugin event %s dispatch failed", method, exc_info=True)
+        except Exception as exc:
+            level = warn_level(_warned_plugin_dispatch, f"{method}:{type(exc).__name__}")
+            self.logger.log(level, "Plugin event %s dispatch failed", method, exc_info=True)
 
     def _ensure_plugin_registry(self) -> PluginRegistry:
         if self._plugin_registry is None:
@@ -857,13 +964,12 @@ class Pipe:
             self._plugin_registry.init_plugins(self)
         return self._plugin_registry
 
-    # =============================================================================
     # ENTRY POINTS
-    # =============================================================================
 
     @timed
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
+        self._refresh_process_log_level()
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
@@ -907,17 +1013,18 @@ class Pipe:
             self.logger.exception("OpenRouter configuration error")
         except Exception as exc:
             refresh_error = exc
-            self.logger.warning("OpenRouter catalog refresh failed: %s", exc, exc_info=True)
+            level = warn_level(_warned_pipes_maintenance, f"catalog_refresh:{type(exc).__name__}")
+            self.logger.log(level, "OpenRouter catalog refresh failed: %s", exc, exc_info=True)
         finally:
             await session.close()
 
         available_models = OpenRouterModelRegistry.list_models()
         if refresh_error and available_models:
-            self.logger.warning("Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
+            level = warn_level(_warned_pipes_maintenance, f"catalog_cached:{type(refresh_error).__name__}")
+            self.logger.log(level, "Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
         if refresh_error and not available_models:
             return []
 
-        # Disable old OpenRouter Search filter if it still exists (replaced by Web Tools)
         try:
             from open_webui.models.functions import Functions as _Funcs
             old_ors = await _Funcs.get_function_by_id("openrouter_search")
@@ -948,7 +1055,8 @@ class Pipe:
                     enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
                 )
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
         elif all_web_tools_disabled:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -962,7 +1070,8 @@ class Pipe:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"fusion:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_OPENROUTER_FUSION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -976,7 +1085,8 @@ class Pipe:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"image_gen:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -990,7 +1100,8 @@ class Pipe:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(available_models)
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"video:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc, exc_info=True)
         elif not self.valves.ENABLE_VIDEO_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -1014,13 +1125,13 @@ class Pipe:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
             except Exception as exc:
-                self.logger.debug("AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"direct_uploads:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc, exc_info=True)
 
         selected_models = self._select_models(self.valves.MODEL_ID, available_models)
         selected_models = self._apply_model_filters(selected_models, self.valves)
         selected_models = self._expand_variant_models(selected_models, self.valves)
 
-        # Provider routing filter creation (immediate, like Web Tools and Direct Uploads)
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
         user_routing = (self.valves.USER_PROVIDER_ROUTING_MODELS or "").strip()
         if admin_routing or user_routing:
@@ -1036,12 +1147,9 @@ class Pipe:
                         self.id,
                     )
             except Exception as exc:
-                self.logger.debug("Provider routing filter creation failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"provider_routing:{type(exc).__name__}")
+                self.logger.log(level, "Provider routing filter creation failed: %s", exc, exc_info=True)
 
-        # One-time cleanup of stale openrouter_* filter IDs in model metadata.
-        # Must run inside pipes() — before OWUI's get_all_models() reads model
-        # overlays and pre-warms the function cache — to prevent "Function not
-        # found" crashes on OWUI 0.8.0+.
         if not self._stale_filter_ids_pruned:
             self._stale_filter_ids_pruned = True
             try:
@@ -1051,20 +1159,20 @@ class Pipe:
                         "Pruned stale openrouter_* filter IDs from %d model(s) on startup.", count
                     )
             except Exception as exc:
-                self.logger.debug("Startup stale filter ID pruning failed: %s", exc, exc_info=True)
+                level = warn_level(_warned_pipes_maintenance, f"stale_prune:{type(exc).__name__}")
+                self.logger.log(level, "Startup stale filter ID pruning failed: %s", exc, exc_info=True)
 
         self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
             selected_models,
             pipe_identifier=self.id,
         )
 
-        # Plugins see full model data (pricing, capabilities) — trusted code
         if self.valves.ENABLE_PLUGIN_SYSTEM:
             try:
                 await self._ensure_plugin_registry().dispatch_on_models(selected_models)
             except Exception:
-                self.logger.debug("Plugin on_models dispatch failed", exc_info=True)
-        # Return simple id/name list - OWUI's get_function_models() only reads these fields
+                level = warn_level(_warned_pipes_maintenance, "on_models")
+                self.logger.log(level, "Plugin on_models dispatch failed", exc_info=True)
         return [
             {"id": m["id"], "name": m.get("name", m["id"])}
             for m in selected_models
@@ -1155,10 +1263,8 @@ class Pipe:
         safe_event_emitter = None
 
         try:
-            # Set up timing context at the very start to capture full request flow
             from .core.timing_logger import set_timing_context, timing_mark
             _early_request_id = secrets.token_hex(8)
-            # Ensure timing file is configured when enabled (handles runtime valve changes)
             self._maybe_configure_timing_file()
             set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
             timing_mark("pipe_entry")
@@ -1180,8 +1286,14 @@ class Pipe:
                 __metadata__ = {}
 
             safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(__event_emitter__)
-            user_valves_raw = __user__.get("valves") or {}
-            user_valves = self.UserValves.model_validate(user_valves_raw)
+            user_valves, rejected_user_valves = await self._read_user_valves(__user__)
+            for name in rejected_user_valves:
+                level = warn_level(_warned_user_valves, name)
+                self.logger.log(
+                    level,
+                    "User valve %s could not be read and is using its default",
+                    name,
+                )
             valves = self._merge_valves(self.valves, user_valves)
             user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
             wants_stream = bool(body.get("stream"))
@@ -1263,16 +1375,18 @@ class Pipe:
                 body=body,
                 user=__user__,
                 request=__request__,
-                event_emitter=safe_event_emitter,  # Keep emitter for both streaming and non-streaming
+                event_emitter=safe_event_emitter,
                 event_call=__event_call__,
                 metadata=__metadata__,
                 tools=__tools__,
                 task=__task__,
                 task_body=__task_body__,
                 valves=valves,
+                user_valves=user_valves,
+                rejected_user_valves=rejected_user_valves,
                 future=future,
                 stream_queue=stream_queue,
-                request_id=_early_request_id,  # Use same ID as timing context
+                request_id=_early_request_id,
             )
 
             timing_mark("before_enqueue_job")
@@ -1356,8 +1470,6 @@ class Pipe:
         Cancels all Redis background tasks and closes the Redis client connection.
         Any errors during client close are logged but not propagated.
         """
-        # Cancel background tasks first, then await same-loop ones so their
-        # cleanup (finally blocks) completes before the client closes
         cancelled_tasks: list[asyncio.Task] = []
         for attr in ("_redis_listener_task", "_redis_flush_task", "_redis_ready_task"):
             task = getattr(self, attr, None)
@@ -1379,7 +1491,6 @@ class Pipe:
                         timeout=2.0,
                     )
 
-        # Close Redis client and handle errors gracefully
         if self._redis_client:
             try:
                 await self._redis_client.close()
@@ -1397,7 +1508,7 @@ class Pipe:
 
     def _init_minimal_for_tests(self) -> None:
         self.type = "manifold"
-        self.logger = logging.getLogger("openrouter_pipe_test")
+        self.logger = SessionLogger.get_logger(__name__.split(".")[0])
         self._http_session = None
         self._initialized = False
         self._closed = False
@@ -1528,9 +1639,6 @@ class Pipe:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker
             else:
-                # The queue worker (and its Queue) belong to a different event loop.
-                # This can happen in test runners that create a new loop per test.
-                # Do not await across loops; just drop references so a new loop can recreate them.
                 self.logger.debug(
                     "Skipping await for request worker bound to a different event loop during close()."
                 )
@@ -1554,7 +1662,6 @@ class Pipe:
                     with contextlib.suppress(asyncio.CancelledError):
                         await worker
                 except RuntimeError as exc:
-                    # Shutdown/reload edge-case: avoid noisy logs when a stale coroutine/task leaks through.
                     if "cannot reuse already awaited coroutine" not in str(exc):
                         raise
                     self.logger.debug("Ignoring log worker shutdown error: %s", exc)
@@ -1690,29 +1797,22 @@ class Pipe:
         self.shutdown()
         self._schedule_close()
 
-    # =============================================================================
     # UTILITY METHODS
-    # =============================================================================
 
     @staticmethod
     @timed
-    def _should_warn_event_queue_backlog(
-        qsize: int,
-        warn_size: int,
-        now: float,
-        last_warn_ts: float,
-        *,
-        cooldown_seconds: float = 30.0,
-    ) -> bool:
-        """Return True when the event queue backlog should log a warning.
+    def _should_warn_event_queue_backlog(qsize: int, warn_size: int) -> bool:
+        """Whether the backlog has reached the threshold worth reporting.
 
-        This is a pure helper extracted for testability; behaviour is unchanged.
+        Threshold only. The "have I said this recently" half used to live here as a
+        hand-rolled timestamp cooldown, which meant an operator inside the 30 s window
+        saw nothing at any level -- and no census could find it, because the condition
+        was spelled as a plain call rather than as a latch lookup. That half now goes
+        through `warn_level`, which demotes the repeat to DEBUG instead of dropping it.
         """
-        return qsize >= warn_size and (now - last_warn_ts) >= cooldown_seconds
+        return qsize >= warn_size
 
-    # =============================================================================
     # ORCHESTRATION METHODS
-    # =============================================================================
 
 
     @timed
@@ -1747,21 +1847,18 @@ class Pipe:
             self._startup_task = None
 
 
-
     @timed
     async def _ensure_concurrency_controls(self, valves: Pipe.Valves) -> None:
         """Lazy-initialize queue worker and semaphore with the latest valves."""
         cls = type(self)
         current_loop = asyncio.get_running_loop()
 
-        # Check if existing lock is bound to a different (stale) event loop
         if self._queue_worker_lock is not None:
             try:
                 lock_loop = getattr(cast(Any, self._queue_worker_lock), "_get_loop", lambda: None)()
                 if lock_loop is not current_loop:
                     self._queue_worker_lock = None
             except RuntimeError:
-                # Lock is bound to a closed/different loop
                 self._queue_worker_lock = None
 
         if self._queue_worker_lock is None:
@@ -1774,8 +1871,6 @@ class Pipe:
                 except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
                     worker_loop = None
                 if worker_loop is not None and worker_loop is not current_loop:
-                    # The worker task belongs to a different event loop (common in test runners).
-                    # Drop the stale references so a new loop can recreate them.
                     self.logger.debug(
                         "Dropping stale request worker bound to a different event loop during setup."
                     )
@@ -1805,7 +1900,6 @@ class Pipe:
                 )
                 self.logger.debug("Started request queue worker")
 
-            # Semaphores remain class-level for global rate limiting
             target = valves.MAX_CONCURRENT_REQUESTS
             if cls._global_semaphore is None:
                 cls._global_semaphore = asyncio.Semaphore(target)
@@ -1833,7 +1927,6 @@ class Pipe:
                 self.logger.info("Increased MAX_PARALLEL_TOOLS_GLOBAL to %s", target_tool)
             elif target_tool < cls._tool_global_limit:
                 self.logger.warning("Lower MAX_PARALLEL_TOOLS_GLOBAL (%s->%s) requires restart to take full effect.", cls._tool_global_limit, target_tool)
-
 
 
     @timed
@@ -1866,9 +1959,6 @@ class Pipe:
                     continue
                 task = asyncio.create_task(job.pipe._execute_pipe_job(job))
 
-                # Hold a strong reference so the GC cannot destroy the task
-                # while it is still running.  Without this, GC fires
-                # GeneratorExit (wrong context) instead of CancelledError.
                 active = type(job.pipe)._active_jobs
                 active.add(task)
 
@@ -1890,7 +1980,6 @@ class Pipe:
             return
 
 
-
     @timed
     async def _execute_pipe_job(self, job: _PipeJob) -> None:
         """Isolate per-request context, HTTP session, and semaphore slot."""
@@ -1910,7 +1999,6 @@ class Pipe:
             else None
         )
         try:
-            # Plugin on_emitter_wrap hook — wrap emitter before tool_context so tool workers use it.
             if (
                 self.valves.ENABLE_PLUGIN_SYSTEM
                 and stream_emitter is not None
@@ -1936,8 +2024,6 @@ class Pipe:
             async with self._acquire_semaphore(semaphore, job.request_id):
                 session = self._create_http_session(job.valves)
                 tokens = self._apply_logging_context(job)
-                # Set _PIPE_ID here (same context that will reset it) so
-                # the token is always valid in the finally block below.
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
                 )
@@ -1958,7 +2044,6 @@ class Pipe:
                     user_id=job.user_id,
                     event_emitter=stream_emitter or job.event_emitter,
                     batch_cap=job.valves.TOOL_BATCH_CAP,
-                    # Phase 3: Add context for process_tool_result() integration
                     request=job.request,
                     user=job.user,
                     metadata=job.metadata,
@@ -1986,15 +2071,13 @@ class Pipe:
                     job.task_body,
                     valves=job.valves,
                     session=session,
-                )
+                    user_valves=job.user_valves,
+                    rejected_user_valves=job.rejected_user_valves,
+                    )
                 if not job.future.done():
                     job.future.set_result(result)
                 self._circuit_breaker.reset(job.user_id)
         except asyncio.CancelledError:
-            # Task was cancelled (user disconnected / OWUI session teardown).
-            # Resolve the future so nothing waits on it, send a stream
-            # sentinel so readers don't hang, then re-raise so asyncio
-            # records the task as cancelled.
             if not job.future.done():
                 job.future.cancel()
             if stream_queue is not None:
@@ -2019,11 +2102,6 @@ class Pipe:
             if tool_context:
                 await self._shutdown_tool_context(tool_context)
 
-            # Non-streaming fallback: if the streaming subsystem didn't consume and
-            # persist session logs, stage them here so the assembler can produce
-            # the per-message zip. Task requests (title/tags/followups) are included
-            # when they share the same message_id - the archive merger will combine
-            # all events from all invocations into a single comprehensive archive.
             rid = SessionLogger.request_id.get() or ""
             if rid:
                 with SessionLogger._state_lock:
@@ -2074,8 +2152,6 @@ class Pipe:
                     with SessionLogger._state_lock:
                         SessionLogger.logs.pop(rid, None)
 
-            # Terminal-hook backstop for early-return/exception paths; observers
-            # must dedupe by request_id (a real terminal may have already fired).
             backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
             if backstop_rid:
                 if job.future.cancelled():
@@ -2095,12 +2171,6 @@ class Pipe:
                 )
 
             if tool_token is not None:
-                # ValueError if GeneratorExit delivered the token into a
-                # different contextvars.Context (e.g. GC-driven coroutine
-                # teardown).  The _active_jobs task registry prevents this
-                # under normal operation, but we guard defensively so an
-                # unexpected teardown path degrades gracefully rather than
-                # masking the original exception.
                 with contextlib.suppress(ValueError):
                     self._TOOL_CONTEXT.reset(tool_token)
             for var, token in tokens:
@@ -2109,7 +2179,6 @@ class Pipe:
             if session:
                 with contextlib.suppress(Exception):
                     await session.close()
-
 
 
     @contextlib.asynccontextmanager
@@ -2129,13 +2198,33 @@ class Pipe:
             semaphore.release()
             self.logger.debug("Semaphore released (request=%s)", request_id)
 
+    def _refresh_process_log_level(self) -> None:
+        """Point SessionLogger's out-of-request floor at the operator's LOG_LEVEL.
+
+        Everything `pipes()` logs -- filter auto-install failures, plugin dispatch
+        failures, startup pruning -- runs with no request in scope, so without this
+        it is judged against the process default rather than the configured valve.
+
+        The only writer of `process_log_level`. A request must not redefine it: the
+        attribute is process-wide with no token to restore it, so one request would set
+        the floor for every out-of-request logger in the worker from then on. The
+        per-request level rides the `log_level` ContextVar instead, which
+        `effective_log_level` prefers and `_apply_logging_context` resets.
+        """
+        try:
+            SessionLogger.process_log_level = resolve_level(
+                str(self.valves.LOG_LEVEL), SessionLogger.process_log_level
+            )
+        except Exception:  # noqa: BLE001, S110 - a valve read must not break startup
+            pass
+
     @timed
     def _apply_logging_context(self, job: _PipeJob) -> list[tuple[ContextVar[Any], contextvars.Token[Any]]]:
         """Set SessionLogger contextvars based on the incoming request."""
         session_id = job.session_id or None
         request_id = job.request_id or None
         user_id = job.user_id or None
-        log_level = getattr(logging, job.valves.LOG_LEVEL)
+        log_level = resolve_level(str(job.valves.LOG_LEVEL), SessionLogger.process_log_level)
         SessionLogger.SESSION_LOG_MAX_LINES = job.valves.SESSION_LOG_MAX_LINES
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
@@ -2143,7 +2232,6 @@ class Pipe:
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
 
-        # Set timing context if timing logging is enabled
         if request_id:
             with contextlib.suppress(Exception):
                 from .core.timing_logger import set_timing_context
@@ -2154,7 +2242,6 @@ class Pipe:
                 )
 
         return tokens
-
 
 
     @timed
@@ -2170,6 +2257,8 @@ class Pipe:
         __task__: Any = None,
         __task_body__: Any = None,
         *,
+        user_valves: Pipe.UserValves | None = None,
+        rejected_user_valves: list[str] | None = None,
         valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
@@ -2187,10 +2276,9 @@ class Pipe:
             __metadata__ = {}
 
         if valves is None:
-            user_valves_raw = __user__.get("valves") or {}
             valves = self._merge_valves(
                 self.valves,
-                self.UserValves.model_validate(user_valves_raw),
+                parse_user_valves(__user__.get("valves"), model=self.UserValves)[0],
             )
         if session is None:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
@@ -2200,7 +2288,6 @@ class Pipe:
         pipe_identifier = self.id
         self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
 
-        # Plugin on_request hook — intercept before API key check
         plugin_result = None
         if self.valves.ENABLE_PLUGIN_SYSTEM:
             try:
@@ -2234,8 +2321,6 @@ class Pipe:
         task_name = TaskModelAdapter._task_name(__task__)
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
         if use_task_model_adapter and self._auth_failure_active():
-            # Suppress background task calls after an auth failure to avoid log spam
-            # and repeated upstream requests.
             fallback = self._build_task_fallback_content(task_name)
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),
@@ -2245,7 +2330,6 @@ class Pipe:
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
             self._note_auth_failure()
-            # Housekeeping task calls are background; return a safe stub without emitting UI errors.
             if use_task_model_adapter:
                 fallback = self._build_task_fallback_content(task_name)
                 return self._build_chat_completion_payload(
@@ -2258,7 +2342,6 @@ class Pipe:
                 "openrouter_code": 401,
                 "openrouter_message": api_key_error,
             }
-            # For streaming requests we must emit and finish the stream.
             if bool(body.get("stream")) and __event_emitter__:
                 await self._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
@@ -2269,7 +2352,6 @@ class Pipe:
                 )
                 return ""
 
-            # Non-streaming: return a normal chat completion payload with the markdown.
             error_id, context_defaults = self._ensure_error_formatter()._build_error_context()
             enriched_variables = {**context_defaults, **variables}
             try:
@@ -2353,13 +2435,9 @@ class Pipe:
         enforced_models = self._apply_model_filters(allowlist_models, valves)
         enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
 
-        # _PIPE_ID is now set in _execute_pipe_job (same async context that
-        # resets it), so model normalisation works throughout the call tree.
         features = _extract_feature_flags(__metadata__)
-        # Custom location that this manifold uses to store feature flags
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
 
-        # Plugin on_request_transform hook — modify body before sending to OpenRouter
         if self.valves.ENABLE_PLUGIN_SYSTEM:
             try:
                 await self._ensure_plugin_registry().dispatch_on_request_transform(
@@ -2390,8 +2468,9 @@ class Pipe:
                 features,
                 user_id=user_id,
                 virtual_variant_bases=virtual_variant_bases,
+                user_valves=user_valves,
+                rejected_user_valves=rejected_user_valves,
             )
-        # OpenRouter 400 errors (already have templates)
         except OpenRouterAPIError as e:
             await self._ensure_error_formatter()._report_openrouter_error(
                 e,
@@ -2443,7 +2522,6 @@ class Pipe:
                 )
                 return ""
 
-            # All 4xx — build rich error with auto-selected template
             body_text = None
             if e.response is not None:
                 try:
@@ -2502,8 +2580,6 @@ class Pipe:
         return result
 
 
-
-
     @timed
     async def _process_transformed_request(
         self,
@@ -2527,12 +2603,15 @@ class Pipe:
         *,
         user_id: str = "",
         virtual_variant_bases: dict[str, str] | None = None,
+        user_valves: Pipe.UserValves | None = None,
+        rejected_user_valves: list[str] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         return await self._ensure_request_orchestrator().process_request(
             body, __user__, __request__, __event_emitter__, __event_call__, __metadata__, __tools__,
             __task__, __task_body__, valves, session, openwebui_model_id, pipe_identifier,
             allowlist_norm_ids, enforced_norm_ids, catalog_norm_ids, features,
             user_id=user_id, virtual_variant_bases=virtual_variant_bases,
+            user_valves=user_valves, rejected_user_valves=rejected_user_valves,
         )
 
     # Model Management
@@ -2724,8 +2803,6 @@ class Pipe:
                 exc_info=True,
             )
         finally:
-            # Always cancel remaining workers and wait, even under
-            # CancelledError — prevents orphaned tool worker tasks.
             for task in context.workers:
                 if not task.done():
                     task.cancel()
@@ -2886,11 +2963,9 @@ class Pipe:
         fn_to_call = cast(ToolCallable, fn)
         timeout = float(context.timeout)
 
-        # Helper to process result and emit files/embeds
         async def _process_and_emit(raw_result: Any) -> tuple[str, list[dict[str, Any]], list[str]]:
             timing_mark(f"tool_run:{tool_name}:processing")
             try:
-                # Use the tool executor's safe processing method
                 executor = self._ensure_tool_executor()
                 text, files, embeds = await executor._process_tool_result_safe(
                     tool_name=tool_name,
@@ -2917,7 +2992,6 @@ class Pipe:
 
                 return text, files, embeds
             except Exception as proc_exc:
-                # Safety net - never crash, just return stringified result
                 self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc, exc_info=True)
                 return _fallback_tool_text(raw_result), [], []
 
@@ -2999,7 +3073,6 @@ class Pipe:
             owui_chat_id=owui_chat_id,
         )
 
-    # ADDITIONAL HELPER METHODS (called by orchestration methods)
 
     @timed
     async def _ping_openrouter(
@@ -3087,13 +3160,12 @@ class Pipe:
         free_mode = valves.FREE_MODEL_FILTER
         tool_mode = valves.TOOL_CALLING_FILTER
         zdr_only = valves.ZDR_MODELS_ONLY
-        zdr_model_ids = None
-        if zdr_only:
-            zdr_model_ids = OpenRouterModelRegistry.zdr_model_ids()
-            if zdr_model_ids is None:
-                self.logger.warning(
-                    "ZDR model filter enabled but ZDR endpoint list is unavailable; skipping ZDR filtering."
-                )
+        if zdr_only and not OpenRouterModelRegistry.zdr_list_available():
+            # latched: runs from pipes() and the chat path; the condition is stable
+            self.logger.log(
+                warn_level(_warned_pipes_maintenance, "zdr_list_unavailable"),
+                "ZDR model filter enabled but ZDR endpoint list is unavailable; skipping ZDR filtering.",
+            )
         if free_mode == "all" and tool_mode == "all" and not zdr_only:
             return models
 
@@ -3103,10 +3175,6 @@ class Pipe:
             if not norm_id:
                 continue
 
-            # Three-tier spec resolution for filter evaluation:
-            # 1. Real catalog variant (has own spec) -> use full norm_id
-            # 2. Virtual routing variant (admin-configured, no catalog spec) -> use base ID
-            # 3. Unknown variant (no spec, not virtual) -> spec lookups return empty -> fail filters
             is_virtual = model.get("variant_is_virtual", False)
             if is_virtual:
                 spec_lookup_id = model.get("variant_base_norm_id") or norm_id.rsplit(":", 1)[0]
@@ -3114,10 +3182,8 @@ class Pipe:
                 spec_lookup_id = norm_id
 
             if zdr_only:
-                zdr_capable = OpenRouterModelRegistry.is_zdr_capable(norm_id)
-                if zdr_capable is False:
-                    continue
-                if zdr_capable is None and zdr_model_ids is not None and norm_id not in zdr_model_ids:
+                is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(norm_id)
+                if is_zdr_capable is False:
                     continue
 
             if free_mode != "all":
@@ -3159,39 +3225,32 @@ class Pipe:
         """
         variant_specs_csv = valves.VARIANT_MODELS
         if not variant_specs_csv:
-            return models  # No variants configured
+            return models
 
-        # Parse CSV into (base_id, variant_tag, is_preset) tuples
-        # Presets use @ separator, variants use : separator
         variant_specs: list[tuple[str, str, bool]] = []
         for spec in variant_specs_csv.split(","):
             spec = spec.strip()
             if not spec:
                 continue
 
-            # Try preset syntax first (@ separator)
             if "@" in spec:
                 parts = spec.rsplit("@", 1)
                 base_id = parts[0].strip()
-                raw_tag = parts[1].strip()  # e.g., "preset/email-copywriter"
+                raw_tag = parts[1].strip()
                 is_preset = raw_tag.startswith("preset/")
-                # Keep preset tags as-is (case-sensitive slugs)
                 variant_tag = raw_tag
                 if base_id and variant_tag:
                     variant_specs.append((base_id, variant_tag, is_preset))
-            # Fall back to variant syntax (: separator)
             elif ":" in spec:
                 parts = spec.rsplit(":", 1)
                 base_id = parts[0].strip()
                 variant_tag = parts[1].strip().lower()
                 if base_id and variant_tag:
                     variant_specs.append((base_id, variant_tag, False))
-            # Skip invalid entries (no separator)
 
         if not variant_specs:
-            return models  # Nothing to expand
+            return models
 
-        # Build lookup map: original_id -> model dict
         model_map: dict[str, dict[str, Any]] = {}
         for model in models:
             original_id = model.get("original_id", "")
@@ -3199,7 +3258,7 @@ class Pipe:
                 model_map[original_id] = model
 
         # Expand variants and presets
-        expanded: list[dict[str, Any]] = list(models)  # Start with base models
+        expanded: list[dict[str, Any]] = list(models)
 
         for base_id, variant_tag, is_preset in variant_specs:
             # Find base model
@@ -3215,30 +3274,21 @@ class Pipe:
                 )
                 continue
 
-            # Clone base model and modify for variant/preset
-            variant_model = dict(base_model)  # Shallow copy
+            variant_model = dict(base_model)
 
-            # Update ID to include variant suffix (always use : internally)
             base_sanitized_id = variant_model.get("id", "")
             variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
 
-            # Keep original_id pointing to BASE (for icon/description lookups)
-            # Do NOT change original_id - it must stay as base_id for catalog lookups
 
             # Update display name with tag
-            # Use exact base name and append variant tag or preset label
             base_name = variant_model.get("name", base_id)
             if is_preset:
-                # "preset/email-copywriter" → "Preset: email-copywriter"
                 preset_slug = variant_tag.replace("preset/", "")
                 tag_display = f"Preset: {preset_slug}"
             else:
-                # Standard variant: "nitro" → "Nitro"
                 tag_display = variant_tag.capitalize()
             variant_model["name"] = f"{base_name} {tag_display}"
 
-            # Keep norm_id pointing to base (for capability lookups)
-            # norm_id is used by ModelFamily.supports() to check features
 
             # Add to expanded list
             expanded.append(variant_model)
@@ -3314,8 +3364,6 @@ class Pipe:
         if not variant_specs:
             return allowlist_models, virtual_variant_bases
 
-        # Build lookup from ALL available models (not just allowlist) so that
-        # base models excluded from MODEL_ID can still be used as variant bases.
         catalog_by_original: dict[str, dict[str, Any]] = {}
         catalog_by_sanitized: dict[str, dict[str, Any]] = {}
         catalog_by_norm: dict[str, dict[str, Any]] = {}
@@ -3371,7 +3419,7 @@ class Pipe:
                 self.logger.warning("Variant model base could not be normalized: %s", base_id)
                 continue
 
-            variant_model = dict(base_model)  # Shallow copy
+            variant_model = dict(base_model)
             base_sanitized_id = variant_model.get("id", "")
             variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
             variant_model["norm_id"] = full_norm_id
@@ -3400,8 +3448,6 @@ class Pipe:
     ) -> list[str]:
         reasons: list[str] = []
 
-        # Compute spec_lookup_id: virtual variants use the base model for
-        # capability/pricing checks (three-tier rule from plan Section D).
         vvb = virtual_variant_bases or {}
         spec_lookup_id = vvb.get(model_norm_id, model_norm_id)
         spec_available = spec_lookup_id in catalog_norm_ids
@@ -3437,8 +3483,8 @@ class Pipe:
 
         zdr_only = valves.ZDR_MODELS_ONLY
         if zdr_only and spec_available:
-            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(model_norm_id)
-            if zdr_capable is False:
+            is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(model_norm_id)
+            if is_zdr_capable is False:
                 reasons.append("ZDR_MODELS_ONLY")
 
         return reasons
@@ -3476,8 +3522,6 @@ class Pipe:
             headers["x-anthropic-beta"] = ",".join(values)
         headers.pop("X-Anthropic-Beta", None)
 
-    # 4.7 Emitters (Front-end communication)
-
 
     @classmethod
     @timed
@@ -3511,8 +3555,6 @@ class Pipe:
         if not decrypted:
             return None, "OpenRouter API key is not configured."
 
-        # If the key was stored encrypted but decryption did not yield a plausible plaintext key,
-        # treat it as an operator config issue.
         if raw_value.startswith(EncryptedStr._ENCRYPTION_PREFIX) and (
             decrypted.startswith(EncryptedStr._ENCRYPTION_PREFIX)
             or (not decrypted.startswith("sk-"))
@@ -3603,13 +3645,11 @@ class Pipe:
         if not mapped:
             return global_valves
 
-        # Do not allow per-user overrides of the global log level.
         mapped.pop("LOG_LEVEL", None)
 
         return global_valves.model_copy(update=mapped)
 
 
-# Merge plugin-declared valve fields into Pipe.Valves / Pipe.UserValves at import time.
 try:
     from .plugins.registry import PluginRegistry as _PluginRegistryForValves
 

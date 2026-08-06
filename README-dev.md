@@ -26,6 +26,8 @@ git push origin dev
 - Bundle workflow runs → creates artifacts:
   - `open_webui_openrouter_pipe_bundled.py` (readable)
   - `open_webui_openrouter_pipe_bundled_compressed.py` (compressed)
+  - `open_webui_openrouter_pipe_bundled_no_plugins.py` (readable, plugins omitted)
+  - `open_webui_openrouter_pipe_bundled_compressed_no_plugins.py` (compressed, plugins omitted)
 - Updates the `dev` pre-release with the new bundle
 - Bleeding-edge users can download from the `dev` release
 
@@ -145,10 +147,10 @@ Go to **Actions** → select a workflow run → scroll to **Artifacts** → down
 
 ## Linting
 
-Production code is linted with [ruff](https://docs.astral.sh/ruff/) in CI. No config file is needed — the command scopes itself:
+Production code is linted with [ruff](https://docs.astral.sh/ruff/) in CI. The rule set is ruff's own default, so the version matters: `pyproject.toml` sets `required-version` to match the pin in .github/workflows/verify.yml, and a different ruff refuses to run rather than reporting findings CI would not.
 
 ```bash
-source .venv/bin/activate && ruff check open_webui_openrouter_pipe/
+source .venv/bin/activate && ruff check open_webui_openrouter_pipe/ scripts/ filters/
 ```
 
 Tests (`tests/`) are **not** linted — patterns like mid-file imports, fixture redefinitions, and assign-to-verify are intentional and would trigger false positives.

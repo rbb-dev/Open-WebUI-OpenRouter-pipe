@@ -15,15 +15,13 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..core.logging_system import SessionLogger
-from ..core.utils import _render_error_template
+from ..core.utils import _render_error_template, citation_access_stamp
 
-# Type hints for Open WebUI components
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 if TYPE_CHECKING:
     from ..pipe import _PipeJob
 
-# Lazy loading for Open WebUI utilities to avoid triggering langchain at import time
 _owui_template_cached: Callable[..., dict[str, Any]] | None = None
 
 
@@ -74,8 +72,14 @@ def openai_chat_chunk_message_template(
             _owui_template_cached = _real_template
         except ImportError:
             _owui_template_cached = _stub_chat_chunk_template
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.utils.misc failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
+            _owui_template_cached = _stub_chat_chunk_template
     return _owui_template_cached(model, content, None, tool_calls, usage)
-
 
 
 class EventEmitterHandler:
@@ -100,7 +104,7 @@ class EventEmitterHandler:
         self,
         logger: logging.Logger,
         valves: Any,
-        pipe_instance: Any,  # Reference to Pipe instance for helper methods
+        pipe_instance: Any,
         event_emitter: EventEmitter | None = None,
     ):
         """Initialize EventEmitterHandler.
@@ -163,7 +167,6 @@ class EventEmitterHandler:
                 self.logger.exception("Failed to emit status")
 
 
-
     async def _emit_error_event(
         self,
         event_emitter: EventEmitter | None,
@@ -179,7 +182,7 @@ class EventEmitterHandler:
         dumped to the server log (instead of the UI) so developers can inspect
         what went wrong.
         """
-        error_message = str(error_obj)  # If it's an exception, convert to string
+        error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
 
         if show_error_message and event_emitter:
@@ -196,7 +199,6 @@ class EventEmitterHandler:
             except Exception:
                 self.logger.exception("Failed to emit error event")
 
-        # 2) Optionally dump the collected logs to the backend logger
         if show_error_log_citation:
             request_id = SessionLogger.request_id.get()
             with SessionLogger._state_lock:
@@ -212,7 +214,6 @@ class EventEmitterHandler:
                         self.logger.debug("Error logs for request %s:\n%s", request_id, rendered)
             else:
                 self.logger.warning("No debug logs found for request_id %s", request_id)
-
 
 
     async def _emit_templated_error_event(
@@ -277,7 +278,6 @@ class EventEmitterHandler:
             self.logger.exception("[%s] Failed to emit error message", error_id)
 
 
-
     def _create_error_context(self) -> tuple[str, dict[str, Any]]:
         """Return a unique error id plus contextual metadata for templates."""
         error_id = secrets.token_hex(8)
@@ -290,7 +290,6 @@ class EventEmitterHandler:
             "support_url": self.valves.SUPPORT_URL,
         }
         return error_id, context
-
 
 
     async def _emit_citation(
@@ -331,7 +330,7 @@ class EventEmitterHandler:
         if not metadata:
             metadata = [
                 {
-                    "date_accessed": datetime.datetime.now(datetime.UTC).isoformat(),
+                    "date_accessed": citation_access_stamp(),
                     "source": source_info.get("url") or source_name,
                 }
             ]
@@ -426,10 +425,10 @@ class EventEmitterHandler:
         self,
         event_emitter: EventEmitter | None,
         *,
-        content: str | None = "",                       # always included (may be "").  UI will stall if you leave it out.
-        title:   str | None = None,                     # optional title.
-        usage:   dict[str, Any] | None = None,          # optional usage block
-        done:    bool = True,                           # True -> final frame
+        content: str | None = "",
+        title:   str | None = None,
+        usage:   dict[str, Any] | None = None,
+        done:    bool = True,
     ) -> None:
         """Emit a ``chat:completion`` event if an emitter is present.
 
@@ -441,7 +440,6 @@ class EventEmitterHandler:
         if event_emitter is None:
             return
 
-        # Note: Open WebUI emits a final "chat:completion" event after the stream ends, which overwrites any previously emitted completion events' content and title in the UI.
         try:
             await event_emitter(
                 {
@@ -542,7 +540,6 @@ class EventEmitterHandler:
             )
 
 
-
     def _make_middleware_stream_emitter(
         self,
         job: _PipeJob,
@@ -580,8 +577,6 @@ class EventEmitterHandler:
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
 
             if isinstance(etype, str) and etype.startswith("response."):
-                # Pass through Responses API events as raw SSE payloads so OWUI can
-                # build output items (tool cards, reasoning, etc.) via serialize_output.
                 await self._put_middleware_stream_item(job, stream_queue, event)
                 return
 
@@ -598,12 +593,8 @@ class EventEmitterHandler:
                         assistant_sent = assistant_sent + delta
                 elif isinstance(content, str) and content:
                     if content.startswith(assistant_sent):
-                        # Normal append - compute delta from difference
                         delta_text = content[len(assistant_sent) :]
                         assistant_sent = content
-                    # Note: Content replacement (e.g., tool cards) should use
-                    # chat:completion event, not chat:message. The chat:completion
-                    # handler syncs assistant_sent without emitting to the stream.
                 if isinstance(delta_text, str) and delta_text:
                     answer_started = True
                     await self._put_middleware_stream_item(
@@ -614,7 +605,6 @@ class EventEmitterHandler:
                 return
 
             if etype == "chat:message:delta":
-                # Optimized delta event: content IS the delta, emit directly
                 delta_text = data.get("content")
                 if isinstance(delta_text, str) and delta_text:
                     assistant_sent = assistant_sent + delta_text
@@ -665,14 +655,9 @@ class EventEmitterHandler:
                 return
 
             if etype == "chat:completion":
-                # Sync assistant_sent when chat:completion has content (OWUI replacement)
-                # This ensures subsequent text deltas compute correctly.
-                # chat:completion with content is used for tool cards (OWUI parity).
                 completion_content = data.get("content")
                 if isinstance(completion_content, str):
                     assistant_sent = completion_content
-                    # Pass through SSE so tool cards reach the frontend
-                    # OWUI's process_chat_response will emit this as a replacement event
                     await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 
                 error = data.get("error")

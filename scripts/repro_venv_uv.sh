@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Reproduce this repo's Python virtualenv using uv (10-100x faster than pip).
-# Uses latest available versions (no pins).
+# Latest available versions except the two gating tools, which are pinned to CI's.
 #
 # uv is a drop-in replacement for pip, written in Rust by Astral.
 # https://github.com/astral-sh/uv
@@ -53,11 +53,12 @@ fi
 
 # Install everything else (uv handles this efficiently)
 # No need for separate pip/setuptools/wheel upgrade - uv doesn't need them
+uv pip install --python "$VENV_DIR/bin/python" -e ".[test]"
 uv pip install --python "$VENV_DIR/bin/python" \
     open-webui \
     aiohttp cairosvg cryptography fastapi httpx lz4 Pillow pydantic pydantic-core pyzipper sqlalchemy tenacity \
-    pytest pytest-asyncio pytest-cov aioresponses \
-    ruff pyright vulture pyflakes \
+    pytest-cov \
+    ruff==0.16.0 pyright==1.1.408 vulture pyflakes \
     git-filter-repo
 
 echo ""

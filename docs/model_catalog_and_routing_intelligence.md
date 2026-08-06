@@ -122,7 +122,7 @@ For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools
 
 ### 4.5 Output token cap selection
 
-When `USE_MODEL_MAX_OUTPUT_TOKENS=True`, the pipe can set `max_output_tokens` using the provider-advertised `max_completion_tokens` derived from the catalog. When it is disabled, the pipe clears `max_output_tokens` so provider limits and upstream defaults apply.
+When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` from the provider-advertised `max_completion_tokens` in the catalog. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on.
 
 ### 4.6 Auto context trimming (context-compression plugin)
 

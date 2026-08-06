@@ -23,8 +23,6 @@ from ..api.transforms import (
     apply_context_transforms,
 )
 from ..core.config import _PIPE_METADATA_KEY
-
-# Import types needed for request processing
 from ..core.errors import (
     OpenRouterAPIError,
     _is_reasoning_effort_error,
@@ -273,6 +271,8 @@ class RequestOrchestrator:
         user_id: str = "",
         virtual_variant_bases: dict[str, str] | None = None,
         outcome_sink: dict[str, Any] | None = None,
+        user_valves: Any = None,
+        rejected_user_valves: list[str] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
@@ -324,8 +324,8 @@ class RequestOrchestrator:
                 if isinstance(msg, dict) and msg.get("role") == "user":
                     last_user_msg = msg
                     break
-            if not isinstance(last_user_msg, dict):
-                raise ValueError("Direct uploads require at least one user message.")  # noqa: TRY004 - reported to the user via the ValueError path
+            if last_user_msg is None:
+                raise ValueError("Direct uploads require at least one user message.")
 
             content = last_user_msg.get("content")
             content_blocks: list[dict[str, Any]] = []
@@ -382,7 +382,6 @@ class RequestOrchestrator:
                 if len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xE0) == 0xE0:
                     return "mp3"
                 if len(prefix) >= 12 and prefix[4:8] == b"ftyp":
-                    # ISO BMFF container (commonly .m4a for audio uploads).
                     return "m4a"
                 if prefix.startswith(b"fLaC"):
                     return "flac"
@@ -441,7 +440,6 @@ class RequestOrchestrator:
                 audio_format = (sniffed or declared_format).strip().lower()
                 if not audio_format:
                     raise ValueError("Native audio attachment missing required 'format'.")
-                # Do not trust upstream metadata; re-sniff and apply the configured /responses eligibility allowlist.
                 item["format"] = audio_format
                 item["responses_eligible"] = bool(audio_format in allowed_for_responses)
                 content_blocks.append(
@@ -479,16 +477,7 @@ class RequestOrchestrator:
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
         user_model = None
         if user_id:
-            try:
-                user_model = await get_user_by_id(user_id, self.logger)
-            except Exception:  # pragma: no cover - defensive guard
-                self.logger.warning(
-                    "Could not resolve user %s; uploads in this request will be stored "
-                    "under the fallback account",
-                    user_id,
-                    exc_info=True,
-                )
-                user_model = None
+            user_model = await get_user_by_id(user_id, self.logger)
             if user_model is None:
                 self.logger.warning(
                     "User %s did not resolve; uploads in this request will be stored "
@@ -530,10 +519,6 @@ class RequestOrchestrator:
 
         direct_uploads = _extract_direct_uploads(__metadata__ or {})
         if use_task_model_adapter and direct_uploads:
-            # IMPORTANT: Housekeeping task requests (title/tags/follow-ups, web_search query generation, etc.)
-            # inherit the originating request metadata (`request.state.metadata`) and therefore may carry our
-            # `openrouter_pipe.direct_uploads` marker. Do not inject direct uploads into housekeeping calls,
-            # but also do not mutate shared metadata (it may be reused by the subsequent main chat request).
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Ignoring direct uploads for task request (task=%s chat_id=%s)",
@@ -576,8 +561,6 @@ class RequestOrchestrator:
                         requires_chat = True
                         break
 
-            # Note: /chat/completions supports `type:"file"` blocks (data URLs), so direct files can be carried
-            # alongside chat-only modalities when we route the request to /chat/completions.
 
             if requires_chat:
                 selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
@@ -597,19 +580,14 @@ class RequestOrchestrator:
                     return ""
                 endpoint_override = "chat_completions"
 
-        # OpenRouter presets (preset field) only work on /chat/completions, not /responses.
-        # Force chat completions when a preset parameter is present in the request body.
-        # Extract preset from body top-level OR from params.custom_params (Open WebUI may not merge it)
         preset = body.get("preset")
         if not preset:
-            # Try extracting from nested params.custom_params location
             params = body.get("params")
             if isinstance(params, dict):
                 custom_params = params.get("custom_params")
                 if isinstance(custom_params, dict):
                     preset = custom_params.get("preset")
                     if preset:
-                        # Promote to top-level for downstream processing
                         body["preset"] = preset
 
         if preset and endpoint_override is None:
@@ -639,8 +617,6 @@ class RequestOrchestrator:
 
         completions_body = CompletionsBody.model_validate(body)
 
-        # For virtual routing variants, resolve the base model ID for capability
-        # checks (vision, tools, etc.) so features aren't silently disabled.
         vvb = virtual_variant_bases or {}
         raw_model = completions_body.model if isinstance(completions_body.model, str) else ""
         raw_norm = ModelFamily.base_model(raw_model) if raw_model else ""
@@ -649,7 +625,6 @@ class RequestOrchestrator:
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
-            # If chat_id and openwebui_model_id are provided, from_completions() uses them to fetch previously persisted items (function_calls, reasoning, etc.) from DB and reconstruct the input array in the correct order.
             **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
             **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
             artifact_loader=self._pipe._artifact_store._db_fetch,
@@ -667,14 +642,11 @@ class RequestOrchestrator:
         self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
-        # Inject provider routing from filter-injected metadata.
-        # Only housekeeping tasks skip this - MOA should inherit normal chat routing.
         if (not use_task_model_adapter) and isinstance(__metadata__, dict):
             pipe_meta = __metadata__.get(_PIPE_METADATA_KEY)
             if isinstance(pipe_meta, dict):
                 filter_provider = pipe_meta.get("provider")
                 if isinstance(filter_provider, dict) and filter_provider:
-                    # Merge filter-injected provider settings with any existing provider settings
                     existing_provider = responses_body.provider or {}
                     if isinstance(existing_provider, dict):
                         merged_provider = {**existing_provider, **filter_provider}
@@ -687,27 +659,36 @@ class RequestOrchestrator:
         admin_enforce_zdr = valves.ZDR_ENFORCE
         allow_user_zdr = valves.ALLOW_USER_ZDR_OVERRIDE
         user_requests_zdr = False
+        zdr_reason = "REQUEST_ZDR"
         if allow_user_zdr and not admin_enforce_zdr:
-            user_valves_raw = __user__.get("valves") or {}
-            try:
-                user_valves = self._pipe.UserValves.model_validate(user_valves_raw)
-                user_requests_zdr = user_valves.REQUEST_ZDR
-            except (AttributeError, TypeError, ValueError):
+            # Read once per request, at the entry point, and carried here on the job.
+            # Re-reading cost a second full user-row fetch and produced a SECOND
+            # snapshot: a valve saved between the two reads left the request honouring
+            # one for every other setting and the other for the privacy routing.
+            if user_valves is None:
+                user_valves, rejected = await self._pipe._read_user_valves(__user__)
+            else:
+                rejected = rejected_user_valves or []
+            # A rejected field is positive evidence: the row was read, REQUEST_ZDR was
+            # in it, and it would not parse -- so the user's answer is genuinely lost
+            # and routing without ZDR could break an opt-in they made.
+            if "REQUEST_ZDR" in rejected:
                 self.logger.warning(
-                    "Could not read the user's Zero Data Retention preference; "
-                    "proceeding without it",
-                    exc_info=True,
+                    "The user's Zero Data Retention preference could not be parsed; "
+                    "enforcing ZDR rather than routing without it"
                 )
-                user_requests_zdr = False
+                user_requests_zdr = True
+                zdr_reason = "ZDR_PREFERENCE_UNREADABLE"
+            else:
+                # None from the reader is a failed row read, not evidence about this
+                # field; an undecodable blob arrives above as every field rejected.
+                user_requests_zdr = user_valves.REQUEST_ZDR
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
+        if admin_enforce_zdr:
+            zdr_reason = "ZDR_ENFORCE"
         if enforce_zdr:
-            zdr_lookup_id = (
-                normalized_model_id.rsplit(":", 1)[0]
-                if ":" in normalized_model_id
-                else normalized_model_id
-            )
-            zdr_capable = OpenRouterModelRegistry.is_zdr_capable(zdr_lookup_id)
-            if zdr_capable is False:
+            is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
+            if is_zdr_capable is False:
                 if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
@@ -716,7 +697,7 @@ class RequestOrchestrator:
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": "ZDR_ENFORCE",
+                        "restriction_reasons": zdr_reason,
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -728,7 +709,7 @@ class RequestOrchestrator:
                     log_level=logging.WARNING,
                 )
                 return ""
-            if zdr_capable is None:
+            if is_zdr_capable is None:
                 if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)
                 await self._pipe._ensure_error_formatter()._emit_templated_error(
@@ -737,7 +718,7 @@ class RequestOrchestrator:
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": "ZDR_ENFORCE_UNAVAILABLE",
+                        "restriction_reasons": f"{zdr_reason}_UNAVAILABLE",
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -795,16 +776,16 @@ class RequestOrchestrator:
             responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,
         )
 
-        if valves.USE_MODEL_MAX_OUTPUT_TOKENS:
-            if responses_body.max_output_tokens is None:
-                default_max = ModelFamily.max_completion_tokens(responses_body.model)
-                if default_max:
-                    responses_body.max_output_tokens = default_max
-        else:
-            responses_body.max_output_tokens = None
+        # The valve governs the pipe's own DEFAULT, never the user's parameter.
+        # `max_output_tokens` is non-None here only if the user asked for it: the sole
+        # other writer is the fill below. Clearing it in an else branch discarded the
+        # `max_tokens` the user set in Open WebUI's advanced params, while temperature
+        # and top_p on the same request went through untouched.
+        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and responses_body.max_output_tokens is None:
+            default_max = ModelFamily.max_completion_tokens(responses_body.model)
+            if default_max:
+                responses_body.max_output_tokens = default_max
 
-        # For virtual routing variants (e.g. :nitro), resolve capability lookups
-        # against the base model so tools/vision/search are not silently disabled.
         capability_model_id = vvb.get(normalized_model_id, responses_body.model)
 
         task_mode = use_task_model_adapter
@@ -933,7 +914,6 @@ class RequestOrchestrator:
                 tools_registry = {}
         __tools__ = tools_registry
 
-        # These are executed client-side via Socket.IO (execute:tool) and must not crash the pipe.
         direct_registry: dict[str, dict[str, Any]] = {}
         try:
             direct_registry, _ = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
@@ -966,7 +946,6 @@ class RequestOrchestrator:
         incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
         strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
 
-        # Normalize OWUI tool registry (__tools__) into a dict form when possible.
         owui_registry: dict[str, dict[str, Any]] = {}
         if isinstance(__tools__, dict):
             owui_registry = {k: v for k, v in __tools__.items() if isinstance(v, dict)}
@@ -980,8 +959,6 @@ class RequestOrchestrator:
                 if isinstance(name, str) and name.strip():
                     owui_registry[name.strip()] = entry
 
-        # OWUI-native tools are already computed by OWUI middleware and attached to metadata["tools"].
-        # Prefer using that executor registry instead of re-synthesizing builtins inside the pipe.
         if isinstance(__metadata__, dict):
             metadata_tools_raw = __metadata__.get("tools")
             if isinstance(metadata_tools_raw, dict):
@@ -1036,12 +1013,11 @@ class RequestOrchestrator:
         if isinstance(__metadata__, dict) and exposed_to_origin:
             __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
 
-        if tools:
-            if owui_tool_passthrough:
-                # Full bypass: do not gate tools on model capability here; forward as OWUI provided.
-                responses_body.tools = tools
-            elif ModelFamily.supports("function_calling", capability_model_id):
-                responses_body.tools = tools
+        if tools and (
+            owui_tool_passthrough
+            or ModelFamily.supports("function_calling", capability_model_id)
+        ):
+            responses_body.tools = tools
 
         pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
         if isinstance(pdf_parser, str) and pdf_parser.strip():
@@ -1081,7 +1057,6 @@ class RequestOrchestrator:
             )
 
 
-        # Convert the normalized model id back to the original OpenRouter id for the API request.
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 
         if _fusion_internal_divert(
@@ -1098,6 +1073,8 @@ class RequestOrchestrator:
             )
             invocation = FusionInnerInvocation(
                 orchestrator=self,
+                user_valves=user_valves,
+                rejected_user_valves=list(rejected_user_valves or []),
                 messages=list(body.get("messages") or []) if isinstance(body, dict) else [],
                 outer_model_id=responses_body.model,
                 user=__user__,
@@ -1164,7 +1141,6 @@ class RequestOrchestrator:
         while True:
             try:
                 if responses_body.stream:
-                    # Return async generator for partial text
                     return await self._pipe._streaming_handler._run_streaming_loop(
                         responses_body,
                         valves,
@@ -1180,7 +1156,6 @@ class RequestOrchestrator:
                         fusion_live_enabled=fusion_live_enabled,
                         outcome_sink=outcome_sink,
                     )
-                # Return final text (non-streaming)
                 return await self._pipe._streaming_handler._run_nonstreaming_loop(
                     responses_body,
                     valves,

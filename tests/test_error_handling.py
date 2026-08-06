@@ -323,7 +323,6 @@ class TestRateLimitRetryAfter:
         ras = err.metadata.get("retry_after_seconds")
         assert isinstance(ras, (int, float)) and not isinstance(ras, bool), f"expected numeric, got {ras!r}"
         assert ras > 0
-        # raw header preserved separately; parsed value is not the GMT string
         assert err.metadata.get("retry_after") == "Wed, 21 Oct 2099 07:28:00 GMT"
         assert ras != "Wed, 21 Oct 2099 07:28:00 GMT"
 

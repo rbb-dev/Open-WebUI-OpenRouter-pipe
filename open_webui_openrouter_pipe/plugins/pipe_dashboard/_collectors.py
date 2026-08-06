@@ -13,6 +13,8 @@ import logging
 import time
 from typing import Any
 
+from ...core.warn_latch import warn_level
+
 logger = logging.getLogger(__name__)
 
 PROCESS_START = time.monotonic()
@@ -24,13 +26,13 @@ def _safe_int(value: Any) -> int:
     try:
         return int(value)
     except (OverflowError, TypeError, ValueError):
-        if "safe_int" not in _warned_collectors:
-            _warned_collectors.add("safe_int")
-            logger.warning(
-                "pipe_dashboard: a collected metric was not an integer; reporting 0 "
-                "for it until this is fixed",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_collectors, 'safe_int')
+        logger.log(
+            _level,
+            "pipe_dashboard: a collected metric was not an integer; reporting 0 "
+            "for it until this is fixed",
+            exc_info=True,
+        )
         return 0
 
 
@@ -39,13 +41,13 @@ def _waiter_count(sem: Any) -> int:
         waiters = getattr(sem, "_waiters", None)
         return len(waiters) if waiters is not None else 0
     except (AttributeError, TypeError):
-        if "waiter_count" not in _warned_collectors:
-            _warned_collectors.add("waiter_count")
-            logger.warning(
-                "pipe_dashboard: cannot read semaphore waiters; the dashboard will "
-                "report an empty wait queue",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_collectors, 'waiter_count')
+        logger.log(
+            _level,
+            "pipe_dashboard: cannot read semaphore waiters; the dashboard will "
+            "report an empty wait queue",
+            exc_info=True,
+        )
         return 0
 
 
@@ -56,13 +58,13 @@ def _semaphore_active(sem: Any, limit: int) -> int:
     try:
         return max(0, limit - int(sem._value))
     except (AttributeError, TypeError, ValueError):
-        if "semaphore_active" not in _warned_collectors:
-            _warned_collectors.add("semaphore_active")
-            logger.warning(
-                "pipe_dashboard: cannot read semaphore usage; the dashboard will "
-                "report 0 active for it",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_collectors, 'semaphore_active')
+        logger.log(
+            _level,
+            "pipe_dashboard: cannot read semaphore usage; the dashboard will "
+            "report 0 active for it",
+            exc_info=True,
+        )
         return 0
 
 
@@ -115,12 +117,12 @@ def collect_video_pool(pipe: Any) -> dict[str, int]:
         try:
             active = len(getattr(pipe, "_video_active_tasks", {}) or {})
         except TypeError:
-            if "video_active" not in _warned_collectors:
-                _warned_collectors.add("video_active")
-                logger.warning(
-                    "pipe_dashboard: cannot count active video tasks; reporting 0",
-                    exc_info=True,
-                )
+            _level = warn_level(_warned_collectors, 'video_active')
+            logger.log(
+                _level,
+                "pipe_dashboard: cannot count active video tasks; reporting 0",
+                exc_info=True,
+            )
             active = 0
     return {"active": active, "max": limit}
 
@@ -183,13 +185,13 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
                     counted += 1
         auth_active = counted
     except (AttributeError, ImportError, RuntimeError, TypeError):
-        if "auth_failures" not in _warned_collectors:
-            _warned_collectors.add("auth_failures")
-            logger.warning(
-                "pipe_dashboard: cannot read active auth failures; the dashboard will "
-                "report 0 for them",
-                exc_info=True,
-            )
+        _level = warn_level(_warned_collectors, 'auth_failures')
+        logger.log(
+            _level,
+            "pipe_dashboard: cannot read active auth failures; the dashboard will "
+            "report 0 for them",
+            exc_info=True,
+        )
 
     return {
         "tracked_users": tracked,

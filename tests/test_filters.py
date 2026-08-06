@@ -25,7 +25,6 @@ def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
     """
     import sys
 
-    # Mock open_webui.env if not available (test environment)
     if "open_webui" not in sys.modules:
         open_webui_mock = ModuleType("open_webui")
         sys.modules["open_webui"] = open_webui_mock
@@ -39,13 +38,10 @@ def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
     module = ModuleType(module_name)
     module.__file__ = f"<{module_name}_rendered_source>"
 
-    # Add to sys.modules so nested imports can resolve
     sys.modules[module_name] = module
 
-    # Execute the source in the module namespace
     exec(compile(source, f"<{module_name}>", "exec"), module.__dict__)
 
-    # Rebuild Pydantic models to resolve forward references (Literal types)
     if hasattr(module, "Filter"):
         if hasattr(module.Filter, "UserValves"):
             module.Filter.UserValves.model_rebuild()
@@ -55,15 +51,12 @@ def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
     return module
 
 
-# Load the Direct Uploads filter from rendered template
 _direct_uploads_source = FilterManager.render_direct_uploads_filter_source()
 _direct_uploads_module = _load_filter_from_source(_direct_uploads_source, "direct_uploads_filter")
 Filter = _direct_uploads_module.Filter
 
 
-# ============================================================================
 # Filter Initialization Tests
-# ============================================================================
 
 
 def test_filter_initializes_with_default_valves():
@@ -102,11 +95,6 @@ def test_filter_user_valves_has_pdf_parser():
 
     user_valves_ocr = Filter.UserValves(DIRECT_PDF_PARSER="Mistral OCR")
     assert user_valves_ocr.DIRECT_PDF_PARSER == "Mistral OCR"
-
-
-# ============================================================================
-# Helper Method Tests (_to_int)
-# ============================================================================
 
 
 def test_to_int_with_none():
@@ -149,18 +137,13 @@ def test_to_int_with_empty_string():
 def test_to_int_with_invalid_string():
     """Test _to_int returns None for non-numeric strings."""
     assert Filter._to_int("abc") is None
-    assert Filter._to_int("12.34") is None  # Not pure int format
+    assert Filter._to_int("12.34") is None
 
 
 def test_to_int_with_other_types():
     """Test _to_int returns None for unsupported types."""
     assert Filter._to_int([1, 2, 3]) is None
     assert Filter._to_int({"value": 42}) is None
-
-
-# ============================================================================
-# Helper Method Tests (_csv_set)
-# ============================================================================
 
 
 def test_csv_set_with_valid_csv():
@@ -200,11 +183,6 @@ def test_csv_set_with_non_string():
     assert Filter._csv_set(["a", "b"]) == set()
 
 
-# ============================================================================
-# Helper Method Tests (_mime_allowed)
-# ============================================================================
-
-
 def test_mime_allowed_exact_match():
     """Test _mime_allowed with exact MIME type match."""
     assert Filter._mime_allowed("application/pdf", "application/pdf,text/plain") is True
@@ -237,11 +215,6 @@ def test_mime_allowed_with_empty_allowlist():
 def test_mime_allowed_no_match():
     """Test _mime_allowed returns False when no match."""
     assert Filter._mime_allowed("video/mp4", "audio/*,application/pdf") is False
-
-
-# ============================================================================
-# Helper Method Tests (_infer_audio_format)
-# ============================================================================
 
 
 def test_infer_audio_format_from_mime_wav():
@@ -282,11 +255,6 @@ def test_infer_audio_format_with_non_string():
     assert Filter._infer_audio_format(123, "audio/mp3") == "mp3"
 
 
-# ============================================================================
-# Helper Method Tests (_model_caps)
-# ============================================================================
-
-
 def test_model_caps_with_full_structure():
     """Test _model_caps extracts capabilities from proper structure."""
     model = {
@@ -322,9 +290,7 @@ def test_model_caps_with_non_dict():
     assert Filter._model_caps({"info": {"meta": {"openrouter_pipe": "not a dict"}}}) == {}
 
 
-# ============================================================================
 # Inlet Tests - Basic Validation
-# ============================================================================
 
 
 def test_inlet_returns_body_if_not_dict():
@@ -360,9 +326,7 @@ def test_inlet_returns_body_if_files_empty():
     assert result == body
 
 
-# ============================================================================
 # Inlet Tests - File Diversion
-# ============================================================================
 
 
 def test_inlet_diverts_files_when_enabled():
@@ -396,7 +360,6 @@ def test_inlet_diverts_files_when_enabled():
     # Files should be removed from body
     assert result["files"] == []
 
-    # Diverted files should be in metadata
     pipe_meta = metadata.get("openrouter_pipe", {})
     direct_uploads = pipe_meta.get("direct_uploads", {})
     assert len(direct_uploads.get("files", [])) == 1
@@ -533,13 +496,10 @@ def test_inlet_retains_files_with_unsupported_mime():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Files should remain (fail open for unsupported MIME)
     assert len(result["files"]) == 1
 
 
-# ============================================================================
 # Inlet Tests - Audio Diversion
-# ============================================================================
 
 
 def test_inlet_diverts_audio_when_enabled():
@@ -573,7 +533,6 @@ def test_inlet_diverts_audio_when_enabled():
     # Audio should be removed from body
     assert result["files"] == []
 
-    # Diverted audio should be in metadata
     pipe_meta = metadata.get("openrouter_pipe", {})
     direct_uploads = pipe_meta.get("direct_uploads", {})
     assert len(direct_uploads.get("audio", [])) == 1
@@ -591,7 +550,7 @@ def test_inlet_retains_audio_when_format_not_allowed():
         {
             "id": "audio_1",
             "type": "file",
-            "name": "recording.xyz",  # Unknown format
+            "name": "recording.xyz",
             "size": 2048,
             "content_type": "audio/xyz",
         }
@@ -611,13 +570,10 @@ def test_inlet_retains_audio_when_format_not_allowed():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Audio should remain in body (unsupported format)
     assert len(result["files"]) == 1
 
 
-# ============================================================================
 # Inlet Tests - Video Diversion
-# ============================================================================
 
 
 def test_inlet_diverts_video_when_enabled():
@@ -651,7 +607,6 @@ def test_inlet_diverts_video_when_enabled():
     # Video should be removed from body
     assert result["files"] == []
 
-    # Diverted video should be in metadata
     pipe_meta = metadata.get("openrouter_pipe", {})
     direct_uploads = pipe_meta.get("direct_uploads", {})
     assert len(direct_uploads.get("video", [])) == 1
@@ -668,7 +623,7 @@ def test_inlet_retains_video_with_unsupported_mime():
             "type": "file",
             "name": "clip.avi",
             "size": 4096,
-            "content_type": "video/avi",  # Not in default allowlist
+            "content_type": "video/avi",
         }
     ]
     body = {"files": list(files)}
@@ -686,26 +641,23 @@ def test_inlet_retains_video_with_unsupported_mime():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Video should remain (unsupported MIME)
     assert len(result["files"]) == 1
 
 
-# ============================================================================
 # Inlet Tests - Size Limits
-# ============================================================================
 
 
 def test_inlet_raises_on_file_too_large():
     """Test inlet raises exception when file exceeds size limit."""
     filt = Filter()
-    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 1  # 1MB limit
+    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 1
 
     files = [
         {
             "id": "file_1",
             "type": "file",
             "name": "large.pdf",
-            "size": 2 * 1024 * 1024,  # 2MB
+            "size": 2 * 1024 * 1024,
             "content_type": "application/pdf",
         }
     ]
@@ -729,14 +681,14 @@ def test_inlet_raises_on_file_too_large():
 def test_inlet_raises_on_audio_too_large():
     """Test inlet raises exception when audio exceeds size limit."""
     filt = Filter()
-    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 1  # 1MB limit
+    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 1
 
     files = [
         {
             "id": "audio_1",
             "type": "file",
             "name": "large.mp3",
-            "size": 2 * 1024 * 1024,  # 2MB
+            "size": 2 * 1024 * 1024,
             "content_type": "audio/mp3",
         }
     ]
@@ -760,14 +712,14 @@ def test_inlet_raises_on_audio_too_large():
 def test_inlet_raises_on_video_too_large():
     """Test inlet raises exception when video exceeds size limit."""
     filt = Filter()
-    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 1  # 1MB limit
+    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 1
 
     files = [
         {
             "id": "video_1",
             "type": "file",
             "name": "large.mp4",
-            "size": 2 * 1024 * 1024,  # 2MB
+            "size": 2 * 1024 * 1024,
             "content_type": "video/mp4",
         }
     ]
@@ -791,22 +743,22 @@ def test_inlet_raises_on_video_too_large():
 def test_inlet_raises_on_total_payload_exceeded():
     """Test inlet raises when total payload exceeds limit."""
     filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1  # 1MB total limit
-    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 10  # Individual limit is higher
+    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
+    filt.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB = 10
 
     files = [
         {
             "id": "file_1",
             "type": "file",
             "name": "doc1.pdf",
-            "size": 600 * 1024,  # 600KB
+            "size": 600 * 1024,
             "content_type": "application/pdf",
         },
         {
             "id": "file_2",
             "type": "file",
             "name": "doc2.pdf",
-            "size": 600 * 1024,  # 600KB (total 1.2MB)
+            "size": 600 * 1024,
             "content_type": "application/pdf",
         }
     ]
@@ -857,9 +809,7 @@ def test_inlet_raises_on_missing_file_size():
         filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
 
-# ============================================================================
 # Inlet Tests - Edge Cases
-# ============================================================================
 
 
 def test_inlet_skips_legacy_files():
@@ -902,7 +852,7 @@ def test_inlet_skips_non_file_type():
     files = [
         {
             "id": "item_1",
-            "type": "image",  # Not 'file'
+            "type": "image",
             "name": "photo.jpg",
             "size": 1024,
             "content_type": "image/jpeg",
@@ -933,14 +883,14 @@ def test_inlet_skips_items_without_valid_id():
 
     files = [
         {
-            "id": "",  # Empty id
+            "id": "",
             "type": "file",
             "name": "doc.pdf",
             "size": 1024,
             "content_type": "application/pdf",
         },
         {
-            "id": 123,  # Non-string id
+            "id": 123,
             "type": "file",
             "name": "doc2.pdf",
             "size": 1024,
@@ -962,7 +912,6 @@ def test_inlet_skips_items_without_valid_id():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Invalid id items should remain unchanged
     assert len(result["files"]) == 2
 
 
@@ -1001,7 +950,6 @@ def test_inlet_handles_user_not_dict():
     # __user__ is not a dict
     result = filt.inlet(body, __metadata__=metadata, __user__="not a dict", __model__={})
 
-    # Should still process (with default user valves)
     assert "files" in result
 
 
@@ -1020,7 +968,7 @@ def test_inlet_handles_user_valves_not_basemodel():
     ]
     body = {"files": list(files)}
     metadata = {}
-    user = {"valves": "not a BaseModel"}  # Invalid valves
+    user = {"valves": "not a BaseModel"}
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__={})
 
@@ -1048,7 +996,7 @@ def test_inlet_updates_metadata_files():
     }
 
     files = [diverted, retained]
-    metadata = {"files": files}  # Same reference
+    metadata = {"files": files}
     body = {"files": files}
     user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
     model = {
@@ -1063,7 +1011,6 @@ def test_inlet_updates_metadata_files():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Both body and metadata should have the retained file
     assert len(result["files"]) == 1
     assert len(metadata["files"]) == 1
 
@@ -1104,7 +1051,6 @@ def test_inlet_merges_existing_direct_uploads():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Should have both existing and new files
     direct_uploads = metadata["openrouter_pipe"]["direct_uploads"]
     assert len(direct_uploads["files"]) == 2
 
@@ -1113,11 +1059,10 @@ def test_inlet_deduplicates_by_id():
     """Test inlet deduplicates files by id."""
     filt = Filter()
 
-    # Pre-existing direct upload with same id
     existing_file = {"id": "file_1", "name": "old.pdf", "size": 500, "content_type": "application/pdf"}
 
     new_file = {
-        "id": "file_1",  # Same id
+        "id": "file_1",
         "type": "file",
         "name": "new.pdf",
         "size": 1024,
@@ -1145,7 +1090,6 @@ def test_inlet_deduplicates_by_id():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Should have only one file (deduplicated)
     direct_uploads = metadata["openrouter_pipe"]["direct_uploads"]
     assert len(direct_uploads["files"]) == 1
 
@@ -1184,9 +1128,7 @@ def test_inlet_persists_responses_audio_format_allowlist():
     assert direct_uploads["responses_audio_format_allowlist"] == "wav,mp3"
 
 
-# ============================================================================
 # Additional Coverage Tests
-# ============================================================================
 
 
 def test_model_caps_with_meta_not_dict():
@@ -1215,7 +1157,7 @@ def test_inlet_retains_audio_when_user_valve_disabled():
     ]
     body = {"files": list(files)}
     metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_AUDIO=False)}  # Disabled
+    user = {"valves": Filter.UserValves(DIRECT_AUDIO=False)}
     model = {
         "info": {
             "meta": {
@@ -1252,7 +1194,7 @@ def test_inlet_retains_audio_when_model_lacks_capability():
         "info": {
             "meta": {
                 "openrouter_pipe": {
-                    "capabilities": {"audio_input": False}  # No audio support
+                    "capabilities": {"audio_input": False}
                 }
             }
         }
@@ -1272,8 +1214,7 @@ def test_inlet_retains_audio_when_model_lacks_capability():
 def test_inlet_retains_audio_with_unsupported_mime():
     """Test inlet retains audio with unsupported MIME type (lines 302-303)."""
     filt = Filter()
-    # Default audio MIME allowlist is "audio/*" so let's change it
-    filt.valves.DIRECT_AUDIO_MIME_ALLOWLIST = "audio/wav"  # Only wav
+    filt.valves.DIRECT_AUDIO_MIME_ALLOWLIST = "audio/wav"
 
     files = [
         {
@@ -1281,7 +1222,7 @@ def test_inlet_retains_audio_with_unsupported_mime():
             "type": "file",
             "name": "recording.mp3",
             "size": 2048,
-            "content_type": "audio/mp3",  # Not in allowlist
+            "content_type": "audio/mp3",
         }
     ]
     body = {"files": list(files)}
@@ -1299,29 +1240,28 @@ def test_inlet_retains_audio_with_unsupported_mime():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Audio should remain (MIME not allowed)
     assert len(result["files"]) == 1
 
 
 def test_inlet_raises_on_audio_total_payload_exceeded():
     """Test inlet raises when audio total payload exceeds limit (line 314)."""
     filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1  # 1MB total limit
-    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 10  # Individual limit higher
+    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
+    filt.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB = 10
 
     files = [
         {
             "id": "audio_1",
             "type": "file",
             "name": "song1.mp3",
-            "size": 600 * 1024,  # 600KB
+            "size": 600 * 1024,
             "content_type": "audio/mp3",
         },
         {
             "id": "audio_2",
             "type": "file",
             "name": "song2.mp3",
-            "size": 600 * 1024,  # 600KB (total 1.2MB)
+            "size": 600 * 1024,
             "content_type": "audio/mp3",
         }
     ]
@@ -1357,7 +1297,7 @@ def test_inlet_retains_video_when_user_valve_disabled():
     ]
     body = {"files": list(files)}
     metadata = {}
-    user = {"valves": Filter.UserValves(DIRECT_VIDEO=False)}  # Disabled
+    user = {"valves": Filter.UserValves(DIRECT_VIDEO=False)}
     model = {
         "info": {
             "meta": {
@@ -1394,7 +1334,7 @@ def test_inlet_retains_video_when_model_lacks_capability():
         "info": {
             "meta": {
                 "openrouter_pipe": {
-                    "capabilities": {"video_input": False}  # No video support
+                    "capabilities": {"video_input": False}
                 }
             }
         }
@@ -1414,22 +1354,22 @@ def test_inlet_retains_video_when_model_lacks_capability():
 def test_inlet_raises_on_video_total_payload_exceeded():
     """Test inlet raises when video total payload exceeds limit (line 345)."""
     filt = Filter()
-    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1  # 1MB total limit
-    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 10  # Individual limit higher
+    filt.valves.DIRECT_TOTAL_PAYLOAD_MAX_MB = 1
+    filt.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB = 10
 
     files = [
         {
             "id": "video_1",
             "type": "file",
             "name": "clip1.mp4",
-            "size": 600 * 1024,  # 600KB
+            "size": 600 * 1024,
             "content_type": "video/mp4",
         },
         {
             "id": "video_2",
             "type": "file",
             "name": "clip2.mp4",
-            "size": 600 * 1024,  # 600KB (total 1.2MB)
+            "size": 600 * 1024,
             "content_type": "video/mp4",
         }
     ]
@@ -1471,7 +1411,6 @@ def test_inlet_merges_existing_warnings():
         }
     }
     user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
-    # Model lacks capability - generates new warning
     model = {
         "info": {
             "meta": {
@@ -1504,7 +1443,6 @@ def test_inlet_deduplicates_warnings():
         }
     ]
     body = {"files": list(files)}
-    # Pre-existing warning that matches the one that will be generated
     metadata = {
         "openrouter_pipe": {
             "direct_uploads_warnings": ["Direct file uploads not supported by the selected model; falling back to Open WebUI."]
@@ -1523,14 +1461,8 @@ def test_inlet_deduplicates_warnings():
 
     result = filt.inlet(body, __metadata__=metadata, __user__=user, __model__=model)
 
-    # Should only have one warning (deduplicated)
     warnings = metadata["openrouter_pipe"]["direct_uploads_warnings"]
     assert len(warnings) == 1
-
-
-# ============================================================================
-# Full Integration Tests - Filter + Pipe
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -1574,7 +1506,6 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
     assert filtered_body["files"] == []
     assert "direct_uploads" in metadata.get("openrouter_pipe", {})
 
-    # Now pass to pipe with aioresponses mock
     with aioresponses() as mock_http:
         # Mock catalog
         mock_http.get(
@@ -1647,7 +1578,6 @@ async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
     }
     metadata = {"model": {"id": "openai/gpt-4o"}}
     user = {"valves": Filter.UserValves(DIRECT_FILES=True)}
-    # Model lacks file capability - should generate warning
     model = {
         "info": {
             "meta": {
@@ -1667,13 +1597,10 @@ async def test_filter_warnings_passed_to_pipe(pipe_instance_async):
     warnings = pipe_meta.get("direct_uploads_warnings", [])
     assert any("not supported" in str(w) for w in warnings)
 
-    # Files should remain (fail-open)
     assert len(filtered_body["files"]) == 1
 
 
-# ============================================================================
 # Provider Routing Filter Tests
-# ============================================================================
 
 
 class TestProviderRoutingFilter:
@@ -1723,9 +1650,7 @@ class TestProviderRoutingFilter:
     def test_provider_filter_admin_initializes(self, provider_filter_admin):
         """Test admin provider filter initializes correctly."""
         filt = provider_filter_admin()
-        # Admin visibility means toggle=False (always runs)
         assert filt.toggle is False
-        # Should have Valves but not UserValves
         assert hasattr(filt, 'valves')
         assert not hasattr(filt, 'user_valves')
 
@@ -1753,9 +1678,7 @@ class TestProviderRoutingFilter:
     def test_provider_filter_user_initializes(self, provider_filter_user):
         """Test user provider filter initializes correctly."""
         filt = provider_filter_user()
-        # User visibility means toggle=True (user can disable)
         assert filt.toggle is True
-        # Should have UserValves but not Valves
         assert hasattr(filt, 'user_valves')
         assert not hasattr(filt, 'valves')
 
@@ -1772,9 +1695,7 @@ class TestProviderRoutingFilter:
     def test_provider_filter_both_initializes(self, provider_filter_both):
         """Test both-visibility provider filter has both valve types."""
         filt = provider_filter_both()
-        # Both visibility means toggle=True
         assert filt.toggle is True
-        # Should have both Valves and UserValves
         assert hasattr(filt, 'valves')
         assert hasattr(filt, 'user_valves')
 
@@ -1795,14 +1716,12 @@ class TestProviderRoutingFilter:
     def test_provider_filter_inlet_sets_provider_routing(self, provider_filter_admin):
         """Test provider filter inlet sets provider routing in metadata."""
         filt = provider_filter_admin()
-        # Create new Valves instance with ONLY explicitly set (triggers model_fields_set)
         filt.valves = filt.Valves(ONLY="OpenAI")
 
         body = {"messages": [], "model": "openai/gpt-4o"}
         metadata = {}
         filt.inlet(body, __metadata__=metadata)
 
-        # Should have provider routing in metadata (key is "provider", not "provider_routing")
         pipe_meta = metadata.get("openrouter_pipe", {})
         routing = pipe_meta.get("provider", {})
         assert routing.get("only") == ["openai"]
@@ -1810,7 +1729,6 @@ class TestProviderRoutingFilter:
     def test_provider_filter_with_quantization(self, provider_filter_admin):
         """Test provider filter with quantization option."""
         filt = provider_filter_admin()
-        # Create new Valves instance with QUANTIZATION explicitly set
         filt.valves = filt.Valves(QUANTIZATION="fp16")
 
         body = {"messages": []}
@@ -1824,7 +1742,6 @@ class TestProviderRoutingFilter:
     def test_provider_filter_with_zdr(self, provider_filter_admin):
         """Test provider filter with ZDR enabled."""
         filt = provider_filter_admin()
-        # Create new Valves instance with ZDR explicitly set
         filt.valves = filt.Valves(ZDR=True)
 
         body = {"messages": []}
@@ -1838,7 +1755,6 @@ class TestProviderRoutingFilter:
     def test_provider_filter_order_mapping(self, provider_filter_both):
         """Test provider filter ORDER field maps to slug list."""
         filt = provider_filter_both()
-        # Create new Valves instance with ORDER explicitly set
         filt.valves = filt.Valves(ORDER="Together > Fireworks > Deepinfra")
 
         body = {"messages": []}
@@ -1847,7 +1763,6 @@ class TestProviderRoutingFilter:
 
         pipe_meta = metadata.get("openrouter_pipe", {})
         routing = pipe_meta.get("provider", {})
-        # ORDER should be mapped to list of provider slugs
         order = routing.get("order", [])
         assert order == ["together", "fireworks", "deepinfra"]
 
@@ -1864,7 +1779,6 @@ class TestProviderRoutingFilter:
 
     def test_provider_filter_escapes_model_slug(self):
         """Test provider filter properly escapes model slugs."""
-        # Test with a slug that might need escaping
         source = FilterManager._render_provider_routing_filter_source(
             model_slug="vendor/model-with-dashes",
             providers=["provider"],
@@ -1872,15 +1786,9 @@ class TestProviderRoutingFilter:
             visibility="admin",
         )
         assert "vendor/model-with-dashes" in source
-        # Should not cause syntax errors when compiled
         module = _load_filter_from_source(source, "provider_filter_escape_test")
         filt = module.Filter()
         assert filt is not None
-
-
-# ============================================================================
-# Provider Routing ORDER bounds + stale-value healing (issue #57)
-# ============================================================================
 
 
 def _order_options_of(module) -> dict[str, list[str]]:
@@ -2395,3 +2303,190 @@ class TestProviderRoutingHashPersistence:
         assert second == first
         assert _FakeFunctionsTable.update_count == updates_after_first
 
+
+def test_filter_id_sanitiser_handles_every_real_catalog_id():
+    """Enumerated .replace() chains only cover the separators someone thought of.
+
+    The catalog contains tilde aliases (~anthropic/claude-sonnet-latest) which are
+    real, supported ids; a colon-only fix leaves them producing a non-identifier.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    slugs = [
+        "openai/gpt-4o",
+        "deepseek/deepseek-v3.2:free",
+        "~anthropic/claude-sonnet-latest",
+        "~google/gemini-pro-latest",
+        "meta-llama/llama-3.3-70b",
+        "qwen/qwen-2.5-72b-instruct:nitro",
+        "x-ai/grok-beta",
+    ]
+    bad = [
+        f"{s} -> {FilterManager.sanitize_model_for_filter_id(s)}"
+        for s in slugs
+        if not FilterManager.sanitize_model_for_filter_id(s).isidentifier()
+    ]
+    assert not bad, "these produce ids that are not valid identifiers:\n  " + "\n  ".join(bad)
+
+    mapped = {s: FilterManager.sanitize_model_for_filter_id(s) for s in slugs}
+    collisions = {
+        v: [k for k in mapped if mapped[k] == v]
+        for v in set(mapped.values())
+        if list(mapped.values()).count(v) > 1
+    }
+    assert not collisions, (
+        f"distinct model slugs map to the same filter id: {collisions}"
+    )
+
+
+def test_filter_id_sanitiser_is_injective():
+    """Distinct catalog ids must produce distinct OWUI function ids.
+
+    Injective over the alphabet OpenRouter actually uses, which is what matters and
+    what the probes below cover. It is NOT injective over arbitrary strings -- `a/b`
+    and `a_b` both map to `a_b`, and the two lower-casing sanitisers additionally
+    merge case -- so the alphabet assertion at the end is load-bearing rather than
+    decorative: it is what makes the claim true.
+
+    A run-collapsing `+` maps `a/b-c` and `a/b--c` to the same id, so the second
+    model silently reuses -- and overwrites -- the first model's installed filter.
+    The ids are persisted OWUI function rows, so a collision is not recoverable by
+    re-running discovery.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    probes = [
+        "a/b-c",
+        "a/b--c",
+        "x.y",
+        "x..y",
+        "openai/gpt-4o",
+        "openai/gpt--4o",
+        "~anthropic/claude-sonnet-latest",
+        "anthropic/claude-sonnet-latest",
+        "x/y:free",
+        "x/y::free",
+        "google/veo-3",
+        "~google/veo-3",
+    ]
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        sanitize_image_filter_id,
+    )
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        sanitize_video_filter_id,
+    )
+
+    for label, fn in (
+        ("provider_routing", FilterManager.sanitize_model_for_filter_id),
+        ("video", sanitize_video_filter_id),
+        ("image", sanitize_image_filter_id),
+    ):
+        mapped = {p: fn(p) for p in probes}
+        collisions = {
+            v: sorted(k for k in mapped if mapped[k] == v)
+            for v in set(mapped.values())
+            if list(mapped.values()).count(v) > 1
+        }
+        assert not collisions, f"{label}: distinct slugs share a filter id: {collisions}"
+        bad = sorted(v for v in mapped.values() if not v.isidentifier())
+        assert not bad, (
+            f"{label}: these filter ids are not Python identifiers: {bad}. Open WebUI "
+            "rejects the row (`routers/functions.py` checks `id.isidentifier()`), so the "
+            "filter is silently never installed and the model loses its controls."
+        )
+
+    import json
+    from pathlib import Path as _Path
+
+    # Vendored, because `.external/` is gitignored: reading the alphabet only from there
+    # meant this assertion -- the one the docstring calls load-bearing -- skipped on
+    # every CI run and every fresh checkout, leaving twelve hand-written probes that
+    # contain no "_" and no uppercase letter to stand in for the real population.
+    # Local dumps are still read when present, so a fresh one widens the alphabet.
+    fixture = _Path(__file__).resolve().parent / "fixtures" / "catalog_model_ids.json"
+    ids: set[str] = set(json.loads(fixture.read_text(encoding="utf-8")))
+    for dump in sorted(
+        (_Path(__file__).resolve().parents[1] / ".external").glob("models-openrouter-*-pretty.json")
+    ):
+        payload = json.loads(dump.read_text(encoding="utf-8"))
+        ids.update(m.get("id", "") for m in payload.get("data", []) if m.get("id"))
+    assert len(ids) > 100, f"only {len(ids)} catalog ids; the alphabet check is inert"
+    offenders = sorted(i for i in ids if "_" in i or any(c.isupper() for c in i))
+    assert not offenders, (
+        f"{len(offenders)} catalog ids contain '_' or an uppercase letter, e.g. "
+        f"{offenders[:5]}. The sanitisers map those onto the same id as their "
+        "separator-punctuated twin, so injectivity no longer holds for real input."
+    )
+
+
+class TestInstalledRowMatchesTheRenderedModule:
+    """The row Open WebUI is handed must agree with the module stored in it."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_state(self, monkeypatch):
+        import open_webui.models.functions as functions_module
+
+        _FakeFunctionsTable.reset()
+        monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
+        previous_hash = FilterManager._provider_routing_state_hash
+        FilterManager._provider_routing_state_hash = ""
+        yield
+        FilterManager._provider_routing_state_hash = previous_hash
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("admin_csv", "user_csv", "visibility", "expected"),
+        [
+            ("example/toggle-model", "", "admin", False),
+            ("", "example/toggle-model", "user", True),
+            ("example/toggle-model", "example/toggle-model", "both", True),
+        ],
+    )
+    async def test_the_row_advertises_the_toggle_its_module_declares(
+        self, pipe_instance_async, admin_csv, user_csv, visibility, expected
+    ):
+        """`meta.toggle` is what Open WebUI reads to decide whether users see a switch.
+
+        It was unobservable: the `FunctionMeta` stub in conftest declared only
+        `description` and `manifest` and had no `model_config`, so pydantic's default
+        `extra='ignore'` silently discarded `toggle` on the way in. The real class is
+        `extra='allow'`. Both `"toggle": False` and an inverted `visibility == "admin"`
+        left the whole suite green.
+
+        `test_provider_filter_*_initializes` asserts `filt.toggle` on the *rendered
+        module*, which is a different fact from the row metadata -- and the pairing of
+        the two is exactly what can silently disagree. This reads the row the install
+        path actually wrote.
+        """
+        provider_map = {
+            "example/toggle-model": {
+                "providers": ["alpha"],
+                "quantizations": ["fp16"],
+                "short_name": "Toggle Model",
+                "provider_names": {"alpha": "Alpha"},
+            }
+        }
+        manager = pipe_instance_async._ensure_filter_manager()
+        mapping = await manager.ensure_provider_routing_filters(
+            admin_csv, user_csv, provider_map, [], "openrouter"
+        )
+        assert "example/toggle-model" in mapping, "the filter was never installed"
+        stored = _FakeFunctionsTable.store[mapping["example/toggle-model"]]
+
+        row_toggle = getattr(stored.meta, "toggle", None)
+        assert row_toggle is not None, (
+            "meta.toggle did not survive into the stored row at all. The FunctionMeta "
+            "stub is dropping extra keys again, which makes every meta field the pipe "
+            "sets beyond description/manifest untestable."
+        )
+        assert row_toggle is expected, (
+            f"visibility={visibility!r} wrote meta.toggle={row_toggle!r}, expected "
+            f"{expected!r}. Open WebUI renders the user-facing switch from this."
+        )
+
+        module = _load_filter_from_source(stored.content, f"toggle_probe_{visibility}")
+        module_toggle = bool(getattr(module.Filter(), "toggle", False))
+        assert module_toggle is expected, (
+            f"the rendered module declares toggle={module_toggle!r} while the row says "
+            f"{row_toggle!r}; the two describe the same filter and must agree"
+        )

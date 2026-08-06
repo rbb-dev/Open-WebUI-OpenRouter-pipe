@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
@@ -161,3 +163,82 @@ def test_standalone_and_embedded_web_tools_filter_are_identical():
         enable_datetime=True,
     )
     assert embedded.strip() == standalone.strip()
+
+
+def _standalone_pairs():
+    """Every filters/*.py paired with the renderer that installs it, by MARKER.
+
+    Discovered, not enumerated. The previous version listed two filenames in a
+    parametrize and covered the third by hand, so a fourth reference filter would be
+    silently unguarded from the moment it was added — which is exactly how the
+    direct-uploads pair drifted 24 lines apart, with the un-hardened copy being the one
+    the pipe auto-installs for everyone.
+    """
+    renderers = {
+        "render_openrouter_web_tools_filter_source": {
+            "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
+        },
+        "render_openrouter_image_gen_filter_source": {},
+        "render_direct_uploads_filter_source": {},
+    }
+    rendered = {
+        name: getattr(FilterManager, name)(**kwargs) for name, kwargs in renderers.items()
+    }
+
+    pairs, unmapped = [], []
+    for path in sorted(_STANDALONE_PATH.parent.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        marker = None
+        for line in text.splitlines():
+            if line.startswith("OWUI_OPENROUTER_PIPE_MARKER"):
+                marker = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+        if not marker:
+            unmapped.append(f"{path.name}: no OWUI_OPENROUTER_PIPE_MARKER")
+            continue
+        matches = [name for name, src in rendered.items() if marker in src]
+        if len(matches) != 1:
+            unmapped.append(f"{path.name}: marker {marker!r} matched {matches or 'no'} renderer(s)")
+            continue
+        pairs.append((path.name, matches[0], renderers[matches[0]]))
+    return pairs, unmapped
+
+
+def test_every_standalone_filter_is_mapped_to_a_renderer():
+    """An unmapped file is loud rather than absent.
+
+    Without this, adding filters/openrouter_something.py with no matching renderer
+    simply drops out of the comparison below and nobody finds out.
+    """
+    pairs, unmapped = _standalone_pairs()
+    assert not unmapped, (
+        "these files under filters/ are not paired with any renderer, so nothing "
+        f"compares them to the source the pipe installs: {unmapped}"
+    )
+    assert len(pairs) >= 3, (
+        f"only {len(pairs)} standalone filters were discovered; the sweep has stopped "
+        "finding them and the comparison below is checking almost nothing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "renderer", "kwargs"),
+    _standalone_pairs()[0],
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_every_standalone_filter_matches_its_generator(filename, renderer, kwargs):
+    """The reference copy in filters/ and the source the pipe installs must agree.
+
+    The direct-uploads pair had drifted 24 lines apart with nothing to notice: the
+    reference had been hardened (a guarded SRC_LOG_LEVELS import, and getattr defaults
+    for four UserValves) while the generator -- the copy actually installed into Open
+    WebUI for everyone who lets the pipe auto-install -- kept the form that raises
+    AttributeError on a UserValves object missing those fields.
+    """
+    standalone = (_STANDALONE_PATH.parent / filename).read_text(encoding="utf-8")
+    generated = getattr(FilterManager, renderer)(**kwargs)
+    assert generated.strip() == standalone.strip(), (
+        f"filters/{filename} and FilterManager.{renderer} have diverged. Whichever "
+        "copy you changed, apply it to the other -- users get one or the other "
+        "depending on whether they installed it by hand or let the pipe do it."
+    )

@@ -45,9 +45,7 @@ def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-# ============================================================================
 # Adapter Initialization Tests
-# ============================================================================
 
 
 def test_pipe_creates_responses_adapter(pipe_instance):
@@ -64,14 +62,11 @@ def test_pipe_creates_responses_adapter(pipe_instance):
     assert isinstance(adapter, ResponsesAdapter)
     assert pipe._responses_adapter is adapter
 
-    # Second call should return same instance
     adapter2 = pipe._ensure_responses_adapter()
     assert adapter2 is adapter
 
 
-# ============================================================================
 # Streaming Request Tests - Basic
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -141,21 +136,19 @@ async def test_responses_streaming_with_passthrough_deltas(pipe_instance_async):
         )
 
         events = []
-        # delta_char_limit=0 means passthrough mode (no batching)
         async for event in pipe.send_openai_responses_streaming_request(
             session,
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            delta_char_limit=0,  # Passthrough mode
+            delta_char_limit=0,
             idle_flush_ms=0,
         ):
             events.append(event)
 
         await session.close()
 
-    # Should have 3 separate delta events when passthrough
     text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
     assert len(text_deltas) == 3
 
@@ -189,7 +182,6 @@ async def test_responses_streaming_with_delta_batching(pipe_instance_async):
         )
 
         events = []
-        # delta_char_limit > 0 enables Nagle coalescing
         async for event in pipe.send_openai_responses_streaming_request(
             session,
             {"model": "openai/gpt-4o", "stream": True, "input": []},
@@ -202,17 +194,11 @@ async def test_responses_streaming_with_delta_batching(pipe_instance_async):
 
         await session.close()
 
-    # Nagle drain batches all available events — should be fewer than 11
     text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
     assert len(text_deltas) < 11
     # All content must arrive intact
     combined = "".join(e["delta"] for e in text_deltas)
     assert combined == "Hello World"
-
-
-# ============================================================================
-# Streaming Request Tests - Error Handling (lines 122-147, 206-225)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -480,11 +466,6 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
     assert exc_info.value.status == 405
 
 
-# ============================================================================
-# Streaming Request Tests - Breaker Open (lines 112, 164)
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_breaker_open_at_start(pipe_instance_async):
     """Test breaker open check at start of stream (line 112)."""
@@ -492,7 +473,6 @@ async def test_responses_streaming_breaker_open_at_start(pipe_instance_async):
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Force breaker to be open by simulating failures
     test_user_id = "test-breaker-user"
     for _ in range(20):
         pipe._circuit_breaker.record_failure(test_user_id)
@@ -500,7 +480,7 @@ async def test_responses_streaming_breaker_open_at_start(pipe_instance_async):
     with aioresponses() as mock_http:
         mock_http.post(
             "https://openrouter.ai/api/v1/responses",
-            body=b"",  # Won't reach this
+            body=b"",
             status=200,
         )
 
@@ -511,18 +491,13 @@ async def test_responses_streaming_breaker_open_at_start(pipe_instance_async):
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-                breaker_key=test_user_id,  # Use breaker key
+                breaker_key=test_user_id,
             ):
                 pass
 
         await session.close()
 
     assert "Breaker open" in str(exc_info.value)
-
-
-# ============================================================================
-# Streaming Request Tests - SSE Parsing Edge Cases (lines 178-198)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -534,9 +509,9 @@ async def test_responses_streaming_empty_data_blob_skipped(pipe_instance_async):
 
     # Include some empty data lines
     sse_response = (
-        "data: \n\n"  # Empty data
+        "data: \n\n"
         + _sse({"type": "response.output_text.delta", "delta": "Text"})
-        + "data:   \n\n"  # Whitespace only data
+        + "data:   \n\n"
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
         + "data: [DONE]\n\n"
     )
@@ -561,7 +536,6 @@ async def test_responses_streaming_empty_data_blob_skipped(pipe_instance_async):
 
         await session.close()
 
-    # Should have text delta and completed events
     assert any(e.get("type") == "response.output_text.delta" for e in events)
     assert any(e.get("type") == "response.completed" for e in events)
 
@@ -574,9 +548,9 @@ async def test_responses_streaming_comment_lines_skipped(pipe_instance_async):
     session = pipe._create_http_session(valves)
 
     sse_response = (
-        ": This is a comment\n"  # SSE comment
+        ": This is a comment\n"
         + _sse({"type": "response.output_text.delta", "delta": "Hello"})
-        + ":another comment\n"  # Another comment
+        + ":another comment\n"
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
         + "data: [DONE]\n\n"
     )
@@ -616,7 +590,6 @@ async def test_responses_streaming_trailing_data_after_done(pipe_instance_async)
         _sse({"type": "response.output_text.delta", "delta": "First"})
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
         + "data: [DONE]\n\n"
-        # The producer should stop before processing anything after [DONE]
     )
 
     with aioresponses() as mock_http:
@@ -642,11 +615,6 @@ async def test_responses_streaming_trailing_data_after_done(pipe_instance_async)
     assert len(events) >= 2
 
 
-# ============================================================================
-# Streaming Request Tests - Worker JSON Parse Failures (lines 249-254)
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_worker_handles_done_marker(pipe_instance_async):
     """Test that worker handles [DONE] marker in data lines (line 248-249).
@@ -659,7 +627,6 @@ async def test_responses_streaming_worker_handles_done_marker(pipe_instance_asyn
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Stream with [DONE] properly handled
     sse_response = (
         _sse({"type": "response.output_text.delta", "delta": "Hello"})
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
@@ -693,11 +660,6 @@ async def test_responses_streaming_worker_handles_done_marker(pipe_instance_asyn
     assert len(text_deltas) >= 1
 
 
-# ============================================================================
-# Streaming Request Tests - Event Queue Backlog Warning (lines 304-335)
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_queue_backlog_warning(pipe_instance_async):
     """Test event queue backlog warning (lines 324-335).
@@ -710,7 +672,6 @@ async def test_responses_streaming_queue_backlog_warning(pipe_instance_async):
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Create many events to potentially trigger queue backlog
     sse_events = []
     for i in range(50):
         sse_events.append(_sse({"type": "response.output_text.delta", "delta": f"chunk{i}", "output_index": 0}))
@@ -733,19 +694,13 @@ async def test_responses_streaming_queue_backlog_warning(pipe_instance_async):
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            event_queue_warn_size=10,  # Lower threshold
+            event_queue_warn_size=10,
         ):
             events.append(event)
 
         await session.close()
 
-    # Should complete successfully despite queue warnings
     assert any(e.get("type") == "response.completed" for e in events)
-
-
-# ============================================================================
-# Streaming Request Tests - Null/Empty Events (lines 342-344)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -755,8 +710,6 @@ async def test_responses_streaming_null_event_skipped(pipe_instance_async):
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # The worker can theoretically produce null events in edge cases
-    # We test with normal events to ensure the logic handles boundaries
     sse_response = (
         _sse({"type": "response.output_text.delta", "delta": "Hi"})
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
@@ -783,13 +736,7 @@ async def test_responses_streaming_null_event_skipped(pipe_instance_async):
 
         await session.close()
 
-    # Should have events without null issues
     assert len(events) >= 2
-
-
-# ============================================================================
-# Streaming Request Tests - Non-Delta Events (lines 371-381)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -833,11 +780,6 @@ async def test_responses_streaming_non_delta_events_yielded(pipe_instance_async)
     assert len(func_events) >= 1
 
 
-# ============================================================================
-# Streaming Request Tests - Final Delta Flush (lines 383-385)
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_final_delta_flush(pipe_instance_async):
     """Test final delta flush at end of stream (lines 383-385)."""
@@ -845,7 +787,6 @@ async def test_responses_streaming_final_delta_flush(pipe_instance_async):
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Create deltas that don't trigger threshold but should be flushed at end
     sse_response = (
         _sse({"type": "response.output_text.delta", "delta": "AB", "output_index": 0})
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
@@ -861,26 +802,19 @@ async def test_responses_streaming_final_delta_flush(pipe_instance_async):
         )
 
         events = []
-        # Use large threshold so deltas buffer
         async for event in pipe.send_openai_responses_streaming_request(
             session,
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            delta_char_limit=100,  # Large threshold
+            delta_char_limit=100,
         ):
             events.append(event)
 
         await session.close()
 
-    # Should still get the buffered content flushed
     assert any(e.get("type") == "response.completed" for e in events)
-
-
-# ============================================================================
-# Non-Streaming Request Tests (lines 411-486)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -1177,11 +1111,6 @@ async def test_responses_nonstreaming_error_408(pipe_instance_async):
     assert exc_info.value.status == 408
 
 
-# ============================================================================
-# Streaming Request Tests - Idle Flush (lines 304-318)
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_idle_flush_timeout(pipe_instance_async):
     """Test idle flush when timeout occurs (lines 304-318).
@@ -1215,8 +1144,8 @@ async def test_responses_streaming_idle_flush_timeout(pipe_instance_async):
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            delta_char_limit=100,  # Large batch threshold
-            idle_flush_ms=1,  # Very short idle timeout
+            delta_char_limit=100,
+            idle_flush_ms=1,
         ):
             events.append(event)
 
@@ -1224,11 +1153,6 @@ async def test_responses_streaming_idle_flush_timeout(pipe_instance_async):
 
     # Should complete successfully
     assert any(e.get("type") == "response.completed" for e in events)
-
-
-# ============================================================================
-# Streaming Request Tests - Multi-Line Data Blobs
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -1270,19 +1194,25 @@ async def test_responses_streaming_multiline_data(pipe_instance_async):
 
         await session.close()
 
-    # Should handle newlines in the delta text
     text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
     assert any("\n" in e.get("delta", "") for e in text_deltas)
 
 
-# ============================================================================
-# Streaming Request Tests - Records Failure with Breaker Key
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_records_failure_with_breaker_key(pipe_instance_async):
-    """Test that failures are recorded when breaker_key is provided (lines 123-124, 223-224)."""
+    """A failed /responses call opens the breaker FOR ITS OWN KEY.
+
+    This drove the request and swallowed the result with no assertion at all, so all
+    three `record_failure(breaker_key)` guards on the /responses path -- the DEFAULT
+    endpoint -- could be disabled together and the whole suite stayed green. Per-user
+    shedding simply stopped existing and nothing noticed.
+
+    Two keys, not one: asserting only that the breaker closed for `test_user_id` is
+    satisfied by `record_failure("")` or by any global trip, so the second key is what
+    makes this about the key rather than about "something happened". `threshold = 1`
+    makes a single failure enough, and `pytest.raises` replaces the bare swallow so the
+    test also fails if the request stops failing.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -1294,6 +1224,12 @@ async def test_responses_streaming_records_failure_with_breaker_key(pipe_instanc
     }
 
     test_user_id = "test-failure-recording"
+    other_user_id = "test-failure-recording-other"
+    breaker = pipe._circuit_breaker
+    breaker.threshold = 1
+    breaker.reset(test_user_id)
+    breaker.reset(other_user_id)
+    assert breaker.allows(test_user_id) is True, "the breaker was already open"
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -1302,8 +1238,7 @@ async def test_responses_streaming_records_failure_with_breaker_key(pipe_instanc
             status=500,
         )
 
-        # This should raise and record a failure
-        try:
+        with pytest.raises(Exception):
             async for _ in pipe.send_openai_responses_streaming_request(
                 session,
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
@@ -1313,15 +1248,128 @@ async def test_responses_streaming_records_failure_with_breaker_key(pipe_instanc
                 breaker_key=test_user_id,
             ):
                 pass
-        except Exception:
-            pass  # Expected to fail
 
         await session.close()
+
+    assert breaker.allows(test_user_id) is False, (
+        "a failed /responses stream did not open the breaker for its key, so a user "
+        "whose requests keep failing is never shed and every retry reaches OpenRouter"
+    )
+    assert breaker.allows(other_user_id) is True, (
+        "the failure was recorded against some key other than the one passed in"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "failing_path"),
+    [(400, "the response check"), (500, "the response check")],
+    ids=["4xx", "5xx"],
+)
+async def test_a_failed_stream_records_exactly_one_breaker_failure(
+    pipe_instance_async, status, failing_path
+):
+    """One failed request is ONE failure, however many handlers see the same error.
+
+    The 4xx branch records and then raises; the producer handler catches that very
+    exception and used to record again, so a single failed request counted twice and a
+    user was shed after half the configured number of failures. Neither of the two
+    recording sites was individually load-bearing -- disabling either alone left the
+    suite green, because the other still fired -- which is exactly what a count, rather
+    than a boolean, exposes.
+
+    Asserted as a count with `threshold` well above it, so the assertion is about how
+    many were recorded rather than about whether the breaker happened to open.
+    """
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    key = f"single-count-{status}"
+    breaker = pipe._circuit_breaker
+    breaker.threshold = 10
+    breaker.reset(key)
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            payload={"error": {"message": "boom"}},
+            status=status,
+        )
+        with pytest.raises(Exception):
+            async for _ in pipe.send_openai_responses_streaming_request(
+                session,
+                {"model": "openai/gpt-4o", "stream": True, "input": []},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                valves=valves,
+                breaker_key=key,
+            ):
+                pass
+        await session.close()
+
+    recorded = len(breaker._breaker_records[key])
+    assert recorded == 1, (
+        f"a single failed {status} request recorded {recorded} breaker failures via "
+        f"{failing_path}. Counting one request more than once sheds the user after "
+        "fewer real failures than the configured threshold."
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_retried_attempt_records_its_own_breaker_failure(pipe_instance_async):
+    """Per-ATTEMPT, not per-call: three transport failures are three failures.
+
+    The sibling above pins one-per-request; on its own, the cheapest way to satisfy it
+    is a flag that is never reset, which would silently stop counting every attempt
+    after the first. A pre-output `ClientError` is the one thing `_should_retry_stream`
+    retries, so this is the case that tells the two apart.
+    """
+    import aiohttp
+
+    pipe = pipe_instance_async
+    valves = pipe.valves
+    session = pipe._create_http_session(valves)
+
+    key = "retried-attempts"
+    breaker = pipe._circuit_breaker
+    breaker.threshold = 10
+    breaker.reset(key)
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            exception=aiohttp.ClientConnectionError("connection refused"),
+            repeat=True,
+        )
+        with pytest.raises(Exception):
+            async for _ in pipe.send_openai_responses_streaming_request(
+                session,
+                {"model": "openai/gpt-4o", "stream": True, "input": []},
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                valves=valves,
+                breaker_key=key,
+            ):
+                pass
+        await session.close()
+
+    recorded = len(breaker._breaker_records[key])
+    assert recorded == 3, (
+        f"three retried attempts recorded {recorded} breaker failures. Fewer than one "
+        "per attempt means the per-attempt reset is missing and a user who fails every "
+        "retry is counted once; more means one attempt is being counted twice."
+    )
 
 
 @pytest.mark.asyncio
 async def test_responses_nonstreaming_records_failure_with_breaker_key(pipe_instance_async):
-    """Test that non-streaming failures are recorded when breaker_key is provided (lines 454-455)."""
+    """A failed non-streaming /responses call opens the breaker FOR ITS OWN KEY.
+
+    Same hole as its streaming twin above: drive-and-swallow with no assertion, so the
+    `record_failure(breaker_key)` guard could be deleted with the suite green. Two keys
+    and `threshold = 1` for the same reasons stated there.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -1333,6 +1381,12 @@ async def test_responses_nonstreaming_records_failure_with_breaker_key(pipe_inst
     }
 
     test_user_id = "test-nonstream-failure"
+    other_user_id = "test-nonstream-failure-other"
+    breaker = pipe._circuit_breaker
+    breaker.threshold = 1
+    breaker.reset(test_user_id)
+    breaker.reset(other_user_id)
+    assert breaker.allows(test_user_id) is True, "the breaker was already open"
 
     with aioresponses() as mock_http:
         mock_http.post(
@@ -1341,7 +1395,7 @@ async def test_responses_nonstreaming_records_failure_with_breaker_key(pipe_inst
             status=400,
         )
 
-        try:
+        with pytest.raises(Exception):
             await pipe.send_openai_responses_nonstreaming_request(
                 session,
                 {"model": "openai/gpt-4o", "input": []},
@@ -1350,15 +1404,19 @@ async def test_responses_nonstreaming_records_failure_with_breaker_key(pipe_inst
                 valves=valves,
                 breaker_key=test_user_id,
             )
-        except Exception:
-            pass  # Expected to fail
 
         await session.close()
 
+    assert breaker.allows(test_user_id) is False, (
+        "a failed non-streaming /responses call did not open the breaker for its key, "
+        "so a user whose requests keep failing is never shed"
+    )
+    assert breaker.allows(other_user_id) is True, (
+        "the failure was recorded against some key other than the one passed in"
+    )
 
-# ============================================================================
+
 # Streaming - Multiple Workers
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -1391,19 +1449,13 @@ async def test_responses_streaming_multiple_workers(pipe_instance_async):
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
             valves=valves,
-            workers=4,  # Multiple workers
+            workers=4,
         ):
             events.append(event)
 
         await session.close()
 
-    # Should complete successfully with multiple workers
     assert any(e.get("type") == "response.completed" for e in events)
-
-
-# ============================================================================
-# Streaming - Reasoning/Thinking Events
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -1446,11 +1498,6 @@ async def test_responses_streaming_reasoning_events(pipe_instance_async):
     assert len(reasoning_events) >= 1
 
 
-# ============================================================================
-# Streaming - [DONE] Event Inside Data Lines
-# ============================================================================
-
-
 @pytest.mark.asyncio
 async def test_responses_streaming_error_event_in_stream(pipe_instance_async):
     """Test that error events in stream trigger error handling (line 351)."""
@@ -1458,7 +1505,6 @@ async def test_responses_streaming_error_event_in_stream(pipe_instance_async):
     valves = pipe.valves
     session = pipe._create_http_session(valves)
 
-    # Stream that contains an error event mid-stream
     sse_response = (
         _sse({"type": "response.output_text.delta", "delta": "Hello"})
         + _sse({
@@ -1494,13 +1540,10 @@ async def test_responses_streaming_error_event_in_stream(pipe_instance_async):
         except OpenRouterAPIError:
             error_raised = True
         except Exception:
-            # Some error was raised, which exercises the error path
             error_raised = True
 
         await session.close()
 
-    # Either the stream completed or an error was raised
-    # Both paths indicate the code was exercised
     assert len(events) > 0 or error_raised
 
 
@@ -1515,7 +1558,6 @@ async def test_responses_streaming_done_marker(pipe_instance_async):
         _sse({"type": "response.output_text.delta", "delta": "Hello"})
         + _sse({"type": "response.completed", "response": {"output": [], "usage": {}}})
         + "data: [DONE]\n\n"
-        # Any additional events after [DONE] should be ignored
         + _sse({"type": "response.output_text.delta", "delta": "Should not appear"})
     )
 
@@ -1539,7 +1581,6 @@ async def test_responses_streaming_done_marker(pipe_instance_async):
 
         await session.close()
 
-    # Should only have events before [DONE]
     deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
     assert all("Should not appear" not in e.get("delta", "") for e in deltas)
 
@@ -1589,7 +1630,6 @@ async def test_from_completions_maps_response_format_to_text_format(minimal_pipe
         response_format={"type": "json_schema", "json_schema": {"name": "demo", "schema": {"type": "object"}}},
     )
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1617,7 +1657,6 @@ async def test_from_completions_preserves_parallel_tool_calls(minimal_pipe):
         parallel_tool_calls=False,
     )
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1639,7 +1678,6 @@ async def test_from_completions_converts_legacy_function_call_dict(minimal_pipe)
         function_call={"name": "lookup_weather"},
     )
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1661,7 +1699,6 @@ async def test_from_completions_converts_legacy_function_call_strings(minimal_pi
         function_call="none",
     )
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1687,7 +1724,6 @@ async def test_from_completions_preserves_chat_completion_only_params(minimal_pi
         "frequency_penalty": "0.5",
     })
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1714,7 +1750,6 @@ async def test_from_completions_does_not_override_explicit_tool_choice(minimal_p
         tool_choice="auto",
     )
 
-    # No mocking - let real transform_messages_to_input run
     responses = await ResponsesBody.from_completions(
         completions,
         transformer_context=minimal_pipe,
@@ -1762,9 +1797,6 @@ def test_auto_context_trimming_disabled_preserves_explicit_truncation(minimal_pi
     assert responses.truncation == "auto"
 
 
-# ===== From test_responses_input_hardening.py =====
-
-
 import pytest
 
 
@@ -1809,6 +1841,7 @@ def test_sanitize_request_input_strips_function_call_and_output_extras(pipe_inst
             "type": "function_call_output",
             "call_id": "call-1",
             "output": '{"ok": true}',
+            "status": "completed",
         },
     ]
 
@@ -1915,11 +1948,6 @@ def test_sanitize_request_input_applies_replay_budget_idempotently(pipe_instance
     output_item = next(i for i in body.input if i.get("type") == "function_call_output")
     second_output = output_item["output"]
     assert second_output == first_output
-
-
-# ============================================================================
-# Sanitizer - Orphaned function_call / function_call_output validation
-# ============================================================================
 
 
 def test_sanitize_drops_orphaned_function_call_output(pipe_instance):
@@ -2127,24 +2155,9 @@ def test_sanitize_mixed_orphans_and_valid_pairs(pipe_instance):
     assert body.input[3]["output"] == _ORPHAN_STUB_OUTPUT
 
 
-# ============================================================================
-# Streaming - Parse Failure Resilience (C3 fix verification)
-#
-# These tests verify that malformed SSE data (invalid JSON, invalid UTF-8)
-# does NOT cause the producer→worker→distributor pipeline to hang.
-#
-# The C3 bug: when a worker encounters unparseable data, it must still emit
-# a (seq, None) placeholder into event_queue so the distributor can advance
-# past that sequence number.  Without it, the distributor waits forever for
-# the missing seq → infinite hang.
-#
 # The fix is 3 parts:
-#   1. Worker: catch Exception (not just JSONDecodeError), emit (seq, None)
-#   2. Distributor: store event BEFORE checking for None (don't skip)
-#   3. Distributor: skip None INSIDE the ordering loop (after advancing seq)
-# ============================================================================
 
-_HANG_TIMEOUT = 10  # seconds — generous to avoid CI flakes; catches real hangs
+_HANG_TIMEOUT = 10
 
 
 def _completed_sse() -> str:
@@ -2397,24 +2410,16 @@ def test_should_retry_stream_no_retry_after_emit():
     import aiohttp as _aiohttp
     from open_webui_openrouter_pipe.api.gateway.responses_adapter import _should_retry_stream
 
-    # Before any output: retry on network errors.
     assert _should_retry_stream(False, _aiohttp.ClientConnectionError()) is True
     assert _should_retry_stream(False, _aiohttp.ClientPayloadError()) is True
     assert _should_retry_stream(False, _asyncio.TimeoutError()) is True
 
-    # After output emitted: never retry (would duplicate).
     assert _should_retry_stream(True, _aiohttp.ClientConnectionError()) is False
     assert _should_retry_stream(True, _aiohttp.ClientPayloadError()) is False
     assert _should_retry_stream(True, _asyncio.TimeoutError()) is False
 
-    # Non-network errors are never retried, regardless of emit state.
     assert _should_retry_stream(False, ValueError("x")) is False
     assert _should_retry_stream(False, None) is False
-
-
-# ============================================================================
-# Anthropic top-level cache_control on /responses (Issue #48)
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -2517,3 +2522,63 @@ async def test_responses_no_toplevel_cache_control_for_non_anthropic(pipe_instan
         await session.close()
 
     assert "cache_control" not in captured.get("json", {})
+
+
+@pytest.mark.parametrize(
+    ("reported", "survives"),
+    [
+        ("completed", True),
+        ("incomplete", True),
+        ("in_progress", True),
+        ("failed", False),
+        ("error", False),
+        ("cancelled", False),
+        ("", False),
+        (None, False),
+        (123, False),
+    ],
+)
+def test_only_documented_tool_output_statuses_reach_the_wire(pipe_instance, reported, survives):
+    """The whitelist is load-bearing in both directions.
+
+    Narrowing it back to nothing is caught elsewhere; widening it to
+    `if reported_status is not None` is not, and that is the shape that lets a
+    provider-specific string through. OpenRouter documents exactly three values for
+    a function_call_output, and an undocumented one is a request the provider may
+    reject outright.
+    """
+    from open_webui_openrouter_pipe.api.transforms import ResponsesBody
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    item = {
+        "type": "function_call_output",
+        "id": "ulid-1",
+        "call_id": "call-1",
+        "output": "result text",
+    }
+    if reported is not None:
+        item["status"] = reported
+
+    call = {
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "search_web",
+        "arguments": "{}",
+    }
+    body = ResponsesBody.model_validate(
+        {"model": "openrouter/test", "input": [call, item], "stream": True}
+    )
+    _sanitize_request_input(pipe_instance, body)
+
+    sent = [i for i in body.input if isinstance(i, dict) and i.get("type") == "function_call_output"]
+    assert sent, "the tool output was dropped entirely"
+    if survives:
+        assert sent[0].get("status") == reported, (
+            f"{reported!r} is a documented ToolCallStatus and must reach the provider; "
+            "dropping it tells the model nothing about the call's outcome"
+        )
+    else:
+        assert "status" not in sent[0], (
+            f"{reported!r} is not one of OpenRouter's documented ToolCallStatus values "
+            f"but reached the wire as {sent[0].get('status')!r}"
+        )

@@ -40,9 +40,7 @@ from open_webui_openrouter_pipe.streaming.streaming_core import (
 )
 
 
-# =============================================================================
 # Helper Functions
-# =============================================================================
 
 
 def _make_fake_stream(events: list[dict[str, Any]]):
@@ -91,11 +89,6 @@ def _native_reasoning_text(emitted: list[dict]) -> str:
     return "".join(texts)
 
 
-# =============================================================================
-# StreamingHandler Initialization Tests
-# =============================================================================
-
-
 class TestStreamingHandlerInit:
     """Tests for StreamingHandler initialization."""
 
@@ -109,9 +102,7 @@ class TestStreamingHandlerInit:
         assert handler._pipe is pipe
 
 
-# =============================================================================
 # _wrap_event_emitter Tests
-# =============================================================================
 
 
 class TestWrapEventEmitter:
@@ -180,9 +171,7 @@ class TestWrapEventEmitter:
         assert emitted[0]["type"] == "status"
 
 
-# =============================================================================
 # Endpoint Selection Tests
-# =============================================================================
 
 
 class TestEndpointSelection:
@@ -247,11 +236,6 @@ class TestEndpointSelection:
             pipe.logger.setLevel(logging.DEBUG)
             result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=valves)
             assert result == "chat_completions"
-
-
-# =============================================================================
-# _looks_like_responses_unsupported Tests
-# =============================================================================
 
 
 class TestLooksLikeResponsesUnsupported:
@@ -368,11 +352,6 @@ class TestLooksLikeResponsesUnsupported:
         assert StreamingHandler._looks_like_responses_unsupported(error) is True
 
 
-# =============================================================================
-# Streaming Loop - Basic Event Handling Tests
-# =============================================================================
-
-
 class TestStreamingLoopBasic:
     """Basic tests for the streaming loop."""
 
@@ -453,17 +432,14 @@ class TestStreamingLoopBasic:
         # Log warning about incomplete stream
         assert any("Stream ended without completion event" in record.message for record in caplog.records)
 
-        # Result contains the partial content plus the interrupted notice
         assert result is not None
         assert "Hello" in result
         assert "Response interrupted" in result
 
-        # Verify the interrupted notice was emitted as a delta
         deltas = [e for e in emitted if e.get("type") == "chat:message:delta"]
         delta_contents = "".join(d.get("data", {}).get("content", "") for d in deltas)
         assert "Response interrupted" in delta_contents
 
-        # Verify a completion event was emitted
         completions = [e for e in emitted if e.get("type") == "chat:completion"]
         assert len(completions) >= 1
         last_completion = completions[-1]
@@ -807,10 +783,13 @@ class TestStreamingLoopBasic:
         """Test delta batching valves are forwarded to the streaming adapter."""
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        # Non-default values on purpose: 256 and 30 ARE the field defaults, so the
+        # model_copy was a no-op and replacing the two forwarded valves with those
+        # literals in streaming_core passed this test.
         valves = pipe.valves.model_copy(
             update={
-                "STREAMING_DELTA_CHAR_LIMIT": 256,
-                "STREAMING_IDLE_FLUSH_MS": 30,
+                "STREAMING_DELTA_CHAR_LIMIT": 512,
+                "STREAMING_IDLE_FLUSH_MS": 250,
             }
         )
 
@@ -832,13 +811,11 @@ class TestStreamingLoopBasic:
             user_id="user-123",
         )
 
-        assert captured_kwargs.get("delta_char_limit") == 256
-        assert captured_kwargs.get("idle_flush_ms") == 30
+        assert captured_kwargs.get("delta_char_limit") == 512
+        assert captured_kwargs.get("idle_flush_ms") == 250
 
 
-# =============================================================================
 # Tool Pass-through Mode Tests
-# =============================================================================
 
 
 class TestToolPassthrough:
@@ -1184,9 +1161,7 @@ class TestToolPassthrough:
         assert isinstance(args, str)
 
 
-# =============================================================================
 # Web Search Status Tests
-# =============================================================================
 
 
 class TestWebSearchStatus:
@@ -1320,9 +1295,7 @@ class TestWebSearchStatus:
         assert "temperature forecast" in find_statuses[0]["data"]["description"]
 
 
-# =============================================================================
 # Citation Annotation Tests
-# =============================================================================
 
 
 class TestCitationAnnotations:
@@ -1520,9 +1493,7 @@ class TestCitationAnnotations:
         assert len(source_events) == 1, "Fallback should not emit duplicates"
 
 
-# =============================================================================
 # Image Generation Tests
-# =============================================================================
 
 
 class TestImageGeneration:
@@ -1842,9 +1813,7 @@ class TestImageGeneration:
         assert result is not None
 
 
-# =============================================================================
 # Reasoning/Thinking Mode Tests
-# =============================================================================
 
 
 class TestReasoningThinking:
@@ -2378,9 +2347,7 @@ class TestReasoningThinking:
         assert any("Thinking" in e.get("data", {}).get("description", "") for e in status_events)
 
 
-# =============================================================================
 # Surrogate Pair Handling Tests
-# =============================================================================
 
 
 class TestSurrogatePairHandling:
@@ -2482,9 +2449,7 @@ class TestSurrogatePairHandling:
         assert result == "Hello"
 
 
-# =============================================================================
 # Tool List Handling Tests
-# =============================================================================
 
 
 class TestToolListHandling:
@@ -2603,9 +2568,7 @@ class TestToolListHandling:
         assert result == "OK"
 
 
-# =============================================================================
 # Non-streaming Loop Tests
-# =============================================================================
 
 
 class TestNonStreamingLoop:
@@ -2748,9 +2711,7 @@ class TestNonStreamingLoop:
         assert "test" in model_result and "fallback" in model_result
 
 
-# =============================================================================
 # Function Call Tests
-# =============================================================================
 
 
 class TestFunctionCalls:
@@ -2941,9 +2902,7 @@ class TestFunctionCalls:
         assert "no_args_function()" in caplog.text
 
 
-# =============================================================================
 # Output Item Types Tests
-# =============================================================================
 
 
 class TestOutputItemTypes:
@@ -3134,9 +3093,7 @@ class TestOutputItemTypes:
         assert "Code executed" in result
 
 
-# =============================================================================
 # Persist Reasoning Tests
-# =============================================================================
 
 
 class TestPersistReasoning:
@@ -3240,9 +3197,7 @@ class TestPersistReasoning:
         assert deleted_refs == []
 
 
-# =============================================================================
 # API Error Handling Tests
-# =============================================================================
 
 
 class TestAPIErrorHandling:
@@ -3282,11 +3237,6 @@ class TestAPIErrorHandling:
         assert result == ""
 
 
-# =============================================================================
-# Loop Limit and Function Execution Tests
-# =============================================================================
-
-
 class TestLoopLimitAndFunctionExecution:
     """Tests for loop limits and function execution."""
 
@@ -3310,7 +3260,6 @@ class TestLoopLimitAndFunctionExecution:
         call_count = [0]
         captured_requests: list[dict] = []
 
-        # First call: model requests a tool. Second call (synthesis): model responds with text.
         async def fake_stream(self, session, request_body, **_kwargs):
             captured_requests.append(request_body)
             call_count[0] += 1
@@ -3330,8 +3279,6 @@ class TestLoopLimitAndFunctionExecution:
                     },
                 }
             else:
-                # Synthesis turn: yield delta events (the handler accumulates
-                # assistant_message from delta events, not completed output).
                 yield {"type": "response.output_text.delta", "delta": "Based on what I gathered, here is the answer."}
                 yield {
                     "type": "response.completed",
@@ -3363,16 +3310,12 @@ class TestLoopLimitAndFunctionExecution:
             user_id="user-123",
         )
 
-        # Tools should NOT have been executed (stubs injected instead)
         assert not execute_called[0], "Tools should not be executed when loop limit is reached"
-        # Model got a second API call (synthesis turn)
         assert call_count[0] == 2, f"Expected 2 API calls (tool + synthesis), got {call_count[0]}"
-        # Stub should be in the second request's input
         second_input = captured_requests[1].get("input", [])
         stub_outputs = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
         assert stub_outputs, "Expected stub function_call_output in synthesis request"
         assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
-        # Result should contain model's synthesis, not an error template
         assert "Based on what I gathered" in result
 
     @pytest.mark.asyncio
@@ -3520,8 +3463,6 @@ class TestLoopLimitAndFunctionExecution:
 
         assert len(captured_requests) == 2
         second_input = captured_requests[1].get("input", [])
-        # The orphaned error output (function_call_output without matching
-        # function_call) is dropped by the sanitizer to prevent API 400 errors.
         outputs = [
             item
             for item in second_input
@@ -3595,8 +3536,6 @@ class TestLoopLimitAndFunctionExecution:
             if isinstance(item, dict) and item.get("type") == "function_call_output"
         }
         assert "call-good" in output_ids
-        # call-bad's error output is an orphan (no matching function_call)
-        # and is dropped by the sanitizer to prevent API 400 errors.
         assert "call-bad" not in output_ids
 
     @pytest.mark.asyncio
@@ -3829,8 +3768,6 @@ class TestLoopLimitAndFunctionExecution:
         plan = by_text.get("plan")
         synth = by_text.get("synth")
         assert plan is not None and synth is not None, f"reasoning payloads: {reasoning_payloads}"
-        # pre-tool reasoning anchors to the round's first call (back-filled);
-        # post-tool reasoning anchors to the preceding call (immediate).
         assert plan.get("_anchor_following_call_ordinal") == 0, f"plan anchors: {plan}"
         assert synth.get("_anchor_preceding_call_ordinal") == 0, f"synth anchors: {synth}"
         assert plan.get("_anchor_seq") == 0
@@ -3900,8 +3837,6 @@ class TestLoopLimitAndFunctionExecution:
             (p["payload"].get("content") or [{}])[0].get("text", ""): p["payload"]
             for p in captured if p["item_type"] == "reasoning"
         }
-        # "before A" precedes the 1st call (ordinal 0); "between A and B" precedes
-        # the 2nd call (ordinal 1) -- not collapsed onto the round's first call.
         assert by_text["before A"].get("_anchor_following_call_ordinal") == 0, by_text
         assert by_text["between A and B"].get("_anchor_following_call_ordinal") == 1, by_text
 
@@ -3911,11 +3846,10 @@ class TestLoopLimitAndFunctionExecution:
         BY REFERENCE. Pin that cross-module contract so a future defensive copy in
         persistence cannot silently drop the anchor and resurface the 400."""
         store = pipe_instance._artifact_store
-        store._item_model = object()  # satisfy the guard without a real DB
+        store._item_model = object()
         payload = {"type": "reasoning", "content": [], "summary": []}
         row = store._make_db_row("chat-1", "msg-1", "model", payload)
         assert row is not None and row["payload"] is payload, "payload not stored by reference"
-        # Simulate the response.completed back-fill mutating the already-queued payload:
         payload["_anchor_following_call_ordinal"] = 2
         assert row["payload"]["_anchor_following_call_ordinal"] == 2
 
@@ -4042,7 +3976,6 @@ class TestLoopLimitAndFunctionExecution:
                 yield {"type": "response.output_item.done", "item": {
                     "id": "rs-post", "type": "reasoning", "status": "completed",
                     "content": [{"type": "reasoning_text", "text": "bpost"}], "summary": [], "signature": "S2"}}
-                # response.completed OMITS rs-post (partial echo): only pre + call.
                 yield {"type": "response.completed", "response": {"output": [
                     {"type": "reasoning", "id": "rs-pre",
                      "content": [{"type": "reasoning_text", "text": "apre"}], "signature": "S1"},
@@ -4077,13 +4010,9 @@ class TestLoopLimitAndFunctionExecution:
         )
         by_text = {(p.get("content") or [{}])[0].get("text", ""): p
                    for p in captured if p.get("type") == "reasoning"}
-        # rs-pre echoed -> following 0; rs-post un-echoed -> preceding 0 (by stream order),
-        # NOT following 0 (which would collapse the two onto the same side).
         assert by_text["apre"].get("_anchor_following_call_ordinal") == 0, by_text
         assert by_text["bpost"].get("_anchor_preceding_call_ordinal") == 0, by_text
         assert by_text["bpost"].get("_anchor_following_call_ordinal") is None, by_text
-        # The stream position is kept off the payload (side-channel), so no scratch
-        # key persists.
         assert all("_tmp_stream_pos" not in p for p in by_text.values()), by_text
 
     @pytest.mark.asyncio
@@ -4100,7 +4029,6 @@ class TestLoopLimitAndFunctionExecution:
             yield {"type": "response.output_item.done", "item": {
                 "id": "rs-x", "type": "reasoning", "status": "completed",
                 "content": [{"type": "reasoning_text", "text": "partial"}], "summary": [], "signature": "S"}}
-            # Stream ends here -- NO response.completed (truncated).
 
         captured: list[dict] = []
 
@@ -4126,9 +4054,7 @@ class TestLoopLimitAndFunctionExecution:
             assert not any(str(k).startswith("_tmp") for k in p), f"scratch key persisted: {list(p)}"
 
 
-# =============================================================================
 # Adaptive Tool Budgeting Tests
-# =============================================================================
 
 
 class TestAdaptiveToolBudgeting:
@@ -4217,6 +4143,130 @@ class TestAdaptiveToolBudgeting:
         second_request = captured_requests[1]
         assert "tools" in second_request
         assert "tool_choice" in second_request
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "item_type,failure",
+        [
+            ("openrouter:web_fetch", {"status": "failed", "url": "https://x.test"}),
+            ("openrouter:advisor", {"status": "error"}),
+            ("openrouter:subagent", {"error": "subagent crashed"}),
+            ("openrouter:web_fetch", {"httpStatus": 404, "url": "https://x.test"}),
+            ("openrouter:fusion", {"status": "error"}),
+            ("openrouter:code_interpreter", {"error": "traceback"}),
+            ("openrouter:datetime", {"status": "error"}),
+            ("openrouter:web_search", {"status": "failed"}),
+        ],
+    )
+    async def test_failed_server_tool_cards_are_not_labelled_completed(
+        self, monkeypatch, pipe_instance_async, item_type, failure
+    ):
+        """The emitted card's status, not the helper in isolation.
+
+        Every earlier guard on this was a source-shape scan, and each was defeated by
+        rewriting the expression -- hoisting the literal into a module constant, an
+        f-string, a dict() call. Open WebUI appends this card verbatim onto the
+        persisted assistant message, so the only assertion that matters is what the
+        card actually carries.
+        """
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={"SHOW_TOOL_CARDS": True})
+
+        item = {"type": item_type, "id": "srv-1", **failure}
+
+        async def streaming(self, *_args, **_kwargs):
+            yield {"type": "response.output_item.done", "item": item}
+            yield {
+                "type": "response.completed",
+                "response": {"output": [], "usage": {}},
+            }
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "c", "message_id": "m"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        cards = [
+            e["item"]
+            for e in emitted
+            if e.get("type") == "response.output_item.added"
+            and e.get("item", {}).get("type")
+            in {"function_call", "function_call_output"}
+        ]
+        assert cards, f"no card emitted for {item_type} {failure}"
+        assert all(c.get("status") != "completed" for c in cards), (
+            f"{item_type} reported {failure} but a card claims success: "
+            f"{[(c.get('type'), c.get('status')) for c in cards]}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "item_type,success",
+        [
+            ("openrouter:web_fetch", {"status": "completed", "url": "https://x.test"}),
+            ("openrouter:advisor", {"status": "ok"}),
+            ("openrouter:subagent", {"status": "ok"}),
+            ("openrouter:fusion", {"status": "ok"}),
+            ("openrouter:code_interpreter", {"status": "ok"}),
+            ("openrouter:datetime", {"status": "ok"}),
+            ("openrouter:web_search", {"status": "completed"}),
+        ],
+    )
+    async def test_successful_server_tool_cards_are_not_labelled_incomplete(
+        self, monkeypatch, pipe_instance_async, item_type, success
+    ):
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        valves = pipe.valves.model_copy(update={"SHOW_TOOL_CARDS": True})
+
+        item = {"type": item_type, "id": "srv-ok", **success}
+
+        async def streaming(self, *_args, **_kwargs):
+            yield {"type": "response.output_item.done", "item": item}
+            yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "c", "message_id": "m"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        cards = [
+            e["item"]
+            for e in emitted
+            if e.get("type") == "response.output_item.added"
+            and e.get("item", {}).get("type")
+            in {"function_call", "function_call_output"}
+        ]
+        assert cards, f"no card emitted for {item_type} {success}"
+        assert all(c.get("status") == "completed" for c in cards), (
+            f"{item_type} reported {success} but a card claims failure: "
+            f"{[(c.get('type'), c.get('status')) for c in cards]}"
+        )
 
     @pytest.mark.asyncio
     async def test_failed_tool_outputs_are_model_visible_not_persisted_but_carded(self, monkeypatch, pipe_instance_async):
@@ -4311,10 +4361,12 @@ class TestAdaptiveToolBudgeting:
         fco_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call_output"]
         assert fc_items, "Expected in-progress function_call card"
         assert fc_items[0]["item"]["status"] == "in_progress"
-        assert fco_items, "Expected completed function_call_output card with error text"
-        assert fco_items[0]["item"]["status"] == "completed"
+        assert fco_items, "Expected a function_call_output card with error text"
         fco_text = fco_items[0]["item"]["output"][0]["text"]
         assert "failed before completion" in fco_text
+        assert fco_items[0]["item"]["status"] == "incomplete", (
+            "a failed tool call is carded, and persisted, as a successful one"
+        )
 
     @pytest.mark.asyncio
     async def test_omitted_tool_outputs_are_not_persisted_but_carded(self, monkeypatch, pipe_instance_async):
@@ -4438,7 +4490,6 @@ class TestAdaptiveToolBudgeting:
         even when reasoning streamed before the tool call."""
         from open_webui_openrouter_pipe.streaming import streaming_core as streaming_core_module
 
-        # The reasoning timing-boundary marker constant is retired entirely.
         assert not hasattr(streaming_core_module, "OWUI_REASONING_TIMING_BOUNDARY_MARKER")
 
         pipe = pipe_instance_async
@@ -4516,14 +4567,11 @@ class TestAdaptiveToolBudgeting:
             user_id="user-123",
         )
 
-        # The retired timing-marker space delta must never be emitted.
         assert not any(
             e.get("type") == "chat:message:delta"
             and e.get("data", {}).get("content") == " "
             for e in emitted
         )
-        # The reasoning streamed before the tool call still surfaces as a native
-        # reasoning box, and tool execution still happened.
         assert _native_reasoning_text(emitted) == "Thinking about the right tool."
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         assert output_items
@@ -4758,9 +4806,7 @@ class TestAdaptiveToolBudgeting:
         assert any("incomplete" in str(e).lower() for e in notifications)
 
 
-# =============================================================================
 # Validate Base64 Size Tests
-# =============================================================================
 
 
 class TestValidateBase64Size:
@@ -4778,9 +4824,7 @@ class TestValidateBase64Size:
         assert isinstance(result, bool)
 
 
-# =============================================================================
 # Final Status Tests
-# =============================================================================
 
 
 class TestFinalStatus:
@@ -4818,9 +4862,7 @@ class TestFinalStatus:
         assert final_statuses
 
 
-# =============================================================================
 # Response Output Edge Cases
-# =============================================================================
 
 
 class TestResponseOutputEdgeCases:
@@ -4921,10 +4963,16 @@ def test_queue_valves_unbounded_defaults(pipe_instance):
     assert pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE == 1000, "Warning threshold should be 1000"
 
 
-def test_valve_descriptions_warn_deadlock(pipe_instance):
-    """Verify valve descriptions document deadlock risks for small bounded queues."""
+def test_valve_descriptions_warn_about_small_bounded_queues(pipe_instance):
+    """The two buffer valves must warn that a small bound can stall the whole reply.
+
+    Asserted as the property, not as the word: this pinned the literal "deadlock",
+    which is engineering vocabulary an Open WebUI administrator does not share, so the
+    text could never be written plainly without turning this red. What has to survive
+    a reword is the warning itself -- that `0` is the safe value and a small positive
+    bound risks stalling -- not the term used to say it.
+    """
     pipe = pipe_instance
-    # Access model_fields from class, not instance (avoid Pydantic 2.11+ deprecation)
     chunk_desc = Pipe.Valves.model_fields['STREAMING_CHUNK_QUEUE_MAXSIZE'].description
     event_desc = Pipe.Valves.model_fields['STREAMING_EVENT_QUEUE_MAXSIZE'].description
     warn_desc = Pipe.Valves.model_fields['STREAMING_EVENT_QUEUE_WARN_SIZE'].description
@@ -4934,84 +4982,70 @@ def test_valve_descriptions_warn_deadlock(pipe_instance):
     assert event_desc is not None, "Event queue should have a description"
     assert warn_desc is not None, "Warning size should have a description"
 
-    # Both queue descriptions should warn about deadlock
-    assert 'deadlock' in chunk_desc.lower(), "Chunk queue description should mention deadlock risk"
-    assert 'deadlock' in event_desc.lower(), "Event queue description should mention deadlock risk"
+    for name, desc in (("chunk", chunk_desc), ("event", event_desc)):
+        low = desc.lower()
+        assert "0=unbounded" in low and "recommended" in low, (
+            f"the {name} buffer description no longer states that 0 is unbounded and "
+            "recommended, so an admin has nothing telling them the safe value"
+        )
+        assert any(w in low for w in ("stall", "hang", "lock up")), (
+            f"the {name} buffer description no longer warns what a small bounded value "
+            f"risks: {desc!r}. The warning is the point; the wording is free."
+        )
 
-    # Both should mention the unbounded (0) recommendation
     assert '0=' in chunk_desc, "Chunk queue should document 0=unbounded"
     assert '0=' in event_desc, "Event queue should document 0=unbounded"
 
-    # Warning description should explain qsize monitoring
-    assert 'qsize' in warn_desc.lower(), "Warning description should mention qsize()"
-    assert 'warn' in warn_desc.lower(), "Warning description should mention warning behavior"
-
-
-@pytest.mark.parametrize('qsize, warn_size, delta_time, expected', [
-    # Below threshold - never warn
-    (999, 1000, 0, False),
-    (999, 1000, 30, False),
-    (999, 1000, 60, False),
-
-    # At threshold but time not elapsed - no warn
-    (1000, 1000, 0, False),
-    (1000, 1000, 29.9, False),
-
-    # At threshold and time elapsed - warn
-    (1000, 1000, 30.0, True),
-    (1000, 1000, 60, True),
-
-    # Above threshold but time not elapsed - no warn
-    (1200, 1000, 0, False),
-    (1200, 1000, 29, False),
-
-    # Above threshold and time elapsed - warn
-    (1200, 1000, 30, True),
-    (1200, 1000, 100, True),
-
-    # Edge cases
-    (0, 1000, 30, False),     # Empty queue
-    (5000, 1000, 30, True),   # Very large backlog
-    (1000, 100, 30, True),    # Lower warning threshold
-])
-def test_warn_condition_logic(qsize, warn_size, delta_time, expected):
-    """Test drain loop warning condition matches implementation logic.
-
-    Implementation: Pipe._should_warn_event_queue_backlog(...)
-    """
-    should_warn = Pipe._should_warn_event_queue_backlog(
-        qsize,
-        warn_size,
-        delta_time,
-        0.0,
+    # Not the literal `qsize()`: that pinned a line of Python in text an administrator
+    # reads. What must survive is that the valve says a warning is logged and what it
+    # counts.
+    assert "warn" in warn_desc.lower(), (
+        f"the warn-size description no longer says a warning is logged: {warn_desc!r}"
     )
-    assert should_warn == expected, f"Failed for qsize={qsize}, warn_size={warn_size}, delta={delta_time}"
+    assert "backlog" in warn_desc.lower(), (
+        f"the warn-size description no longer says what it counts: {warn_desc!r}"
+    )
+
+
+@pytest.mark.parametrize(("qsize", "warn_size", "expected"), [
+    (999, 1000, False),
+    (1000, 1000, True),
+    (1200, 1000, True),
+    (0, 1000, False),
+    (1000, 100, True),
+])
+def test_warn_condition_logic(qsize, warn_size, expected):
+    """The drain loop's backlog threshold. The cooldown is warn_level's, not this.
+
+    This used to also pin a timestamp cooldown, which suppressed the repeat entirely
+    instead of demoting it to DEBUG. Both call sites now log through
+    `warn_level(_warned_queue_backlog, ...)`, whose window behaviour TestWarnLevel
+    covers; what remains here is the boundary.
+    """
+    assert Pipe._should_warn_event_queue_backlog(qsize, warn_size) is expected
 
 
 def test_queue_valve_constraints():
     """Verify valve constraints allow unbounded and bounded configurations."""
-    # Access model_fields from class, not instance (avoid Pydantic 2.11+ deprecation)
     chunk_field = Pipe.Valves.model_fields['STREAMING_CHUNK_QUEUE_MAXSIZE']
     event_field = Pipe.Valves.model_fields['STREAMING_EVENT_QUEUE_MAXSIZE']
     warn_field = Pipe.Valves.model_fields['STREAMING_EVENT_QUEUE_WARN_SIZE']
 
-    # Check ge=0 constraint
     assert chunk_field.metadata[0].ge == 0, "Chunk queue should allow ge=0"
     assert event_field.metadata[0].ge == 0, "Event queue should allow ge=0"
     assert warn_field.metadata[0].ge == 100, "Warning size should require ge=100"
 
 
 @pytest.mark.parametrize('chunk_size, event_size', [
-    (0, 0),       # Unbounded (recommended)
-    (1000, 1000), # Large bounded (safe)
-    (50, 50),     # Small bounded (documented risk)
-    (100, 200),   # Asymmetric
+    (0, 0),
+    (1000, 1000),
+    (50, 50),
+    (100, 200),
 ])
 def test_valve_accepts_various_queue_sizes(chunk_size, event_size, pipe_instance):
     """Verify valves accept various queue size configurations."""
     pipe = pipe_instance
 
-    # These should all be valid configurations (though some are risky)
     pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE = chunk_size
     pipe.valves.STREAMING_EVENT_QUEUE_MAXSIZE = event_size
 
@@ -5019,37 +5053,39 @@ def test_valve_accepts_various_queue_sizes(chunk_size, event_size, pipe_instance
     assert pipe.valves.STREAMING_EVENT_QUEUE_MAXSIZE == event_size
 
 
-def test_warning_cooldown_prevents_spam():
-    """Verify 30-second cooldown prevents log spam.
+def test_warning_cooldown_prevents_spam(caplog):
+    """The first backlog warns; a repeat inside the window drops to DEBUG, not silence.
 
-    Implementation initializes last_warn_ts=0.0, so first warning requires
-    delta >= 30.0 from epoch 0.0.
+    This used to read the production source for a `-1e9` cooldown seed. Both sites now
+    log through `warn_level(_warned_queue_backlog, ..., cooldown_s=30.0)`, whose dict
+    latch has no seed to get wrong -- an absent key IS the never-warned state -- so the
+    property is asserted on emitted records instead of on a literal in the source.
     """
-    # Simulating multiple checks within cooldown window
-    # Implementation in pipe starts with event_queue_warn_last_ts = 0.0
-    timestamps = [0.0, 10.0, 20.0, 29.9, 30.0, 60.0, 90.0]
-    last_warn_ts = 0.0
-    warnings_emitted = []
+    import logging
 
-    for now in timestamps:
-        if Pipe._should_warn_event_queue_backlog(1000, 1000, now, last_warn_ts):
-            warnings_emitted.append(now)
-            last_warn_ts = now
+    from open_webui_openrouter_pipe.api.gateway import responses_adapter as adapter
 
-    # First warn at 30.0 (30.0-0.0>=30), next at 60.0 (60.0-30.0>=30), then 90.0
-    assert warnings_emitted == [30.0, 60.0, 90.0], "Should respect 30s cooldown"
+    logger = logging.getLogger("test.backlog.cooldown")
+    adapter._warned_queue_backlog.clear()
+    try:
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            for _ in range(4):
+                logger.log(
+                    adapter.warn_level(
+                        adapter._warned_queue_backlog, "event_queue", cooldown_s=30.0
+                    ),
+                    "Event queue backlog high",
+                )
+        levels = [r.levelno for r in caplog.records if r.name == logger.name]
+    finally:
+        adapter._warned_queue_backlog.clear()
 
-
-def test_unbounded_queue_semantics():
-    """Document that maxsize=0 means unbounded in asyncio.Queue."""
-    import asyncio
-
-    # asyncio.Queue with maxsize=0 is unbounded (never blocks on put)
-    unbounded_queue = asyncio.Queue(maxsize=0)
-    bounded_queue = asyncio.Queue(maxsize=10)
-
-    assert unbounded_queue.maxsize == 0, "maxsize=0 is the unbounded marker"
-    assert bounded_queue.maxsize == 10, "Positive maxsize creates bounded queue"
+    assert levels == [logging.WARNING, logging.DEBUG, logging.DEBUG, logging.DEBUG], (
+        f"four backlog reports inside the 30s window emitted {levels}. The first must "
+        "warn and the rest must demote to DEBUG -- dropping them entirely is what the "
+        "hand-rolled timestamp cooldown did, and it left an operator who raised the log "
+        "level seeing strictly less than before."
+    )
 
 
 @pytest.mark.parametrize('warn_size', [100, 500, 1000, 5000])
@@ -5058,7 +5094,6 @@ def test_warning_size_minimum(warn_size, pipe_instance):
     pipe = pipe_instance
     pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE = warn_size
 
-    # Should accept any value >= 100
     assert pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE >= 100
     assert pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE == warn_size
 
@@ -5168,8 +5203,6 @@ async def test_streaming_loop_handles_openrouter_errors(monkeypatch, pipe_instan
             user_id="user-123",
         )
 
-    # C1 guard: the re-raise must take the error path in `finally`, never the
-    # success path -- so no terminal done=True completion may be emitted.
     done_completions = [
         event for event in emitted
         if event.get("type") == "status" and event.get("data", {}).get("done") is True
@@ -5192,14 +5225,12 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
     )
     valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-    # Set real model capabilities using ModelFamily.set_dynamic_specs
     ModelFamily.set_dynamic_specs({
         "openrouter.test-rich": {
             "features": {"function_calling": True}
         }
     })
 
-    # Mock ArtifactStore boundary methods instead of Pipe internal methods
     persisted_rows: list[dict] = []
 
     async def mock_artifact_persist(rows):
@@ -5224,11 +5255,9 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
             "payload": payload,
         }
 
-    # Mock at the ArtifactStore boundary, not Pipe internal methods
     monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_artifact_persist)
     monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_artifact_make_db_row)
 
-    # Mock the tool callable to return a simple result
     async def mock_tool_callable(**kwargs):
         return "ok"
 
@@ -5287,7 +5316,6 @@ async def test_streaming_loop_reasoning_status_and_tools(monkeypatch, pipe_insta
     async def emitter(event):
         emitted.append(event)
 
-    # Set up tool execution context with worker (required since legacy fallback removed)
     loop = asyncio.get_running_loop()
     context = _ToolExecutionContext(
         queue=asyncio.Queue(),
@@ -5343,9 +5371,8 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
         stream=True,
     )
-    valves = pipe.valves  # Use default valves (open_webui mode)
+    valves = pipe.valves
 
-    # Prepare SSE events with reasoning to return
     events = [
         {"type": "response.output_item.added", "output_index": 0, "item": {"type": "reasoning", "id": "rs-1"}},
         {"type": "response.reasoning_text.delta", "delta": "Analysing..."},
@@ -5354,7 +5381,6 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
         {"type": "response.completed", "response": {"output": [], "usage": {"input_tokens": 1}}},
     ]
 
-    # Mock the SSE streaming method to return our events
     async def fake_stream(self, session, request_body, **_kwargs):
         for event in events:
             yield event
@@ -5367,7 +5393,6 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
     async def emitter(event):
         emitted.append(event)
 
-    # Call _run_streaming_loop to test event emission
     output = await pipe._streaming_handler._run_streaming_loop(
         body,
         valves,
@@ -5380,18 +5405,12 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
 
     assert output == "Hello"
 
-    # In open_webui mode, reasoning surfaces as a native reasoning output item
-    # (the seam forwards it verbatim to the outward stream).
     items = _native_reasoning_items(emitted)
     assert items, "Expected a native reasoning output item in open_webui mode"
     assert all(item.get("status") == "completed" for item in items)
 
-    # The reasoning streamed before the answer is captured in the box. The box
-    # closes at the first answer delta, so the post-answer "Late reasoning."
-    # delta is not surfaced under the append-only native contract.
     assert _native_reasoning_text(emitted) == "Analysing..."
 
-    # The reasoning box is emitted before the "Hello" answer delta.
     native_idx = next(
         i for i, e in enumerate(emitted)
         if e.get("type") == "response.output_item.added"
@@ -5404,7 +5423,6 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
     )
     assert native_idx < answer_idx, "reasoning box must precede the answer delta"
 
-    # Verify regular content message exists (using chat:message:delta for streaming)
     chat_deltas = [
         item
         for item in emitted
@@ -5415,11 +5433,9 @@ async def test_pipe_stream_mode_outputs_openai_reasoning_chunks(monkeypatch, pip
         for item in chat_deltas
     ), "Expected chat:message with 'Hello'"
 
-    # Legacy reasoning:delta / reasoning:completed events are retired.
     assert not any(item.get("type") == "reasoning:delta" for item in emitted)
     assert not any(item.get("type") == "reasoning:completed" for item in emitted)
 
-    # Verify reasoning is NOT in status messages (that's "status" mode behavior)
     status_msgs = [
         item.get("data", {}).get("description", "")
         for item in emitted
@@ -5811,7 +5827,6 @@ async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance
                 },
             }
         else:
-            # Synthesis turn: yield delta events (handler builds assistant_message from deltas).
             yield {"type": "response.output_text.delta", "delta": "Synthesized answer."}
             yield {
                 "type": "response.completed",
@@ -5854,8 +5869,6 @@ async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance
     assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
 
 
-# ===== From integration/test_streaming_queue_integration.py =====
-
 """Real integration tests for streaming queue behavior.
 
 These tests exercise the actual streaming pipeline including:
@@ -5887,7 +5900,6 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
     assert pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE == 0
     assert pipe.valves.STREAMING_EVENT_QUEUE_MAXSIZE == 0
 
-    # Build massive event stream (10K events)
     event_count = 10000
     events = []
 
@@ -5904,7 +5916,6 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
         }
     })
 
-    # Mock streaming request to return massive burst
     async def fake_stream(self, session, request_body, **_kwargs):
         for event in events:
             yield event
@@ -5917,7 +5928,6 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
     async def capture_emitter(event):
         emitted_events.append(event)
 
-    # Run streaming loop (exercises real queue handling)
     result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
@@ -5932,7 +5942,6 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
         user_id="user-123",
     )
 
-    # Verify all events processed without deadlock
     assert len(result) > 0, "Should have streamed content"
     assert len(emitted_events) > 0, "Should have emitted events"
 
@@ -5940,7 +5949,6 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
     completion_events = [e for e in emitted_events if e.get("type") == "chat:completion"]
     assert completion_events, "Should emit completion event"
 
-    # Verify usage info preserved through queues
     last_completion = completion_events[-1]
     usage = last_completion.get("data", {}).get("usage", {})
     assert usage.get("output_tokens") == event_count, "Usage tokens should pass through queues"
@@ -5959,8 +5967,6 @@ async def test_bounded_queue_configuration_affects_streaming(monkeypatch):
     """
     pipe = Pipe()
 
-    # Set bounded queues (safe sizes for this test)
-    # Note: These affect queues created AFTER this point
     pipe.valves.STREAMING_CHUNK_QUEUE_MAXSIZE = 1000
     pipe.valves.STREAMING_EVENT_QUEUE_MAXSIZE = 1000
 
@@ -5989,7 +5995,6 @@ async def test_bounded_queue_configuration_affects_streaming(monkeypatch):
     async def capture_emitter(event):
         emitted_events.append(event)
 
-    # Run streaming loop with bounded queues
     result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
@@ -6004,7 +6009,6 @@ async def test_bounded_queue_configuration_affects_streaming(monkeypatch):
         user_id="user-123",
     )
 
-    # Verify streaming succeeded with bounded queues
     assert len(result) > 0, "Bounded queues should allow streaming"
     assert len(emitted_events) > 0, "Events should be emitted through bounded queues"
 
@@ -6026,10 +6030,8 @@ async def test_event_queue_backlog_warning_triggers_during_streaming(monkeypatch
     """
     pipe = Pipe()
 
-    # Set low warning threshold to trigger during test
     pipe.valves.STREAMING_EVENT_QUEUE_WARN_SIZE = 100
 
-    # Build stream with enough events to potentially cause backlog
     events = []
     for i in range(2000):
         events.append({"type": "response.output_text.delta", "delta": "x"})
@@ -6054,7 +6056,6 @@ async def test_event_queue_backlog_warning_triggers_during_streaming(monkeypatch
     async def capture_emitter(event):
         emitted_events.append(event)
 
-    # Run streaming with potential for backlog
     result = await pipe._streaming_handler._run_streaming_loop(
         body=ResponsesBody(
             model="test",
@@ -6075,9 +6076,6 @@ async def test_event_queue_backlog_warning_triggers_during_streaming(monkeypatch
     # Verify events were emitted
     assert len(emitted_events) > 0, "Events should be emitted"
 
-    # Note: Backlog warnings may or may not occur depending on timing,
-    # but the code path is exercised and if warning logic is broken,
-    # we'd see errors in logs or streaming failures
 
     await pipe.close()
 
@@ -6143,7 +6141,6 @@ async def test_queue_handles_rapid_start_stop_cycles(monkeypatch):
 
     await pipe.close()
 
-# ===== From test_middleware_stream_queue.py =====
 
 import asyncio
 
@@ -6188,24 +6185,12 @@ async def test_put_middleware_stream_item_times_out_drops_item(pipe_instance_asy
     stream_queue: asyncio.Queue[dict | str | None] = asyncio.Queue(maxsize=1)
     stream_queue.put_nowait({"event": {"type": "notification", "data": {}}})
 
-    # Should NOT raise — item is silently dropped
     await pipe._event_emitter_handler._put_middleware_stream_item(
         cast(Any, job),
         stream_queue,
         {"event": {"type": "status"}},
     )
-    # Queue still has only the original item
     assert stream_queue.qsize() == 1
-
-
-# =============================================================================
-# Additional Coverage Tests for streaming_core.py
-# Lines: 83-84, 237, 246-249, 251, 273-279, 294, 300-301, 303-323, 328, 337-339,
-#        345-361, 365, 398, 401, 412-413, 431, 475, 501, 511, 551, 553-555,
-#        806, 816, 849, 860, 1024, 1092, 1095, 1153-1156, 1378, 1427-1428,
-#        1465, 1484-1490, 1515-1521, 1577-1578, 1688, 1711-1712, 1745-1747,
-#        1756, 1760, 1763, 1767-1773, 1783, 1787, 1790, 1794-1805, 1949, 1996-2000
-# =============================================================================
 
 
 class TestStreamingCoreAdditionalCoverage:
@@ -6218,8 +6203,6 @@ class TestStreamingCoreAdditionalCoverage:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-        # Text with min chars but no punctuation to trigger idle seconds check
-        # Using a small delay to simulate idle time
         events = [
             {"type": "response.reasoning_text.delta", "delta": "Thinking about this"},
             {"type": "response.output_text.delta", "delta": "Done."},
@@ -6256,7 +6239,6 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Test with URL result which doesn't require base64 validation
         events = [
             {
                 "type": "response.output_item.done",
@@ -6285,7 +6267,6 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        # Should contain image markdown with the URL
         assert "![" in result and "storage.example.com" in result
 
     @pytest.mark.asyncio
@@ -6503,7 +6484,6 @@ class TestStreamingCoreAdditionalCoverage:
 
         # Text and images should be in result
         assert "First block" in result
-        # Image URLs should appear in the output (either as markdown or raw)
         assert "example.com" in result or len(result) > len("First block")
 
     @pytest.mark.asyncio
@@ -6513,7 +6493,6 @@ class TestStreamingCoreAdditionalCoverage:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
-        # Test with a malformed event that's not a dict
         events = [
             {"type": "response.reasoning_text.delta", "delta": "Valid thought"},
             {"type": "response.output_text.delta", "delta": "Done."},
@@ -6553,7 +6532,7 @@ class TestStreamingCoreAdditionalCoverage:
                 "item": {
                     "type": "reasoning",
                     "id": "rs-1",
-                    "content": "not-a-list",  # Invalid content format
+                    "content": "not-a-list",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done."},
@@ -6582,7 +6561,7 @@ class TestStreamingCoreAdditionalCoverage:
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
         events = [
-            {"type": "response.reasoning_text.delta", "delta": ""},  # Empty
+            {"type": "response.reasoning_text.delta", "delta": ""},
             {"type": "response.reasoning_text.delta", "delta": "Real thought"},
             {"type": "response.output_text.delta", "delta": "Done."},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -6615,11 +6594,10 @@ class TestStreamingCoreAdditionalCoverage:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
-        # Simulate cumulative reasoning where the buffer already contains what's being sent
         events = [
             {"type": "response.reasoning_text.delta", "delta": "ABC"},
-            {"type": "response.reasoning_text.delta", "delta": "ABCDEF"},  # cumulative
-            {"type": "response.reasoning_text.delta", "delta": "AB"},  # shorter - triggers startswith check
+            {"type": "response.reasoning_text.delta", "delta": "ABCDEF"},
+            {"type": "response.reasoning_text.delta", "delta": "AB"},
             {"type": "response.output_text.delta", "delta": "Done."},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -6658,7 +6636,7 @@ class TestStreamingCoreAdditionalCoverage:
                 "type": "response.function_call_arguments.delta",
                 "item_id": "call-1",
                 "name": "test_tool",
-                "delta": "",  # Empty delta
+                "delta": "",
             },
             {
                 "type": "response.function_call_arguments.delta",
@@ -6708,7 +6686,7 @@ class TestStreamingCoreAdditionalCoverage:
                 "type": "response.function_call_arguments.done",
                 "item_id": "call-1",
                 "name": "test_tool",
-                "arguments": '{"different": "args"}',  # Doesn't start with prev
+                "arguments": '{"different": "args"}',
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -6780,7 +6758,7 @@ class TestStreamingCoreAdditionalCoverage:
                     "id": "call-1",
                     "call_id": "call-1",
                     "name": "my_tool",
-                    "arguments": object(),  # non-string, non-dict
+                    "arguments": object(),
                 },
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -6900,7 +6878,7 @@ class TestStreamingCoreAdditionalCoverage:
                     "output": [
                         {
                             "type": "function_call",
-                            "call_id": None,  # Missing call_id will cause issues
+                            "call_id": None,
                             "name": "test_tool",
                             "arguments": '{"key": "value"}',
                         }
@@ -6928,8 +6906,6 @@ class TestStreamingCoreAdditionalCoverage:
                 user_id="user-123",
             )
 
-        # The tool call should be skipped due to missing call_id
-        # This exercises the error handling path
 
     @pytest.mark.asyncio
     async def test_nonstreaming_tool_calls_response_exception(self, monkeypatch, pipe_instance_async, caplog):
@@ -6955,14 +6931,12 @@ class TestStreamingCoreAdditionalCoverage:
             },
         ]
 
-        # Create a malformed metadata that causes exception in response building
         def mock_time_raising(*args, **kwargs):
             raise ValueError("Simulated time error")
 
         monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", _make_fake_nonstream(events))
 
         import logging
-        # The test verifies the code path runs without crashing
         result = await pipe._streaming_handler._run_nonstreaming_loop(
             body,
             valves,
@@ -7003,7 +6977,6 @@ class TestStreamingCoreAdditionalCoverage:
         async def emitter(event):
             emitted.append(event)
 
-        # The CancelledError is re-raised after cleanup
         with pytest.raises(asyncio.CancelledError):
             await pipe._streaming_handler._run_streaming_loop(
                 body,
@@ -7149,9 +7122,6 @@ class TestStreamingCoreAdditionalCoverage:
 
         assert result == "Hello"
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-        # Check if annotations were attempted to be persisted OR the test ran through the code path
-        # The response output with annotations exercises the persistence code path
-        assert True  # Successfully ran through the annotation persistence code path
 
     @pytest.mark.asyncio
     async def test_assistant_reasoning_details_persistence(self, monkeypatch, pipe_instance_async):
@@ -7205,8 +7175,6 @@ class TestStreamingCoreAdditionalCoverage:
 
         assert result == "Hello"
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-        # Successfully ran through the reasoning_details persistence code path
-        assert True
 
     @pytest.mark.asyncio
     async def test_reasoning_details_persistence_exception(self, monkeypatch, pipe_instance_async, caplog):
@@ -7238,7 +7206,7 @@ class TestStreamingCoreAdditionalCoverage:
         original_upsert = Chats.upsert_message_to_chat_by_id_and_message_id
         async def raising_upsert(*args, **kwargs):
             call_count[0] += 1
-            if call_count[0] > 1:  # Let first call (annotations) pass, fail on reasoning_details
+            if call_count[0] > 1:
                 raise Exception("DB error on reasoning_details")
 
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", raising_upsert)
@@ -7286,7 +7254,7 @@ class TestStreamingCoreAdditionalCoverage:
         """Test _looks_like_responses_unsupported returns False when no response keyword (line 1992-1993)."""
         class CustomError(Exception):
             def __init__(self):
-                super().__init__("This endpoint is not available")  # No "response" word
+                super().__init__("This endpoint is not available")
 
         error = CustomError()
         result = StreamingHandler._looks_like_responses_unsupported(error)
@@ -7345,7 +7313,7 @@ class TestStreamingCoreAdditionalCoverage:
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
 
         def mock_make_db_row(*args, **kwargs):
-            return None  # Always return None to trigger warning
+            return None
 
         monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
 
@@ -7367,11 +7335,9 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Make _validate_base64_size return False to test the skip path
         def mock_validate_size(data):
             return False
 
-        # Monkeypatch on multimodal_handler using setattr
         pipe._file_gateway.validate_base64_size = mock_validate_size
 
         events = [
@@ -7380,7 +7346,7 @@ class TestStreamingCoreAdditionalCoverage:
                 "item": {
                     "type": "image_generation_call",
                     "id": "img-1",
-                    "result": [{"b64_json": "dGVzdA=="}],  # Valid base64
+                    "result": [{"b64_json": "dGVzdA=="}],
                 },
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -7402,8 +7368,6 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        # Should handle gracefully (no image output or empty)
-        # The base64 validation failure should result in no image markdown
         assert "![" not in result
 
     @pytest.mark.asyncio
@@ -7412,9 +7376,8 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Create a slow stream that allows thinking tasks to timeout
         async def slow_stream(self, session, request_body, **_kwargs):
-            await asyncio.sleep(0.1)  # Small delay
+            await asyncio.sleep(0.1)
             yield {"type": "response.output_text.delta", "delta": "Hello"}
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
 
@@ -7435,7 +7398,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert result == "Hello"
-        # Verify "Thinking" status was emitted
         status_events = _collect_events_of_type(emitted, "status")
         assert any("Thinking" in e.get("data", {}).get("description", "") for e in status_events)
 
@@ -7454,7 +7416,7 @@ class TestStreamingCoreAdditionalCoverage:
             {
                 "type": "response.function_call_arguments.delta",
                 "item_id": "call-1",
-                "name": "",  # Empty name
+                "name": "",
                 "delta": '{"key": "value"}',
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -7476,7 +7438,6 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        # Should skip the tool call with empty name
         tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
         assert not tool_calls
 
@@ -7494,12 +7455,12 @@ class TestStreamingCoreAdditionalCoverage:
                     "output": [
                         {
                             "type": "message",
-                            "role": "user",  # Wrong role
+                            "role": "user",
                             "annotations": [{"type": "file_ref"}],
                         },
                         {
                             "type": "message",
-                            "role": "system",  # Wrong role
+                            "role": "system",
                             "annotations": [{"type": "file_ref2"}],
                         },
                     ],
@@ -7530,7 +7491,6 @@ class TestStreamingCoreAdditionalCoverage:
 
         assert result == "Hello"
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
-        # No annotations should be persisted for wrong roles
         assert not any("annotations" in str(d.get("data", {})) for d in persisted_data)
 
     @pytest.mark.asyncio
@@ -7546,7 +7506,7 @@ class TestStreamingCoreAdditionalCoverage:
                 "response": {
                     "output": [
                         {
-                            "type": "function_call",  # Wrong type
+                            "type": "function_call",
                             "role": "assistant",
                             "annotations": [{"type": "file_ref"}],
                         },
@@ -7582,9 +7542,9 @@ class TestStreamingCoreAdditionalCoverage:
                 "type": "response.completed",
                 "response": {
                     "output": [
-                        "string_item",  # Non-dict
-                        None,  # None
-                        123,  # Number
+                        "string_item",
+                        None,
+                        123,
                         {
                             "type": "message",
                             "role": "assistant",
@@ -7631,7 +7591,6 @@ class TestStreamingCoreAdditionalCoverage:
         assert endpoint == "chat_completions"
         assert forced is True
 
-        # Non-matching model shouldn't be forced
         endpoint2, forced2 = pipe._streaming_handler._select_llm_endpoint_with_forced("openai/gpt-4", valves=valves)
         assert forced2 is False
 
@@ -7655,7 +7614,6 @@ class TestStreamingCoreAdditionalCoverage:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Set up a request_id in SessionLogger
         request_id = "test-request-id-123"
         SessionLogger.request_id.set(request_id)
         SessionLogger.logs[request_id] = [{"event": "test-log"}]
@@ -7688,7 +7646,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert result == "Hello"
-        # Verify session log was attempted to be persisted
         assert len(persisted_logs) > 0
 
         # Clean up
@@ -7704,7 +7661,6 @@ class TestStreamingCoreAdditionalCoverage:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
-        # Set up a request_id in SessionLogger
         request_id = "test-request-tool-passthrough"
         SessionLogger.request_id.set(request_id)
         SessionLogger.logs[request_id] = [{"event": "test-log"}]
@@ -7749,7 +7705,6 @@ class TestStreamingCoreAdditionalCoverage:
             user_id="user-123",
         )
 
-        # Verify session log persisted with has_function_calls path exercised
         assert len(persisted_logs) > 0
 
         # Clean up
@@ -7817,7 +7772,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
 
         assert result == "Hello"
-        # Check that annotations persistence was called
         annotation_calls = [c for c in upsert_calls if "annotations" in c[2]]
         expected_annotations = [
             {
@@ -7888,7 +7842,6 @@ class TestStreamingCoreAdditionalCoverage:
         assert result == "Hello"
         # Check notification was emitted
         notifications = _collect_events_of_type(emitted, "notification")
-        # Notification path may or may not trigger depending on exact flow
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_for_annotations)
 
     @pytest.mark.asyncio
@@ -7916,7 +7869,6 @@ class TestStreamingCoreAdditionalCoverage:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Make upsert fail for reasoning_details
         from open_webui.models.chats import Chats
         original_upsert_for_reasoning = Chats.upsert_message_to_chat_by_id_and_message_id
         async def failing_upsert(chat_id, message_id, data):
@@ -7986,7 +7938,6 @@ class TestStreamingCoreAdditionalCoverage:
 
     def test_looks_like_responses_unsupported_api_error_message_patterns(self):
         """Test _looks_like_responses_unsupported with various message patterns (lines 1976-1984)."""
-        # Test with "not supported" in message
         error1 = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
@@ -7995,7 +7946,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
         assert StreamingHandler._looks_like_responses_unsupported(error1) is True
 
-        # Test with chat/completions suggestion
         error2 = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
@@ -8004,7 +7954,6 @@ class TestStreamingCoreAdditionalCoverage:
         )
         assert StreamingHandler._looks_like_responses_unsupported(error2) is True
 
-        # Test with openai-responses-v1 mention
         error3 = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
@@ -8013,19 +7962,13 @@ class TestStreamingCoreAdditionalCoverage:
         )
         assert StreamingHandler._looks_like_responses_unsupported(error3) is True
 
-        # Test without response/responses keyword (should return False early)
         error4 = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
             provider="test",
-            openrouter_message="This feature is not supported",  # No "response" word
+            openrouter_message="This feature is not supported",
         )
         assert StreamingHandler._looks_like_responses_unsupported(error4) is False
-
-
-# =============================================================================
-# Additional Coverage Tests - Targeting Uncovered Lines
-# =============================================================================
 
 
 class TestNonAPIErrorResponsesUnsupported:
@@ -8065,12 +8008,10 @@ class TestNonAPIErrorResponsesUnsupported:
         """Test non-API error returns False without response keyword (line 1992-1993)."""
         class CustomError(Exception):
             def __init__(self):
-                super().__init__("xai-responses-v1 endpoint not available")  # No 'response' keyword
+                super().__init__("xai-responses-v1 endpoint not available")
 
         error = CustomError()
         result = StreamingHandler._looks_like_responses_unsupported(error)
-        # This should return False because 'response' keyword is missing
-        # But "responses" is in xai-responses-v1, so it returns True
         assert result is True
 
     def test_non_api_error_no_response_or_responses_keyword(self):
@@ -8126,7 +8067,6 @@ class TestToolPassthroughExceptionHandling:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Create an emitter that raises an exception when receiving tool_calls
         call_count = [0]
         async def failing_emitter(event):
             if event.get("type") == "chat:tool_calls":
@@ -8146,7 +8086,6 @@ class TestToolPassthroughExceptionHandling:
                 user_id="user-123",
             )
 
-        # The exception should be caught and logged
         assert any("Tool pass-through failed" in record.message or "Failed to stream tool-call" in record.message for record in caplog.records)
 
 
@@ -8160,7 +8099,6 @@ class TestNonStreamingToolPassthroughException:
         body = ResponsesBody(model="test/model", input=[], stream=False)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
-        # This event will be processed in non-streaming mode
         events = [
             {
                 "type": "response.completed",
@@ -8180,12 +8118,9 @@ class TestNonStreamingToolPassthroughException:
 
         monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", _make_fake_nonstream(events))
 
-        # Mock metadata.get to raise an exception when accessing "model"
-        # This will cause an exception in the non-streaming tool response building
         class BadMetadata(dict):
             def get(self, key, default=None):
                 if key == "model":
-                    # Return something that will cause issues when .get("id") is called
                     class BadModel:
                         def get(self, k, d=None):
                             raise TypeError("Simulated metadata access failure")
@@ -8204,10 +8139,8 @@ class TestNonStreamingToolPassthroughException:
                 user_id="user-123",
             )
 
-        # The result should fall back to assistant_message (empty string or the text before error)
         # Check if the warning was logged
         has_warning = any("Failed to build non-streaming tool_calls response" in record.message for record in caplog.records)
-        # Either we got a warning or we got a dict response (if the exception didn't occur)
         assert has_warning or isinstance(result, dict) or result == ""
 
 
@@ -8269,7 +8202,6 @@ class TestPersistToolsNormalizationFailure:
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", cycling_stream)
 
         async def mock_execute(calls, registry):
-            # Return function_call_output with an unusual type that will fail normalization
             return [{"type": "unknown_unsupported_type", "call_id": "call-1", "output": '{"result": "sunny"}'}]
 
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
@@ -8313,10 +8245,7 @@ class TestPersistToolsNormalizationFailure:
                 user_id="user-123",
             )
 
-        # Check that a warning was logged about normalization returning None
-        # This happens when _normalize_persisted_item returns None for the unknown type
         has_warning = any("Normalization returned None" in record.message or "_make_db_row returned None" in record.message for record in caplog.records)
-        # The test is successful if we either got a warning or the code path was executed
         assert result is not None
 
 
@@ -8409,7 +8338,6 @@ class TestImagePersistenceWithStatusMessages:
             user_id="user-123",
         )
 
-        # Result should include markdown image with URL
         assert "![" in result
         assert "https://example.com/image.png" in result
 
@@ -8423,14 +8351,13 @@ class TestAppendOutputBlockEmpty:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Create events that would result in empty image blocks
         events = [
             {
                 "type": "response.output_item.done",
                 "item": {
                     "type": "image_generation_call",
                     "id": "img-1",
-                    "result": [],  # Empty result list
+                    "result": [],
                 },
             },
             {"type": "response.output_text.delta", "delta": "Hello"},
@@ -8453,7 +8380,6 @@ class TestAppendOutputBlockEmpty:
             user_id="user-123",
         )
 
-        # Result should be just "Hello" without empty image blocks
         assert result == "Hello"
 
 
@@ -8502,7 +8428,6 @@ class TestExtractReasoningTextNonDict:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
-        # Reasoning event with unusual structure
         events = [
             {"type": "response.reasoning_text.delta", "delta": "Thinking..."},
             {"type": "response.output_text.delta", "delta": "Done."},
@@ -8584,7 +8509,7 @@ class TestAppendReasoningTextEmpty:
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
         events = [
-            {"type": "response.reasoning_text.delta", "delta": ""},  # Empty delta
+            {"type": "response.reasoning_text.delta", "delta": ""},
             {"type": "response.reasoning_text.delta", "delta": "Thinking..."},
             {"type": "response.output_text.delta", "delta": "Done."},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -8644,9 +8569,7 @@ class TestThinkingTasksDelayedStatus:
         )
 
         assert result == "Hello"
-        # The delayed status tasks should have been created but cancelled
         status_events = [e for e in emitted if e.get("type") == "status"]
-        # At minimum we should have some status events (Thinking... is emitted at delay=0)
         assert any("Thinking" in e.get("data", {}).get("description", "") for e in status_events)
 
 
@@ -8768,7 +8691,6 @@ class TestToolPassthroughNameSent:
 
         tool_calls = [e for e in emitted if e.get("type") == "chat:tool_calls"]
         assert tool_calls
-        # First call should include name, subsequent calls should not
         first_tool_call = tool_calls[0]["data"]["tool_calls"][0]["function"]
         assert "name" in first_tool_call
 
@@ -8790,7 +8712,7 @@ class TestFunctionCallRawTextConversion:
                     "id": "call-1",
                     "call_id": "call-1",
                     "name": "test_func",
-                    "arguments": None,  # None case
+                    "arguments": None,
                 },
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -8810,7 +8732,6 @@ class TestFunctionCallRawTextConversion:
                 user_id="user-123",
             )
 
-        # Check that the function was processed
         assert "test_func()" in caplog.text or result is not None
 
 
@@ -8830,7 +8751,6 @@ class TestSessionLogSegmentPersistException:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Mock session log persistence to raise an exception
         async def mock_persist_session_log(*args, **kwargs):
             raise RuntimeError("Simulated session log persist failure")
 
@@ -8852,11 +8772,9 @@ class TestSessionLogSegmentPersistException:
                 user_id="user-123",
             )
 
-        # The result should still be successful even if session log failed
         assert result == "Hello"
         # Check that the exception was logged
         has_debug = any("Failed to persist session log segment" in record.message for record in caplog.records)
-        # Either the debug log was captured or the function completed successfully
         assert result == "Hello"
 
 
@@ -8935,7 +8853,6 @@ class TestNonAPIErrorReturningFalse:
 
         error = CustomError()
         result = StreamingHandler._looks_like_responses_unsupported(error)
-        # Contains "response" but no "not supported", "unsupported", etc. patterns
         assert result is False
 
 
@@ -8949,9 +8866,8 @@ class TestReasoningStatusReturnEarly:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-        # Provide reasoning events with whitespace-only content
         events = [
-            {"type": "response.reasoning_text.delta", "delta": "   "},  # Whitespace only
+            {"type": "response.reasoning_text.delta", "delta": "   "},
             {"type": "response.output_text.delta", "delta": "Done."},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -8973,9 +8889,7 @@ class TestReasoningStatusReturnEarly:
         )
 
         assert result == "Done."
-        # Reasoning status should not be emitted for whitespace-only text
         status_events = [e for e in emitted if e.get("type") == "status"]
-        # The "Thinking..." status should still appear but not the whitespace text
         reasoning_status_texts = [e.get("data", {}).get("description", "") for e in status_events]
         assert not any(s.strip() == "" for s in reasoning_status_texts if s)
 
@@ -9021,7 +8935,6 @@ class TestNonStreamingToolCallsNonDictItem:
                 user_id="user-123",
             )
 
-        # Should return a dict with tool_calls
         assert isinstance(result, dict) or result == ""
 
 
@@ -9040,10 +8953,10 @@ class TestAnnotationsAndReasoningDetailsExtraction:
                 "type": "response.completed",
                 "response": {
                     "output": [
-                        "string_item",  # non-dict, should be skipped
-                        123,  # non-dict, should be skipped
-                        {"type": "not_message"},  # wrong type, should be skipped
-                        {"type": "message", "role": "user"},  # wrong role, should be skipped
+                        "string_item",
+                        123,
+                        {"type": "not_message"},
+                        {"type": "message", "role": "user"},
                         {
                             "type": "message",
                             "role": "assistant",
@@ -9473,9 +9386,8 @@ class TestPersistToolsNormalizationReturnsNone:
             persisted_rows.extend(rows)
             return [f"ulid-{i}" for i in range(len(rows))]
 
-        # Make _make_db_row return None (no chat_id/message_id)
         def mock_make_db_row(chat_id, message_id, model_id, payload):
-            return None  # Always return None to trigger the warning
+            return None
 
         monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
         monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
@@ -9496,7 +9408,6 @@ class TestPersistToolsNormalizationReturnsNone:
                 user_id="user-123",
             )
 
-        # Check that warnings were logged about _make_db_row returning None
         has_warning = any("_make_db_row returned None" in record.message for record in caplog.records)
         assert has_warning or result is not None
 
@@ -9506,20 +9417,14 @@ class TestAPIErrorCodePatterns:
 
     def test_api_error_no_patterns_match_returns_false(self):
         """Test API error where no patterns match returns False (line 1984)."""
-        # Test with response keyword but no matching patterns
         error = OpenRouterAPIError(
             status=400,
             reason="Bad Request",
             provider="test",
-            openrouter_message="The response was incomplete",  # Has "response" but no pattern match
+            openrouter_message="The response was incomplete",
         )
         result = StreamingHandler._looks_like_responses_unsupported(error)
         assert result is False
-
-
-# =============================================================================
-# Additional Coverage Tests for 98%+ Coverage
-# =============================================================================
 
 
 class TestChatsImportFallback:
@@ -9527,12 +9432,7 @@ class TestChatsImportFallback:
 
     def test_chats_import_fallback_is_none_when_not_present(self):
         """Test that Chats is None when import fails (line 84)."""
-        # The import fallback sets Chats = None when open_webui.models.chats not found
-        # This is tested implicitly by the conftest.py stub setup
-        # We can verify the fallback path by checking the module's behavior
         from open_webui_openrouter_pipe.streaming import streaming_core
-        # When running tests, Chats should be the stub or None
-        # The import fallback is exercised during module load
         assert hasattr(streaming_core, 'Chats')
 
 
@@ -9546,10 +9446,8 @@ class TestReasoningStatusEmitGuard:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-        # Send short reasoning text that doesn't end with punctuation
-        # and is below min chars threshold - should NOT emit status
         events = [
-            {"type": "response.reasoning_text.delta", "delta": "ab"},  # Short, no punctuation
+            {"type": "response.reasoning_text.delta", "delta": "ab"},
             {"type": "response.output_text.delta", "delta": "Hello"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -9570,11 +9468,8 @@ class TestReasoningStatusEmitGuard:
             user_id="user-123",
         )
 
-        # The short reasoning text "ab" should not trigger a status emit
-        # because it doesn't meet any of the emit conditions
         status_events = [e for e in emitted if e.get("type") == "status"]
         reasoning_status = [e for e in status_events if "ab" == e.get("data", {}).get("description", "")]
-        # "ab" is too short and has no punctuation, so should not appear as standalone status
         assert len(reasoning_status) == 0 or result == "Hello"
 
 
@@ -9606,7 +9501,6 @@ class TestImagePersistenceExtConversion:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Mock storage context to enable persistence
         async def mock_resolve_storage_context(request_context, user_obj):
             return (Mock(), Mock())
 
@@ -9632,7 +9526,6 @@ class TestImagePersistenceExtConversion:
             user_id="user-123",
         )
 
-        # The jpg mime type should trigger extension handling
         assert "Image" in result or len(emitted) > 0
 
 
@@ -9645,14 +9538,13 @@ class TestMaterializeImageFromStr:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Provide image result with empty/whitespace string
         events = [
             {
                 "type": "response.output_item.done",
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": "   ",  # Empty/whitespace only
+                    "result": "   ",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -9679,14 +9571,13 @@ class TestMaterializeImageFromStr:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # data: URL that doesn't parse correctly
         events = [
             {
                 "type": "response.output_item.done",
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": "data:invalid",  # Invalid data URL
+                    "result": "data:invalid",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -9717,14 +9608,13 @@ class TestMaterializeImageFromStr:
         png_header = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
         b64_image = base64.b64encode(png_header).decode()
 
-        # Base64 with prefix (not a full data: URL, but has the ,base64 marker)
         events = [
             {
                 "type": "response.output_item.done",
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": f"image/png;base64,{b64_image}",  # Has ;base64, prefix
+                    "result": f"image/png;base64,{b64_image}",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -9733,7 +9623,6 @@ class TestMaterializeImageFromStr:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Mock storage to not persist (returns None)
         async def mock_resolve_storage_context(request_context, user_obj):
             return (None, None)
 
@@ -9749,7 +9638,6 @@ class TestMaterializeImageFromStr:
             user_id="user-123",
         )
 
-        # Should process the base64 and return a data URL fallback
         assert "Done" in result or "data:" in result or "!" in result
 
     @pytest.mark.asyncio
@@ -9764,7 +9652,7 @@ class TestMaterializeImageFromStr:
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": "not_valid_base64!!!@@@",  # Invalid base64
+                    "result": "not_valid_base64!!!@@@",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -9807,7 +9695,7 @@ class TestMaterializeImageEntry:
                     "status": "completed",
                     "result": {
                         "b64_json": b64_image,
-                        "mime_type": "image/jpg",  # Test jpg to jpeg conversion
+                        "mime_type": "image/jpg",
                     },
                 },
             },
@@ -9833,7 +9721,6 @@ class TestMaterializeImageEntry:
             user_id="user-123",
         )
 
-        # Should process and return data URL fallback
         assert "Done" in result or "!" in result
 
     @pytest.mark.asyncio
@@ -9849,8 +9736,8 @@ class TestMaterializeImageEntry:
                     "type": "image_generation_call",
                     "status": "completed",
                     "result": {
-                        "b64_json": "invalid!!!base64",  # Invalid base64
-                        "url": "https://example.com/image.png",  # Fallback URL
+                        "b64_json": "invalid!!!base64",
+                        "url": "https://example.com/image.png",
                     },
                 },
             },
@@ -9878,15 +9765,13 @@ class TestMaterializeImageEntry:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # The _append_output_block function is tested indirectly through image handling
-        # When an image URL is empty, it should not append anything
         events = [
             {
                 "type": "response.output_item.done",
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": "",  # Empty result
+                    "result": "",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Text only"},
@@ -9917,9 +9802,8 @@ class TestSurrogateNormalization:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Send empty deltas to test the empty combined path
         events = [
-            {"type": "response.output_text.delta", "delta": ""},  # Empty delta
+            {"type": "response.output_text.delta", "delta": ""},
             {"type": "response.output_text.delta", "delta": "Hello"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
@@ -9953,9 +9837,7 @@ class TestExtractReasoningText:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "status"})
 
-        # Create a stream that includes a malformed reasoning event
         events = [
-            # This tests the non-dict guard in _extract_reasoning_text
             {"type": "response.reasoning_text.delta", "delta": "Normal reasoning"},
             {"type": "response.output_text.delta", "delta": "Hello"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -9985,11 +9867,10 @@ class TestExtractReasoningTextFromItem:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Send output_item.done with a non-dict item to test the guard
         events = [
             {
                 "type": "response.output_item.done",
-                "item": "not_a_dict",  # Non-dict item
+                "item": "not_a_dict",
             },
             {"type": "response.output_text.delta", "delta": "Hello"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -10022,7 +9903,7 @@ class TestAppendReasoningText:
 
         # Send reasoning with empty delta
         events = [
-            {"type": "response.reasoning_text.delta", "delta": ""},  # Empty reasoning
+            {"type": "response.reasoning_text.delta", "delta": ""},
             {"type": "response.reasoning_text.delta", "delta": "Thinking..."},
             {"type": "response.output_text.delta", "delta": "Hello"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -10056,9 +9937,8 @@ class TestLaterTimeout:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Create a slow stream that allows thinking status updates to fire
         async def slow_stream(self, session, request_body, **_kwargs):
-            await asyncio.sleep(0.1)  # Small delay to allow thinking tasks
+            await asyncio.sleep(0.1)
             yield {"type": "response.output_text.delta", "delta": "Hello"}
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
 
@@ -10094,7 +9974,6 @@ class TestRawArgumentsFallback:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
 
-        # Create a custom object that can't be JSON serialized but has __str__
         class UnserializableArgs:
             def __str__(self):
                 return "unserializable_args"
@@ -10102,7 +9981,6 @@ class TestRawArgumentsFallback:
             def __repr__(self):
                 return "UnserializableArgs()"
 
-        # Send function call with arguments that will fail JSON parsing
         events = [
             {
                 "type": "response.output_item.done",
@@ -10111,7 +9989,7 @@ class TestRawArgumentsFallback:
                     "call_id": "call-1",
                     "id": "call-1",
                     "name": "test_tool",
-                    "arguments": [1, 2, 3],  # List instead of object - will fail parsing
+                    "arguments": [1, 2, 3],
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -10139,7 +10017,6 @@ class TestRawArgumentsFallback:
             user_id="user-123",
         )
 
-        # Should handle the non-object arguments gracefully
         assert "Done" in result or result is not None
 
 
@@ -10153,7 +10030,6 @@ class TestToolCallsPayloadNonDict:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
-        # Enable debug logging to trigger the summary code path
         import logging
         pipe.logger.setLevel(logging.DEBUG)
 
@@ -10202,7 +10078,7 @@ class TestNonStreamingToolCallsException:
     async def test_nonstreaming_tool_calls_build_exception(self, monkeypatch, pipe_instance_async, caplog):
         """Test exception handling when building non-streaming tool_calls response (lines 1484-1490)."""
         pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)  # Non-streaming
+        body = ResponsesBody(model="test/model", input=[], stream=False)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
         events = [
@@ -10229,7 +10105,6 @@ class TestNonStreamingToolCallsException:
         call_count = [0]
         def failing_dumps(*args, **kwargs):
             call_count[0] += 1
-            # Fail on specific calls to trigger the exception handler
             if call_count[0] > 5:
                 raise ValueError("Simulated JSON error")
             return original_dumps(*args, **kwargs)
@@ -10247,8 +10122,7 @@ class TestNonStreamingToolCallsException:
                     user_id="user-123",
                 )
 
-        # Should handle the exception and still return something
-        assert result is not None or True  # May return empty string or dict
+        assert result is not None
 
 
 class TestPersistToolsNormalizationNone:
@@ -10318,10 +10192,9 @@ class TestPersistToolsNormalizationNone:
         original_normalize = persistence.normalize_persisted_item
 
         def mock_normalize(item):
-            return None  # Always return None
+            return None
 
         monkeypatch.setattr(persistence, "normalize_persisted_item", mock_normalize)
-        # Also patch the imported reference in streaming_core
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.streaming.streaming_core.normalize_persisted_item",
             mock_normalize
@@ -10360,7 +10233,6 @@ class TestPersistToolsNormalizationNone:
                 user_id="user-123",
             )
 
-        # Should log warning about normalization returning None
         has_warning = any("Normalization returned None" in record.message for record in caplog.records)
         assert has_warning or result is not None
 
@@ -10407,7 +10279,6 @@ class TestSessionLogSegmentStatus:
                 user_id="user-123",
             )
 
-        # Verify the session log was called with cancelled status if logging is enabled
         if session_logs:
             assert session_logs[-1].get("status") == "cancelled"
 
@@ -10444,7 +10315,6 @@ class TestSessionLogSegmentStatus:
             user_id="user-123",
         )
 
-        # Should have logged with error status
         if session_logs:
             assert session_logs[-1].get("status") == "error"
 
@@ -10483,11 +10353,7 @@ class TestSessionLogPersistException:
                 user_id="user-123",
             )
 
-        # Should still complete successfully despite persist failure
         assert result == "Hello"
-        # Exception should be logged at debug level
-        has_debug = any("persist session log" in record.message.lower() for record in caplog.records)
-        assert has_debug or True  # May not always log depending on config
 
 
 class TestDataUrlImagePersistence:
@@ -10530,7 +10396,6 @@ class TestDataUrlImagePersistence:
         async def mock_upload(request, user, file_data, filename, mime_type, **kwargs):
             return "file-success-123"
 
-        # Mock _emit_status to avoid the StatusMessages import issue
         status_calls: list[tuple] = []
         async def mock_emit_status(emitter, msg, done=False):
             status_calls.append((msg, done))
@@ -10553,8 +10418,6 @@ class TestDataUrlImagePersistence:
             user_id="user-123",
         )
 
-        # Verify the persistence path was exercised
-        # The result should contain the image markdown or "Done"
         assert "Done" in result or "!" in result or "/api/v1/files" in result
 
 
@@ -10587,12 +10450,11 @@ class TestImagePersistenceFailFallback:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Mock storage to succeed context but fail upload
         async def mock_resolve_storage_context(request_context, user_obj):
             return (Mock(), Mock())
 
         async def mock_upload_fail(request, user, file_data, filename, mime_type, **kwargs):
-            return None  # Upload fails
+            return None
 
         monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", mock_resolve_storage_context)
         monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage", mock_upload_fail)
@@ -10607,13 +10469,7 @@ class TestImagePersistenceFailFallback:
             user_id="user-123",
         )
 
-        # Should include the original data URL as fallback
         assert "Done" in result or "data:" in result or "!" in result
-
-
-# =============================================================================
-# Additional Coverage Tests - Second Round for 98%+
-# =============================================================================
 
 
 class TestImageB64JsonPersistence:
@@ -10656,7 +10512,6 @@ class TestImageB64JsonPersistence:
             uploaded.append({"filename": filename, "mime_type": mime_type, "size": len(file_data)})
             return "file-b64-123"
 
-        # Mock _emit_status to avoid StatusMessages issue
         async def mock_emit_status(emitter, msg, done=False):
             pass
 
@@ -10697,7 +10552,6 @@ class TestRawBase64Persistence:
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    # Raw base64 with prefix but not data: URL
                     "result": f"image/png;base64,{b64_image}",
                 },
             },
@@ -10745,7 +10599,6 @@ class TestValidateBase64SizeFails:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Large base64 that exceeds size limit
         large_b64 = base64.b64encode(b"x" * 100000).decode()
 
         events = [
@@ -10754,7 +10607,7 @@ class TestValidateBase64SizeFails:
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": large_b64,  # Large raw base64
+                    "result": large_b64,
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -10763,9 +10616,8 @@ class TestValidateBase64SizeFails:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Mock _validate_base64_size to return False
         def mock_validate(b64_str):
-            return False  # Size validation fails
+            return False
 
         monkeypatch.setattr(pipe._file_gateway, "validate_base64_size", mock_validate)
 
@@ -10779,7 +10631,6 @@ class TestValidateBase64SizeFails:
             user_id="user-123",
         )
 
-        # Should just return "Done" without image
         assert result == "Done"
 
 
@@ -10864,7 +10715,7 @@ class TestAppendOutputBlockEmptySnippet:
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": "   ",  # Whitespace only - should be trimmed to empty
+                    "result": "   ",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Hello"},
@@ -10883,7 +10734,6 @@ class TestAppendOutputBlockEmptySnippet:
             user_id="user-123",
         )
 
-        # Empty image should not be appended, just "Hello"
         assert result == "Hello"
 
 
@@ -10896,9 +10746,8 @@ class TestLaterTimeoutWithDelayedStream:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Create a delayed stream to allow thinking tasks to fire
         async def delayed_stream(self, session, request_body, **_kwargs):
-            await asyncio.sleep(2.0)  # Long enough for thinking tasks
+            await asyncio.sleep(2.0)
             yield {"type": "response.output_text.delta", "delta": "Hello"}
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
 
@@ -10919,12 +10768,10 @@ class TestLaterTimeoutWithDelayedStream:
         )
 
         assert result == "Hello"
-        # Check for thinking-related status messages
         status_descriptions = [
             e.get("data", {}).get("description", "")
             for e in emitted if e.get("type") == "status"
         ]
-        # Should have multiple thinking status messages due to delay
         thinking_statuses = [d for d in status_descriptions if "think" in d.lower() or "read" in d.lower() or "gather" in d.lower()]
         assert len(thinking_statuses) >= 1
 
@@ -10982,9 +10829,7 @@ class TestToolCallsPayloadDebugLogging:
                 user_id="user-123",
             )
 
-        # Should emit tool_calls event for Open-WebUI passthrough
         tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
-        # The event should be emitted for Open-WebUI mode
         assert tool_calls or result is not None
 
 
@@ -10998,7 +10843,6 @@ class TestRawArgumentsNonJsonNonString:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
 
-        # Use a list (array) as arguments - will fail JSON parsing as object
         events = [
             {
                 "type": "response.output_item.done",
@@ -11007,7 +10851,7 @@ class TestRawArgumentsNonJsonNonString:
                     "call_id": "call-1",
                     "id": "call-1",
                     "name": "test_tool",
-                    "arguments": [1, 2, 3],  # Array, not object
+                    "arguments": [1, 2, 3],
                 },
             },
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -11053,12 +10897,9 @@ class TestSessionLogPersistExceptionCoverage:
     @pytest.mark.asyncio
     async def test_session_log_persist_exception_path_exists(self, pipe_instance_async):
         """Verify session log persist exception path exists (lines 1711-1712)."""
-        # This test verifies the exception handler exists in the code
-        # The actual path is exercised by TestSessionLogPersistException
         from open_webui_openrouter_pipe.streaming import streaming_core
         import inspect
         source = inspect.getsource(streaming_core.StreamingHandler._run_streaming_loop)
-        # The exception handler catches persist failures and logs them
         assert "Failed to persist session log segment" in source
 
 
@@ -11072,7 +10913,6 @@ class TestExtractReasoningFromNonDictEvent:
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
-        # Normal events that test the dict handling
         events = [
             {"type": "response.reasoning_text.delta", "delta": "Thinking..."},
             {"type": "response.output_text.delta", "delta": "Answer"},
@@ -11113,8 +10953,8 @@ class TestEmptyReasoningDelta:
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
 
         events = [
-            {"type": "response.reasoning_text.delta", "delta": ""},  # Empty
-            {"type": "response.reasoning_text.delta", "delta": None},  # None
+            {"type": "response.reasoning_text.delta", "delta": ""},
+            {"type": "response.reasoning_text.delta", "delta": None},
             {"type": "response.reasoning_text.delta", "delta": "Real thinking"},
             {"type": "response.output_text.delta", "delta": "Answer"},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
@@ -11148,7 +10988,6 @@ class TestNormalizeSurrogateEmpty:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Multiple empty deltas followed by content
         events = [
             {"type": "response.output_text.delta", "delta": ""},
             {"type": "response.output_text.delta", "delta": ""},
@@ -11181,7 +11020,6 @@ class TestJpgMimeTypeConversion:
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
-        # Small valid PNG (doesn't matter for mime type testing)
         png_header = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
         b64_image = base64.b64encode(png_header).decode()
 
@@ -11191,7 +11029,7 @@ class TestJpgMimeTypeConversion:
                 "item": {
                     "type": "image_generation_call",
                     "status": "completed",
-                    "result": f"data:image/jpg;base64,{b64_image}",  # jpg mime type
+                    "result": f"data:image/jpg;base64,{b64_image}",
                 },
             },
             {"type": "response.output_text.delta", "delta": "Done"},
@@ -11226,7 +11064,6 @@ class TestJpgMimeTypeConversion:
             user_id="user-123",
         )
 
-        # Extension in filename should be jpeg, not jpg
         if uploaded:
             assert "jpeg" in uploaded[0]["filename"] or uploaded[0]["mime_type"] == "image/jpg"
 
@@ -11437,15 +11274,11 @@ class TestOpenRouterServerToolCards:
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
         emitted = await self._run_card_events(pipe, events)
-        # url_citation still renders
         sources = [e for e in emitted if e.get("type") == "source"]
         assert any(s["data"]["source"]["url"] == "https://a.com" for s in sources)
-        # exactly one throttled warning toast naming the unhandled type
         notifs = [e for e in emitted if e.get("type") == "notification" and e.get("data", {}).get("type") == "warning"]
         assert len(notifs) == 1, "expected exactly one throttled warning toast"
         assert "file_citation" in notifs[0]["data"]["content"]
-        # the loop processed the message (url_citation rendered) and returned without raising
-        # — i.e. the unhandled type did not break the response.
 
     @pytest.mark.asyncio
     async def test_streaming_survives_emitter_failure_midstream(self, pipe_instance_async):
@@ -11598,7 +11431,7 @@ class TestOpenRouterServerToolCards:
         events = [
             {"type": "response.output_item.done", "item": {
                 "type": "openrouter:datetime", "status": "completed",
-                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},  # no id
+                "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}},
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
@@ -11617,7 +11450,6 @@ class TestOpenRouterServerToolCards:
         function_outputs = [e for e in added_items if e.get("item", {}).get("type") == "function_call_output"]
         assert len(function_calls) == 1
         assert len(function_outputs) == 1
-        # The call_ids must match each other (paired) and start with "st-" (UUID fallback prefix)
         fc_id = function_calls[0]["item"]["call_id"]
         fco_id = function_outputs[0]["item"]["call_id"]
         assert fc_id == fco_id, "function_call and function_call_output must have matching call_id"
@@ -11655,7 +11487,6 @@ class TestOpenRouterServerToolCards:
                           and e.get("item", {}).get("call_id") == "wf-1"]
         assert len(function_calls) == 1
         assert "https://example.com/page" in function_calls[0]["item"]["arguments"]
-        # The fetched `content` (per OutputWebFetchServerToolItem schema) must render in the card.
         function_outputs = [e for e in emitted
                             if e.get("type") == "response.output_item.added"
                             and e.get("item", {}).get("type") == "function_call_output"
@@ -11667,7 +11498,6 @@ class TestOpenRouterServerToolCards:
     async def test_openrouter_web_search_url_extraction(self, monkeypatch, pipe_instance_async):
         """web_search emits status event with extracted URLs (status event NOT gated by SHOW_TOOL_CARDS)."""
         pipe = pipe_instance_async
-        # NOTE: status events with action='web_search' are NOT gated; they fire regardless of SHOW_TOOL_CARDS
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
         events = [
@@ -11709,7 +11539,7 @@ class TestOpenRouterServerToolCards:
             "datetime": "2026-04-26T15:00:00", "timezone": "UTC"}}
         events = [
             done_event,
-            done_event,  # duplicate
+            done_event,
             {"type": "response.completed", "response": {"output": [], "usage": {}}},
         ]
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
@@ -11817,10 +11647,9 @@ class TestOpenRouterServerToolCards:
                      if "Tool card(s) emitted without matching" in r.getMessage()]
         assert len(unmatched) == 1
         message = unmatched[0].getMessage()
-        # Orphans should be sorted and present; the matched call should NOT be in the warning.
         assert "call-2" in message
         assert "call-3" in message
-        assert "['call-2', 'call-3']" in message  # sorted, only orphans
+        assert "['call-2', 'call-3']" in message
 
     def test_no_unmatched_warning_when_sets_match(self, pipe_instance_async, caplog):
         """No warning when every started tool card has a matching output."""
@@ -11843,16 +11672,12 @@ def test_citation_host_strips_www_prefix_not_character_set():
     (which strips the character set {w,.} and corrupts hosts starting with 'w')."""
     from open_webui_openrouter_pipe.streaming.streaming_core import _citation_host
 
-    # www. prefix is removed exactly once
     assert _citation_host("https://www.example.com/path") == "example.com"
-    # hosts beginning with 'w' must survive intact (the old lstrip bug)
     assert _citation_host("https://weather.com/forecast") == "weather.com"
     assert _citation_host("https://wikipedia.org/wiki/X") == "wikipedia.org"
     assert _citation_host("https://wsj.com/a") == "wsj.com"
     assert _citation_host("https://web.archive.org/x") == "web.archive.org"
-    # no scheme / no path still works
     assert _citation_host("example.com") == "example.com"
-    # only a leading www. is stripped, not an internal one
     assert _citation_host("https://wwworld.com") == "wwworld.com"
 
 
@@ -12060,3 +11885,93 @@ class TestToolCitationRoutingComplement:
         )
         assert owui_calls["count"] == 0
         assert harvester_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_flush_fails", [False, True])
+async def test_each_artifact_is_persisted_exactly_once_per_turn(
+    monkeypatch, pipe_instance_async, first_flush_fails
+):
+    """The pending buffer must be DRAINED by the flush, not merely copied out of.
+
+    `test_function_execution_with_persist_tools` asserts
+    `"sunny" in result.lower() or persisted_rows` — the left disjunct is true, so the
+    persistence half never has to hold. Deleting `pending_items.clear()` left the whole
+    suite green while every flush re-sent everything accumulated so far: growth is
+    quadratic in the number of tool rounds, and `pending_ulids` collects duplicate ids
+    for the persisted assistant message.
+
+    Counts rows arriving at the persistence boundary across the WHOLE turn, so it is
+    blind to how flushes are scheduled but cannot miss a buffer that is never emptied.
+    Asserting a per-flush size would pin the current schedule instead.
+
+    The failing-flush arm pins the deliberate half: on a DB error the rows are dropped
+    rather than retried, and the caller reports it to the UI.
+    """
+    body = ResponsesBody(model="test/model", input=[], stream=True)
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(update={
+        "TOOL_EXECUTION_MODE": "Pipeline",
+        "PERSIST_TOOL_RESULTS": True,
+        "SHOW_TOOL_CARDS": False,
+        "MAX_FUNCTION_CALL_LOOPS": 4,
+    })
+
+    rounds = [
+        [{"type": "response.completed", "response": {"output": [
+            {"type": "function_call", "call_id": cid, "name": "lookup", "arguments": "{}"}
+        ], "usage": {}}}]
+        for cid in ("c1", "c2")
+    ] + [[{"type": "response.output_text.delta", "delta": "done."},
+          {"type": "response.completed", "response": {"output": [], "usage": {}}}]]
+
+    idx = [0]
+
+    async def streaming(self, session, request_body, **_kw):
+        i = min(idx[0], len(rounds) - 1)
+        idx[0] += 1
+        for ev in rounds[i]:
+            yield ev
+
+    batches: list[list[str]] = []
+
+    async def persist(rows):
+        # keyed on (type, call_id): one round persists BOTH the function_call and its
+        # function_call_output, which share a call_id but are different artifacts
+        batches.append([
+            f"{r['payload'].get('type')}:{r['payload'].get('call_id') or r['payload'].get('id') or ''}"
+            for r in rows
+        ])
+        if first_flush_fails and len(batches) == 1:
+            raise RuntimeError("db down")
+        return [f"ulid-{len(batches)}-{i}" for i in range(len(rows))]
+
+    def make_row(chat_id, message_id, model_id, payload):
+        return {"chat_id": chat_id, "message_id": message_id, "model_id": model_id,
+                "item_type": payload.get("type"), "payload": payload}
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+    monkeypatch.setattr(pipe._artifact_store, "_make_db_row", make_row)
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", persist)
+
+    async def emitter(_event):
+        return None
+
+    await pipe._streaming_handler._run_streaming_loop(
+        body, valves, emitter,
+        metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+        tools={"lookup": {"callable": lambda **_kw: "ok"}},
+        session=cast(Any, object()), user_id="user-1",
+    )
+
+    assert len(batches) >= 2, (
+        f"only {len(batches)} flush(es) ran, so this test observed nothing about the "
+        "buffer being drained between them"
+    )
+    seen = [row for batch in batches for row in batch]
+    duplicated = sorted({r for r in seen if seen.count(r) > 1})
+    assert not duplicated, (
+        f"these artifacts were sent to the database more than once: {duplicated}. "
+        f"Flushes were {batches!r} — the pending buffer is not being drained, so every "
+        "later flush rewrites every earlier artifact."
+    )

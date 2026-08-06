@@ -26,19 +26,17 @@ Filter assignment rules (driven by `filter_manager.ensure_openrouter_image_filte
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 
 from ..core.config import _OPENROUTER_IMAGE_FILTER_MARKER
-
-_IMAGE_FILTER_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
+from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 
 
 @dataclass(frozen=True, slots=True)
 class ImageFilterSpec:
     """Metadata for an image-generation filter variant."""
 
-    variant: str  # "generic" | "gemini" | "sourceful" | "sourceful_v25" | "recraft" | "recraft_v3" | "grok"
+    variant: str
     function_id: str
     display_name: str
     marker: str
@@ -46,7 +44,7 @@ class ImageFilterSpec:
 
 def sanitize_image_filter_id(variant: str) -> str:
     raw = (variant or "generic").strip().lower()
-    cleaned = _IMAGE_FILTER_ID_RE.sub("_", raw).strip("_")
+    cleaned = _IMAGE_FILTER_ID_RE.sub("_", raw)
     if not cleaned:
         cleaned = "generic"
     if len(cleaned) > 30:

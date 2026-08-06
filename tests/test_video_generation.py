@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 import json
 import logging
@@ -282,7 +283,7 @@ async def test_video_lifecycle_removes_temp_directory(monkeypatch):
     captured_dirs: list = []
 
     async def fake_streaming_download(url, dest_path, **_kwargs):
-        captured_dirs.append(dest_path.parent)  # the mkdtemp dir
+        captured_dirs.append(dest_path.parent)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(MP4_BYTES)
         return {"path": dest_path, "mime_type": "video/mp4", "url": url, "size_bytes": len(MP4_BYTES)}
@@ -797,10 +798,6 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
             assert job_id == "job-resume"
             return {"status": "completed", "usage": {"cost": "0.25"}}
 
-        # T0-A refactor: download/upload no longer go through the client. The adapter calls
-        # the canonical _download_remote_url_streaming on the multimodal handler and
-        # upload_to_owui_storage_from_path on the file gateway. content_url/bearer_header
-        # just return the URL/headers the canonical helper consumes.
         def content_url(self, job_id: str) -> str:
             return f"https://example.test/videos/{job_id}/content"
 
@@ -840,8 +837,6 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
     )
 
     assert submit_calls == 0
-    # Multi-line <video>...</video> with URL on its own line is the canonical format that
-    # marked tokenizes as a single CommonMark "type 7" html block (verified empirically).
     assert "<video>\n/api/v1/files/file-1/content\n</video>" in result
     assert pipe._video_user_active_counts == {}
     assert pipe._video_user_active_jobs == {}
@@ -948,8 +943,6 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
 
     assert "### Video generation failed" in result
     assert "provider stopped" in result
-    # Failure content reaches OWUI via chat:message:delta (which feeds the stream accumulator
-    # so the end-of-stream finalizer writes it to DB) — NOT via direct DB upsert.
     delta_events = [e for e in events if e.get("type") == "chat:message:delta"]
     assert any(e.get("data", {}).get("content") == result for e in delta_events), (
         f"expected a chat:message:delta with the failure content; got {events!r}"
@@ -995,6 +988,48 @@ async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
     semaphore = adapter._ensure_global_semaphore(pipe.valves)
     await asyncio.wait_for(semaphore.acquire(), timeout=0.2)
     semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cleanup_step_does_not_strand_the_releases_after_it():
+    """One contract for both release paths, driven rather than counted.
+
+    Two byte-near-identical closures used to encode this 250 lines apart, differing
+    only in one word of the log message, so changing which exceptions propagate in one
+    left the other on the old contract. Both now call `_cleanup_step`.
+
+    Two arms, opposite directions: an ordinary failure is logged and the NEXT step still
+    runs; a cancellation propagates instead of being swallowed. A version that swallows
+    everything passes the first arm and fails the second.
+    """
+    import asyncio as _asyncio
+    import logging
+
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("video-cleanup-test")
+
+    ran: list[str] = []
+
+    async def _boom():
+        raise RuntimeError("release failed")
+
+    async def _later():
+        ran.append("later")
+
+    await adapter._cleanup_step("lifecycle", ("c1", "m1"), "user slot", _boom())
+    await adapter._cleanup_step("lifecycle", ("c1", "m1"), "message lock", _later())
+    assert ran == ["later"], (
+        "a failing cleanup step stopped the releases after it, which strands every "
+        "resource below it for the life of the process"
+    )
+
+    async def _cancelled():
+        raise _asyncio.CancelledError()
+
+    with pytest.raises(_asyncio.CancelledError):
+        await adapter._cleanup_step("lifecycle", ("c1", "m1"), "cancelled", _cancelled())
 
 
 @pytest.mark.asyncio
@@ -1053,16 +1088,39 @@ async def _assert_no_phantom_permit(adapter, pipe, semaphore):
 
 
 @pytest.mark.asyncio
-async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(monkeypatch):
-    """A cancel after the lifecycle task exists must not release its permit twice."""
+@pytest.mark.parametrize(
+    ("persisted", "path"),
+    [
+        ("", "fresh-submit"),
+        ("[openrouter:v1:videojob:job-mid-handoff]: #\n\nVideo generation is running...", "resume"),
+    ],
+)
+async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
+    monkeypatch, persisted, path
+):
+    """A cancel after the lifecycle task exists must not release its permit twice.
+
+    Parametrised because the handoff is written twice -- once for a fresh submit and
+    once for resuming a job found in the persisted message -- and only the first was
+    covered. Moving `lifecycle_transferred = True` back below the `async with` on the
+    resume branch left the whole suite green.
+
+    When the cancel lands while suspended on the contended dict lock, the flag is still
+    False, so generate()'s finally releases the global semaphore, the user slot and the
+    message lock -- all still owned by the lifecycle task, which releases them again.
+    Over-releasing an asyncio.Semaphore mints a permanent extra permit, so the
+    configured concurrency cap drifts upward for the worker's lifetime.
+    """
     Pipe._video_global_semaphore = None
     Pipe._video_global_limit = 0
     pipe = Pipe()
+    created: list[Any] = []
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
         pipe.valves.MAX_CONCURRENT_VIDEO_GENS = 1
+        pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
         adapter = pipe._ensure_video_generation_adapter()
-        cast(Any, adapter)._persistence = _MemoryPersistence("")
+        cast(Any, adapter)._persistence = _MemoryPersistence(persisted)
         semaphore = adapter._ensure_global_semaphore(pipe.valves)
         assert semaphore._value == 1
 
@@ -1076,13 +1134,18 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
             async def status(self, _job_id):
                 await asyncio.sleep(3600)
 
+            def content_url(self, job_id):
+                return f"https://example.test/videos/{job_id}/content"
+
+            def bearer_header(self):
+                return {"Authorization": "Bearer test"}
+
         monkeypatch.setattr(
             "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient",
             FakeClient,
         )
 
         reached_handoff = asyncio.Event()
-        created: list[Any] = []
         real_create = adapter._create_lifecycle_task
 
         def spy_create(**kwargs):
@@ -1134,8 +1197,9 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
             await asyncio.sleep(0)
 
         assert semaphore._value == 0, (
-            f"global video semaphore inflated to {semaphore._value}: generate() released a "
-            "permit already owned by the still-running lifecycle task"
+            f"global video semaphore inflated to {semaphore._value} on the {path} path: "
+            "generate() released a permit already owned by the still-running lifecycle "
+            "task, so the configured cap is now permanently wrong for this worker"
         )
     finally:
         for bg in created:
@@ -1642,7 +1706,9 @@ def test_video_help_includes_cfg_scale_for_kling_v3_only():
 async def test_payload_includes_seed_and_generate_audio_for_capable_models(monkeypatch):
     pipe = Pipe()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url_blocking", lambda url: True)
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_request_ips_blocking", lambda url: ["203.0.113.9"]
+    )
 
     payload = await adapter._build_payload(
         api_model_id="google/veo-3.1",
@@ -1661,7 +1727,9 @@ async def test_payload_includes_seed_and_generate_audio_for_capable_models(monke
 async def test_payload_drops_seed_for_seed_incapable_models(monkeypatch):
     pipe = Pipe()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url_blocking", lambda url: True)
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_request_ips_blocking", lambda url: ["203.0.113.9"]
+    )
 
     payload = await adapter._build_payload(
         api_model_id="kwaivgi/kling-video-o1",
@@ -1679,7 +1747,9 @@ async def test_payload_drops_seed_for_seed_incapable_models(monkeypatch):
 async def test_generate_audio_does_not_clobber_audio_url_on_wan(monkeypatch):
     pipe = Pipe()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url_blocking", lambda url: True)
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_request_ips_blocking", lambda url: ["203.0.113.9"]
+    )
 
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
@@ -2127,18 +2197,431 @@ async def test_passthrough_validation_uses_async_safe_url(monkeypatch):
     adapter = pipe._ensure_video_generation_adapter()
     handler = pipe._multimodal_handler
 
-    async_called: list = []
+    import threading
 
-    async def fake_async(url):
-        async_called.append(url)
-        return True
+    loop_thread = threading.get_ident()
+    resolved_on: list = []
 
-    def fake_blocking(url):
-        raise AssertionError("must not call blocking DNS on the event loop")
+    def recording_blocking(url):
+        resolved_on.append((url, threading.get_ident()))
+        return ["203.0.113.9"]
 
-    monkeypatch.setattr(handler, "_is_safe_url", fake_async)
-    monkeypatch.setattr(handler, "_is_safe_url_blocking", fake_blocking)
+    monkeypatch.setattr(handler, "_request_ips_blocking", recording_blocking)
 
     payload = {"video": "https://example.test/clip.mp4"}
     await adapter._validate_passthrough_urls(payload)
-    assert async_called == ["https://example.test/clip.mp4"]
+
+    assert [url for url, _ in resolved_on] == ["https://example.test/clip.mp4"], (
+        "the passthrough URL was not validated at all"
+    )
+    assert all(tid != loop_thread for _, tid in resolved_on), (
+        "the SSRF gate resolved DNS on the event loop's own thread. getaddrinfo blocks, "
+        "so every other request on this worker stalls for the length of the lookup -- "
+        "which is why the async wrapper offloads it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_still_releases_every_resource(monkeypatch):
+    """A generation cancelled while finalising must not strand its locks or slots.
+
+    The cleanup tail awaits `_video_active_tasks_dict_lock`, which every video request
+    touches, so suspending there is routine rather than exotic. Cancellation delivered
+    at that point used to abandon the two releases below it: the per-user slot stayed
+    spent (that user locked out until restart) and the per-message lock stayed held,
+    which deadlocks every later request for the same message because
+    `_acquire_message_lock` has no timeout.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    try:
+        adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+        key = ("chat-1", "msg-1")
+        user_id = "user-1"
+        job_id = "job-1"
+
+        async def never_finishes(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient",
+            lambda *a, **k: SimpleNamespace(),
+        )
+        monkeypatch.setattr(pipe, "_create_http_session", lambda *a, **k: _FakeSession([]))
+        monkeypatch.setattr(adapter, "_poll_until_terminal", never_finishes)
+
+        message_lock = await adapter._acquire_message_lock(key)
+        assert message_lock.locked()
+        pipe._video_user_active_counts[user_id] = 1
+        pipe._video_user_active_jobs[user_id] = {job_id}
+        pipe._video_user_locks[user_id] = asyncio.Lock()
+        semaphore = asyncio.Semaphore(1)
+        await semaphore.acquire()
+
+        task = asyncio.create_task(
+            adapter._run_lifecycle_after_submit(
+                key=key,
+                job_id=job_id,
+                api_model_id="openai/sora-2-pro",
+                normalized_model_id="openai.sora-2-pro",
+                valves=pipe.valves,
+                event_emitter=None,
+                user={"id": user_id},
+                user_obj={"id": user_id},
+                chat_id="chat-1",
+                message_id="msg-1",
+                request=None,
+                user_id=user_id,
+                global_semaphore=semaphore,
+                message_lock=message_lock,
+                started_at=time.monotonic(),
+            )
+        )
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+        await pipe._video_active_tasks_dict_lock.acquire()
+        task.cancel()
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if pipe._video_active_tasks_dict_lock._waiters:
+                break
+        assert pipe._video_active_tasks_dict_lock._waiters, (
+            "cleanup never reached the dict-lock await; the test is not exercising "
+            "the cancellation point it exists for"
+        )
+        task.cancel()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        pipe._video_active_tasks_dict_lock.release()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if not message_lock.locked():
+                break
+
+        assert not message_lock.locked(), (
+            "per-message lock stranded: the next video request for this message "
+            "would hang forever"
+        )
+        assert pipe._video_user_active_counts.get(user_id, 0) == 0, (
+            "per-user slot stranded: this user is locked out of video generation"
+        )
+        assert semaphore._value == 1, "global video permit lost for the process lifetime"
+    finally:
+        await pipe.close()
+
+
+def test_every_video_cleanup_await_is_shielded():
+    """Both `finally` blocks that release video resources must shield their awaits.
+
+    The cancellation fix was applied to the lifecycle tail but not to generate()'s own
+    finally, which has the identical shape. A behavioural test of the helper cannot
+    catch that -- it shields the call itself, so removing production's shield changes
+    nothing. This asserts the structure instead: any `await` inside a video cleanup
+    `finally` must be wrapped in asyncio.shield, or a cancellation delivered there
+    abandons the releases below it (the per-user slot stays spent and the per-message
+    lock stays held, and _acquire_message_lock has no timeout).
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe" / "integrations" / "video.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+
+    checked, unshielded = 0, []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try) or not node.finalbody:
+            continue
+        for stmt in node.finalbody:
+            for inner in ast.walk(stmt):
+                if not isinstance(inner, ast.Await):
+                    continue
+                call = inner.value
+                checked += 1
+                shielded = (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "shield"
+                )
+                if not shielded:
+                    unshielded.append(f"video.py:{inner.lineno}: {ast.unparse(inner)[:80]}")
+
+    # No name filter and no floor. The filter matched `_release_`/`_finalize_generation`
+    # and so skipped `await session.close()` -- which was genuinely unshielded -- while
+    # the floor of 2 was exactly the population it matched, so a new cleanup helper
+    # under any other name moved neither number. Every await in a `finally` is checked;
+    # a legitimate exception goes in the dict below and is verified to still match.
+    assert checked >= 3, (
+        f"only {checked} awaits found in any finally block; the scan has gone blind"
+    )
+    assert not unshielded, (
+        "these awaits sit in a cleanup `finally` without asyncio.shield, so a "
+        "cancellation delivered there strands every release below them:\n  "
+        + "\n  ".join(unshielded)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cleanup_step_does_not_skip_the_others():
+    """One release failing must not strand the rest, and must not vanish.
+
+    Both cleanup helpers run inside asyncio.shield. Without per-step isolation the
+    first failure propagates out of the shielded coroutine, skipping every release
+    below it -- and because nothing awaits that coroutine, the exception surfaces
+    only as asyncio's default handler output, if at all.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    try:
+        adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+        key = ("chat-s", "msg-s")
+        user_id = "user-s"
+
+        message_lock = await adapter._acquire_message_lock(key)
+        assert message_lock.locked()
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("user-slot release exploded")
+
+        adapter._release_user_slot = _boom
+
+        await adapter._release_presubmit_slots(
+            key, user_id, "job-s", message_lock, release_user_slot=True
+        )
+
+        assert not message_lock.locked(), (
+            "a failure in the user-slot release skipped the message-lock release, "
+            "stranding it for the lifetime of the process"
+        )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_cleanup_step_failure_does_not_skip_the_others():
+    """Same guarantee as the pre-submit twin, on the long-lived generation path.
+
+    _finalize_generation has three steps rather than two, and only the twin was
+    covered -- so its isolation could be removed with the whole suite green.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    try:
+        adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+        key = ("chat-l", "msg-l")
+        user_id = "user-l"
+
+        message_lock = await adapter._acquire_message_lock(key)
+        assert message_lock.locked()
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("user-slot release exploded")
+
+        adapter._release_user_slot = _boom
+
+        await adapter._finalize_generation(key, user_id, "job-l", message_lock)
+
+        assert not message_lock.locked(), (
+            "a failure in the user-slot release skipped the message-lock release, "
+            "stranding it for the lifetime of the process"
+        )
+    finally:
+        await pipe.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_id", "should_emit"),
+    [
+        ("chat-ok", True),
+        ("temporary:abc", False),
+        ("channel:abc", False),
+        ("local:abc", False),
+    ],
+)
+async def test_the_pending_placeholder_is_only_emitted_for_a_storable_chat(
+    monkeypatch, chat_id, should_emit
+):
+    """The one is_linkable_chat call site that no test reached.
+
+    Every other consumer of the predicate is covered -- removing the prefix check
+    inside is_linkable_chat itself kills a dozen tests -- but deleting
+    `and is_linkable_chat(chat_id)` here left the whole suite green.
+
+    Without it the pending placeholder, carrying the resume marker, is emitted into
+    Temporary Chats and channel invocations, which have no chat row. If the turn is
+    interrupted the user holds a marker for a conversation that cannot be looked up:
+    VideoPersistence.load_message refuses those ids by design.
+
+    Asserted on the emitted event rather than on the predicate, because the predicate
+    is already covered three times over; what was missing is that this site consults it.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence("")
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def submit(self, _payload):
+            return {"id": "job-gate", "status": "queued"}
+
+        async def status(self, _job_id):
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+
+    emitted: list[dict[str, Any]] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    task = asyncio.create_task(
+        adapter.generate(
+            body={"messages": [{"role": "user", "content": "make a video"}]},
+            responses_body=SimpleNamespace(provider={}),
+            valves=pipe.valves,
+            session=object(),
+            event_emitter=emitter,
+            metadata={"chat_id": chat_id, "message_id": "msg-g", "user_id": "user-g"},
+            user={"id": "user-g"},
+            request=None,
+            user_obj={"id": "user-g"},
+            normalized_model_id="openai.sora-2-pro",
+            api_model_id="openai/sora-2-pro",
+        )
+    )
+    try:
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if any(e.get("type") == "message" for e in emitted):
+                break
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        await pipe.close()
+
+    markers = [
+        e
+        for e in emitted
+        if e.get("type") == "message"
+        and "openrouter:v1:videojob:" in str(e.get("data", {}).get("content", ""))
+    ]
+    if should_emit:
+        assert markers, (
+            f"no resume marker was emitted for chat_id={chat_id!r}; an interrupted turn "
+            "would leave the user with no way to resume the job"
+        )
+    else:
+        assert not markers, (
+            f"a resume marker was emitted for chat_id={chat_id!r}, which has no chat "
+            "row. VideoPersistence.load_message refuses that id, so the marker points "
+            "at a conversation that cannot be looked up."
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_temp_directory_that_cannot_be_removed_is_reported(monkeypatch, tmp_path, caplog):
+    """The leak warning must be reachable for the failure its own message names.
+
+    It was not: the call kept `ignore_errors=True`, which swallows every OSError inside
+    rmtree, so the `except` around it could never fire and the leak stayed exactly as
+    silent as before the "surface swallowed failures" work.
+
+    The failure is produced by pointing mkdtemp's result at a REGULAR FILE, so rmtree
+    raises NotADirectoryError on every platform and regardless of uid. Monkeypatching
+    rmtree to raise would prove nothing -- a stub raises whether or not ignore_errors
+    is present, so that test passes against the unfixed code. chmod would be a no-op
+    for uid 0, which is common in container CI.
+    """
+    import logging
+
+    from open_webui_openrouter_pipe.integrations.video_types import VideoLifecycleResult
+
+    not_a_directory = tmp_path / "definitely-a-file"
+    not_a_directory.write_text("x", encoding="utf-8")
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, _job_id):
+            return {"status": "completed", "usage": {"cost": 0.1}}
+
+        def content_url(self, job_id):
+            return f"https://example.test/videos/{job_id}/content"
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    async def fake_streaming_download(url, dest_path, **_kwargs):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url, "size_bytes": len(MP4_BYTES)}
+
+    async def fake_upload_from_path(*_args, **_kwargs):
+        return "file-1"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.tempfile.mkdtemp",
+        lambda **_kw: str(not_a_directory),
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download
+    )
+    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+
+    async def emitter(_event):
+        return None
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=pipe.logger.name):
+            result = await adapter._run_lifecycle_after_submit(
+                key=("chat-1", "msg-1"),
+                job_id="job-leak",
+                api_model_id="openai/sora-2-pro",
+                normalized_model_id="openai.sora-2-pro",
+                valves=pipe.valves,
+                event_emitter=emitter,
+                user={"id": "user-1"},
+                user_obj={"id": "user-1"},
+                chat_id="chat-1",
+                message_id="msg-1",
+                request=None,
+                user_id="user-1",
+                global_semaphore=semaphore,
+                message_lock=message_lock,
+                started_at=time.monotonic(),
+            )
+    finally:
+        await pipe.close()
+
+    assert isinstance(result, VideoLifecycleResult)
+    assert any("leak one" in m for m in caplog.messages), (
+        f"rmtree failed and nothing was reported; messages were {caplog.messages!r}. "
+        "The directory leaks once per generation and the operator never finds out."
+    )

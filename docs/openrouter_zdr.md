@@ -24,18 +24,19 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
 
 - **`ZDR_MODELS_ONLY`**
   - Filters the model list to only ZDR‑capable models.
-  - **Catalog filter only** — does not enforce ZDR on requests.
+  - **Catalog filter and request admission** — a hidden model is also refused if requested directly. It never sends `provider.zdr=true`.
 
 - **`ZDR_ENFORCE`**
   - Forces `provider.zdr=true` on every request.
   - Rejects requests for models without ZDR endpoints.
-  - Variant suffixes (for example `:nitro` or `:free` entries created via `VARIANT_MODELS`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. If the variant's routing constraints leave no ZDR endpoint (for example a `:free` tier with no ZDR provider), OpenRouter rejects the request with a routing error rather than falling back.
+  - Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. A suffix OpenRouter lists as a model in its own right — `:free`, `:thinking` — is answered for **itself**, not for its base, so a listed `:free` with no ZDR endpoint is refused here rather than routed.
   - Video models are always rejected, with or without a variant suffix.
-  - `ZDR_MODELS_ONLY` keeps strict per-id matching and continues to hide variant entries; it remains a catalog filter with no request-level enforcement.
+  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`, and it fails open when the ZDR endpoint list cannot be loaded, except for video models, which have no ZDR endpoints and stay hidden.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.
   - Ignored when `ZDR_ENFORCE` is enabled.
+  - If a user's stored `REQUEST_ZDR` value cannot be parsed, the pipe cannot tell whether they opted in, so it enforces ZDR for that request rather than routing without it. A model that is not ZDR-capable is then refused with `Restricted by: ZDR_PREFERENCE_UNREADABLE`, which names the preference rather than the `ZDR_ENFORCE` valve. A failure to *read* the row is different: the preference Open WebUI supplied is used, so one unreadable settings row does not end that user's chat.
 
 ---
 

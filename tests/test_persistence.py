@@ -30,9 +30,7 @@ from open_webui_openrouter_pipe.storage.persistence import (
 from open_webui_openrouter_pipe.core.utils import _await_if_needed
 
 
-# -----------------------------------------------------------------------------
 # Fixtures and Helpers
-# -----------------------------------------------------------------------------
 
 
 class _Field:
@@ -69,7 +67,7 @@ class _FakeModel:
     payload = _Field("payload")
     is_encrypted = _Field("is_encrypted")
     created_at = _Field("created_at")
-    __table__ = _FakeTable()  # For dialect-specific INSERT ON CONFLICT
+    __table__ = _FakeTable()
 
     def __init__(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -232,11 +230,6 @@ def _sqlite_engine():
     return create_engine("sqlite://")
 
 
-# -----------------------------------------------------------------------------
-# Tests for Schema Discovery Edge Cases (lines 351-352, 363-364, 393-394, 407)
-# -----------------------------------------------------------------------------
-
-
 def test_discover_schema_from_base_metadata_raises(pipe_instance):
     """A raising Base.metadata descriptor must degrade to schema=None, not propagate.
 
@@ -309,11 +302,6 @@ def test_discover_engine_from_context_raises(pipe_instance):
     assert engine is None
 
 
-# -----------------------------------------------------------------------------
-# Tests for Dialect Logging Exception (lines 440-441)
-# -----------------------------------------------------------------------------
-
-
 def test_init_artifact_store_dialect_logging_exception(pipe_instance, caplog):
     """Test that dialect logging exception is handled gracefully (lines 440-441)."""
     class _BrokenDialect:
@@ -327,13 +315,7 @@ def test_init_artifact_store_dialect_logging_exception(pipe_instance, caplog):
             return _BrokenDialect()
 
     with _install_internal_db(_BrokenEngine()):
-        # The exception in dialect logging should be caught and alternative logging used
         pipe_instance._artifact_store._init_artifact_store(pipe_identifier="test_dialect", table_fragment="test")
-
-
-# -----------------------------------------------------------------------------
-# Tests for Schema Normalization (lines 477, 481-483, 490)
-# -----------------------------------------------------------------------------
 
 
 def test_schema_normalization_logic():
@@ -342,7 +324,6 @@ def test_schema_normalization_logic():
     This directly tests the schema normalization logic that determines whether
     to add schema to table_args.
     """
-    # Test case 1: Valid schema with whitespace
     schema = "  test_schema  "
     normalized_schema = None
     if isinstance(schema, str):
@@ -351,7 +332,6 @@ def test_schema_normalization_logic():
             normalized_schema = candidate
     assert normalized_schema == "test_schema"
 
-    # Test case 2: Empty string after strip
     schema = "   "
     normalized_schema = None
     if isinstance(schema, str):
@@ -360,7 +340,6 @@ def test_schema_normalization_logic():
             normalized_schema = candidate
     assert normalized_schema is None
 
-    # Test case 3: None schema
     schema = None
     normalized_schema = None
     if isinstance(schema, str):
@@ -369,14 +348,12 @@ def test_schema_normalization_logic():
             normalized_schema = candidate
     assert normalized_schema is None
 
-    # Test case 4: table_args with schema
     table_args = {"extend_existing": True, "sqlite_autoincrement": False}
     normalized_schema = "my_schema"
     if normalized_schema:
         table_args["schema"] = normalized_schema
     assert table_args["schema"] == "my_schema"
 
-    # Test case 5: table_args without schema
     table_args = {"extend_existing": True, "sqlite_autoincrement": False}
     normalized_schema = None
     if normalized_schema:
@@ -390,17 +367,11 @@ def test_init_artifact_store_existing_table_removal(pipe_instance):
     with _install_internal_db(engine):
         # Initialize once
         pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
-        # Initialize again with same table name to trigger removal
         pipe_instance._artifact_store._artifact_store_signature = None
         pipe_instance._artifact_store._init_artifact_store(pipe_identifier="pipe", table_fragment="pipe")
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
-
-
-# -----------------------------------------------------------------------------
-# Tests for DB Thread Pool Sizing from Engine Pool (line 564-574)
-# -----------------------------------------------------------------------------
 
 
 def test_init_artifact_store_thread_pool_matches_queue_pool_size(pipe_instance):
@@ -429,7 +400,7 @@ def test_init_artifact_store_thread_pool_fallback_on_null_pool(pipe_instance):
 
 def test_init_artifact_store_thread_pool_default_sqlite(pipe_instance):
     """Thread pool should read default pool_size=5 from a default SQLite file engine."""
-    engine = _sqlite_engine()  # in-memory SQLite → SingletonThreadPool with size=5
+    engine = _sqlite_engine()
     store = pipe_instance._artifact_store
     store._db_executor = None
     with _install_internal_db(engine):
@@ -445,7 +416,6 @@ def test_init_artifact_store_thread_pool_includes_max_overflow(pipe_instance, mo
     store = pipe_instance._artifact_store
     store._db_executor = None
 
-    # Mock open_webui.env with DATABASE_POOL_MAX_OVERFLOW = 20
     env_mod = types.ModuleType("open_webui.env")
     env_mod.DATABASE_POOL_MAX_OVERFLOW = 20
     monkeypatch.setitem(sys.modules, "open_webui.env", env_mod)
@@ -453,13 +423,8 @@ def test_init_artifact_store_thread_pool_includes_max_overflow(pipe_instance, mo
     with _install_internal_db(engine):
         store._init_artifact_store(pipe_identifier="pipe_overflow", table_fragment="pipe_overflow")
     assert store._db_executor is not None
-    assert store._db_executor._max_workers == 30  # 10 + 20
+    assert store._db_executor._max_workers == 30
     store._db_executor.shutdown(wait=False)
-
-
-# -----------------------------------------------------------------------------
-# Tests for Table Inspection Exception (lines 515-516)
-# -----------------------------------------------------------------------------
 
 
 def test_init_artifact_store_inspection_error(pipe_instance, monkeypatch):
@@ -475,11 +440,6 @@ def test_init_artifact_store_inspection_error(pipe_instance, monkeypatch):
 
     store = pipe_instance._artifact_store
     assert store._item_model is not None
-
-
-# -----------------------------------------------------------------------------
-# Tests for Index Healing Edge Cases (lines 607, 613, 635)
-# -----------------------------------------------------------------------------
 
 
 def test_maybe_heal_index_conflict_no_indexes(pipe_instance):
@@ -527,8 +487,6 @@ def test_maybe_heal_index_conflict_empty_name(pipe_instance):
         _DummyTable(),
         Exception("error ix_test_table_something"),
     )
-    # Should return True if it found and dropped something, or False if nothing dropped
-    # With empty name, nothing should be executed from metadata indexes
     assert isinstance(result, bool)
 
 
@@ -560,11 +518,6 @@ def test_maybe_heal_index_conflict_all_fail(pipe_instance):
     assert result is False
 
 
-# -----------------------------------------------------------------------------
-# Tests for Prepare Rows Edge Cases (line 778)
-# -----------------------------------------------------------------------------
-
-
 def test_prepare_rows_for_storage_non_dict_payload(pipe_instance):
     """Test _prepare_rows_for_storage skips non-dict payloads (line 778)."""
     store = pipe_instance._artifact_store
@@ -574,7 +527,6 @@ def test_prepare_rows_for_storage_non_dict_payload(pipe_instance):
         {"payload": None, "item_type": "note"},
     ]
     store._prepare_rows_for_storage(rows)
-    # Should not crash, payloads remain unchanged
     assert rows[0]["payload"] == "not a dict"
     assert rows[1]["payload"] == 123
 
@@ -651,11 +603,6 @@ def test_serialize_payload_bytes_strips_null_bytes(pipe_instance):
     assert parsed["output"] == "beforeafter"
 
 
-# -----------------------------------------------------------------------------
-# Tests for DB Persist Edge Cases (lines 812, 916, 975, 980)
-# -----------------------------------------------------------------------------
-
-
 def test_db_persist_sync_empty_rows(pipe_instance):
     """Test _db_persist_sync returns empty list for empty rows (line 812)."""
     _install_fake_store(pipe_instance)
@@ -690,11 +637,6 @@ async def test_db_persist_direct_reraises_non_duplicate(pipe_instance, monkeypat
         await store._db_persist_direct([{"id": "id-1", "chat_id": "c", "message_id": "m"}])
 
 
-# -----------------------------------------------------------------------------
-# Tests for Duplicate Key Detection (lines 988, 992)
-# -----------------------------------------------------------------------------
-
-
 def test_is_duplicate_key_error_with_orig(pipe_instance):
     """Test _is_duplicate_key_error checks orig attribute (line 988)."""
     store = pipe_instance._artifact_store
@@ -713,11 +655,6 @@ def test_is_duplicate_key_error_non_sqlalchemy(pipe_instance):
     store = pipe_instance._artifact_store
     assert store._is_duplicate_key_error(RuntimeError("duplicate key")) is False
     assert store._is_duplicate_key_error(ValueError("unique constraint")) is False
-
-
-# -----------------------------------------------------------------------------
-# Tests for DB Fetch Edge Cases (lines 1003, 1049-1050, 1085, 1095, 1098, 1132, 1157)
-# -----------------------------------------------------------------------------
 
 
 def test_db_fetch_sync_no_item_ids(pipe_instance):
@@ -749,7 +686,6 @@ def test_db_fetch_sync_touch_outer_exception(pipe_instance):
             self._call_count += 1
             if self._call_count == 1:
                 return _FakeQuery(self._rows)
-            # Second call (touch session) - raise before query
             raise RuntimeError("outer touch failed")
 
         def close(self):
@@ -761,7 +697,6 @@ def test_db_fetch_sync_touch_outer_exception(pipe_instance):
         if call_count[0] == 1:
             # First session for fetch
             return _FakeSession(rows)
-        # Second session for touch - will fail
         raise RuntimeError("touch session creation failed")
 
     store._item_model = _FakeModel
@@ -779,7 +714,6 @@ def test_db_fetch_sync_touch_outer_exception(pipe_instance):
     )
     rows.append(row)
 
-    # Should not crash, just log debug message
     result = store._db_fetch_sync("chat", "msg", ["id-1"])
     assert "id-1" in result
 
@@ -831,12 +765,10 @@ async def test_db_fetch_breaker_open_returns_cached_not_empty(pipe_instance):
     store._redis_enabled = True
     store._emit_notification = None
 
-    # id-1 is warm in Redis; id-2 is missing -> forces the DB path
     async def _fake_redis_fetch(_chat_id, item_ids):
         return {"id-1": {"type": "cached"}}
 
     store._redis_fetch_rows = _fake_redis_fetch
-    # Force the per-user DB circuit breaker open
     store._db_breaker_allows = lambda _uid: False
 
     result = await store._db_fetch("chat", "msg", ["id-1", "id-2"])
@@ -867,11 +799,6 @@ async def test_db_fetch_resets_failure_on_success(pipe_instance, monkeypatch):
         assert "test-user" in reset_calls
     finally:
         SessionLogger.user_id.reset(token)
-
-
-# -----------------------------------------------------------------------------
-# Tests for Redis Pubsub Edge Cases (lines 1202, 1208, 1212-1213)
-# -----------------------------------------------------------------------------
 
 
 async def _fast_sleep(_seconds):
@@ -971,6 +898,81 @@ async def test_redis_pubsub_listener_survives_idle_and_reconnects(pipe_instance,
     assert all(ps.closed for ps in store._redis_client.pubsubs[:-1])
 
 
+class _BlockingPubSubFake:
+    """redis-py's actual get_message contract, which the other fakes do not model.
+
+    Verified against the installed redis 8.0.0: the signature is
+    `get_message(ignore_subscribe_messages=False, timeout=0.0)` and the body does
+    `block=(timeout is None)`. So omitting the argument polls -- the default is 0.0,
+    which returns immediately. Every fake in this file accepts `timeout` and ignores it, so dropping
+    `timeout=5.0` from the listener changed nothing in the suite while turning the idle
+    loop into a spin: one core pinned per worker for the process lifetime, plus event
+    loop starvation.
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.subscribe_count = 0
+        self.closed = 0
+
+    async def subscribe(self, _channel):
+        self.subscribe_count += 1
+
+    async def get_message(self, ignore_subscribe_messages=False, timeout=0.0):
+        self.calls += 1
+        if timeout is None:
+            await asyncio.Event().wait()
+        await _real_sleep(timeout)
+        return None
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class _BlockingRedisFake:
+    def __init__(self):
+        self.pubsubs: list[_BlockingPubSubFake] = []
+
+    def pubsub(self):
+        ps = _BlockingPubSubFake()
+        self.pubsubs.append(ps)
+        return ps
+
+
+@pytest.mark.asyncio
+async def test_the_idle_listener_blocks_rather_than_spinning(pipe_instance):
+    """Counts iterations over real wall-clock time; a spin is unbounded.
+
+    Asserting that the call received `timeout == 5.0` would pin a magic number and go
+    red on a legitimate change to 10.0. The property is that the loop is not hot, so
+    this measures it: against a contract-faithful fake, a blocking read yields a
+    handful of calls in 0.2s and a polling one yields six figures.
+    """
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_client = _BlockingRedisFake()
+    store._redis_enabled = True
+
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    try:
+        await _real_sleep(0.2)
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    calls = sum(ps.calls for ps in store._redis_client.pubsubs)
+    assert calls >= 1, (
+        "the listener never called get_message, so this test measured nothing about "
+        "how it idles"
+    )
+    assert calls <= 5, (
+        f"get_message was called {calls} times in 0.2s. The read is not blocking, so "
+        "this loop pins a CPU core for the lifetime of every worker and starves the "
+        "event loop -- silently, with no error anywhere."
+    )
+
+
 @pytest.mark.asyncio
 async def test_redis_pubsub_listener_idle_is_not_an_error(pipe_instance, caplog):
     """Idle None ticks from get_message must not log warnings or exit."""
@@ -1056,11 +1058,6 @@ async def test_redis_pubsub_listener_repeat_errors_log_once(pipe_instance, caplo
     assert len(attempts) >= 2
 
 
-# -----------------------------------------------------------------------------
-# Tests for Redis Periodic Flusher Edge Cases (lines 1227, 1234-1235, 1255)
-# -----------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_redis_periodic_flusher_no_client(pipe_instance, monkeypatch):
     """Test _redis_periodic_flusher exits when no redis client (line 1227)."""
@@ -1088,7 +1085,7 @@ async def test_redis_periodic_flusher_queue_depth_logging(pipe_instance, monkeyp
         def llen(self, _key):
             self.llen_calls += 1
             if self.llen_calls == 1:
-                return 5  # Below warn threshold but > 0
+                return 5
             return 0
 
     store._redis_client = _FakeRedis()
@@ -1116,12 +1113,6 @@ async def test_flush_redis_queue_disabled(pipe_instance):
     store._redis_client = Mock()
 
     await store._flush_redis_queue()
-    # Should return without doing anything
-
-
-# -----------------------------------------------------------------------------
-# Tests for Redis Lock Release Edge Cases (lines 1337-1338)
-# -----------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1146,7 +1137,6 @@ async def test_flush_redis_queue_lock_release_not_1(pipe_instance, caplog):
             return None
 
         def eval(self, _script, _numkeys, key, token):
-            # Return 0 to indicate lock wasn't released properly
             return 0
 
     store._redis_client = _FakeRedis()
@@ -1185,11 +1175,6 @@ async def test_flush_redis_queue_lock_release_non_int(pipe_instance, caplog):
     assert any("lock was not released" in rec.message for rec in caplog.records)
 
 
-# -----------------------------------------------------------------------------
-# Tests for Redis Enqueue Edge Cases (lines 1359, 1362)
-# -----------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_redis_enqueue_rows_empty(pipe_instance):
     """Test _redis_enqueue_rows returns empty list for empty rows (line 1359)."""
@@ -1220,11 +1205,6 @@ async def test_redis_enqueue_rows_fallback_disabled(pipe_instance, monkeypatch):
     assert len(direct_calls) == 1
 
 
-# -----------------------------------------------------------------------------
-# Tests for Redis Fetch Edge Cases (lines 1423, 1443-1444)
-# -----------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_redis_fetch_rows_empty_keys(pipe_instance):
     """Test _redis_fetch_rows returns empty dict when no keys (line 1423)."""
@@ -1237,7 +1217,6 @@ async def test_redis_fetch_rows_empty_keys(pipe_instance):
 
     store._redis_client = _FakeRedis()
 
-    # Empty item_ids should result in empty keys
     result = await store._redis_fetch_rows("chat", [])
     assert result == {}
 
@@ -1268,11 +1247,6 @@ async def test_redis_fetch_rows_ciphertext_from_nested_payload(pipe_instance):
     result = await store._redis_fetch_rows("chat", ["id-1"])
     assert "id-1" in result
     assert result["id-1"]["text"] == "secret"
-
-
-# -----------------------------------------------------------------------------
-# Tests for Cleanup Worker Edge Cases (lines 1476-1479, 1487)
-# -----------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1309,11 +1283,6 @@ def test_cleanup_sync_no_session_factory(pipe_instance):
     store._cleanup_sync(datetime.datetime.now(datetime.UTC))
 
 
-# -----------------------------------------------------------------------------
-# Tests for Circuit Breaker Edge Cases (line 1511, 1515)
-# -----------------------------------------------------------------------------
-
-
 def test_db_breaker_allows_empty_user_id(pipe_instance):
     """Test _db_breaker_allows returns True for empty user_id (line 1511)."""
     store = pipe_instance._artifact_store
@@ -1331,13 +1300,7 @@ def test_db_breaker_allows_clears_old_failures(pipe_instance):
     store._db_breakers["test-user"].append(old_time)
     store._db_breakers["test-user"].append(old_time)
 
-    # Should return True because old failures are cleared
     assert store._db_breaker_allows("test-user") is True
-
-
-# -----------------------------------------------------------------------------
-# Tests for normalize_persisted_item Edge Cases
-# -----------------------------------------------------------------------------
 
 
 def test_normalize_persisted_item_non_dict():
@@ -1386,7 +1349,6 @@ def test_normalize_persisted_item_function_call_non_serializable_args():
     item = {"type": "function_call", "name": "test", "arguments": _NonSerializable()}
     result = normalize_persisted_item(item)
     assert result is not None
-    # Falls back to str()
     assert "NonSerializable" in result["arguments"]
 
 
@@ -1422,9 +1384,7 @@ def test_normalize_persisted_item_web_search_call():
     assert result["action"] == {}
 
 
-# -----------------------------------------------------------------------------
 # Tests for Shutdown
-# -----------------------------------------------------------------------------
 
 
 def test_shutdown_no_executor(pipe_instance):
@@ -1457,9 +1417,7 @@ def test_shutdown_without_cancel_futures(pipe_instance, monkeypatch):
     assert store._db_executor is None
 
 
-# -----------------------------------------------------------------------------
 # Tests for _await_if_needed
-# -----------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1489,9 +1447,7 @@ async def test_await_if_needed_async_with_timeout():
     assert result == "async result"
 
 
-# -----------------------------------------------------------------------------
 # Tests for _encode_crockford
-# -----------------------------------------------------------------------------
 
 
 def test_encode_crockford_negative():
@@ -1506,9 +1462,7 @@ def test_encode_crockford_zero():
     assert result == "0000"
 
 
-# -----------------------------------------------------------------------------
 # Tests for _sanitize_table_fragment
-# -----------------------------------------------------------------------------
 
 
 def test_sanitize_table_fragment_empty():
@@ -1525,11 +1479,6 @@ def test_sanitize_table_fragment_special_chars():
     result = _sanitize_table_fragment("My-Table.Name!")
     assert "_" in result or result.isalnum()
     assert result == result.lower()
-
-
-# -----------------------------------------------------------------------------
-# Tests for _try_acquire_lock_sync (distributed locking)
-# -----------------------------------------------------------------------------
 
 
 def test_try_acquire_lock_sync_no_model(pipe_instance):
@@ -1603,7 +1552,7 @@ def test_try_acquire_lock_sync_success_postgresql(pipe_instance):
         dialect = _FakeDialect()
 
     class _FakeResult:
-        rowcount = 1  # Row was inserted = lock acquired
+        rowcount = 1
 
     class _FakeSession:
         def execute(self, stmt):
@@ -1629,7 +1578,6 @@ def test_try_acquire_lock_sync_success_postgresql(pipe_instance):
         "payload": {"type": "session_log_lock"},
     }
 
-    # Mock the pg_insert at the point where it's imported in the function
     mock_stmt = MagicMock()
     mock_insert_func = MagicMock()
     mock_insert_func.return_value.values.return_value.on_conflict_do_nothing.return_value = mock_stmt
@@ -1652,7 +1600,7 @@ def test_try_acquire_lock_sync_conflict_postgresql(pipe_instance):
         dialect = _FakeDialect()
 
     class _FakeResult:
-        rowcount = 0  # No row inserted = conflict = lock held by another worker
+        rowcount = 0
 
     class _FakeSession:
         def execute(self, stmt):
@@ -1685,7 +1633,7 @@ def test_try_acquire_lock_sync_conflict_postgresql(pipe_instance):
     with patch.dict("sys.modules", {"sqlalchemy.dialects.postgresql": MagicMock(insert=mock_insert_func)}):
         with patch("sqlalchemy.dialects.postgresql.insert", mock_insert_func):
             result = store._try_acquire_lock_sync(lock_row)
-            assert result is False  # Lock not acquired - another worker has it
+            assert result is False
 
 
 def test_try_acquire_lock_sync_success_sqlite(pipe_instance):
@@ -1742,7 +1690,7 @@ def test_try_acquire_lock_sync_fallback_dialect_success(pipe_instance):
     store = pipe_instance._artifact_store
 
     class _FakeDialect:
-        name = "mysql"  # Unknown dialect - should use fallback
+        name = "mysql"
 
     class _FakeEngine:
         dialect = _FakeDialect()
@@ -1811,7 +1759,7 @@ def test_try_acquire_lock_sync_fallback_dialect_duplicate(pipe_instance):
     }
 
     result = store._try_acquire_lock_sync(lock_row)
-    assert result is False  # Duplicate = lock held by another
+    assert result is False
 
 
 def test_try_acquire_lock_sync_fallback_dialect_other_error(pipe_instance):
@@ -1888,7 +1836,7 @@ def test_try_acquire_lock_sync_payload_serialization(pipe_instance):
         "chat_id": "chat-1",
         "message_id": "msg-1",
         "item_type": "session_log_lock",
-        "payload": {"type": "session_log_lock", "pid": 12345},  # Dict payload
+        "payload": {"type": "session_log_lock", "pid": 12345},
     }
 
     mock_values = MagicMock()
@@ -1900,11 +1848,9 @@ def test_try_acquire_lock_sync_payload_serialization(pipe_instance):
         with patch("sqlalchemy.dialects.postgresql.insert", mock_insert_func):
             store._try_acquire_lock_sync(lock_row)
 
-            # Verify values() was called and payload was serialized
             mock_values.assert_called_once()
             call_kwargs = mock_values.call_args[1]
             assert "payload" in call_kwargs
-            # Payload should be a JSON string, not a dict
             assert isinstance(call_kwargs["payload"], str)
             assert "session_log_lock" in call_kwargs["payload"]
 
@@ -2061,3 +2007,88 @@ async def test_redis_pubsub_listener_falls_back_to_close_without_aclose(pipe_ins
     store._redis_enabled = False
     await asyncio.wait_for(listener, timeout=2)
     assert closed == [1]
+
+
+@pytest.mark.asyncio
+async def test_flush_failure_does_not_tear_down_a_healthy_subscription(pipe_instance, caplog):
+    """A failing flush is a storage fault, not a dead pub/sub connection.
+
+    Routing it through the reconnect handler unsubscribes a healthy connection,
+    re-subscribes, logs a false "reconnected", and resets the backoff -- so a
+    persistent write failure becomes a reconnect storm, and wake-ups published
+    during each teardown window are lost.
+    """
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+
+    attempts = 0
+    done = asyncio.Event()
+
+    async def _failing_flush():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 3:
+            done.set()
+        raise RuntimeError("redis SET failed")
+
+    script = [{"type": "message", "data": "flush"}] * 6
+    store._redis_client = _ResilientRedisFake(script)
+    store._redis_enabled = True
+    store._flush_redis_queue = _failing_flush
+
+    caplog.set_level("INFO")
+    listener = asyncio.create_task(store._redis_pubsub_listener())
+    try:
+        await asyncio.wait_for(done.wait(), timeout=5)
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    total_subscribes = sum(ps.subscribe_count for ps in store._redis_client.pubsubs)
+    assert total_subscribes == 1, (
+        f"flush failures re-subscribed {total_subscribes} times; the connection was healthy"
+    )
+    assert not any(
+        "listener reconnected" in r.getMessage() for r in caplog.records
+    ), "logged a reconnect for a connection that never dropped"
+
+
+@pytest.mark.asyncio
+async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatch):
+    """Without health_check_interval a half-open link is indistinguishable from idle.
+
+    redis-py defaults it to 0, which makes PubSub.check_health() a no-op: nothing is
+    ever written to the socket after SUBSCRIBE. The flush listener then blocks on
+    get_message() forever against a peer that is gone, with no error and no reconnect
+    -- it goes deaf silently, and only the 10s timer flush keeps data moving.
+    """
+    import open_webui_openrouter_pipe.pipe as pipe_module
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        async def ping(self):
+            return True
+
+    def _from_url(url, **kwargs):
+        captured.update(kwargs)
+        captured["url"] = url
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        pipe_module, "aioredis", types.SimpleNamespace(from_url=_from_url), raising=False
+    )
+    pipe_instance._redis_url = "redis://localhost:6379"
+    pipe_instance._redis_candidate = True
+    pipe_instance._redis_enabled = False
+
+    await pipe_instance._init_redis_client()
+
+    assert captured, "_init_redis_client returned before building a client"
+
+    interval = captured.get("health_check_interval")
+    assert isinstance(interval, (int, float)) and interval > 0, (
+        f"health_check_interval={interval!r}; the pub/sub connection has no keepalive, "
+        "so a half-open socket looks idle and the flush listener goes deaf silently"
+    )

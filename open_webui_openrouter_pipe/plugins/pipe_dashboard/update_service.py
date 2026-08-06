@@ -16,6 +16,8 @@ import sys
 import time
 from typing import Any
 
+from ...core.utils import _await_if_needed
+
 logger = logging.getLogger(__name__)
 
 FUNCTION_ID = "open_webui_openrouter_pipe"
@@ -51,6 +53,7 @@ class UpdateError(Exception):
         super().__init__(message or code)
         self.code = code
         self.message = message or code
+        self.reset: str = ""
 
 
 def _now() -> float:
@@ -119,6 +122,13 @@ def _client_ssl() -> Any:
 
         return AIOHTTP_CLIENT_SESSION_SSL
     except ImportError:
+        return True
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.env failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
         return True
 
 
@@ -196,7 +206,6 @@ class UpdateService:
         self._commit_inflight = False
         self._auto_role = "pending"
 
-    # ── plumbing ────────────────────────────────────────────────────────────
 
     def _pipe(self) -> Any:
         pipe = self._get_pipe() if callable(self._get_pipe) else None
@@ -245,6 +254,13 @@ class UpdateService:
             return str(__version__)
         except ImportError:
             return "0.0.0"
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui_openrouter_pipe failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
+            return "0.0.0"
 
     def detect_mode(self, content: str | None = None) -> dict[str, Any]:
         import re
@@ -270,7 +286,6 @@ class UpdateService:
     def _session(self) -> Any:
         return getattr(self._pipe(), "_http_session", None)
 
-    # ── check ───────────────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_published(published: Any) -> float | None:
@@ -336,7 +351,7 @@ class UpdateService:
                 if reset:
                     break
             err = UpdateError("rate_limited", "")
-            setattr(err, "reset", reset)  # noqa: B010 - dynamic attribute not declared on UpdateError
+            err.reset = reset
             raise err
         raise UpdateError("offline", f"GitHub returned HTTP {status}")
 
@@ -448,7 +463,6 @@ class UpdateService:
             "pipe_id": pipe.id,
         }
 
-    # ── fetch + validate ─────────────────────────────────────────────────────
 
     async def fetch_and_validate(self, asset: dict[str, Any], *, require_newer: bool) -> str:
         url = str(asset.get("browser_download_url", "") or "")
@@ -500,7 +514,7 @@ class UpdateService:
         if required:
             try:
                 from open_webui.env import VERSION as owui_version
-            except ImportError:
+            except Exception:
                 logger.debug(
                     "update: OWUI compatibility gate skipped (open_webui.env.VERSION unavailable)",
                     exc_info=True,
@@ -513,7 +527,6 @@ class UpdateService:
                 )
         return frontmatter
 
-    # ── loader seam ──────────────────────────────────────────────────────────
 
     async def _reload_via_loader(self, content: str) -> tuple[Any, dict, str]:
         import open_webui.utils.plugin as owp
@@ -536,7 +549,6 @@ class UpdateService:
             raise UpdateError("exec_failed", str(exc)) from exc
         return instance, dict(frontmatter or {}), content
 
-    # ── snapshots (slot-ID files in OWUI Files; nothing durable in function meta) ──
 
     def _slot_ids(self) -> list[str]:
         pid = self._pipe().id
@@ -770,7 +782,6 @@ class UpdateService:
             except OSError:
                 pass
 
-    # ── rev chain + commit ───────────────────────────────────────────────────
 
     @staticmethod
     def _coerce_rev(value: Any) -> int | None:
@@ -903,7 +914,6 @@ class UpdateService:
         commit.add_done_callback(_settle)
         return await asyncio.shield(commit)
 
-    # ── apply / restore / snapshot_delete ────────────────────────────────────
 
     async def apply(self, args: dict, *, actor: str, actor_id: str, request: Any) -> dict[str, Any]:
         if request is None and actor != "auto":
@@ -925,7 +935,7 @@ class UpdateService:
                     err = snap.get("last_check_error") or {}
                     raised = UpdateError(str(err.get("code") or "offline"), str(err.get("message") or ""))
                     if err.get("reset"):
-                        setattr(raised, "reset", str(err["reset"]))  # noqa: B010 - dynamic attribute not declared on UpdateError
+                        raised.reset = str(err["reset"])
                     raise raised
                 if actor == "auto":
                     compressed = bool(mode["compressed"])
@@ -1024,7 +1034,6 @@ class UpdateService:
             finally:
                 await self._release_cross_worker(xlock)
 
-    # ── auto-update loop ─────────────────────────────────────────────────────
 
     _UPDATE_VALVE_KEYS = (
         "PIPE_DASHBOARD_UPDATE_ENABLE",
@@ -1035,20 +1044,92 @@ class UpdateService:
     )
 
     async def _row_valves(self) -> dict[str, Any]:
+        """The persisted update valves, merged over the in-memory ones.
+
+        Prefer `_row_valves_checked` at any call site that must fail closed: this one
+        cannot distinguish "no stored override" from "the store could not be read", and
+        returns the in-memory copy either way.
+        """
+        merged, _stored_read_ok = await self._row_valves_checked()
+        return merged
+
+    async def _row_valves_checked(self) -> tuple[dict[str, Any], bool]:
+        """As `_row_valves`, plus whether the persisted read actually succeeded.
+
+        Three outcomes, not two: a value, absent-so-use-the-default, and unreadable.
+        Callers that gate an action on an operator's stored setting must deny on the
+        third -- falling back to an in-memory True would let an operator's disable be
+        overridden by the very failure that hid it.
+
+        `None` is one unreadable signal: Open WebUI's `get_function_valves_by_id` catches
+        Exception itself and returns None. But `{}` is NOT reliably "no stored override"
+        -- `decrypt_valves` also returns `{}` on InvalidToken, i.e. on a failed decrypt,
+        which is exactly the unreadable case. So an operator who set the update valve off
+        and then rotated WEBUI_SECRET_KEY got `{}`, a `stored_read_ok` of True, and the
+        in-memory default of True back: the disable silently reversed by the very failure
+        that hid it. The raw column tells the two apart -- ciphertext present but nothing
+        decoded is unreadable; column empty is genuinely unset.
+        """
         valves = self._valves()
         merged: dict[str, Any] = {key: getattr(valves, key, None) for key in self._UPDATE_VALVE_KEYS}
+        stored: Any = None
+        stored_read_ok = True
         try:
-            stored = await self._functions().get_function_valves_by_id(self._pipe().id)
+            # `_await_if_needed`, not a bare await: this reader is sync in older Open
+            # WebUI, and a TypeError here classifies the row unreadable, which the
+            # callers below turn into a refusal rather than a fallback.
+            stored = await _await_if_needed(
+                self._functions().get_function_valves_by_id(self._pipe().id)
+            )
         except Exception:
             logger.warning(
-                "update: stored valve read failed; falling back to in-memory valves", exc_info=True
+                "update: stored valve read failed; update actions that require a "
+                "confirmed setting will be refused",
+                exc_info=True,
             )
             stored = None
+            stored_read_ok = False
+        if stored == {} and stored_read_ok:
+            # Empty decoded dict: either nothing is stored, or the blob would not
+            # decrypt. Only the raw column distinguishes them.
+            try:
+                # The ciphertext lives in the Function.valves ORM COLUMN. FunctionModel
+                # -- what get_function_by_id returns -- has no `valves` field at all, so
+                # reading it there was dead code that could never fire, and a test stub
+                # carrying a `valves` attribute certified it green. This is the same
+                # query Open WebUI's own get_function_valves_by_id runs.
+                from open_webui.internal.db import get_async_db_context
+                from open_webui.models.functions import Function
+                from sqlalchemy import select
+
+                async with get_async_db_context() as _db:
+                    _res = await _db.execute(select(Function.valves).filter_by(id=self._pipe().id))
+                    raw = _res.scalar_one_or_none()
+            except Exception:
+                # Only a POSITIVELY observed ciphertext downgrades the read. An Open
+                # WebUI without this reader, or a transient failure on it, is not
+                # evidence of corruption -- treating it as such would deny the update
+                # surface on every host that lacks the API.
+                logger.debug(
+                    "update: raw valve column unavailable; cannot tell an unset row "
+                    "from an undecodable one",
+                    exc_info=True,
+                )
+                raw = None
+            if isinstance(raw, str) and raw.strip():
+                logger.warning(
+                    "update: the stored valve blob did not decode (a rotated "
+                    "WEBUI_SECRET_KEY does this); update actions that require a "
+                    "confirmed setting will be refused"
+                )
+                stored_read_ok = False
+        if stored is None:
+            stored_read_ok = False
         if isinstance(stored, dict):
             for key in self._UPDATE_VALVE_KEYS:
                 if stored.get(key) is not None:
                     merged[key] = stored[key]
-        return merged
+        return merged, stored_read_ok
 
     @staticmethod
     async def _super_admin_id() -> str:
@@ -1083,7 +1164,14 @@ class UpdateService:
     async def _auto_tick(self) -> float:
         interval = _PD_UPDATE_AUTO_INTERVAL
         try:
-            valves = await self._row_valves()
+            valves, stored_read_ok = await self._row_valves_checked()
+            if not stored_read_ok:
+                logger.warning(
+                    "update: the persisted update valves are unreadable; skipping this "
+                    "unattended tick rather than applying an update the operator may "
+                    "have disabled"
+                )
+                return interval
             if not bool(valves.get("PIPE_DASHBOARD_UPDATE_ENABLE", True)):
                 return interval
             if not bool(valves.get("PIPE_DASHBOARD_UPDATE_AUTO", False)):
@@ -1100,7 +1188,7 @@ class UpdateService:
                         str(check_error.get("message") or ""),
                     )
                     if check_error.get("reset"):
-                        setattr(err, "reset", str(check_error["reset"]))  # noqa: B010 - dynamic attribute not declared on UpdateError
+                        err.reset = str(check_error["reset"])
                     self._auto_last = {"code": err.code, "ts": _now(), "message": err.message}
                     return self._next_backoff(err)
                 return interval

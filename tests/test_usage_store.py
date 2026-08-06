@@ -44,7 +44,7 @@ def _make_store_host() -> Any:
 
 
 def _row(**over: Any) -> dict[str, Any]:
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None)
     base: dict[str, Any] = {
         "ts": now,
         "started_at": now,
@@ -164,8 +164,8 @@ def test_purge_deletes_only_older_than_cutoff():
     host = _make_store_host()
     usage = UsageStore()
     assert usage.ensure(host)
-    old = _row(ts=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=40), chat_id="old")
-    new = _row(ts=datetime.datetime.now(datetime.UTC), chat_id="new")
+    old = _row(ts=datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None) - datetime.timedelta(days=40), chat_id="old")
+    new = _row(ts=datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None), chat_id="new")
     usage._persist_sync([old, new])
     assert _count_rows(usage) == 2
     usage._retention_days_fn = lambda: 30
@@ -180,10 +180,10 @@ def test_purge_skips_when_lock_held():
     host = _make_store_host()
     usage = UsageStore()
     assert usage.ensure(host)
-    usage._persist_sync([_row(ts=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=40))])
+    usage._persist_sync([_row(ts=datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None) - datetime.timedelta(days=40))])
     host._item_model = object()
     usage._acquire_purge_lock = lambda store, item_model, lock_id: False
-    usage._purge_sync(datetime.datetime.now(datetime.UTC))
+    usage._purge_sync(datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None))
     assert _count_rows(usage) == 1
 
 
@@ -195,7 +195,7 @@ def test_purge_releases_lock_after_delete():
     host._try_acquire_lock_sync = Mock(return_value=True)
     host._delete_artifacts_sync = Mock()
     usage._reap_stale_lock = lambda *a, **k: None
-    usage._purge_sync(datetime.datetime.now(datetime.UTC))
+    usage._purge_sync(datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None))
     assert host._try_acquire_lock_sync.called
     assert host._delete_artifacts_sync.called
 
@@ -204,7 +204,7 @@ def test_retention_read_live_and_clamped():
     usage = UsageStore()
     usage._retention_days_fn = lambda: 0
     cutoff = usage._purge_cutoff()
-    assert cutoff <= datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1) + datetime.timedelta(seconds=5)
+    assert cutoff <= datetime.datetime.now(datetime.UTC).astimezone().replace(tzinfo=None) - datetime.timedelta(days=1) + datetime.timedelta(seconds=5)
     usage._retention_days_fn = lambda: (_ for _ in ()).throw(RuntimeError())
     assert usage._purge_cutoff() is not None
 
@@ -232,3 +232,88 @@ async def test_start_and_stop_purge_task():
 
     with pytest.raises(asyncio.CancelledError):
         await returned
+
+
+@pytest.mark.parametrize(
+    "tz",
+    ["UTC", "Australia/Brisbane", "America/New_York", "Asia/Kolkata"],
+)
+def test_purge_cutoff_is_in_the_same_naive_frame_as_stored_timestamps(tz, monkeypatch):
+    """The purge cutoff must live in the naive-LOCAL frame, not naive-UTC.
+
+    SessionTracker.db_row stores ``ts`` as naive local time. A cutoff built in any
+    other frame is skewed by the UTC offset: east of UTC the naive-UTC cutoff falls
+    earlier, so a UTC+10 deployment retains 10 hours more than the retention window
+    allows, and west of UTC it falls later, so a UTC-5 deployment purges 5 hours of
+    history early. CI runs in UTC, where the two frames coincide, so only a non-UTC
+    zone can see the bug.
+    """
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        usage = UsageStore()
+        usage._retention_days_fn = lambda: 7
+
+        expected = datetime.datetime.fromtimestamp(time.time() - 7 * 86400)
+        cutoff = usage._purge_cutoff()
+
+        assert cutoff.tzinfo is None, "stored timestamps are naive; the cutoff must match"
+        assert abs((cutoff - expected).total_seconds()) < 5, (
+            f"cutoff is {(cutoff - expected).total_seconds() / 3600:.1f}h away from "
+            f"naive-local now-7d under {tz}"
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+@pytest.mark.parametrize(
+    "tz",
+    ["UTC", "Australia/Brisbane", "America/New_York", "Asia/Kolkata"],
+)
+def test_the_writer_and_the_decoder_agree_on_the_stored_frame(tz, monkeypatch):
+    """A row written for an instant must read back as that same instant.
+
+    The test above anchors the purge cutoff to naive-local computed independently, so
+    it catches the frame moving. It cannot catch the writer and the decoder moving
+    TOGETHER -- a round trip through a self-consistent pair holds in any frame. That
+    matters because the pair is now one owner: an edit touches both at once.
+
+    So this asserts both halves. The round trip pins writer against decoder; the
+    comparison with an independently built naive-local value pins the pair against the
+    frame the column actually holds. Driven through SessionTracker.db_row, which is the
+    real writer, not through the helper alone.
+    """
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.session_tracker import (
+        SessionTracker,
+    )
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import (
+        epoch_from_usage_ts,
+    )
+
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        started = time.time() - 300.0
+        done = time.time()
+        row = SessionTracker().db_row({"started": started, "done": done, "kind": "chat"})
+
+        assert row["ts"].tzinfo is None and row["started_at"].tzinfo is None, (
+            "the column is DateTime with no timezone; an aware value is stored with its "
+            "offset silently dropped"
+        )
+        assert abs(epoch_from_usage_ts(row["ts"]) - done) < 1e-3, (
+            f"a row written for {done} decodes as {epoch_from_usage_ts(row['ts'])} under "
+            f"{tz}; the writer and the decoder are in different frames, so every "
+            "dashboard timestamp is off by the difference"
+        )
+        assert abs(epoch_from_usage_ts(row["started_at"]) - started) < 1e-3
+
+        assert abs((row["ts"] - datetime.datetime.fromtimestamp(done)).total_seconds()) < 1, (
+            f"the stored value is not naive-local under {tz}. The purge cutoff is built "
+            "in naive-local, so a writer in any other frame deletes rows from a window "
+            "shifted by the UTC offset -- silently, and permanently."
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()

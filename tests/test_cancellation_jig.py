@@ -16,6 +16,7 @@ points upstream (frontend task bookkeeping / OWUI task registry).
 
 import asyncio
 import json
+from typing import Any, cast
 
 import pytest
 from aiohttp import web
@@ -100,7 +101,7 @@ async def _start_sse_upstream() -> tuple[str, _UpstreamRecorder, web.AppRunner]:
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    port = site._server.sockets[0].getsockname()[1]
+    port = cast(Any, site._server).sockets[0].getsockname()[1]
     return f"http://127.0.0.1:{port}", recorder, runner
 
 
@@ -135,6 +136,7 @@ async def test_owui_stop_task_cancel_aborts_upstream_request():
             __tools__=None,
         )
         assert hasattr(stream, "__anext__"), f"expected async generator, got {type(stream)}: {stream!r}"
+        stream = cast(Any, stream)
 
         async def _owui_process_chat() -> None:
             async for item in stream:
@@ -182,6 +184,7 @@ async def test_owui_generator_close_aborts_upstream_request():
             __tools__=None,
         )
         assert hasattr(stream, "__anext__")
+        stream = cast(Any, stream)
 
         await asyncio.wait_for(recorder.request_started.wait(), timeout=10)
         for _ in range(200):

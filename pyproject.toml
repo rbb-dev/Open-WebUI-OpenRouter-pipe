@@ -34,8 +34,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-  "aioresponses"
+test = [
+  "aioresponses",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-timeout"
 ]
 
 [project.urls]
@@ -44,11 +47,26 @@ Repository = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe"
 Documentation = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/blob/main/docs/README.md"
 "Bug Tracker" = "https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe/issues"
 
+[tool.ruff]
+# The enabled rule set is ruff's default for THIS version, and nothing else records
+# which version that is. The suppressions in this package -- BLE001, S110, TRY004,
+# S102, B010, SIM115, S112, I001 -- exist only under 0.16's defaults, and RUF100 is
+# default-on, so a ruff whose defaults differ reports every one of them as an unused
+# noqa and fails the build on code nobody touched. This refuses to run rather than
+# report findings the CI gate would not. Keep in step with the ruff== pins in
+# .github/workflows/verify.yml.
+required-version = "0.16.0"
+
 [tool.setuptools.packages.find]
 include = ["open_webui_openrouter_pipe*"]
 
 [tool.setuptools.package-data]
 open_webui_openrouter_pipe = ["py.typed"]
 
-[tool.setuptools.exclude-package-data]
-"*" = ["pytest_bootstrap.py"]
+# NOTE: pytest_bootstrap.py deliberately SHIPS in the wheel. pytest.ini loads it as
+# `-p open_webui_openrouter_pipe.pytest_bootstrap`, so it has to be importable from the
+# installed package. An exclude-package-data entry used to sit here claiming to remove
+# it; that setting governs package DATA, not modules found by packages.find, so it never
+# did anything and the wheel contained the file the whole time. The four bundles do drop
+# it (scripts/bundle_v2.py SKIP_FILES) because a bundle never runs pytest -- that is a
+# deliberate difference, not the drift it looked like.

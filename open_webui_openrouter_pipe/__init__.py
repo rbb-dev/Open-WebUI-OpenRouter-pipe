@@ -14,20 +14,16 @@ during simple imports like `from open_webui_openrouter_pipe import Pipe`.
 
 from typing import TYPE_CHECKING, Any
 
-try:
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as _get_version
-except ImportError:
-    __version__ = "2.7.3"  # Fallback if not installed as package
-else:
-    try:
-        __version__ = _get_version("open-webui-openrouter-pipe")
-    except PackageNotFoundError:
-        __version__ = "2.7.3"  # Fallback if not installed as package
+_FALLBACK_VERSION = "2.7.3"
 
-# -----------------------------------------------------------------------------
-# Type hints only (no runtime import)
-# -----------------------------------------------------------------------------
+__version__ = _FALLBACK_VERSION
+try:
+    from importlib.metadata import version as _get_version
+
+    __version__ = _get_version("open-webui-openrouter-pipe")
+except Exception:  # noqa: BLE001, S110 - see below; no logger exists this early
+    pass
+
 
 if TYPE_CHECKING:
     from .api.transforms import (
@@ -50,7 +46,6 @@ if TYPE_CHECKING:
         DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
         DEFAULT_OPENROUTER_ERROR_TEMPLATE,
         DEFAULT_RATE_LIMIT_TEMPLATE,
-        LOGGER,
         EncryptedStr,
         UserValves,
         Valves,
@@ -132,15 +127,11 @@ if TYPE_CHECKING:
     )
     from .tools.tool_schema import _classify_function_call_artifacts, _strictify_schema
 
-    # Open WebUI / FastAPI re-exports are resolved lazily at runtime via __getattr__.
-    # Define them for type checkers so __all__ is consistent without importing heavy deps.
     upload_file_handler: Any
     run_in_threadpool: Any
 
 
-# -----------------------------------------------------------------------------
 # Public API - All lazy loaded
-# -----------------------------------------------------------------------------
 
 __all__ = [
     "DEFAULT_AUTHENTICATION_ERROR_TEMPLATE",
@@ -148,7 +139,6 @@ __all__ = [
     "DEFAULT_NETWORK_TIMEOUT_TEMPLATE",
     "DEFAULT_OPENROUTER_ERROR_TEMPLATE",
     "DEFAULT_RATE_LIMIT_TEMPLATE",
-    "LOGGER",
     "ULID_LENGTH",
     "_ENCRYPTED_PAYLOAD_VERSION",
     "_OPENROUTER_REFERER",
@@ -179,7 +169,6 @@ __all__ = [
     "TaskModelAdapter",
     "UserValves",
     "Valves",
-    # Internal (for testing)
     "_PipeJob",
     "_QueuedToolCall",
     "_SessionLogArchiveJob",
@@ -248,14 +237,11 @@ __all__ = [
 ]
 
 
-# -----------------------------------------------------------------------------
 # Lazy Loading Implementation
-# -----------------------------------------------------------------------------
 
 # Cache for loaded attributes
 _cache: dict = {}
 
-# Mapping of attribute name to (module_path, attr_name_in_module)
 _LAZY_IMPORTS = {
     # Core config
     "Valves": (".core.config", "Valves"),
@@ -269,7 +255,6 @@ _LAZY_IMPORTS = {
     "DEFAULT_AUTHENTICATION_ERROR_TEMPLATE": (".core.config", "DEFAULT_AUTHENTICATION_ERROR_TEMPLATE"),
     "DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE": (".core.config", "DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE"),
     "_detect_runtime_pipe_id": (".core.config", "_detect_runtime_pipe_id"),
-    "LOGGER": (".core.config", "LOGGER"),
     "_select_openrouter_http_referer": (".core.config", "_select_openrouter_http_referer"),
 
     # Core errors
@@ -364,7 +349,6 @@ _LAZY_IMPORTS = {
     "_SessionLogArchiveJob": (".core.logging_system", "_SessionLogArchiveJob"),
     "write_session_log_archive": (".core.logging_system", "write_session_log_archive"),
 
-    # Pipe (heavy - triggers OWUI)
     "Pipe": (".pipe", "Pipe"),
     "_PipeJob": (".pipe", "_PipeJob"),
 
@@ -396,17 +380,26 @@ def __getattr__(name: str):
         module = importlib.import_module(module_path, __name__)
         value = getattr(module, attr_name)
         _cache[name] = value
-        globals()[name] = value  # Also cache in globals for faster subsequent access
+        globals()[name] = value
         return value
 
-    # Handle Open WebUI re-exports (may be None if not available)
     if name == "upload_file_handler":
         try:
             from open_webui.routers.files import upload_file_handler as _handler
             _cache[name] = _handler
-            globals()[name] = _handler  # cache for faster subsequent access
+            globals()[name] = _handler
             return _handler
         except ImportError:
+            _cache[name] = None
+            return None
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "open_webui.routers.files failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
             _cache[name] = None
             return None
 
@@ -414,13 +407,12 @@ def __getattr__(name: str):
         try:
             from fastapi.concurrency import run_in_threadpool as _run
             _cache[name] = _run
-            globals()[name] = _run  # cache for faster subsequent access
+            globals()[name] = _run
             return _run
-        except ImportError:
+        except Exception:  # noqa: BLE001 - this is the package's __getattr__, so anything
             _cache[name] = None
             return None
 
-    # Handle submodule access (e.g., open_webui_openrouter_pipe.errors)
     submodules = {
         "errors": ".core.errors",
         "config": ".core.config",

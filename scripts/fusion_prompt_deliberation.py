@@ -15,6 +15,7 @@ Usage:
   python fusion_prompt_deliberation.py --run [--type panel|judge|synthesis]
 """
 from __future__ import annotations
+
 import argparse
 import json
 import pathlib
@@ -254,7 +255,7 @@ def call_model(model: str, prompt: str, *, label: str, max_tokens: int = 32000,
                 "usage": data.get("usage"), "reasoning_used": i == 0,
                 "raw": data,
             }
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the per-model result dict records
             last_err = f"{type(exc).__name__}: {exc}"
             break
     return {"ok": False, "label": label, "model": model, "error": last_err}
@@ -268,7 +269,7 @@ def save(rec: dict, path: pathlib.Path) -> None:
 
 
 def extract_prompt(content: str) -> str | None:
-    m = re.findall(r"```prompt\s*\n(.*?)```", content, re.S)
+    m = re.findall(r"```prompt\s*\n(.*?)```", content, re.DOTALL)
     return m[-1].strip() if m else None
 
 

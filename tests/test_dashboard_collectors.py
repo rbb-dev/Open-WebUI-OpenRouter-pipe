@@ -931,3 +931,189 @@ def test_collector_failures_warn_only_once(pipe_instance, caplog):
 
     hits = [m for m in caplog.messages if "cannot read semaphore usage" in m]
     assert len(hits) == 1, hits
+
+
+class _HostileWaiters:
+    """A semaphore whose `_waiters` raises rather than being absent."""
+
+    @property
+    def _waiters(self):
+        raise TypeError("waiters unavailable")
+
+
+class _HostileValue:
+    """Not an int, and refuses to become one."""
+
+    def __int__(self):
+        raise ValueError("not a number")
+
+
+class _HostileVideoPipe:
+    _video_global_limit = 0
+    _video_global_semaphore = None
+
+    @property
+    def _video_active_tasks(self):
+        raise TypeError("task map unavailable")
+
+
+def _collector_causes() -> tuple[set[str], list[str]]:
+    """Every `warn_level(_warned_collectors, ...)` cause key, read from the module's AST.
+
+    Discovered rather than listed. The hand-written table held four of five: the fifth,
+    `auth_failures`, was added by the same commit and guarded by nothing -- deleting its
+    diagnostic outright left the whole suite green, and coverage showed its lines were
+    executed by zero of 5862 tests. A table only makes an omission visible if something
+    compares it to reality -- and only if the comparison can SEE every site, which is
+    why the extractor is shared and reports the shapes it cannot reduce.
+    """
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+
+    from tests.warn_latch_census import warn_level_causes
+
+    return warn_level_causes(_collectors, "_warned_collectors")
+
+
+_COLLECTOR_DRIVERS = {
+    "safe_int": lambda c: c._safe_int(_HostileValue()),
+    "waiter_count": lambda c: c._waiter_count(_HostileWaiters()),
+    "semaphore_active": lambda c: c._semaphore_active(_HostileValue(), 4),
+    "video_active": lambda c: c.collect_video_pool(_HostileVideoPipe())["active"],
+    "auth_failures": lambda c: _drive_hostile_auth_failures(c),
+}
+
+
+def _drive_hostile_auth_failures(collectors):
+    """Make the auth-failure read raise the way a corrupted breaker state would.
+
+    `now < until` against a value that does not compare to a float raises TypeError,
+    which is one of the four the collector catches. Restored on the way out because the
+    breaker's tracking dict is a CLASS attribute shared by every test after this one.
+    """
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
+
+    # A real breaker: collect_rate_limits returns a zeroed dict and never reaches the
+    # auth block when `_circuit_breaker` is falsy, so a hostile stub would drive nothing.
+    pipe = SimpleNamespace(_circuit_breaker=CircuitBreaker(threshold=3, window_seconds=60.0))
+    original = dict(CircuitBreaker._AUTH_FAILURE_UNTIL)
+    CircuitBreaker._AUTH_FAILURE_UNTIL.clear()
+    CircuitBreaker._AUTH_FAILURE_UNTIL["user"] = object()  # type: ignore[assignment]
+    try:
+        return collectors.collect_rate_limits(pipe)["auth_failures_active"]
+    finally:
+        CircuitBreaker._AUTH_FAILURE_UNTIL.clear()
+        CircuitBreaker._AUTH_FAILURE_UNTIL.update(original)
+
+
+def test_every_collector_fallback_has_a_driver():
+    """A new collector without a driver is a red build, not a silent omission.
+
+    Checked in both directions: a discovered cause with no driver is uncovered, and a
+    driver naming a cause that no longer exists is a stale entry pointing at nothing.
+    """
+    from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
+
+    discovered, unresolvable = _collector_causes()
+    assert not unresolvable, UNRESOLVABLE_MESSAGE + "\n  ".join(unresolvable)
+    missing = sorted(discovered - set(_COLLECTOR_DRIVERS))
+    assert not missing, (
+        f"these collector fallbacks have no driver, so deleting their diagnostic is "
+        f"invisible: {missing}. Add a driver rather than narrowing the table."
+    )
+    stale = sorted(set(_COLLECTOR_DRIVERS) - discovered)
+    assert not stale, f"the driver table names causes that no longer exist: {stale}"
+
+
+@pytest.mark.parametrize("label", sorted(_COLLECTOR_DRIVERS))
+def test_each_collector_fallback_is_reported_once(label, caplog):
+    """Substituting 0 for a metric that could not be read must be announced.
+
+    One of these four was covered; the other three were written the same way in the
+    same commit and were not. Deleting each warning block outright left the whole suite
+    green, so the dashboard would report 0 for a broken metric with nothing anywhere
+    saying the number is a placeholder.
+
+    Parametrised rather than copied four times, because the defect IS that three
+    siblings were left out of a pattern the fourth follows -- a table makes adding a
+    fifth collector without its guard a visible omission.
+
+    Asserted on records, not on message text: pinning the prose makes the test a
+    spell-checker that goes red on a reword and still cannot see a latch that never
+    lets the warning fire.
+    """
+    import logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+
+    call = _COLLECTOR_DRIVERS[label]
+    _collectors._warned_collectors.clear()
+
+    def _warnings():
+        return [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and r.name == _collectors.logger.name
+        ]
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=_collectors.logger.name):
+            assert call(_collectors) == 0, (
+                f"{label} did not fall back to 0, so this test never reached the "
+                "diagnostic it exists to check"
+            )
+            first = list(_warnings())
+            for _ in range(4):
+                call(_collectors)
+            total = list(_warnings())
+    finally:
+        _collectors._warned_collectors.clear()
+
+    assert len(first) == 1, (
+        f"{label} substituted 0 and emitted {len(first)} warnings; the dashboard would "
+        "show a placeholder number with no indication it is one"
+    )
+    assert len(total) == 1, (
+        f"{label} warned {len(total)} times over five calls. The latch is not holding, "
+        "so a persistently unreadable metric floods the log on every dashboard tick."
+    )
+    assert first[0].exc_info is not None, (
+        f"{label}'s warning carries no traceback, so it says a metric failed without "
+        "saying why"
+    )
+
+
+def test_an_unreadable_data_volume_is_reported_once_and_names_the_path(caplog, monkeypatch):
+    """Polled every ~16s while a viewer is connected, so it must not flood.
+
+    And it must say WHICH volume failed. The first version interpolated
+    `out.get("disk_path")`, which is assigned only after the read it reports on
+    succeeds, so every message read "for the data directory" and named nothing.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import runtime_metrics as rm
+
+    monkeypatch.setattr(rm.os, "getcwd", lambda: "/nonexistent-volume-xyz")
+
+    def _boom(_path):
+        raise FileNotFoundError("volume is not mounted")
+
+    monkeypatch.setattr(rm.shutil, "disk_usage", _boom)
+
+    out: dict = {}
+    with caplog.at_level(_logging.DEBUG, logger=rm.logger.name):
+        for _ in range(4):
+            out = rm.collect_system_resources()
+
+    disk = [r for r in caplog.records if "cannot read disk usage" in r.getMessage()]
+    assert [r.levelno for r in disk] == [
+        _logging.WARNING, _logging.DEBUG, _logging.DEBUG, _logging.DEBUG,
+    ], [(r.levelname, r.getMessage()) for r in disk]
+    assert "/nonexistent-volume-xyz" in disk[0].getMessage(), (
+        f"the message named no path: {disk[0].getMessage()!r}"
+    )
+    assert disk[0].exc_info is not None
+    assert not any("failed to import" in r.getMessage() for r in caplog.records)
+    assert "disk_free" not in out

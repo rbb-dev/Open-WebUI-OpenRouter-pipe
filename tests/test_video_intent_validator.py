@@ -388,7 +388,6 @@ class TestInvariants:
         # Model only supports first_frame
         model = {"supported_frame_images": ["first_frame"]}
         result = _validate(raw, attachments_count=1, video_model=model)
-        # last_frame downgraded to input_reference
         assert result.frame_plan[0].target == "input_reference"
 
     def test_dedupes_duplicate_first_frame_targets(self):

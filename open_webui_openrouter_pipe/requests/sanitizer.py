@@ -5,13 +5,15 @@ to the provider API. It removes non-replayable artifacts and normalizes
 tool call items to ensure consistent format.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import _filter_replayable_input_items
 from ..core.context_budget import apply_replay_tool_output_budget
-from ..core.utils import _clean_str
+from ..core.utils import TOOL_CALL_STATUSES, _clean_str
 from ..integrations.anthropic import _is_anthropic_model_id
 
 _ORPHAN_STUB_OUTPUT = (
@@ -95,7 +97,7 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
     return out if changed else items
 
 
-def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
+def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
     if not isinstance(items, list):
@@ -149,6 +151,9 @@ def _sanitize_request_input(pipe: "Pipe", body: "ResponsesBody") -> None:
                 "call_id": call_id.strip(),
                 "output": output,
             }
+            reported_status = item.get("status")
+            if reported_status in TOOL_CALL_STATUSES:
+                minimal["status"] = reported_status
             if set(item.keys()) != set(minimal.keys()):
                 changed = True
             return minimal, changed
@@ -232,12 +237,8 @@ def _validate_tool_call_pairs(
     if not orphaned_outputs and not orphaned_calls:
         return items
 
-    # An orphaned function_call is "interior" (historical) when a user message
-    # appears after it -- meaning the conversation moved on past this tool call.
-    # Frontier calls (no user message after them) are pending executions.
     interior_orphaned_calls: set[str] = set()
     if orphaned_calls:
-        # Find the position of the last user message.
         last_user_pos = -1
         for i, item in enumerate(items):
             if (
@@ -246,7 +247,6 @@ def _validate_tool_call_pairs(
                 and item.get("role") == "user"
             ):
                 last_user_pos = i
-        # Any orphaned function_call BEFORE the last user message is interior.
         if last_user_pos >= 0:
             for i, item in enumerate(items):
                 if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -289,6 +289,7 @@ def _validate_tool_call_pairs(
                 "type": "function_call_output",
                 "call_id": cid,
                 "output": _ORPHAN_STUB_OUTPUT,
+                "status": "incomplete",
             })
 
     return result

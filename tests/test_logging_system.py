@@ -36,10 +36,6 @@ from open_webui_openrouter_pipe.core.logging_system import (
 )
 
 
-# -----------------------------------------------------------------------------
-# Test: pyzipper import fallback (lines 37-38)
-# -----------------------------------------------------------------------------
-
 class TestPyzipperImportFallback:
     """Test behavior when pyzipper is not available."""
 
@@ -65,10 +61,6 @@ class TestPyzipperImportFallback:
         # No zip file should be created
         assert not list(tmp_path.rglob("*.zip"))
 
-
-# -----------------------------------------------------------------------------
-# Test: _classify_event_type (lines 101-110)
-# -----------------------------------------------------------------------------
 
 class TestClassifyEventType:
     """Test event type classification based on message content."""
@@ -114,10 +106,6 @@ class TestClassifyEventType:
         result = SessionLogger._classify_event_type("   OpenRouter request headers: ...")
         assert result == "openrouter.request.headers"
 
-
-# -----------------------------------------------------------------------------
-# Test: _build_event (lines 116-147)
-# -----------------------------------------------------------------------------
 
 class TestBuildEvent:
     """Test building structured events from LogRecord."""
@@ -215,7 +203,6 @@ class TestBuildEvent:
         record.getMessage = raise_error  # type: ignore[assignment]
 
         event = SessionLogger._build_event(record)
-        # Falls back to str(msg)
         assert event["message"] == "test %s"
 
     def test_build_event_missing_attributes(self) -> None:
@@ -229,7 +216,6 @@ class TestBuildEvent:
             args=(),
             exc_info=None,
         )
-        # Don't set request_id, session_id, user_id
 
         event = SessionLogger._build_event(record)
 
@@ -239,10 +225,6 @@ class TestBuildEvent:
         assert event["logger"] == ""
         assert event["lineno"] == 0
 
-
-# -----------------------------------------------------------------------------
-# Test: format_event_as_text (lines 153-171)
-# -----------------------------------------------------------------------------
 
 class TestFormatEventAsText:
     """Test text formatting of log events."""
@@ -300,10 +282,8 @@ class TestFormatEventAsText:
             "user_id": "user",
             "message": "msg",
         }
-        # Patch time.localtime to raise, triggering the except block (line 162-163)
         with patch("time.localtime", side_effect=ValueError("localtime failed")):
             result = SessionLogger.format_event_as_text(event)
-        # Should use fallback datetime formatting
         assert "[INFO]" in result
 
     def test_format_event_message_str_fails(self) -> None:
@@ -320,13 +300,8 @@ class TestFormatEventAsText:
             "message": BadStr(),
         }
         result = SessionLogger.format_event_as_text(event)
-        # Should return empty message fallback
         assert "[INFO]" in result
 
-
-# -----------------------------------------------------------------------------
-# Test: get_logger (lines 175-226, specifically 192)
-# -----------------------------------------------------------------------------
 
 class TestGetLogger:
     """Test logger creation and configuration."""
@@ -335,7 +310,13 @@ class TestGetLogger:
         logger = SessionLogger.get_logger("test.get_logger")
         assert logger.name == "test.get_logger"
         assert logger.level == logging.DEBUG
-        assert logger.propagate is True
+        assert logger.propagate is False
+        assert any(
+            type(h).__name__ == "_HostForwardHandler" for h in logger.handlers
+        ), (
+            "propagation is off and nothing forwards to the host, so the pipe's own "
+            "records never reach Open WebUI's log at any level"
+        )
 
     def test_get_logger_adds_null_handler_to_root(self) -> None:
         """Ensure NullHandler is added to root logger if not present."""
@@ -392,15 +373,10 @@ class TestGetLogger:
             exc_info=None,
         )
 
-        # Apply filter - should always return True
         for f in logger.filters:
             result = f(record)
             assert result is True
 
-
-# -----------------------------------------------------------------------------
-# Test: _enqueue (lines 250-268)
-# -----------------------------------------------------------------------------
 
 class TestEnqueue:
     """Test log record enqueuing."""
@@ -462,7 +438,6 @@ class TestEnqueue:
         original_loop = SessionLogger._main_loop
 
         try:
-            # Create a mock loop that's not closed
             mock_loop = MagicMock()
             mock_loop.is_closed.return_value = False
             queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue()
@@ -479,7 +454,6 @@ class TestEnqueue:
                 args=(),
                 exc_info=None,
             )
-            # Call from outside event loop context
             SessionLogger._enqueue(record)
 
             mock_loop.call_soon_threadsafe.assert_called_once()
@@ -517,10 +491,6 @@ class TestEnqueue:
             SessionLogger.log_queue = original_queue
             SessionLogger._main_loop = original_loop
 
-
-# -----------------------------------------------------------------------------
-# Test: _safe_put (lines 272-276)
-# -----------------------------------------------------------------------------
 
 class TestSafePut:
     """Test safe queue put operation."""
@@ -567,14 +537,10 @@ class TestSafePut:
             mock_process.assert_called_once_with(record)
 
 
-# -----------------------------------------------------------------------------
-# Test: process_record (lines 280-320)
-# -----------------------------------------------------------------------------
-
 class TestProcessRecord:
     """Test log record processing."""
 
-    def test_process_record_writes_to_stdout(self, capsys) -> None:
+    def test_process_record_does_not_write_its_own_console_line(self, capsys) -> None:
         record = logging.LogRecord(
             name="test.stdout",
             level=logging.INFO,
@@ -584,32 +550,18 @@ class TestProcessRecord:
             args=(),
             exc_info=None,
         )
-        record.session_log_level = logging.DEBUG
         record.request_id = None
 
         SessionLogger.process_record(record)
 
         captured = capsys.readouterr()
-        assert "stdout test message" in captured.out
-
-    def test_process_record_respects_log_level(self, capsys) -> None:
-        """Messages below session_log_level should not be printed."""
-        record = logging.LogRecord(
-            name="test.level",
-            level=logging.DEBUG,
-            pathname="test.py",
-            lineno=10,
-            msg="debug message should be filtered",
-            args=(),
-            exc_info=None,
+        assert "stdout test message" not in captured.out, (
+            "process_record wrote its own console line. It is the session-log buffer "
+            "path only; the console belongs to the host's handler chain, and writing "
+            "here as well is what produced two lines per record -- and a non-JSON line "
+            "in a LOG_FORMAT=json stream. See "
+            "test_a_record_reaches_the_console_exactly_once."
         )
-        record.session_log_level = logging.INFO  # Only INFO and above
-        record.request_id = None
-
-        SessionLogger.process_record(record)
-
-        captured = capsys.readouterr()
-        assert "debug message should be filtered" not in captured.out
 
     def test_process_record_stores_in_buffer(self) -> None:
         """Records with request_id are stored in logs buffer."""
@@ -630,7 +582,6 @@ class TestProcessRecord:
                 args=(),
                 exc_info=None,
             )
-            record.session_log_level = logging.INFO
             record.request_id = "req-buffer-test"
             record.session_id = "sess-1"
             record.user_id = "user-1"
@@ -665,7 +616,6 @@ class TestProcessRecord:
                 args=(),
                 exc_info=None,
             )
-            record.session_log_level = logging.INFO
             record.request_id = "new-request-id"
             record.session_id = None
             record.user_id = None
@@ -698,7 +648,6 @@ class TestProcessRecord:
                 args=(),
                 exc_info=None,
             )
-            record.session_log_level = logging.DEBUG
             record.request_id = "req-fallback"
             record.session_id = "sess-fallback"
             record.user_id = "user-fallback"
@@ -728,7 +677,6 @@ class TestProcessRecord:
             SessionLogger.logs.clear()
             SessionLogger._session_last_seen.clear()
 
-            # Create initial buffer with one SESSION_LOG_MAX_LINES
             SessionLogger.SESSION_LOG_MAX_LINES = 100
             record1 = logging.LogRecord(
                 name="test",
@@ -739,7 +687,6 @@ class TestProcessRecord:
                 args=(),
                 exc_info=None,
             )
-            record1.session_log_level = logging.DEBUG
             record1.request_id = "req-resize"
             record1.session_id = None
             record1.user_id = None
@@ -747,7 +694,6 @@ class TestProcessRecord:
             SessionLogger.process_record(record1)
             assert SessionLogger.logs["req-resize"].maxlen == 100
 
-            # Change SESSION_LOG_MAX_LINES and add another record
             SessionLogger.SESSION_LOG_MAX_LINES = 200
             record2 = logging.LogRecord(
                 name="test",
@@ -758,13 +704,11 @@ class TestProcessRecord:
                 args=(),
                 exc_info=None,
             )
-            record2.session_log_level = logging.DEBUG
             record2.request_id = "req-resize"
             record2.session_id = None
             record2.user_id = None
 
             SessionLogger.process_record(record2)
-            # Buffer should be recreated with new maxlen
             assert SessionLogger.logs["req-resize"].maxlen == 200
         finally:
             SessionLogger.logs.clear()
@@ -773,10 +717,6 @@ class TestProcessRecord:
             SessionLogger._session_last_seen.update(original_last_seen)
             SessionLogger.SESSION_LOG_MAX_LINES = original_max
 
-
-# -----------------------------------------------------------------------------
-# Test: cleanup (lines 326-331)
-# -----------------------------------------------------------------------------
 
 class TestCleanup:
     """Test session cleanup functionality."""
@@ -789,7 +729,6 @@ class TestCleanup:
             SessionLogger.logs.clear()
             SessionLogger._session_last_seen.clear()
 
-            # Add a stale session (2 hours old)
             stale_time = time.time() - 7200
             SessionLogger.logs["stale-session"] = deque([{"message": "old"}])
             SessionLogger._session_last_seen["stale-session"] = stale_time
@@ -834,10 +773,6 @@ class TestCleanup:
             SessionLogger._session_last_seen.clear()
             SessionLogger._session_last_seen.update(original_last_seen)
 
-
-# -----------------------------------------------------------------------------
-# Test: write_session_log_archive (lines 353-564)
-# -----------------------------------------------------------------------------
 
 class TestWriteSessionLogArchive:
     """Test session log archive writing functionality."""
@@ -951,9 +886,6 @@ class TestWriteSessionLogArchive:
             names = zf.namelist()
             assert "meta.json" in names
             assert "logs.txt" in names
-            # logs.jsonl is ALWAYS written as the canonical machine-readable
-            # record (even in "text" mode) so re-assembly can merge/dedup prior
-            # events — read_archive_events reads logs.jsonl only.
             assert "logs.jsonl" in names
 
     def test_archive_creates_zip_both_format(self, tmp_path: Path) -> None:
@@ -1070,9 +1002,9 @@ class TestWriteSessionLogArchive:
             created_at=time.time(),
             log_format="both",
             log_events=[
-                "string event",  # Non-dict
-                123,  # Non-dict
-                {"message": "dict event"},  # Dict
+                "string event",
+                123,
+                {"message": "dict event"},
             ],
         )
 
@@ -1143,7 +1075,7 @@ class TestWriteSessionLogArchive:
             log_events=[
                 {"message": "1", "request_id": "req-a"},
                 {"message": "2", "request_id": "req-b"},
-                {"message": "3", "request_id": "req-a"},  # Duplicate
+                {"message": "3", "request_id": "req-a"},
             ],
         )
 
@@ -1205,7 +1137,6 @@ class TestWriteSessionLogArchive:
         )
 
         with patch("pyzipper.AESZipFile", side_effect=IOError("zip creation failed")):
-            # Should return without error, cleanup tmp file
             write_session_log_archive(job)
 
         # No zip file should exist
@@ -1237,7 +1168,6 @@ class TestWriteSessionLogArchive:
         with patch("os.replace", side_effect=OSError("replace failed")):
             write_session_log_archive(job)
 
-        # Final zip should not exist, tmp should be cleaned up
         zip_path = tmp_path / "user-replace" / "chat-replace" / "msg-replace.zip"
         assert not zip_path.exists()
 
@@ -1299,13 +1229,12 @@ class TestWriteSessionLogArchive:
             ],
         )
 
-        # Patch json.dumps to fail on first call but succeed on fallback
         original_dumps = json.dumps
         call_count = [0]
 
         def failing_dumps(*args, **kwargs):
             call_count[0] += 1
-            if call_count[0] == 2:  # First jsonl record
+            if call_count[0] == 2:
                 raise TypeError("cannot serialize")
             return original_dumps(*args, **kwargs)
 
@@ -1343,10 +1272,6 @@ class TestWriteSessionLogArchive:
         assert zip_path.exists()
 
 
-# -----------------------------------------------------------------------------
-# Test: set_log_queue and set_main_loop (lines 230-235)
-# -----------------------------------------------------------------------------
-
 class TestQueueAndLoopSetters:
     """Test queue and loop setters."""
 
@@ -1375,10 +1300,6 @@ class TestQueueAndLoopSetters:
         finally:
             SessionLogger._main_loop = original
 
-
-# -----------------------------------------------------------------------------
-# Test: _SessionLogArchiveJob dataclass
-# -----------------------------------------------------------------------------
 
 class TestSessionLogArchiveJob:
     """Test the archive job dataclass."""
@@ -1412,10 +1333,6 @@ class TestSessionLogArchiveJob:
         assert len(job.log_events) == 2
 
 
-# -----------------------------------------------------------------------------
-# Test: Console formatter output (line 288-289)
-# -----------------------------------------------------------------------------
-
 class TestConsoleFormatterException:
     """Test console formatter exception handling."""
 
@@ -1430,7 +1347,6 @@ class TestConsoleFormatterException:
             args=(),
             exc_info=None,
         )
-        record.session_log_level = logging.DEBUG
         record.request_id = None
 
         # Mock formatter to raise
@@ -1447,10 +1363,6 @@ class TestConsoleFormatterException:
         finally:
             SessionLogger._console_formatter = original_formatter
 
-
-# -----------------------------------------------------------------------------
-# Test: Context updates in filter (lines 208-212)
-# -----------------------------------------------------------------------------
 
 class TestFilterContextUpdates:
     """Test filter updates _session_last_seen."""
@@ -1493,10 +1405,6 @@ class TestFilterContextUpdates:
             SessionLogger._session_last_seen.update(original_last_seen)
 
 
-# -----------------------------------------------------------------------------
-# Additional edge case tests for higher coverage
-# -----------------------------------------------------------------------------
-
 class TestBuildEventExceptionInTraceback:
     """Test exception handling in _build_event traceback formatting."""
 
@@ -1520,7 +1428,6 @@ class TestBuildEventExceptionInTraceback:
         record.session_id = None
         record.user_id = None
 
-        # Patch traceback.format_exception to raise
         with patch("traceback.format_exception", side_effect=RuntimeError("format failed")):
             event = SessionLogger._build_event(record)
 
@@ -1660,7 +1567,6 @@ class TestArchiveEdgeCases:
         except ImportError:
             pytest.skip("pyzipper not available")
 
-        # Create event that will cause iteration issues
         class BadIterable:
             def __iter__(self):
                 raise RuntimeError("iteration failed")
@@ -1677,11 +1583,8 @@ class TestArchiveEdgeCases:
             request_id="req-reqids",
             created_at=time.time(),
             log_format="jsonl",
-            log_events=[{"message": "test"}],  # Regular events
+            log_events=[{"message": "test"}],
         )
-
-        # Patch job.log_events iteration
-        original_events = job.log_events
 
         class FailingList(list):
             _count = 0
@@ -1692,7 +1595,6 @@ class TestArchiveEdgeCases:
                     raise RuntimeError("iteration failed")
                 return super().__iter__()
 
-        # Can't easily patch the iteration, so skip this complex case
         write_session_log_archive(job)
 
         zip_path = tmp_path / "user-reqids" / "chat-reqids" / "msg-reqids.zip"
@@ -1716,15 +1618,9 @@ class TestProcessRecordOuterException:
         record.request_id = "req-outer"
         record.session_id = None
         record.user_id = None
-        record.session_log_level = logging.DEBUG
 
-        # Mock getattr to raise on specific attribute
-        original_getattr = getattr
-
-        # Process record with mocked _state_lock that raises
         original_lock = SessionLogger._state_lock
         try:
-            # Create a mock lock that raises on acquire
             class FailingLock:
                 def __enter__(self):
                     raise RuntimeError("lock failed")
@@ -1746,12 +1642,10 @@ class TestEmitHandler:
         """Test that emit handler properly calls _enqueue."""
         logger = SessionLogger.get_logger("test.emit_handler")
 
-        # Find the handler with our custom emit
-        handler = None
-        for h in logger.handlers:
-            if hasattr(h, "emit"):
-                handler = h
-                break
+        handler = next(
+            (h for h in logger.handlers if type(h).__name__ != "_HostForwardHandler"),
+            None,
+        )
 
         assert handler is not None
 
@@ -1784,7 +1678,6 @@ def test_process_record_survives_stdout_write_failure(monkeypatch):
     record.session_id = "sess-stdout-fail"
     record.request_id = "req-stdout-fail"
     record.user_id = "u1"
-    record.session_log_level = logging.DEBUG
 
     def _boom(*_a, **_k):
         raise OSError("stdout closed")
@@ -1865,3 +1758,1088 @@ class TestGetLoggerRootCapture:
             wired = logging.getLogger(root_name)
             wired.handlers.clear()
             wired.filters.clear()
+
+
+def test_text_rendering_keeps_the_error_detail():
+    """logger.exception() moves the detail out of the message; text output must keep it.
+
+    Both text renderers emit only ``message``. Converting
+    ``logger.error(f"failed: {exc}")`` to ``logger.exception("failed")`` therefore
+    deletes the cause from the human-readable logs.txt archive and from the error-log
+    citation dump, which are exactly the artifacts a user sends when reporting a bug.
+    """
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    event = {
+        "created": 1_700_000_000.0,
+        "level": "ERROR",
+        "message": "Failed to emit completion",
+        "exception": {"text": "Traceback...\nRuntimeError: upstream socket died"},
+    }
+
+    rendered = SessionLogger.format_event_as_text(event)
+
+    assert "Failed to emit completion" in rendered
+    assert "upstream socket died" in rendered, (
+        "the traceback was captured but not rendered; logs.txt shows the headline "
+        "and silently drops the cause"
+    )
+
+
+def test_text_rendering_without_an_exception_is_unchanged():
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    rendered = SessionLogger.format_event_as_text(
+        {"created": 1_700_000_000.0, "level": "INFO", "message": "hello"}
+    )
+
+    assert rendered.endswith("hello"), f"unexpected trailing content: {rendered!r}"
+
+
+def test_archive_text_rendering_keeps_the_error_detail(tmp_path):
+    """Round-trips a real encrypted archive; logs.txt must carry the traceback.
+
+    write_session_log_archive builds its own _format_event_as_text as a closure, so
+    the sibling test (which covers SessionLogger.format_event_as_text) does not reach
+    it. An earlier version of this asserted that the source contained the call, which
+    any edit keeping the call but neutralising its value would pass.
+    """
+    pyzipper = pytest.importorskip("pyzipper")
+
+    from open_webui_openrouter_pipe.core.logging_system import (
+        _SessionLogArchiveJob,
+        write_session_log_archive,
+    )
+
+    event = {
+        "created": 1_700_000_000.0,
+        "level": "ERROR",
+        "message": "Failed to emit completion",
+        "exception": {"text": "Traceback (most recent call last):\nRuntimeError: upstream socket died"},
+    }
+    job = _SessionLogArchiveJob(
+        base_dir=str(tmp_path),
+        zip_password=b"pw",
+        zip_compression="stored",
+        zip_compresslevel=None,
+        user_id="u1",
+        session_id="s1",
+        chat_id="c1",
+        message_id="m1",
+        request_id="r1",
+        created_at=1_700_000_000.0,
+        log_format="both",
+        log_events=[dict(event)],
+    )
+
+    write_session_log_archive(job)
+
+    archive = tmp_path / "u1" / "c1" / "m1.zip"
+    assert archive.exists(), "archive was not written; the round-trip proves nothing"
+    with pyzipper.AESZipFile(archive) as zf:
+        zf.setpassword(b"pw")
+        logs_txt = zf.read("logs.txt").decode()
+
+    assert "Failed to emit completion" in logs_txt
+    assert "upstream socket died" in logs_txt, (
+        "logs.txt -- the human-readable log a user attaches to a bug report -- shows "
+        "the headline and silently drops the cause"
+    )
+
+
+def test_the_host_forwarder_honours_the_session_log_level():
+    """LOG_LEVEL must actually gate what reaches Open WebUI's handlers.
+
+    The package logger sits at DEBUG so the session archive captures everything, and
+    Open WebUI's root StreamHandler has no level of its own -- so plain propagation
+    printed every package DEBUG record to the container log and neither GLOBAL_LOG_LEVEL
+    nor this pipe's LOG_LEVEL could stop it. The autouse fixture raises the threshold
+    to DEBUG for the rest of the suite, so this is the only place the production
+    default is exercised.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    import sys as _sys
+
+    _pkg = _sys.modules.get("open_webui_openrouter_pipe")
+    _root = (getattr(_pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
+    wired = SessionLogger.get_logger(_root)
+    child = _logging.getLogger(f"{_root}.forwarder_probe")
+
+    seen: list[tuple[str, str]] = []
+
+    class _Host(_logging.Handler):
+        def emit(self, record):
+            seen.append((record.levelname, record.getMessage()))
+
+    host = _Host()
+    root = _logging.getLogger()
+    root.addHandler(host)
+    try:
+        token = SessionLogger.log_level.set(_logging.INFO)
+        try:
+            child.debug("debug-at-info-threshold")
+            child.warning("warning-at-info-threshold")
+        finally:
+            SessionLogger.log_level.reset(token)
+
+        levels = [lvl for lvl, _ in seen]
+        assert "DEBUG" not in levels, (
+            f"a DEBUG record reached the host at an INFO threshold: {seen}. Every "
+            "logger.debug in the package would print to the container log with no "
+            "way for an operator to suppress it."
+        )
+        assert "WARNING" in levels, (
+            f"a WARNING did not reach the host at all: {seen}. Suppressing debug "
+            "output must not also silence the records operators need."
+        )
+
+        seen.clear()
+        token = SessionLogger.log_level.set(_logging.DEBUG)
+        try:
+            child.debug("debug-at-debug-threshold")
+        finally:
+            SessionLogger.log_level.reset(token)
+        assert [lvl for lvl, _ in seen] == ["DEBUG"], (
+            f"raising the threshold to DEBUG did not let a DEBUG record through: {seen}"
+        )
+    finally:
+        root.removeHandler(host)
+        wired.handlers.clear()
+
+
+def test_a_test_cannot_leave_the_package_logger_deaf():
+    """The autouse restore fixture must actually undo a hostile teardown.
+
+    Two tests in this file end by clearing the package logger's handlers. With
+    propagate=False that leaves it with nowhere to send anything, and every later
+    open_webui_openrouter_pipe.* record is dropped -- 33 tests ran that way before
+    the fixture existed. An absence-assertion landing in that window would pass for
+    the wrong reason, which is the failure mode with no symptom.
+    """
+    import logging as _logging
+
+    import sys as _sys
+
+    pkg = _sys.modules.get("open_webui_openrouter_pipe")
+    root_name = (getattr(pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
+    logger = _logging.getLogger(root_name)
+    import logging as _lg
+
+    real = [h for h in logger.handlers if not isinstance(h, _lg.NullHandler)]
+    assert real or logger.propagate, (
+        f"the package logger {logger.name!r} has no handler that can emit "
+        f"({[type(h).__name__ for h in logger.handlers]}) and does not propagate, so "
+        "every record under it is silently discarded. A previous test cleared it and "
+        "the restore fixture did not put it back. A NullHandler does not count -- it "
+        "is what makes this failure silent."
+    )
+
+
+def test_out_of_request_records_are_judged_against_the_configured_level():
+    """No request in scope must not mean a hardcoded threshold.
+
+    Everything pipes() logs -- filter auto-install failures, plugin dispatch failures,
+    startup pruning -- runs with the log-level ContextVar unset. Reading that var
+    directly pinned those records to its default, so the diagnostics added expressly
+    to stop swallowing failures became unreachable at any setting.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    saved = SessionLogger.process_log_level
+    token = SessionLogger.log_level.set(None)
+    try:
+        SessionLogger.process_log_level = _logging.DEBUG
+        assert SessionLogger.effective_log_level() == _logging.DEBUG, (
+            "with no request in scope the operator's configured level is ignored"
+        )
+        SessionLogger.process_log_level = _logging.WARNING
+        assert SessionLogger.effective_log_level() == _logging.WARNING
+
+        inner = SessionLogger.log_level.set(_logging.DEBUG)
+        try:
+            assert SessionLogger.effective_log_level() == _logging.DEBUG, (
+                "the per-request level no longer overrides the process floor"
+            )
+        finally:
+            SessionLogger.log_level.reset(inner)
+    finally:
+        SessionLogger.log_level.reset(token)
+        SessionLogger.process_log_level = saved
+
+
+def test_host_handlers_receive_enriched_records():
+    """The forwarder must run after the filter that stamps the record.
+
+    session_id / request_id / user_id are attached by a filter on the capture handler,
+    which mutates the record in place. callHandlers runs handlers in insertion order,
+    so registering the forwarder first handed host formatters bare records -- a
+    regression against the old propagate=True shape, where the logger's own handlers
+    always ran before ancestors.
+    """
+    import logging as _logging
+    import sys as _sys
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    seen: list[tuple[str, object, object]] = []
+
+    class _Host(_logging.Handler):
+        def emit(self, record):
+            seen.append((
+                record.getMessage(),
+                getattr(record, "user_id", "<absent>"),
+                getattr(record, "request_id", "<absent>"),
+            ))
+
+    host = _Host()
+    root = _logging.getLogger()
+    root.addHandler(host)
+    uid = SessionLogger.user_id.set("u-enrich")
+    rid = SessionLogger.request_id.set("r-enrich")
+    try:
+        pkg = _sys.modules.get("open_webui_openrouter_pipe")
+        root_name = (getattr(pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
+        SessionLogger.get_logger(root_name)
+        _logging.getLogger(f"{root_name}.enrich_probe").warning("enrich-probe-marker")
+    finally:
+        SessionLogger.user_id.reset(uid)
+        SessionLogger.request_id.reset(rid)
+        root.removeHandler(host)
+
+    hits = [h for h in seen if h[0] == "enrich-probe-marker"]
+    assert hits, "the record never reached a host handler at all"
+    assert hits[0][1] == "u-enrich" and hits[0][2] == "r-enrich", (
+        f"the host handler saw {hits[0]!r}: the forwarder ran before the enriching "
+        "filter, so any host formatter referencing %(user_id)s or %(request_id)s "
+        "raises instead of formatting."
+    )
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("DEBUG", 10), ("warning", 30), ("BASIC_FORMAT", 20), ("nonsense", 20), ("", 20), (None, 20)],
+)
+def test_a_misconfigured_global_log_level_cannot_break_logging(configured, expected):
+    """`getattr(logging, name, INFO)` returns any module attribute, not just a level.
+
+    GLOBAL_LOG_LEVEL=BASIC_FORMAT resolved to a format string, and the forwarder's
+    int() coercion sat outside its own try -- so an unrelated logger.warning() raised
+    ValueError into request handling, breaking the module's own thrice-stated rule
+    that logging must never do that.
+    """
+    from open_webui_openrouter_pipe.core.logging_system import resolve_level
+
+    assert resolve_level(configured, 20) == expected
+
+
+def test_a_bad_threshold_never_escapes_the_forward_handler():
+    """Even if the floor is corrupted at runtime, emitting must not raise."""
+    import logging as _logging
+    import sys as _sys
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    saved = SessionLogger.process_log_level
+    pkg = _sys.modules.get("open_webui_openrouter_pipe")
+    root_name = (getattr(pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
+    token = SessionLogger.log_level.set(None)
+    try:
+        SessionLogger.process_log_level = "%(levelname)s"  # type: ignore[assignment]
+        SessionLogger.get_logger(root_name)
+        _logging.getLogger(f"{root_name}.bad_threshold_probe").warning("must not raise")
+    finally:
+        SessionLogger.log_level.reset(token)
+        SessionLogger.process_log_level = saved
+
+
+class TestLevelResolution:
+    """Every level name in the pipe goes through one resolver, and it is total.
+
+    `getattr(logging, name, fallback)` returns any attribute of the module, so a name
+    that happens to match one yields a non-level -- GLOBAL_LOG_LEVEL=BASIC_FORMAT gives
+    a format string where an int belongs. Bare `getattr(logging, name)` raises instead,
+    and the site that used it runs on every request.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("DEBUG", logging.DEBUG),
+            ("info", logging.INFO),
+            ("  WARNING  ", logging.WARNING),
+            ("ERROR", logging.ERROR),
+            ("CRITICAL", logging.CRITICAL),
+        ],
+    )
+    def test_real_level_names_resolve(self, name, expected):
+        from open_webui_openrouter_pipe.core.logging_system import resolve_level
+
+        assert resolve_level(name, logging.INFO) == expected
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "BASIC_FORMAT",
+            "Formatter",
+            "NOTSET",
+            "TRACE",
+            "",
+            None,
+        ],
+    )
+    def test_anything_that_is_not_a_usable_threshold_falls_back(self, name):
+        from open_webui_openrouter_pipe.core.logging_system import resolve_level
+
+        assert resolve_level(name, logging.WARNING) == logging.WARNING
+
+    def test_a_bad_valve_does_not_break_request_handling(self, pipe_instance):
+        """The failure this replaced: an AttributeError raised per request.
+
+        `_apply_logging_context` runs for every request, so a LOG_LEVEL that is not an
+        attribute of `logging` took the whole request down rather than falling back.
+        """
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger, resolve_level
+
+        assert resolve_level("NOT_A_LEVEL", SessionLogger.process_log_level) == (
+            SessionLogger.process_log_level
+        )
+
+    def test_a_request_does_not_redefine_the_process_wide_floor(self, pipe_instance):
+        """`process_log_level` has one writer, and a request is not it.
+
+        Every other value `_apply_logging_context` sets is a ContextVar captured in a
+        token and reset when the request ends. `process_log_level` is a plain class
+        attribute on a process-wide object, so a request that wrote it would set the
+        floor for every out-of-request logger in the worker from then on -- the
+        dashboard publisher, the Redis listener, video lifecycle tasks, and `pipes()`
+        until its next call.
+
+        The per-request level rides the `log_level` ContextVar, which
+        `effective_log_level` prefers while a request is in scope. So this asserts both
+        halves: the request's level is in force during the request, and the process
+        floor is untouched by it.
+        """
+        import asyncio
+        import logging as _logging
+
+        from open_webui_openrouter_pipe import _PipeJob
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        pipe = pipe_instance
+        pipe.valves.LOG_LEVEL = "WARNING"
+        pipe._refresh_process_log_level()
+        floor_before = SessionLogger.process_log_level
+        assert floor_before == _logging.WARNING, (
+            "the sole writer did not install the operator's LOG_LEVEL, so nothing below "
+            "is testing what it claims to"
+        )
+
+        # pins the no-request baseline: reset() restores what the var held before the
+        # request, and a sibling test in this process may have left one set
+        outer = SessionLogger.log_level.set(None)
+        loop = asyncio.new_event_loop()
+        try:
+            job = _PipeJob(
+                pipe=pipe,
+                body={"model": "test", "messages": []},
+                user={"id": "u1"},
+                request=None,
+                event_emitter=None,
+                event_call=None,
+                metadata={"session_id": "s1"},
+                tools=None,
+                task=None,
+                task_body=None,
+                valves=pipe.valves.model_copy(update={"LOG_LEVEL": "DEBUG"}),
+                future=loop.create_future(),
+            )
+            tokens = pipe._apply_logging_context(job)
+            try:
+                assert SessionLogger.effective_log_level() == _logging.DEBUG, (
+                    "the request's own level is not in force during the request"
+                )
+                assert SessionLogger.process_log_level == floor_before, (
+                    f"the request moved the process-wide floor to "
+                    f"{SessionLogger.process_log_level}. It has no token, so nothing "
+                    "puts it back: every out-of-request logger in this worker is now "
+                    "judged against one request's valve."
+                )
+            finally:
+                for var, token in reversed(tokens):
+                    var.reset(token)
+
+            assert SessionLogger.effective_log_level() == floor_before, (
+                "with the request over and no level in scope, the operator's configured "
+                "floor is not what governs"
+            )
+        finally:
+            SessionLogger.log_level.reset(outer)
+            loop.close()
+
+    def test_constructing_the_pipe_points_the_floor_at_the_operators_valve(self):
+        """Covers the CALL SITE, which the test above does not.
+
+        That one invokes `_refresh_process_log_level()` by hand and asserts on the
+        result, so the function's logic is covered while both places production calls
+        it are not: deleting either `self._refresh_process_log_level()` from
+        `Pipe.__init__` or from `pipes()` left the whole suite green.
+
+        With them gone the floor stays at whatever GLOBAL_LOG_LEVEL set at import and
+        the LOG_LEVEL valve never reaches it. Everything that logs outside a request --
+        filter auto-install failures, plugin dispatch failures, startup pruning, the
+        Redis listener, the dashboard publisher, video lifecycle tasks -- is then judged
+        against that stale floor at every valve setting.
+
+        The floor is poisoned first so a pass cannot come from agreeing with the
+        default, and no spy is used: a spy proves the call happened, not that the level
+        arrived.
+        """
+        import logging as _logging
+
+        from open_webui_openrouter_pipe import Pipe
+        from open_webui_openrouter_pipe.core.logging_system import (
+            SessionLogger,
+            resolve_level,
+        )
+
+        saved = SessionLogger.process_log_level
+        try:
+            SessionLogger.process_log_level = _logging.CRITICAL
+            pipe = Pipe()
+            pipe.valves.LOG_LEVEL = "DEBUG"
+            pipe._refresh_process_log_level()
+            assert SessionLogger.process_log_level == _logging.DEBUG
+
+            SessionLogger.process_log_level = _logging.CRITICAL
+            fresh = Pipe()
+            assert SessionLogger.process_log_level != _logging.CRITICAL, (
+                "constructing a Pipe left the out-of-request floor at the poisoned "
+                "value, so Pipe.__init__ never applied the LOG_LEVEL valve and nothing "
+                "logged outside a request can be seen at any setting"
+            )
+            assert SessionLogger.process_log_level == resolve_level(
+                str(fresh.valves.LOG_LEVEL), _logging.INFO
+            ), (
+                f"the floor is {SessionLogger.process_log_level} but the pipe's "
+                f"LOG_LEVEL valve says {fresh.valves.LOG_LEVEL!r}"
+            )
+        finally:
+            SessionLogger.process_log_level = saved
+
+    @pytest.mark.asyncio
+    async def test_listing_models_reapplies_the_operators_valve(self):
+        """The second call site. `pipes()` runs on every model list, which is where an
+        operator's LOG_LEVEL change first takes effect for out-of-request logging --
+        the pipe object is long-lived, so `__init__` alone never sees the new value.
+        """
+        import logging as _logging
+
+        from aioresponses import aioresponses
+
+        from open_webui_openrouter_pipe import Pipe
+        from open_webui_openrouter_pipe.core.config import EncryptedStr
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        saved = SessionLogger.process_log_level
+        pipe = Pipe()
+        try:
+            pipe.valves.API_KEY = EncryptedStr("sk-test-key")
+            pipe.valves.LOG_LEVEL = "WARNING"
+            SessionLogger.process_log_level = _logging.CRITICAL
+
+            with aioresponses() as mock_http:
+                mock_http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    payload={"data": []},
+                    repeat=True,
+                )
+                await pipe.pipes()
+
+            assert SessionLogger.process_log_level == _logging.WARNING, (
+                f"after pipes() the out-of-request floor is "
+                f"{SessionLogger.process_log_level}, not the configured WARNING. An "
+                "operator changing LOG_LEVEL on a running pipe never affects anything "
+                "logged outside a request."
+            )
+        finally:
+            SessionLogger.process_log_level = saved
+            await pipe.close()
+
+    def test_the_host_forwarder_reproduces_callHandlers_over_a_real_ancestor_chain(self):
+        """The two halves that make the walk faithful, neither of which was asserted.
+
+        `_HostForwardHandler` reimplements `logging.Logger.callHandlers` with the
+        pipe's own threshold applied first. Its session-threshold half was covered; the
+        per-handler level check and the `propagate=False` stop were not -- replacing
+        `if record.levelno >= handler.level` with `if True`, or deleting the
+        `if not node.propagate: break`, left the whole suite green.
+
+        The first sends every INFO record to a host handler an operator configured at
+        WARNING. The second pushes records across a boundary the host deliberately cut,
+        into root handlers meant never to see them.
+
+        A real three-deep chain is what makes both reachable: the package logger's
+        parent is the root logger, which has no parent and never consults propagate, so
+        against the live tree that branch cannot be exercised at all.
+        """
+        import logging as _logging
+
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        class _Recorder(_logging.Handler):
+            def __init__(self, level=_logging.NOTSET):
+                super().__init__(level=level)
+                self.seen: list[str] = []
+
+            def emit(self, record):
+                self.seen.append(record.getMessage())
+
+        root = _logging.getLogger("hostfwd_probe")
+        mid = _logging.getLogger("hostfwd_probe.mid")
+        leaf = _logging.getLogger("hostfwd_probe.mid.leaf")
+        root_rec, mid_rec = _Recorder(), _Recorder(level=_logging.ERROR)
+        root.addHandler(root_rec)
+        mid.addHandler(mid_rec)
+        forwarder = SessionLogger._HostForwardHandler(leaf)
+
+        saved = SessionLogger.process_log_level
+        token = SessionLogger.log_level.set(None)
+        try:
+            SessionLogger.process_log_level = _logging.DEBUG
+            record = leaf.makeRecord(
+                leaf.name, _logging.WARNING, __file__, 0, "probe-one", None, None
+            )
+            forwarder.emit(record)
+
+            assert mid_rec.seen == [], (
+                "a host handler set to ERROR received a WARNING. The per-handler level "
+                "check is not being applied, so operator handler thresholds are ignored."
+            )
+            assert root_rec.seen == ["probe-one"], (
+                f"the record did not reach the ancestor's handler: {root_rec.seen}"
+            )
+
+            mid.propagate = False
+            record2 = leaf.makeRecord(
+                leaf.name, _logging.WARNING, __file__, 0, "probe-two", None, None
+            )
+            forwarder.emit(record2)
+            assert root_rec.seen == ["probe-one"], (
+                f"the walk crossed a propagate=False boundary: {root_rec.seen}. The "
+                "host cut that link deliberately and these records were not meant to "
+                "reach the root handlers."
+            )
+        finally:
+            SessionLogger.log_level.reset(token)
+            SessionLogger.process_log_level = saved
+            mid.propagate = True
+            root.removeHandler(root_rec)
+            mid.removeHandler(mid_rec)
+
+
+class TestSessionBufferResize:
+    """Changing SESSION_LOG_MAX_LINES mid-request must not empty the buffer."""
+
+    @staticmethod
+    def _emit(request_id: str, message: str) -> None:
+        import logging as _logging
+
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        record = _logging.LogRecord(
+            "probe", _logging.WARNING, __file__, 0, message, None, None
+        )
+        record.request_id = request_id
+        record.session_id = "s"
+        record.user_id = "u"
+        SessionLogger.process_record(record)
+
+    def _messages(self, request_id: str) -> list[str]:
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        return [e.get("message", "") for e in SessionLogger.logs.get(request_id, [])]
+
+    def test_growing_the_cap_keeps_every_line_already_captured(self):
+        """The buffer was rebuilt empty on any change, so the archive silently began
+        mid-request. Nothing warned, and no gap marker was written."""
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        saved = SessionLogger.SESSION_LOG_MAX_LINES
+        SessionLogger.logs.pop("resize-grow", None)
+        try:
+            SessionLogger.SESSION_LOG_MAX_LINES = 10
+            self._emit("resize-grow", "before-one")
+            self._emit("resize-grow", "before-two")
+            assert self._messages("resize-grow") == ["before-one", "before-two"]
+
+            SessionLogger.SESSION_LOG_MAX_LINES = 20
+            self._emit("resize-grow", "after")
+
+            assert self._messages("resize-grow") == ["before-one", "before-two", "after"], (
+                "raising the cap discarded lines already captured. The archive the user "
+                "downloads starts partway through the request with nothing saying so."
+            )
+        finally:
+            SessionLogger.SESSION_LOG_MAX_LINES = saved
+            SessionLogger.logs.pop("resize-grow", None)
+
+    def test_shrinking_the_cap_drops_the_oldest_lines_not_all_of_them(self):
+        """Shrinking must mean what the valve says: keep the most recent N."""
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        saved = SessionLogger.SESSION_LOG_MAX_LINES
+        SessionLogger.logs.pop("resize-shrink", None)
+        try:
+            SessionLogger.SESSION_LOG_MAX_LINES = 10
+            for i in range(4):
+                self._emit("resize-shrink", f"line-{i}")
+
+            SessionLogger.SESSION_LOG_MAX_LINES = 2
+            self._emit("resize-shrink", "newest")
+
+            assert self._messages("resize-shrink") == ["line-3", "newest"], (
+                f"got {self._messages('resize-shrink')}; shrinking the cap must keep the "
+                "most recent lines up to the new limit, not empty the buffer"
+            )
+        finally:
+            SessionLogger.SESSION_LOG_MAX_LINES = saved
+            SessionLogger.logs.pop("resize-shrink", None)
+
+    def test_a_change_does_not_wipe_every_other_session_in_flight(self):
+        """The cap is process-wide and the buffers are per-request, so one admin edit
+        reached every request in flight at that instant -- not just one."""
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        saved = SessionLogger.SESSION_LOG_MAX_LINES
+        ids = ["sess-a", "sess-b", "sess-c"]
+        for rid in ids:
+            SessionLogger.logs.pop(rid, None)
+        try:
+            SessionLogger.SESSION_LOG_MAX_LINES = 10
+            for rid in ids:
+                self._emit(rid, f"{rid}-early")
+
+            SessionLogger.SESSION_LOG_MAX_LINES = 11
+            for rid in ids:
+                self._emit(rid, f"{rid}-late")
+
+            for rid in ids:
+                assert self._messages(rid) == [f"{rid}-early", f"{rid}-late"], (
+                    f"{rid} lost its earlier lines: {self._messages(rid)}. One valve "
+                    "change reached every concurrent session, not only the one whose "
+                    "request carried the new value."
+                )
+        finally:
+            SessionLogger.SESSION_LOG_MAX_LINES = saved
+            for rid in ids:
+                SessionLogger.logs.pop(rid, None)
+
+
+class TestGlobalLogLevelHasOneResolver:
+    """The valve default and the process floor must agree for every accepted spelling."""
+
+    @pytest.mark.parametrize(
+        ("env", "expected_name", "expected_level"),
+        [
+            ("WARN", "WARNING", 30),
+            ("FATAL", "CRITICAL", 50),
+            ("WARNING", "WARNING", 30),
+            ("debug", "DEBUG", 10),
+            ("NOTSET", "INFO", 20),
+            ("BOGUS", "INFO", 20),
+            ("", "INFO", 20),
+        ],
+    )
+    def test_the_valve_default_and_resolve_level_denote_the_same_threshold(
+        self, env, expected_name, expected_level, monkeypatch
+    ):
+        """WARN and FATAL are the cases that mattered.
+
+        Open WebUI gates GLOBAL_LOG_LEVEL on `logging.getLevelNamesMapping()`, which
+        contains both. The valve default used a membership test against the five
+        canonical names, so it mapped them to INFO while `resolve_level` mapped them to
+        WARNING and CRITICAL. An operator who set WARN got a WARNING floor at import and
+        an INFO floor once the pipe applied its own valve -- in one process, for one
+        configuration.
+
+        Parametrised over the canonical names too, deliberately: they always agreed,
+        which is exactly why the divergence survived. Only the alias spellings and the
+        rejected ones can fail here.
+        """
+        import logging as _logging
+
+        from open_webui_openrouter_pipe.core.config import _resolve_log_level_default
+        from open_webui_openrouter_pipe.core.logging_system import resolve_level
+
+        monkeypatch.setenv("GLOBAL_LOG_LEVEL", env)
+        valve_name = _resolve_log_level_default()
+        assert valve_name == expected_name, (
+            f"GLOBAL_LOG_LEVEL={env!r} gives the valve {valve_name!r}, expected "
+            f"{expected_name!r}"
+        )
+        floor = resolve_level(env, _logging.INFO)
+        assert floor == expected_level, (
+            f"GLOBAL_LOG_LEVEL={env!r} gives the process floor {floor}, expected "
+            f"{expected_level}"
+        )
+        assert resolve_level(valve_name, _logging.INFO) == floor, (
+            f"GLOBAL_LOG_LEVEL={env!r}: the valve says {valve_name!r} "
+            f"({resolve_level(valve_name, _logging.INFO)}) and the floor says {floor}. "
+            "One process, one configuration, two thresholds."
+        )
+
+    def test_the_valve_default_stays_inside_its_literal(self, monkeypatch):
+        """A level registered by a third party must not leak into the UI dropdown."""
+        import logging as _logging
+
+        from open_webui_openrouter_pipe.core.config import (
+            _ALLOWED_LOG_LEVELS,
+            _resolve_log_level_default,
+        )
+
+        _logging.addLevelName(25, "NOTICE")
+        try:
+            monkeypatch.setenv("GLOBAL_LOG_LEVEL", "NOTICE")
+            value = _resolve_log_level_default()
+            assert value in _ALLOWED_LOG_LEVELS, (
+                f"{value!r} is not one of the five the valve's Literal allows, so the "
+                "config tab would render a value it cannot round-trip"
+            )
+        finally:
+            _logging.addLevelName(25, "Level 25")
+
+
+def test_both_session_log_text_renderers_produce_the_same_line(tmp_path):
+    """The two renderers must agree, driven rather than counted.
+
+    `SessionLogger.format_event_as_text` and the `_format_event_as_text` closure inside
+    `write_session_log_archive` render the same line for the same event. A third copy
+    once existed, had already drifted -- both live renderers gained the exception suffix
+    and the dead one did not -- and the next person to need a formatter would have found
+    the one that silently drops tracebacks.
+
+    Counting `"[user="` in the source was the previous shape of this test and failed in
+    both directions: consolidating the two onto one function, which is the fix the
+    duplication calls for, made the count 1 and turned it red, while a third copy
+    spelling the line as `"[user" + "="` left the count at 2. Driving both paths and
+    comparing the output fails when they drift, passes through the consolidation, and
+    cannot be satisfied by how the format string happens to be written.
+    """
+    pyzipper = pytest.importorskip("pyzipper")
+
+    from open_webui_openrouter_pipe.core.logging_system import (
+        SessionLogger,
+        _SessionLogArchiveJob,
+        write_session_log_archive,
+    )
+
+    event = {
+        "created": 1_700_000_000.5,
+        "level": "ERROR",
+        "user_id": "u1",
+        "message": "Failed to emit completion",
+        "exception": {
+            "text": "Traceback (most recent call last):\nRuntimeError: upstream socket died"
+        },
+    }
+
+    direct = SessionLogger.format_event_as_text(dict(event))
+
+    job = _SessionLogArchiveJob(
+        base_dir=str(tmp_path),
+        zip_password=b"pw",
+        zip_compression="stored",
+        zip_compresslevel=None,
+        user_id="u1",
+        session_id="s1",
+        chat_id="c1",
+        message_id="m1",
+        request_id="r1",
+        created_at=1_700_000_000.5,
+        log_format="both",
+        log_events=[dict(event)],
+    )
+    write_session_log_archive(job)
+
+    archive = tmp_path / "u1" / "c1" / "m1.zip"
+    assert archive.exists(), "no archive was written; the comparison would prove nothing"
+    with pyzipper.AESZipFile(archive) as zf:
+        zf.setpassword(b"pw")
+        archived = zf.read("logs.txt").decode()
+
+    assert direct.strip(), "the direct renderer produced nothing to compare"
+    assert archived.strip() == direct.strip(), (
+        "the two session-log text renderers disagree, so the archive a user downloads "
+        "does not match what the live log showed.\n"
+        f"direct  : {direct.strip()!r}\n"
+        f"archived: {archived.strip()!r}"
+    )
+
+
+_CONSOLE_CASE_SCRIPT = """
+import io, json, logging, os, sys
+sys.path.insert(0, __ROOT__)
+sys.path.insert(0, os.path.join(__ROOT__, "tests"))
+import owui_stubs  # noqa: F401
+from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+def run_case(host_handler, message, emit_level, threshold):
+    buf = io.StringIO()
+    sys.stdout = buf
+    if host_handler == "plain":
+        logging.basicConfig(level="INFO", stream=buf, force=True)
+    elif host_handler == "json":
+        class _JF(logging.Formatter):
+            def format(self, r):
+                return json.dumps({"level": r.levelname, "msg": r.getMessage()})
+        h = logging.StreamHandler(buf)
+        h.setFormatter(_JF())
+        logging.basicConfig(level="INFO", handlers=[h], force=True)
+    else:
+        for h in list(logging.root.handlers):
+            logging.root.removeHandler(h)
+    SessionLogger.get_logger("open_webui_openrouter_pipe")
+    SessionLogger.process_log_level = getattr(logging, threshold)
+    _tok = SessionLogger.log_level.set(getattr(logging, threshold))
+    getattr(logging.getLogger("open_webui_openrouter_pipe.core.config"), emit_level)(message)
+    SessionLogger.log_level.reset(_tok)
+    sys.stdout = sys.__stdout__
+    return buf.getvalue()
+
+results = {}
+for key, spec in __CASES__:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            payload = {"ok": True, "out": run_case(**spec)}
+        except BaseException as exc:
+            payload = {"ok": False, "out": repr(exc)}
+        try:
+            with os.fdopen(write_fd, "w") as handle:
+                handle.write(json.dumps(payload))
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    with os.fdopen(read_fd) as handle:
+        raw = handle.read()
+    _, status = os.waitpid(pid, 0)
+    if not raw:
+        raw = json.dumps({"ok": False, "out": "child produced nothing, status=%d" % status})
+    results[key] = json.loads(raw)
+print("CONSOLE_JSON:" + json.dumps(results))
+"""
+
+
+_CONSOLE_CASES = [
+    ("plain|PROBE-MESSAGE|warning|DEBUG", None),
+    ("none|PROBE-MESSAGE|warning|DEBUG", None),
+    ("json|PROBE-MESSAGE|warning|DEBUG", None),
+    ("plain|PROBE-MESSAGE|debug|WARNING", None),
+    ("plain|PROBE-MESSAGE|info|WARNING", None),
+    ("plain|PROBE-MESSAGE|warning|WARNING", None),
+    ("none|PROBE-MESSAGE|debug|WARNING", None),
+    ("none|PROBE-MESSAGE|info|WARNING", None),
+    ("none|PROBE-MESSAGE|warning|WARNING", None),
+]
+
+_CONSOLE_RESULTS: dict[str, dict] = {}
+
+
+def _run_console_script(cases: list) -> dict:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        _CONSOLE_CASE_SCRIPT.replace("__ROOT__", repr(str(root)))
+        .replace("__CASES__", json.dumps(cases))
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    line = next(
+        (ln for ln in result.stdout.splitlines() if ln.startswith("CONSOLE_JSON:")), None
+    )
+    assert line, (
+        f"console probe produced no output (rc={result.returncode}) "
+        f"stderr={result.stderr[-400:]!r}"
+    )
+    return json.loads(line[len("CONSOLE_JSON:") :])
+
+
+def _console_probe(
+    *,
+    host_handler: str,
+    message: str = "PROBE-MESSAGE",
+    emit_level: str = "warning",
+    threshold: str = "DEBUG",
+) -> str:
+    """Run the console wiring in a FRESH process and return everything written to stdout.
+
+    A fresh process because `get_logger` mutates the root logger and installs handlers
+    that outlive the test, and because a StreamHandler binds its stream at construction --
+    swapping `sys.stdout` afterwards measures nothing, which is how the first version of
+    this probe reported zero lines from working code.
+
+    Every case pays the same import (`open_webui.env` alone costs ~1s), so one interpreter
+    imports once and `os.fork()`s per case: the child starts from the pristine
+    post-import state and its handler mutations die with it, which is the same isolation
+    a separate interpreter gives at a ninth of the wall clock. A case whose arguments are
+    not in the precomputed batch still gets its own run rather than a wrong cached answer.
+    """
+    key = f"{host_handler}|{message}|{emit_level}|{threshold}"
+    spec = {
+        "host_handler": host_handler,
+        "message": message,
+        "emit_level": emit_level,
+        "threshold": threshold,
+    }
+    if key not in _CONSOLE_RESULTS:
+        batch = [(k, dict(zip(("host_handler", "message", "emit_level", "threshold"), k.split("|"))))
+                 for k, _ in _CONSOLE_CASES]
+        if key not in {k for k, _ in _CONSOLE_CASES}:
+            batch = [(key, spec)]
+        _CONSOLE_RESULTS.update(_run_console_script(batch))
+    outcome = _CONSOLE_RESULTS[key]
+    assert outcome["ok"], f"console probe case {key!r} raised: {outcome['out']}"
+    return outcome["out"]
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize("host_handler", ["plain", "none"], ids=["host-prints", "host-silent"])
+def test_a_record_reaches_the_console_exactly_once(host_handler):
+    """One line per record, whether or not the host configured a sink.
+
+    The pipe used to write its own formatted line to stdout AND forward the record to the
+    host's handlers, so every record appeared twice in two different formats wherever
+    Open WebUI had installed a root handler -- which it does whenever GLOBAL_LOG_LEVEL
+    names a real level.
+
+    Both arms matter and they fail in opposite directions: deleting the private write
+    alone makes the `host-silent` arm print nothing, and deleting the forwarder alone
+    makes the pipe invisible to an operator's configured sinks. Only one of the two can
+    own the console, and which one depends on whether an ancestor handler exists.
+    """
+    output = _console_probe(host_handler=host_handler)
+    assert output.count("PROBE-MESSAGE") == 1, (
+        f"with host_handler={host_handler!r} the record appeared "
+        f"{output.count('PROBE-MESSAGE')} times:\n{output}"
+    )
+
+
+@pytest.mark.timeout(600)
+def test_the_console_does_not_corrupt_a_json_log_stream():
+    """LOG_FORMAT=json is a supported Open WebUI setting, and it must stay parseable.
+
+    The private stdout write emitted the pipe's own text format regardless of how the
+    operator had configured logging, so every pipe record put a non-JSON line into a JSON
+    stream and broke structured log parsing for the whole deployment.
+    """
+    output = _console_probe(host_handler="json")
+    lines = [ln for ln in output.splitlines() if "PROBE-MESSAGE" in ln]
+    assert len(lines) == 1, f"expected one line, got {len(lines)}:\n{output}"
+    import json as _json
+
+    _json.loads(lines[0])  # raises if the pipe wrote its own text format instead
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize("host_handler", ["plain", "none"], ids=["host-prints", "host-silent"])
+@pytest.mark.parametrize(
+    ("emit_level", "expected"),
+    [("debug", 0), ("info", 0), ("warning", 1)],
+    ids=["below", "below-2", "at"],
+)
+def test_the_console_honours_the_configured_threshold(host_handler, emit_level, expected):
+    """LOG_LEVEL governs BOTH console sinks, not just the forwarder.
+
+    The fallback handler was attached with no level and no filter while the package
+    logger is pinned at DEBUG, so on a host with no root handler -- Open WebUI's DEFAULT,
+    since env.py installs one only when GLOBAL_LOG_LEVEL names a real level -- every
+    `logger.debug` in the package printed regardless of the valve. That path dumps the
+    full outbound request payload and every non-delta SSE event: conversation text,
+    system prompts and tool arguments.
+
+    Parametrised over levels BELOW and AT the threshold, in BOTH host arms, because the
+    guard that missed this asserted "exactly one line" against a record that was above
+    the threshold either way. A count alone cannot distinguish a threshold that works
+    from one that is never consulted, and a single level cannot either -- a sink hardwired
+    to print everything and one hardwired to print nothing each satisfy one arm.
+    """
+    output = _console_probe(
+        host_handler=host_handler, emit_level=emit_level, threshold="WARNING"
+    )
+    assert output.count("PROBE-MESSAGE") == expected, (
+        f"with host_handler={host_handler!r}, LOG_LEVEL=WARNING and a {emit_level.upper()} "
+        f"record, the console printed it {output.count('PROBE-MESSAGE')} times "
+        f"(expected {expected}). A record below the configured threshold reaching stdout "
+        "means the operator cannot turn off payload logging.\n"
+        f"{output}"
+    )
+
+
+def test_a_hostile_message_object_still_lands_in_the_session_buffer():
+    """`_safe_message` promises it never invokes user `__str__`/`__repr__`. Assert it.
+
+    Nothing checked the promise: replacing `object.__repr__(msg)` with `str(msg)` left
+    the whole suite green while a record whose message raises from both dunders was
+    dropped entirely -- `_build_event` raises, `process_record`'s fallback calls
+    `_safe_message`, that raises again, and the outer handler discards the record. The
+    operator loses the one line describing the failure they are chasing.
+
+    Asserted on the buffer, not on the returned text: the text is `object.__repr__`'s
+    output today and pinning it would be a proxy for "the record survived".
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    class _Hostile:
+        def __str__(self):
+            raise RuntimeError("hostile __str__")
+
+        def __repr__(self):
+            raise RuntimeError("hostile __repr__")
+
+    record = _logging.LogRecord(
+        name="test.hostile",
+        level=_logging.ERROR,
+        pathname="test.py",
+        lineno=1,
+        msg=_Hostile(),
+        args=(),
+        exc_info=None,
+    )
+    record.request_id = "req-hostile"
+    record.session_id = "sess-hostile"
+    record.user_id = "u"
+
+    token = SessionLogger.logs.pop("req-hostile", None)
+    try:
+        SessionLogger.process_record(record)
+        buffered = list(SessionLogger.logs.get("req-hostile") or [])
+    finally:
+        SessionLogger.logs.pop("req-hostile", None)
+        if token is not None:
+            SessionLogger.logs["req-hostile"] = token
+
+    assert len(buffered) == 1, (
+        f"a record whose message raises from both __str__ and __repr__ produced "
+        f"{len(buffered)} buffered events, not 1. It was discarded entirely, so the "
+        "failure it described reaches no sink at all."
+    )

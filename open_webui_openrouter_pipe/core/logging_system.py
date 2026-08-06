@@ -36,9 +36,7 @@ try:
 except ImportError:
     pyzipper = None  # type: ignore[assignment]
 
-# -----------------------------------------------------------------------------
 # Session Log Archive Job
-# -----------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class _SessionLogArchiveJob:
@@ -72,9 +70,51 @@ def _safe_message(record: logging.LogRecord) -> str:
     return object.__repr__(msg)
 
 
-# -----------------------------------------------------------------------------
 # SessionLogger Class
-# -----------------------------------------------------------------------------
+
+def _render_exception_suffix(event: dict[str, Any]) -> str:
+    """Render a captured traceback for the text outputs.
+
+    Both text renderers emit only ``message``. Logging an error via
+    ``logger.exception(...)`` / ``exc_info=`` moves the error detail out of the
+    message and into ``event["exception"]``, so without this the human-readable
+    logs.txt and the error-log citation dump show the headline and silently drop
+    what actually went wrong. The jsonl output keeps it either way.
+    """
+    block = event.get("exception")
+    if not isinstance(block, dict):
+        return ""
+    try:
+        text = str(block.get("text") or "").rstrip()
+    except Exception:  # noqa: BLE001 - render helper; a bad payload must not lose the line
+        return "\n<<unrenderable exception>>"
+    return f"\n{text}" if text else ""
+
+
+def resolve_level(name: str | None, fallback: int) -> int:
+    """A real logging level, or *fallback*.
+
+    `getattr(logging, name, fallback)` returns ANY attribute of the module, so a typo
+    that happens to match one -- GLOBAL_LOG_LEVEL=BASIC_FORMAT -- yields a format
+    string where an int is expected. The default only covers absent, never wrong-kind.
+    Bare `getattr(logging, name)` is worse again: it raises, and the sites that used it
+    run per request.
+
+    NOTSET is rejected rather than returned as 0. It is not a threshold -- as one it
+    admits everything -- so accepting it made GLOBAL_LOG_LEVEL=NOTSET mean "emit
+    everything" to the process floor while the valve fell back to INFO.
+
+    The single resolver for a level name in this package: `core.config` derives the
+    LOG_LEVEL valve default from this function, so the valve and the process floor
+    cannot disagree about what a given GLOBAL_LOG_LEVEL means.
+    """
+    resolved = logging.getLevelName((name or "").strip().upper())
+    if not isinstance(resolved, int) or resolved <= logging.NOTSET:
+        return fallback
+    return resolved
+
+
+
 
 class SessionLogger:
     """Per-request logger that captures console output and an in-memory log buffer.
@@ -89,14 +129,16 @@ class SessionLogger:
     Attributes:
         session_id: ContextVar storing the Open WebUI session id.
         request_id: ContextVar storing the per-request buffer key.
-        log_level:  ContextVar storing the minimum level to emit for this request.
+        log_level:  ContextVar holding this request's minimum level, or None when
+                    no request is in scope. Resolve it with effective_log_level().
         logs:       Map of request_id -> fixed-size deque of structured log events (dicts).
     """
 
     session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
     request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
     user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
-    log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
+    log_level: ContextVar[int | None] = ContextVar("log_level", default=None)
+    process_log_level: int = resolve_level(os.getenv("GLOBAL_LOG_LEVEL"), logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
     logs: ClassVar[dict[str, deque[dict[str, Any]]]] = {}
     _session_last_seen: ClassVar[dict[str, float]] = {}
@@ -104,7 +146,6 @@ class SessionLogger:
     _main_loop: asyncio.AbstractEventLoop | None = None
     _state_lock = threading.Lock()
     _console_formatter = logging.Formatter("%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    _memory_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [user=%(user_id)s] %(message)s")
 
     @staticmethod
     def _classify_event_type(message: str) -> str:
@@ -176,7 +217,50 @@ class SessionLogger:
             message_str = str(message) if message is not None else ""
         except Exception:  # noqa: BLE001 - str-coercion guard in render helper; sentinel fallback
             message_str = "<<unrenderable message>>"
-        return f"{asctime} [{level}] [user={uid}] {message_str}"
+        return (
+            f"{asctime} [{level}] [user={uid}] {message_str}"
+            + _render_exception_suffix(event)
+        )
+
+    class _HostForwardHandler(logging.Handler):
+        """Re-emit to the host's handlers, honouring the session log level.
+
+        Replaces propagation. ``logging.Logger.callHandlers`` walks ancestor
+        *handlers* and consults their levels, never the ancestor loggers' -- so with
+        this logger at DEBUG every record reached Open WebUI's level-less root
+        StreamHandler regardless of any level anyone configured. Same walk here, with
+        the pipe's own threshold applied first.
+        """
+
+        def __init__(self, owner: logging.Logger) -> None:
+            super().__init__(level=logging.DEBUG)
+            self._owner = owner
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if not SessionLogger._passes_threshold(record):
+                return
+            node: logging.Logger | None = self._owner.parent
+            while node is not None:
+                for handler in list(node.handlers):
+                    if record.levelno >= handler.level:
+                        try:
+                            handler.handle(record)
+                        except Exception:  # noqa: BLE001, S112 - one bad host handler must not stop the others
+                            continue
+                if not node.propagate:
+                    break
+                node = node.parent
+
+    @classmethod
+    def effective_log_level(cls) -> int:
+        """The minimum level in force: this request's, else the process-wide one.
+
+        Records emitted outside a request -- startup, `pipes()`, plugin wiring, the
+        Redis listener -- never had the ContextVar set, so reading it directly pinned
+        them to its default regardless of how the operator had configured logging.
+        """
+        level = cls.log_level.get()
+        return cls.process_log_level if level is None else int(level)
 
     @classmethod
     def get_logger(cls, name=__name__):
@@ -197,9 +281,8 @@ class SessionLogger:
         root_logger = logging.getLogger()
         if not any(isinstance(handler, logging.NullHandler) for handler in root_logger.handlers):
             root_logger.addHandler(logging.NullHandler())
-        logger.propagate = True
+        logger.propagate = False
 
-        # Single combined filter: attach session_id and respect per-session level.
         def filter(record):
             """Attach session metadata and capture the per-request console log level."""
             try:
@@ -209,12 +292,10 @@ class SessionLogger:
                 record.session_id = sid
                 record.request_id = rid
                 record.user_id = uid or "-"
-                record.session_log_level = cls.log_level.get()
                 if rid:
                     with cls._state_lock:
                         cls._session_last_seen[rid] = time.time()
             except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
-                # Logging must never break request handling.
                 pass
             return True
 
@@ -226,6 +307,9 @@ class SessionLogger:
 
         async_handler.emit = _emit  # type: ignore[assignment]
         logger.addHandler(async_handler)
+        logger.addHandler(cls._HostForwardHandler(logger))
+        cls._ensure_console_owner(logger)
+
 
         return logger
 
@@ -266,16 +350,57 @@ class SessionLogger:
             cls.process_record(record)
 
     @classmethod
+    def _passes_threshold(cls, record: logging.LogRecord) -> bool:
+        """The one decision about whether a record is shown, for every console sink.
+
+        The package logger is pinned at DEBUG so the session archive captures
+        everything, which means neither sink can rely on the logger's own level -- each
+        has to ask. When only one of them did, `LOG_LEVEL` was inert on any host with no
+        root handler, and every request payload went to stdout.
+
+        Evaluated per record rather than set once as a handler level: the threshold moves
+        under us twice over. `_refresh_process_log_level` rewrites the process floor when
+        the valve changes, and each request sets its own via the `log_level` ContextVar --
+        and `get_logger` runs from `Pipe.__init__`, before either has happened, so a
+        handler level snapshotted there would freeze INFO for the worker's life.
+        """
+        try:
+            threshold = int(cls.effective_log_level())
+        except Exception:  # noqa: BLE001 - this runs inside Logger.handle, so anything
+            threshold = logging.INFO
+        return record.levelno >= threshold
+
+    @classmethod
+    def _ensure_console_owner(cls, logger: logging.Logger) -> None:
+        """Exactly one thing prints a record, and it is the host's chain where there is one.
+
+        This used to write its own formatted line to stdout AND forward the record to the
+        host's handlers, so with Open WebUI's usual wiring every pipe record appeared
+        twice, in two different formats. Worse under `LOG_FORMAT=json`: the private line
+        is not JSON, so it corrupted the operator's structured log stream.
+
+        Open WebUI installs a root handler only when `GLOBAL_LOG_LEVEL` names a real
+        level (`env.py`: `if GLOBAL_LOG_LEVEL in logging.getLevelNamesMapping()`), so a
+        host that does not set it has nowhere to print. A NullHandler is deliberately not
+        counted as somewhere: `get_logger` adds one to the root itself, to keep the
+        "no handlers could be found" warning quiet, and treating it as a sink would make
+        the pipe silent on exactly the hosts that need it to print.
+        """
+        node: logging.Logger | None = logger.parent
+        while node is not None:
+            for handler in node.handlers:
+                if not isinstance(handler, logging.NullHandler):
+                    return
+            node = node.parent if node.propagate else None
+
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(cls._console_formatter)
+        console.addFilter(cls._passes_threshold)
+        logger.addHandler(console)
+
+    @classmethod
     def process_record(cls, record: logging.LogRecord) -> None:
         try:
-            session_log_level = getattr(record, "session_log_level", logging.INFO)
-            if record.levelno >= int(session_log_level):
-                try:
-                    console_line = cls._console_formatter.format(record)
-                    sys.stdout.write(console_line + "\n")
-                    sys.stdout.flush()
-                except Exception:  # noqa: BLE001, S110 - stdout is the failing surface; capture continues below
-                    pass
             request_id = getattr(record, "request_id", None)
             if request_id:
                 try:
@@ -296,8 +421,11 @@ class SessionLogger:
                     }
                 with cls._state_lock:
                     buffer = cls.logs.get(request_id)
-                    if buffer is None or buffer.maxlen != cls.SESSION_LOG_MAX_LINES:
+                    if buffer is None:
                         buffer = deque(maxlen=cls.SESSION_LOG_MAX_LINES)
+                        cls.logs[request_id] = buffer
+                    elif buffer.maxlen != cls.SESSION_LOG_MAX_LINES:
+                        buffer = deque(buffer, maxlen=cls.SESSION_LOG_MAX_LINES)
                         cls.logs[request_id] = buffer
                     buffer.append(event)
                     cls._session_last_seen[request_id] = time.time()
@@ -316,9 +444,7 @@ class SessionLogger:
                 cls._session_last_seen.pop(sid, None)
 
 
-# -----------------------------------------------------------------------------
 # Session Log Archive Writer
-# -----------------------------------------------------------------------------
 
 def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     """Write a single encrypted zip archive containing session logs + metadata.
@@ -398,10 +524,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     if log_format not in {"jsonl", "text", "both"}:
         log_format = "jsonl"
     write_text = log_format in {"text", "both"}
-    # Always write logs.jsonl as the canonical, machine-readable record.
-    # read_archive_events merges/dedups prior events from logs.jsonl on
-    # re-assembly; in pure "text" mode that file was absent, so a re-assembly
-    # for the same message_id silently dropped the earlier invocation's events.
     write_jsonl = True
 
     def _format_asctime_local(created: float) -> str:
@@ -425,7 +547,10 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             message_str = str(message) if message is not None else ""
         except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
             message_str = "<<unrenderable message>>"
-        return f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
+        return (
+            f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
+            + _render_exception_suffix(event)
+        )
 
     def _format_iso_utc(created: float) -> str:
         try:
@@ -530,8 +655,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     if job.zip_compresslevel is not None and compression in {pyzipper.ZIP_DEFLATED, pyzipper.ZIP_BZIP2}:
         zip_kwargs["compresslevel"] = int(job.zip_compresslevel)
 
-    # NOTE: Timing events are written directly to TIMING_LOG_FILE valve path,
-    # not to session archives. See timing_logger.py for direct file output.
 
     try:
         with pyzipper.AESZipFile(tmp_path, **zip_kwargs) as zf:

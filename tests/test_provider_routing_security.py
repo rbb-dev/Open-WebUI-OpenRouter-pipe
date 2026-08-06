@@ -47,9 +47,8 @@ class TestSafeLiteralString:
         """Injection attempts should be safely escaped."""
         malicious = "'; import os; os.system('rm -rf /'); x='"
         result = FilterManager.safe_literal_string(malicious)
-        # Result should be a valid Python literal
         parsed = ast.literal_eval(result)
-        assert parsed == malicious  # The dangerous string is just data
+        assert parsed == malicious
 
     def test_empty_string(self):
         """Empty string should return empty quoted string."""
@@ -115,7 +114,7 @@ class TestValidateProviderName:
         long_name = "A" * 100
         result = FilterManager.validate_provider_name(long_name, slug="test-slug")
         assert len(result) <= 64
-        assert "_" in result  # Hash suffix added
+        assert "_" in result
 
     def test_truncation_preserves_uniqueness(self):
         """Different long names should have different hashes."""
@@ -129,7 +128,7 @@ class TestValidateProviderName:
         """Injection attempts should be sanitized."""
         malicious = '"; import os; #'
         result = FilterManager.validate_provider_name(malicious)
-        assert "import" in result  # Word preserved but quotes removed
+        assert "import" in result
         assert '"' not in result
         assert ";" not in result
 
@@ -188,7 +187,7 @@ class TestProviderSlugPattern:
         "deepinfra",
         "anthropic",
         "mistral",
-        "openai/gpt-4o",  # With segment
+        "openai/gpt-4o",
         "google-vertex/us",
     ])
     def test_valid_slugs(self, slug):
@@ -196,13 +195,13 @@ class TestProviderSlugPattern:
         assert _PROVIDER_SLUG_PATTERN.match(slug) is not None
 
     @pytest.mark.parametrize("slug", [
-        "OPENAI",  # Uppercase
-        "Amazon Bedrock",  # Spaces
-        "amazon_bedrock",  # Underscore
-        'evil"inject',  # Quote
-        "test;drop",  # Semicolon
-        "",  # Empty
-        "test\nline",  # Newline
+        "OPENAI",
+        "Amazon Bedrock",
+        "amazon_bedrock",
+        'evil"inject',
+        "test;drop",
+        "",
+        "test\nline",
     ])
     def test_invalid_slugs(self, slug):
         """Invalid provider slugs should not match."""
@@ -219,68 +218,22 @@ class TestQuantizationPattern:
         "fp16",
         "bf16",
         "unknown",
-        "INT4",  # Uppercase allowed
-        "fp-8",  # Hyphen allowed
+        "INT4",
+        "fp-8",
     ])
     def test_valid_quantizations(self, quant):
         """Valid quantization values should match."""
         assert _QUANTIZATION_PATTERN.match(quant) is not None
 
     @pytest.mark.parametrize("quant", [
-        "int 4",  # Space
-        'fp8"',  # Quote
-        "bf16;",  # Semicolon
-        "",  # Empty
+        "int 4",
+        'fp8"',
+        "bf16;",
+        "",
     ])
     def test_invalid_quantizations(self, quant):
         """Invalid quantization values should not match."""
         assert _QUANTIZATION_PATTERN.match(quant) is None
-
-
-class TestJsonDumpsEscaping:
-    """Tests verifying json.dumps provides correct escaping for double-quoted contexts."""
-
-    def test_double_quote_escaped(self):
-        """Double quotes in input should be escaped."""
-        malicious = 'test"injection'
-        escaped = json.dumps(malicious)[1:-1]
-        assert '\\"' in escaped or '"' not in escaped
-
-    def test_backslash_escaped(self):
-        """Backslashes should be escaped."""
-        input_str = "test\\path"
-        escaped = json.dumps(input_str)[1:-1]
-        assert "\\\\" in escaped
-
-    def test_newline_escaped(self):
-        """Newlines should be escaped."""
-        input_str = "line1\nline2"
-        escaped = json.dumps(input_str)[1:-1]
-        assert "\\n" in escaped
-        assert "\n" not in escaped
-
-    def test_injection_prevented(self):
-        """Code injection via quotes should be prevented."""
-        malicious = '"; import os; os.system("id"); x="'
-        escaped = json.dumps(malicious)[1:-1]
-
-        # Construct the template output
-        template = f'MODEL_SLUG = "{escaped}"'
-
-        # Parse it - should be valid Python with the malicious code as a string literal
-        tree = ast.parse(template)
-
-        # Should be a single assignment, not multiple statements
-        assert len(tree.body) == 1
-        assert isinstance(tree.body[0], ast.Assign)
-
-    def test_unicode_preserved(self):
-        """Unicode characters should be preserved or safely escaped."""
-        input_str = "café"
-        escaped = json.dumps(input_str)[1:-1]
-        # Either preserved or escaped, but recoverable
-        recovered = json.loads(f'"{escaped}"')
-        assert recovered == input_str
 
 
 class TestRenderProviderRoutingFilterSourceSecurity:
@@ -288,7 +241,6 @@ class TestRenderProviderRoutingFilterSourceSecurity:
 
     def test_malicious_model_slug(self):
         """Malicious model slugs should be safely escaped."""
-        # This would break out of a string if not escaped
         malicious_slug = 'openai/gpt-4"; import os; os.system("id"); x="'
 
         source = FilterManager._render_provider_routing_filter_source(
@@ -298,14 +250,12 @@ class TestRenderProviderRoutingFilterSourceSecurity:
             visibility="user",
         )
 
-        # The generated source should be syntactically valid
         is_valid, error = FilterManager.validate_filter_source(source)
         assert is_valid is True, f"Generated source is invalid: {error}"
 
         # Parse and check for injection
         tree = ast.parse(source)
 
-        # Count import statements - should only be standard library imports
         imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
         import_names = []
         for imp in imports:
@@ -314,7 +264,6 @@ class TestRenderProviderRoutingFilterSourceSecurity:
             else:
                 import_names.append(imp.module or "")
 
-        # Should not have 'os' import from injection
         assert "os" not in import_names
 
     def test_invalid_providers_filtered(self):
@@ -351,7 +300,6 @@ class TestRenderProviderRoutingFilterSourceSecurity:
 
         is_valid, _ = FilterManager.validate_filter_source(source)
         assert is_valid is True
-        # When all providers are invalid, _PROVIDER_MAP should be empty
         assert "_PROVIDER_MAP: dict[str, str] = {}" in source
 
     def test_empty_model_slug_raises(self):
@@ -381,11 +329,8 @@ class TestGeneratedInletMethod:
             visibility="user",
         )
 
-        # The generated code should reference __user__.get("valves")
         assert '__user__.get("valves")' in source or "__user__.get('valves')" in source
 
-        # The inlet method body (after "def inlet") should use user_valves from __user__
-        # NOT self.user_valves which only holds defaults
         inlet_section = source.split("def inlet(")[1] if "def inlet(" in source else ""
         # Should have the extraction pattern
         assert "user_valves = __user__" in inlet_section
@@ -399,11 +344,10 @@ class TestGeneratedInletMethod:
             visibility="both",
         )
 
-        # Check structure via string matching (avoids import issues)
         assert "class Filter:" in source
         assert "class Valves(BaseModel):" in source
         assert "class UserValves(BaseModel):" in source
-        assert "toggle = True" in source  # 'both' visibility should be toggleable
+        assert "toggle = True" in source
         assert "def inlet(" in source
         assert "def __init__(" in source
 
@@ -450,7 +394,6 @@ class TestGeneratedInletMethod:
 
         assert "toggle = True" in source
         assert "class UserValves(BaseModel):" in source
-        # Check that Valves class is NOT present (but UserValves is)
         lines = source.split("\n")
         has_admin_valves = any("class Valves(BaseModel):" in line for line in lines)
         assert not has_admin_valves
@@ -482,7 +425,6 @@ class TestGeneratedInletLogic:
         """User visibility should only reference user_valves from __user__."""
         logic = FilterManager._generate_inlet_logic("user")
         assert "user_valves" in logic
-        # Should extract from __user__, not self.user_valves
         assert '__user__.get("valves")' in logic or "__user__.get('valves')" in logic
 
     def test_both_visibility_logic(self):
@@ -538,10 +480,8 @@ class TestOrderFieldPermutations:
             quantizations=[],
             visibility="user",
         )
-        # Both full permutations with ALL providers
         assert "OpenAI > Azure" in source
         assert "Azure > OpenAI" in source
-        # Should NOT have single-provider entries (no partial permutations)
         assert "'OpenAI': [" not in source
         assert "'Azure': [" not in source
 
@@ -554,7 +494,6 @@ class TestOrderFieldPermutations:
             quantizations=[],
             visibility="user",
         )
-        # All 6 full permutations (3! = 6, each with all 3 providers)
         perms = [
             "OpenAI > Azure > Together",
             "OpenAI > Together > Azure",
@@ -575,7 +514,6 @@ class TestOrderFieldPermutations:
             quantizations=[],
             visibility="user",
         )
-        # Full permutations map to lists with ALL provider slugs
         assert "'OpenAI > Azure': ['openai', 'azure']" in source
         assert "'Azure > OpenAI': ['azure', 'openai']" in source
 
@@ -588,7 +526,6 @@ class TestOrderFieldPermutations:
             quantizations=[],
             visibility="user",
         )
-        # Should look up ORDER value in _ORDER_MAP
         assert 'order_display = get_literal("ORDER")' in source
         assert "_ORDER_MAP.get(order_display)" in source
         assert 'provider["order"] = order_slugs' in source
@@ -602,7 +539,6 @@ class TestOrderFieldPermutations:
             quantizations=[],
             visibility="both",
         )
-        # Check that ORDER appears before other fields
         valves_start = source.find("class Valves(BaseModel):")
         assert valves_start != -1
         order_pos = source.find("ORDER:", valves_start)
@@ -627,3 +563,73 @@ class TestOrderFieldPermutations:
         )
         is_valid, error = FilterManager.validate_filter_source(source)
         assert is_valid is True, f"Generated source is invalid: {error}"
+
+
+_BREAKOUT_SLUGS = [
+    'a", __import__("os").environ["P"]="1" #',
+    'a\\", __import__("os").environ["P"]="1" #',
+    'a"""\nimport os\n"""',
+    "a''' \n os.system('id') \n '''",
+    'a\\\\", exec("x=1") #',
+    'a\n@property\ndef x(): pass\n',
+    'a\x00b',
+    'a import os ',
+]
+
+
+def _skeleton(source: str) -> str:
+    """The generated module's STRUCTURE, with every string value blanked.
+
+    Comparing structures is what distinguishes data from code. A denylist of dangerous
+    spellings is not: the assertion this replaces looked for an `os` import, and the
+    payload that lands contains no import statement at all.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            node.value = "<S>"
+    return ast.dump(tree)
+
+
+@pytest.mark.parametrize("slug", _BREAKOUT_SLUGS)
+def test_a_slug_reaches_the_generated_source_only_as_data(slug):
+    """A model slug is user-influenced and is rendered into code Open WebUI executes.
+
+    Every byte derived from it must land inside a string literal. Stated as a property:
+    rendering with a hostile slug and with a benign one must produce the same AST once
+    string values are blanked -- if the slug changed the structure, it became code.
+    """
+    render = FilterManager._render_provider_routing_filter_source
+    kwargs = dict(providers=["openai"], quantizations=["fp16"], visibility="user")
+
+    hostile = render(model_slug=slug, **kwargs)
+    benign = render(model_slug="openai/gpt-4o", **kwargs)
+
+    assert _skeleton(hostile) == _skeleton(benign), (
+        f"the slug {slug!r} changed the STRUCTURE of the generated filter, not just its "
+        "data -- it is being rendered as code. Open WebUI executes this source."
+    )
+
+
+@pytest.mark.parametrize("slug", _BREAKOUT_SLUGS)
+def test_a_hostile_slug_executes_nothing_when_the_filter_loads(slug):
+    """The structural check above, confirmed by running the artifact.
+
+    `validate_filter_source` returning True is not evidence of safety -- parsing
+    cleanly is what an injection needs, not what refutes one.
+    """
+    import os as _os
+
+    sentinel = "OPENROUTER_PIPE_INJECTION_CANARY"
+    _os.environ.pop(sentinel, None)
+    source = FilterManager._render_provider_routing_filter_source(
+        model_slug=slug.replace("P", sentinel),
+        providers=["openai"],
+        quantizations=["fp16"],
+        visibility="user",
+    )
+    namespace: dict = {}
+    exec(compile(source, "<generated-filter>", "exec"), namespace)  # noqa: S102 - executing the artifact is the check
+    assert _os.environ.get(sentinel) is None, (
+        f"loading the filter generated from slug {slug!r} executed injected code"
+    )

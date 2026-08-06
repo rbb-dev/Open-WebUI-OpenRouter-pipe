@@ -25,10 +25,16 @@ import aiohttp
 
 from ..core.timing_logger import timed
 
-# Open WebUI internals (imported locally in methods for test compatibility)
 try:
     from open_webui.models.models import ModelForm
 except ImportError:
+    ModelForm = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.models failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
     ModelForm = None  # type: ignore
 
 from ..core.config import (
@@ -39,8 +45,6 @@ from ..core.config import (
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
 )
-
-# Lazy import to avoid circular dependency.
 from .registry import ModelFamily, OpenRouterModelRegistry
 
 if TYPE_CHECKING:
@@ -251,7 +255,6 @@ class ModelCatalogManager:
         self._model_metadata_sync_task: asyncio.Task | None = None
         self._model_metadata_sync_key: tuple[Any, ...] | None = None
 
-        # Cached provider map for immediate access in pipes()
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
 
@@ -380,7 +383,6 @@ class ModelCatalogManager:
     ) -> dict[str, Any] | list[dict[str, str]] | None:
         """Build default access payload for newly inserted overlays."""
         if supports_access_control:
-            # ``None`` means public in current OWUI. Non-public defaults to private.
             return None if access_mode == "public" else {}
 
         if access_mode == "public":
@@ -449,7 +451,6 @@ class ModelCatalogManager:
         """
         valves = self._pipe.valves
 
-        # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
         admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
@@ -657,7 +658,7 @@ class ModelCatalogManager:
         model_providers: dict[str, set[str]] = {}
         model_quantizations: dict[str, set[str]] = {}
         model_short_names: dict[str, str] = {}
-        model_provider_names: dict[str, dict[str, str]] = {}  # model_slug -> {provider_slug: display_name}
+        model_provider_names: dict[str, dict[str, str]] = {}
 
         for item in raw_items:
             if not isinstance(item, dict):
@@ -667,7 +668,6 @@ class ModelCatalogManager:
             if not isinstance(model_slug, str) or not model_slug:
                 continue
 
-            # Capture short_name (only need to do this once per model)
             if model_slug not in model_short_names:
                 short_name = item.get("short_name")
                 if isinstance(short_name, str) and short_name:
@@ -677,15 +677,10 @@ class ModelCatalogManager:
             if not isinstance(endpoint, dict):
                 continue
 
-            # Skip variant-only endpoints - these providers only serve variant models
-            # (e.g., :free, :thinking) and aren't available for the base model.
-            # The frontend catalog now includes model_variant_slug even for base models,
-            # so only skip when it differs from the base slug.
             model_variant_slug = endpoint.get("model_variant_slug")
             if isinstance(model_variant_slug, str) and model_variant_slug and model_variant_slug != model_slug:
                 continue
 
-            # Extract provider slug and display name
             provider_info = endpoint.get("provider_info")
             if isinstance(provider_info, dict):
                 provider_slug = provider_info.get("slug")
@@ -694,7 +689,6 @@ class ModelCatalogManager:
                         model_providers[model_slug] = set()
                     model_providers[model_slug].add(provider_slug)
 
-                    # Capture provider display name (prefer displayName, fallback to name)
                     if model_slug not in model_provider_names:
                         model_provider_names[model_slug] = {}
                     if provider_slug not in model_provider_names[model_slug]:
@@ -709,7 +703,6 @@ class ModelCatalogManager:
                     model_quantizations[model_slug] = set()
                 model_quantizations[model_slug].add(quantization)
 
-        # Build final mapping with sorted lists and metadata
         result: dict[str, dict[str, Any]] = {}
         all_slugs = set(model_providers.keys()) | set(model_quantizations.keys())
 
@@ -739,8 +732,6 @@ class ModelCatalogManager:
             )
             return None
 
-        # Protect against corrupt or malicious JSON from remote source.
-        # Ensure it's a dict before returning, logging invalid responses.
         if isinstance(payload, dict):
             return payload
         self.logger.warning(
@@ -970,7 +961,6 @@ class ModelCatalogManager:
         """Sync model metadata (capabilities, profile images, descriptions) into OWUI's Models table."""
         valves = self._pipe.valves
 
-        # Check if provider routing is enabled (either ADMIN or USER lists are non-empty)
         admin_routing_models = valves.ADMIN_PROVIDER_ROUTING_MODELS
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
@@ -1011,7 +1001,6 @@ class ModelCatalogManager:
             ):
                 frontend_data = await self._fetch_frontend_model_catalog(session)
 
-            # Log frontend catalog fetch result for debugging
             if frontend_data is None:
                 self.logger.debug("Frontend catalog fetch returned None")
             elif isinstance(frontend_data, dict):
@@ -1048,7 +1037,6 @@ class ModelCatalogManager:
                         if isinstance(slug, str) and slug and isinstance(desc, str) and desc.strip():
                             description_mapping[slug] = desc.strip()
 
-            # Build provider map for provider routing filters
             provider_map: dict[str, dict[str, Any]] = {}
             if provider_routing_enabled:
                 provider_map = await self._build_provider_map_with_overlay(
@@ -1057,7 +1045,6 @@ class ModelCatalogManager:
                     admin_routing_models,
                     user_routing_models,
                 )
-                # Cache for immediate access in pipes()
                 self._cached_provider_map = provider_map
                 self.logger.info(
                     "Provider map built: %d models have provider info. Sample keys: %s",
@@ -1124,7 +1111,6 @@ class ModelCatalogManager:
                         if url_to_data.get(url)
                     }
 
-            # DB writes are performed via OWUI async helper functions.
             semaphore = asyncio.Semaphore(10)
             web_tools_filter_function_id: str | None = None
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
@@ -1276,7 +1262,7 @@ class ModelCatalogManager:
                     )
 
             # Provider routing filter generation
-            provider_routing_filter_map: dict[str, str] = {}  # model_slug -> filter_id
+            provider_routing_filter_map: dict[str, str] = {}
             if provider_routing_enabled:
                 admin_list = [m.strip() for m in admin_routing_models.split(",") if m.strip()]
                 user_list = [m.strip() for m in user_routing_models.split(",") if m.strip()]
@@ -1305,7 +1291,6 @@ class ModelCatalogManager:
                         "Provider routing enabled but provider_map is empty (frontend catalog may have failed to load)"
                     )
 
-                # Summary log for provider routing auto-attachment
                 if provider_routing_filter_map:
                     self.logger.info(
                         "Auto-attaching provider routing filters to %d model(s): %s",
@@ -1313,8 +1298,6 @@ class ModelCatalogManager:
                         ", ".join(sorted(provider_routing_filter_map.keys())),
                     )
 
-            # Build set of existing openrouter_* filter IDs for stale-reference pruning.
-            # A single query here avoids per-model DB lookups during metadata sync.
             _valid_openrouter_filter_ids: frozenset[str] = frozenset()
             try:
                 from open_webui.models.functions import Functions as _FunctionsTable
@@ -1396,13 +1379,6 @@ class ModelCatalogManager:
                         maker_id = original_id.split("/", 1)[0]
                         profile_image_url = maker_data_mapping.get(maker_id)
 
-                # Image-output models (Sourceful, Flux, Seedream, gpt-image,
-                # gemini-image) and video-output models do NOT support tool
-                # calling. Attaching Web Tools sends a `tools=[{...}]` array
-                # which fails with "No endpoints found that support tool use".
-                # Gate web_tools_supported on absence of image_output and
-                # video_generation features (mirrors the web_search overlay
-                # gate at line ~936).
                 from ..filters.fusion_filter_renderer import (
                     is_fusion_model as _is_fusion,
                 )
@@ -1454,10 +1430,6 @@ class ModelCatalogManager:
                     and pipe_capabilities.get("image_output")
                 )
 
-                # Fusion filter: auto-wire to the openrouter/fusion model ONLY.
-                # openrouter_id is the sanitized OWUI id ("openrouter.fusion"); original_id
-                # is the raw slug ("openrouter/fusion"). is_fusion_model handles both forms,
-                # but we test both ids anyway, mirroring the image/video lookups above.
                 from ..filters.fusion_filter_renderer import is_fusion_model
                 fusion_filter_ids_for_model: list[str] = []
                 if fusion_filter_function_id and (
@@ -1470,11 +1442,8 @@ class ModelCatalogManager:
                     and valves.AUTO_ATTACH_FUSION_FILTER
                 )
 
-                # Look up provider routing filter ID for this model.
-                # Use original_id (e.g., "openai/gpt-4o") rather than the sanitized OWUI id.
                 pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
 
-                # DEBUG: trace provider routing attachment
                 if provider_routing_filter_map:
                     self.logger.debug(
                         "PR lookup: original_id=%r, map_keys=%r, pr_filter_id=%r",
@@ -1700,8 +1669,6 @@ class ModelCatalogManager:
 
         existing = await Models.get_model_by_id(openwebui_model_id)
 
-        # Per-model advanced params: allow operators to prevent the pipe from overwriting manually-edited
-        # model settings (capability checkboxes, icons, filter attachments/defaults, etc).
         disable_model_metadata_sync = False
         disable_capability_updates = False
         disable_image_updates = False
@@ -1713,7 +1680,6 @@ class ModelCatalogManager:
         disable_description_updates = False
 
         if existing is not None:
-            # Lazy import to avoid circular dependency
             from ..api.transforms import _get_disable_param
 
             params = getattr(existing, "params", None)
@@ -1805,7 +1771,7 @@ class ModelCatalogManager:
 
         def _apply_filter_ids(meta_dict: dict) -> bool:
             if not filter_function_id:
-                return False  # no filter installed at all
+                return False
             normalized = _normalize_id_list(meta_dict, "filterIds")
             pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
@@ -1815,10 +1781,6 @@ class ModelCatalogManager:
                     previous_id = prev
             had = set(normalized)
             wanted = set(had)
-            # Attach only when BOTH auto_attach AND supported are true. When
-            # either flips off (e.g. capability lost — image-output model now
-            # gates web_tools_supported to False), discard the id so previously-
-            # attached filters get cleaned up on subsequent sync.
             if auto_attach_filter and filter_supported:
                 wanted.add(filter_function_id)
             else:
@@ -1827,7 +1789,6 @@ class ModelCatalogManager:
                 wanted.discard(previous_id)
             if wanted == had:
                 return False
-            # Preserve order as much as possible; append new id at the end.
             if auto_attach_filter and filter_supported and filter_function_id not in normalized:
                 normalized.append(filter_function_id)
             normalized = [fid for fid in normalized if fid in wanted]
@@ -1854,7 +1815,6 @@ class ModelCatalogManager:
                 wanted.discard(previous_id)
             if wanted == had:
                 return False
-            # Preserve order as much as possible; append new id at the end.
             if direct_uploads_filter_supported and direct_uploads_filter_function_id not in normalized:
                 normalized.append(direct_uploads_filter_function_id)
             normalized = [fid for fid in normalized if fid in wanted]
@@ -1891,14 +1851,10 @@ class ModelCatalogManager:
             return True
 
 
-
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
             if not auto_default_filter or not filter_function_id or not filter_supported:
                 return False
 
-            # Never set a default filter unless the filter is actually attached. This matters when
-            # operators disable auto-attach (or when the filter is removed/unsupported) so we don't
-            # leave the model in a "default on" state for a filter that isn't present.
             filter_ids = _normalize_id_list(meta_dict, "filterIds")
             if filter_function_id not in filter_ids:
                 return False
@@ -1911,7 +1867,6 @@ class ModelCatalogManager:
             default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
             changed = False
 
-            # If the filter id changed (rare), migrate defaults while preserving operator intent.
             if previous_id_str and previous_id_str != filter_function_id and previous_id_str in default_ids:
                 default_ids = [filter_function_id if fid == previous_id_str else fid for fid in default_ids]
                 changed = True
@@ -1940,7 +1895,6 @@ class ModelCatalogManager:
 
         def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
             """Attach provider routing filter to model if configured."""
-            # DEBUG: Log entry into attachment function
             self.logger.debug(
                 "PR attach attempt: model=%r, filter_id=%r",
                 openwebui_model_id,
@@ -1965,7 +1919,6 @@ class ModelCatalogManager:
             if previous_id:
                 wanted.discard(previous_id)
 
-            # DEBUG: Log the comparison
             self.logger.debug(
                 "PR attach: current_filterIds=%r, had=%r, wanted=%r, previous_id=%r",
                 normalized,
@@ -1978,7 +1931,6 @@ class ModelCatalogManager:
                 self.logger.debug("PR attach: wanted==had, no change needed")
                 return False
 
-            # Preserve order as much as possible; append new id at the end.
             if provider_routing_filter_id not in normalized:
                 normalized.append(provider_routing_filter_id)
             normalized = [fid for fid in normalized if fid in wanted]
@@ -1994,7 +1946,6 @@ class ModelCatalogManager:
             return True
 
         if existing:
-            # Update existing model - preserve ALL existing fields including owner
             meta_dict = {}
             if existing.meta:
                 meta_dict.update(existing.meta.model_dump())
@@ -2131,7 +2082,6 @@ class ModelCatalogManager:
             await Models.update_model_by_id(openwebui_model_id, model_form)
 
         else:
-            # Insert new overlay model - do NOT set user_id/owner
             meta_dict = {}
             if update_capabilities and capabilities is not None:
                 meta_dict["capabilities"] = capabilities
@@ -2200,10 +2150,8 @@ class ModelCatalogManager:
                 meta_dict[_PIPE_METADATA_KEY] = pipe_meta
 
             if not meta_dict:
-                # Nothing to insert, skip
                 return
 
-            # Create proper ModelMeta and ModelParams objects
             meta_obj = ModelMeta(**meta_dict)
             params_obj = ModelParams()
 
@@ -2224,5 +2172,4 @@ class ModelCatalogManager:
                 access_payload=access_payload,
                 is_active=True,
             )
-            # Use empty user_id to let OWUI handle ownership defaults
             await Models.insert_new_model(model_form, user_id="")

@@ -30,15 +30,15 @@ _registration_lock = threading.Lock()
 _PD_COARSE_MIN_INTERVAL = 0.25
 _coarse_state: dict[str, float] = {}
 
-_get_pipe: Any = None
+_routes_get_pipe: Any = None
 _reconcile_lock = asyncio.Lock()
 _fresh_dispatch: Any = None
 _reconcile_attempted = False
 
 
 def set_pipe_getter(get_pipe: Any) -> None:
-    global _get_pipe
-    _get_pipe = get_pipe
+    global _routes_get_pipe
+    _routes_get_pipe = get_pipe
 
 
 def _coarse_rate_limited(user_id: str) -> bool:
@@ -65,7 +65,7 @@ async def bearer_user(request: Request) -> Any:
     try:
         from open_webui.models.users import Users
         from open_webui.utils.auth import decode_token, is_valid_token
-    except ImportError:
+    except Exception:
         logger.warning(
             "pipe_dashboard: Open WebUI auth helpers are unavailable; denying the request",
             exc_info=True,
@@ -117,7 +117,7 @@ async def _action_route(request: Request, body: ActionBody):
     if _coarse_rate_limited(user.id):
         _audit(user, body.action, "coarse_rate_limited", _client_ip(request))
         raise HTTPException(status_code=429)
-    pipe = _get_pipe() if _get_pipe else None
+    pipe = _routes_get_pipe() if _routes_get_pipe else None
     dispatch = dispatch_action
     if body.action not in ACTIONS and pipe is not None and getattr(pipe, "id", None):
         global _fresh_dispatch, _reconcile_attempted
@@ -148,7 +148,7 @@ def get_owui_app() -> Any | None:
         from open_webui.main import app
 
         return app
-    except ImportError:
+    except Exception:
         logger.debug("pipe_dashboard: Open WebUI app is not importable", exc_info=True)
         return None
 
