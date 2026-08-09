@@ -102,14 +102,15 @@ Dashboard command ("dashboard")
 Emits dashboard HTML via event_emitter (embeds → srcdoc iframe)
   │
   ▼
-Dashboard JS: io(origin, {path: "/ws/socket.io", auth: {token}})
-  │  token = localStorage["token"] (requires same-origin iframe — see Requirements)
+Dashboard JS: io(origin, {path: "/ws/socket.io", auth: fn -> {token}})
+  │  token read from localStorage at each handshake (requires same-origin iframe
+  │  — see Requirements); a value captured once would replay a rotated token
   ▼
 on connect → emit "user-join" → in its ACK → emit "openrouter:pipe_dashboard:sub"
   │  (the ACK ordering guarantees OWUI has registered the session first)
   ▼
-Subscribe handler: session must exist in OWUI's SESSION_POOL,
-  │  then sio.enter_room(sid, "pipe_dashboard_viewers")
+Subscribe handler: resolve the viewer, then sio.enter_room(sid,
+  │  "pipe_dashboard_viewers") and pin the authorized id to the socket.io session
   ▼
 Publisher loop on the worker holding the socket:
   │  aggregates stats → sio.emit("openrouter:pipe_dashboard", payload,
@@ -123,6 +124,10 @@ Dashboard JS updates DOM sections as payloads arrive
 - **Room membership is the entire viewer state.** Socket.IO removes a socket from `pipe_dashboard_viewers` on disconnect and deletes the empty room — no registry, no keys, no TTLs, no custom HTTP surface.
 - **Rooms are per-worker-local**, so the worker that holds a viewer's socket detects it locally and emits **locally** (`ignore_queue=True`) — the stats push never needs the cross-worker socket backplane. Redis carries the stats aggregation.
 - **Reconnects self-heal.** Socket.IO re-fires `connect` with a fresh sid; the client re-emits `user-join` and the subscribe, rejoining the room automatically.
+- **Viewer identity is pinned to the socket, not to OWUI's heartbeat bookkeeping.** OWUI identifies a socket through `SESSION_POOL`, which its reaper deletes after `SESSION_POOL_TIMEOUT` seconds without a heartbeat — while the socket is still connected and still in the viewers room. Resolving identity from that store alone made a live administrator indistinguishable from an anonymous socket, and the reauthorization sweep evicted them under a message claiming their access had been revoked. The subscribe handler therefore writes the authorized user id into the socket.io session under its own namespaced key, and identity resolution reads that first with `SESSION_POOL` as fallback. The session belongs to python-socketio rather than to Open WebUI, so the store exists regardless of Open WebUI version, and it is destroyed with the connection.
+- **The panel heartbeats every 30 seconds**, matching Open WebUI's own frontend, so `SESSION_POOL` stays populated and Open WebUI stops logging the panel as an orphaned session. Identity no longer depends on it.
+- **A replayed panel does not auto-connect.** Open WebUI persists the dashboard HTML into the chat message and re-runs it on every later chat load. The shell records in `localStorage`, under the panel's own id, when this browser first saw that panel, and dials out only while that record is fresh; an older panel opens in the disconnected state with its Connect button showing, so scrolling back through history cannot silently pin the publisher's emit loop. Both the write and the comparison happen in the browser: a server-rendered timestamp measured against the client clock fails silently in both directions under host skew, disconnecting a brand-new panel when the client runs fast and disabling the bound entirely when it runs slow.
+- **A denial hangs up before offering reconnect.** Revocation removes the socket from the room but leaves it connected, and the Socket.IO client's `connect()` is a no-op on a connected socket — so the panel disconnects first, then shows the Connect button. Retrying is safe: the subscribe handler re-adjudicates from scratch.
 - **The subscribe emit lives inside the `user-join` ACK** because OWUI's server (`always_connect=True`) confirms the connection *before* it finishes validating the token and populating `SESSION_POOL`; emitting the subscribe bare on `connect` would race that.
 - The Socket.IO browser client is **inlined into the dashboard HTML** from the generated `_socketio_client.py` module (OWUI does not serve a standalone client). It is generated from the same SHA-384-pinned vendor file the Fusion feature uses: `python scripts/build_pipe_dashboard_socketio.py`.
 

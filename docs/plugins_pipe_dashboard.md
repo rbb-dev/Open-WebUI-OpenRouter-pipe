@@ -231,6 +231,12 @@ explicitly and points at this setting). Native browser dialogs are additionally 
 sandbox regardless of settings, which is why every confirmation in the dashboard uses inline
 click-again-to-confirm buttons instead.
 
+**A panel you scroll back to does not reconnect on its own.** Open WebUI keeps the rendered
+dashboard inside the chat message, so reopening an old conversation re-runs it. Rather than let
+every past panel quietly resume streaming live statistics, a panel this browser first saw more than a
+few minutes ago opens in the DISCONNECTED state and says so; press **Connect** for live data. The
+panel you have just opened with the command is unaffected.
+
 **Content Security Policy.** If a restrictive `IFRAME_CSP` is configured, allow `script-src 'unsafe-inline'` and `connect-src 'self'` — the same policy the [OpenRouter Fusion panel](openrouter_fusion.md) uses.
 
 ---

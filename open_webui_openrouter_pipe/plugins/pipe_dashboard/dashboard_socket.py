@@ -13,7 +13,12 @@ import logging
 from typing import Any
 
 from ...core.warn_latch import warn_level
-from .authz import can_view, resolve_socket_user_id, resolve_user
+from .authz import (
+    can_view,
+    remember_socket_user_id,
+    resolve_socket_user_id,
+    resolve_user,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +38,8 @@ _warned_import_sites: set[str] = set()
 async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     global _resync
     pipe = _get_pipe() if _get_pipe else None
-    user = await resolve_user(resolve_socket_user_id(sid))
+    uid = await resolve_socket_user_id(sid)
+    user = await resolve_user(uid)
     if not await can_view(user, pipe):
         try:
             from open_webui.socket.main import sio
@@ -49,6 +55,8 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     except Exception:
         logger.debug("pipe_dashboard sub failed for sid=%s", sid, exc_info=True)
         return
+    if uid:
+        await remember_socket_user_id(sid, uid)
     _resync = True
 
 
@@ -217,8 +225,9 @@ async def reauthorize_local_viewers() -> None:
         )
         return
     for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
-        user = await resolve_user(resolve_socket_user_id(sid))
+        user = await resolve_user(await resolve_socket_user_id(sid))
         if not await can_view(user, pipe):
+            logger.warning("pipe_dashboard: evicting viewer sid=%s (authorization no longer holds)", sid)
             try:
                 await sio.leave_room(sid, VIEWERS_ROOM)
                 await sio.emit(DENIED_EVENT, {}, room=sid)

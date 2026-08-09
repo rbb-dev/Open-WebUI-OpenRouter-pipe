@@ -52,7 +52,46 @@ async def resolve_user(user_id: str | None) -> Any | None:
         return None
 
 
-def resolve_socket_user_id(sid: str) -> str | None:
+VIEWER_ID_KEY = "openrouter_pipe_dashboard_user_id"
+
+
+async def remember_socket_user_id(sid: str, user_id: str) -> bool:
+    """Pin an authorized viewer's id to the socket.io session for the socket's lifetime.
+
+    Open WebUI identifies a socket through ``SESSION_POOL``, which its reaper deletes
+    after ``SESSION_POOL_TIMEOUT`` seconds without a heartbeat while the socket is still
+    connected and still in the viewers room. Reading only that store makes a live admin
+    indistinguishable from an anonymous socket, and the reauthorization sweep evicts them
+    for it. The socket.io session is owned by python-socketio, not by Open WebUI, so it
+    exists on every Open WebUI version and dies only with the connection.
+    """
+    try:
+        from open_webui.socket.main import sio
+
+        try:
+            existing = await sio.get_session(sid)
+        except Exception:
+            logger.debug("pipe_dashboard: no existing session for socket %s", sid, exc_info=True)
+            existing = None
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged[VIEWER_ID_KEY] = user_id
+        await sio.save_session(sid, merged)
+        return True
+    except Exception:
+        logger.debug("pipe_dashboard: could not pin viewer id for socket %s", sid, exc_info=True)
+        return False
+
+
+async def resolve_socket_user_id(sid: str) -> str | None:
+    try:
+        from open_webui.socket.main import sio
+
+        session = await sio.get_session(sid)
+        uid = session.get(VIEWER_ID_KEY) if isinstance(session, dict) else None
+        if isinstance(uid, str) and uid:
+            return uid
+    except Exception:
+        logger.debug("pipe_dashboard: no pinned viewer id for socket %s", sid, exc_info=True)
     try:
         from open_webui.socket.main import get_user_id_from_session_pool
 

@@ -901,12 +901,6 @@ class TestDashboardShell:
         assert "Log queue" in html
         assert "Archive queue" in html
 
-    def test_unique_dash_ids(self):
-        """Each dashboard instance gets a unique ID prefix."""
-        import secrets
-        ids = {"dash-" + secrets.token_hex(4) for _ in range(20)}
-        assert len(ids) == 20
-
 
 @pytest.mark.asyncio
 async def test_update_service_constructed_and_auto_task_started():

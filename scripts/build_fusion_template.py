@@ -25,28 +25,41 @@ PRODUCTION_BOOTSTRAP = r'''
   try { EVENTS.forEach(function(ev){ try { window.FusionUI.push(ev); } catch(_e){} }); } catch(_e){}
   try { if (_FUSION_FINAL && EVENTS.length && _clockStart && _clockFrozen == null) { if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; } _clockStart = 0; var _elx = document.getElementById('elapsed'); if (_elx) _elx.textContent = '—'; } } catch(_e){}
   (function fusionLiveSocket(){
+    if (_FUSION_FINAL) return;
     var msgId = null;
     try {
       var host = window.frameElement;
       var wrap = host && host.closest && host.closest('[id^="message-"]');
       if (wrap) msgId = wrap.id.slice("message-".length);
     } catch(_e){}
-    var token = null;
-    try { token = localStorage.getItem("token"); } catch(_e){}
+    function freshToken(){ try { return localStorage.getItem("token"); } catch(_e){ return null; } }
+    var token = freshToken();
     if (!token) return;
+    var idleTimer = null;
+    var finished = false;
     function connect(){
       if (typeof io === "undefined") return;
       try {
         var origin = "";
         try { origin = parent.location.origin; } catch(_e){ origin = ""; }
-        var sock = io(origin || undefined, { reconnection: true, reconnectionDelay: 1000, reconnectionDelayMax: 5000, randomizationFactor: 0.5, path: "/ws/socket.io", transports: ["websocket", "polling"], auth: { token: token } });
-        sock.on("connect", function(){ try { sock.emit("user-join", { auth: { token: token } }); } catch(_e){} });
+        var sock = io(origin || undefined, { reconnection: true, reconnectionDelay: 1000, reconnectionDelayMax: 5000, randomizationFactor: 0.5, path: "/ws/socket.io", transports: ["websocket", "polling"], auth: function(cb){ cb({ token: freshToken() }); } });
+        function armIdle(){
+          if (idleTimer) { clearTimeout(idleTimer); }
+          idleTimer = setTimeout(function(){ try { sock.disconnect(); } catch(_e){} }, finished ? 15000 : 600000);
+        }
+        sock.on("connect", function(){
+          armIdle();
+          try { sock.emit("user-join", { auth: { token: freshToken() || token } }); } catch(_e){}
+        });
+        sock.on("disconnect", function(){
+          if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        });
         sock.on("events", function(payload){
           try {
             if (!payload || typeof payload !== "object") return;
             if (msgId && payload.message_id && payload.message_id !== msgId) return;
             var d = payload.data;
-            if (d && d.type === "fusion:event" && d.data && d.data.event) { window.FusionUI.push(d.data.event); }
+            if (d && d.type === "fusion:event" && d.data && d.data.event) { if (d.data.event.type === "response.output_text.done") { finished = true; } armIdle(); window.FusionUI.push(d.data.event); }
           } catch(_e){}
         });
       } catch(_e){}

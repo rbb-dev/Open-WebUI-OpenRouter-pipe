@@ -20,7 +20,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
 # Interpolated into the failure message, never retyped there: the message used to quote
 # a stale literal while the assertion compared a different one.
-_EXPECTED_OWUI_IMPORTS = (17, 71)
+_EXPECTED_OWUI_IMPORTS = (17, 73)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

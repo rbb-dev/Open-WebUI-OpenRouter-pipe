@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import sys
 import time
 import types
@@ -13,7 +14,7 @@ import pytest
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
-from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_publisher, dashboard_socket
+from open_webui_openrouter_pipe.plugins.pipe_dashboard import authz, dashboard_publisher, dashboard_socket
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher import (
     _build_emit_payload,
     run_dashboard_publisher,
@@ -118,6 +119,7 @@ class TestPipeDashboardSub:
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(side_effect=KeyError("Session not found"))
         dashboard_socket._resync = False
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: None,
@@ -132,6 +134,7 @@ class TestPipeDashboardSub:
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
         dashboard_socket._resync = False
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: "user-1",
@@ -149,22 +152,28 @@ class TestPipeDashboardSub:
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
         dashboard_socket._resync = False
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: "user-1",
         )
-        monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
+        fake_resolve_user = AsyncMock(return_value=object())
+        monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
         dashboard_socket._get_pipe = lambda: object()
         await _pipe_dashboard_sub("sid-authed")
         mock_sio.enter_room.assert_awaited_once_with("sid-authed", VIEWERS_ROOM)
         assert dashboard_socket._resync is True
+        # The resolver is async; a missing await hands resolve_user a coroutine, which
+        # denies every subscriber in production while leaving argument-blind stubs green.
+        fake_resolve_user.assert_awaited_once_with("user-1")
 
     @pytest.mark.asyncio
     async def test_enter_room_failure_no_resync(self, monkeypatch):
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock(side_effect=RuntimeError("boom"))
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
         dashboard_socket._resync = False
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: "user-1",
@@ -182,6 +191,7 @@ class TestReauthorizeLocalViewers:
         mock_sio = Mock()
         mock_sio.leave_room = AsyncMock()
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
         _install_socket_stub(
             monkeypatch, sio=mock_sio,
             get_session_ids_from_room=lambda room: ["s1"],
@@ -195,25 +205,185 @@ class TestReauthorizeLocalViewers:
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="s1")
 
     @pytest.mark.asyncio
-    async def test_keeps_granted(self, monkeypatch):
+    async def test_keeps_granted(self, monkeypatch, caplog):
         mock_sio = Mock()
         mock_sio.leave_room = AsyncMock()
         mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(side_effect=KeyError("Session not found"))
         _install_socket_stub(
             monkeypatch, sio=mock_sio,
             get_session_ids_from_room=lambda room: ["s1"],
             get_user_id_from_session_pool=lambda sid: "user-1",
         )
-        monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
+        fake_resolve_user = AsyncMock(return_value=object())
+        monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
         dashboard_socket._get_pipe = lambda: object()
-        await dashboard_socket.reauthorize_local_viewers()
+        with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
+            await dashboard_socket.reauthorize_local_viewers()
         mock_sio.leave_room.assert_not_awaited()
+        fake_resolve_user.assert_awaited_once_with("user-1")
+        # Defect 5's other half: an eviction warning that also fires for authorized
+        # viewers is worse than none, so pin the negative case beside the positive.
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     @pytest.mark.asyncio
     async def test_import_failure_safe(self, monkeypatch):
         _install_socket_stub(monkeypatch)
         await dashboard_socket.reauthorize_local_viewers()
+
+    @pytest.mark.asyncio
+    async def test_eviction_is_logged(self, monkeypatch, caplog):
+        mock_sio = Mock()
+        mock_sio.leave_room = AsyncMock()
+        mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
+        _install_socket_stub(
+            monkeypatch, sio=mock_sio,
+            get_session_ids_from_room=lambda room: ["s1"],
+            get_user_id_from_session_pool=lambda sid: "user-1",
+        )
+        monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
+        monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
+        dashboard_socket._get_pipe = lambda: object()
+        with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
+            await dashboard_socket.reauthorize_local_viewers()
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("evicting viewer" in m and "s1" in m for m in warnings), warnings
+
+
+class TestViewerIdentityOutlivesTheSessionPool:
+    """The identity a viewer is judged by must outlive OWUI's heartbeat bookkeeping.
+
+    OWUI identifies a socket through ``SESSION_POOL``, which its reaper deletes after
+    ``SESSION_POOL_TIMEOUT`` seconds without a heartbeat -- while the socket is still
+    connected and still in the viewers room. Reading only that store made a live admin
+    indistinguishable from an anonymous socket, and the sweep evicted them for it.
+
+    The durable store is the socket.io session, which belongs to python-socketio rather
+    than to Open WebUI. That matters: Open WebUI 0.10.2 never writes it, so a fix that
+    only *read* it would be dead code on that deployment. This plugin writes its own
+    namespaced key at admission, so the read has a paired writer on every version.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, *, session, pool):
+        mock_sio = Mock()
+        mock_sio.get_session = AsyncMock(**session)
+        mock_sio.save_session = AsyncMock()
+        _install_socket_stub(monkeypatch, sio=mock_sio, get_user_id_from_session_pool=pool)
+        return mock_sio
+
+    @pytest.mark.asyncio
+    async def test_pinned_id_wins_over_the_pool(self, monkeypatch):
+        self._stub(monkeypatch,
+                   session={"return_value": {authz.VIEWER_ID_KEY: "u-sess"}},
+                   pool=lambda sid: "u-pool")
+        assert await authz.resolve_socket_user_id("sid-1") == "u-sess"
+
+    @pytest.mark.asyncio
+    async def test_reaped_pool_still_resolves(self, monkeypatch):
+        """The reported bug: pool reaped at 120s while the socket is still connected."""
+        self._stub(monkeypatch,
+                   session={"return_value": {authz.VIEWER_ID_KEY: "u-sess"}},
+                   pool=lambda sid: None)
+        assert await authz.resolve_socket_user_id("sid-1") == "u-sess"
+
+    @pytest.mark.asyncio
+    async def test_pool_answers_before_anything_is_pinned(self, monkeypatch):
+        """Pins the two lookups in SEPARATE try blocks.
+
+        ``get_session`` raises ``KeyError`` for an unknown sid. Sharing one try block
+        with the pool read swallows the session failure past the fallback.
+        """
+        self._stub(monkeypatch,
+                   session={"side_effect": KeyError("Session not found")},
+                   pool=lambda sid: "u-pool")
+        assert await authz.resolve_socket_user_id("sid-1") == "u-pool"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{}, {"user": {"id": "owui-only"}}, None, "not-a-dict",
+                                         {authz.VIEWER_ID_KEY: ""}, {authz.VIEWER_ID_KEY: 42}])
+    async def test_unusable_session_falls_through(self, monkeypatch, payload):
+        """Including a session holding only OWUI's own key: that is not ours to read."""
+        self._stub(monkeypatch, session={"return_value": payload}, pool=lambda sid: "u-pool")
+        assert await authz.resolve_socket_user_id("sid-1") == "u-pool"
+
+    @pytest.mark.asyncio
+    async def test_both_sources_dead_returns_none(self, monkeypatch):
+        def _boom(sid):
+            raise RuntimeError("pool down")
+
+        self._stub(monkeypatch, session={"side_effect": KeyError("gone")}, pool=_boom)
+        assert await authz.resolve_socket_user_id("sid-1") is None
+
+    @pytest.mark.asyncio
+    async def test_redis_outage_on_pool_does_not_lose_identity(self, monkeypatch):
+        """In Redis mode ``SESSION_POOL.get`` propagates ConnectionError; the pinned id
+        is worker-local memory and is unaffected."""
+        def _boom(sid):
+            raise ConnectionError("redis down")
+
+        self._stub(monkeypatch,
+                   session={"return_value": {authz.VIEWER_ID_KEY: "u-sess"}},
+                   pool=_boom)
+        assert await authz.resolve_socket_user_id("sid-1") == "u-sess"
+
+    @pytest.mark.asyncio
+    async def test_pinning_preserves_whatever_owui_put_there(self, monkeypatch):
+        """save_session REPLACES the whole dict, so the write must merge, not clobber."""
+        mock_sio = self._stub(monkeypatch,
+                              session={"return_value": {"user": {"id": "owui"}}},
+                              pool=lambda sid: None)
+        assert await authz.remember_socket_user_id("sid-1", "u-1") is True
+        mock_sio.save_session.assert_awaited_once_with(
+            "sid-1", {"user": {"id": "owui"}, authz.VIEWER_ID_KEY: "u-1"})
+
+    @pytest.mark.asyncio
+    async def test_pinning_survives_an_absent_session(self, monkeypatch):
+        mock_sio = self._stub(monkeypatch, session={"side_effect": KeyError("new sid")},
+                              pool=lambda sid: None)
+        assert await authz.remember_socket_user_id("sid-1", "u-1") is True
+        mock_sio.save_session.assert_awaited_once_with("sid-1", {authz.VIEWER_ID_KEY: "u-1"})
+
+    @pytest.mark.asyncio
+    async def test_pinning_reports_failure_rather_than_raising(self, monkeypatch):
+        mock_sio = self._stub(monkeypatch, session={"return_value": {}}, pool=lambda sid: None)
+        mock_sio.save_session = AsyncMock(side_effect=RuntimeError("socket gone"))
+        assert await authz.remember_socket_user_id("sid-1", "u-1") is False
+
+    @pytest.mark.asyncio
+    async def test_admission_pins_the_id_it_authorized(self, monkeypatch):
+        """End-to-end through the real subscribe handler: the write must actually happen,
+        or the read added above is dead code."""
+        mock_sio = Mock()
+        mock_sio.enter_room = AsyncMock()
+        mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(side_effect=KeyError("not yet"))
+        mock_sio.save_session = AsyncMock()
+        _install_socket_stub(monkeypatch, sio=mock_sio,
+                             get_user_id_from_session_pool=lambda sid: "user-1")
+        monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
+        monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
+        dashboard_socket._get_pipe = lambda: object()
+        await _pipe_dashboard_sub("sid-authed")
+        mock_sio.save_session.assert_awaited_once_with(
+            "sid-authed", {authz.VIEWER_ID_KEY: "user-1"})
+
+    @pytest.mark.asyncio
+    async def test_a_denied_subscriber_is_never_pinned(self, monkeypatch):
+        mock_sio = Mock()
+        mock_sio.enter_room = AsyncMock()
+        mock_sio.emit = AsyncMock()
+        mock_sio.get_session = AsyncMock(side_effect=KeyError("not yet"))
+        mock_sio.save_session = AsyncMock()
+        _install_socket_stub(monkeypatch, sio=mock_sio,
+                             get_user_id_from_session_pool=lambda sid: "user-1")
+        monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
+        monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
+        dashboard_socket._get_pipe = lambda: object()
+        await _pipe_dashboard_sub("sid-denied")
+        mock_sio.save_session.assert_not_awaited()
 
 
 class TestRegisterSocketHandler:

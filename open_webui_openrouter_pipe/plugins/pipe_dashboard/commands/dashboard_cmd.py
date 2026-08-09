@@ -28,6 +28,9 @@ from ..dashboard_socket import (
 )
 from ..update_tab_assets import UPDATE_TAB_CSS, UPDATE_TAB_JS
 
+_PD_HEARTBEAT_MS = 30000
+_PD_AUTOCONNECT_MAX_AGE_S = 300
+
 
 def _safe(val: Any) -> str:
     """HTML-escape a value for safe embedding."""
@@ -235,6 +238,14 @@ def _build_dashboard_shell(dash_id: str) -> str:
 
     All containers are empty — JavaScript populates them from socket.io
     stats events.  Uses a tabbed layout: Live, Usage, Health, System, Storage, About.
+
+    Open WebUI persists this HTML into the chat message and re-runs it on every later
+    chat load, so the shell records when this browser first saw a given panel and stops
+    auto-connecting once that panel is stale. Scrolling back through history therefore
+    cannot silently pin the publisher's two-second emit loop for the life of the tab.
+    The baseline is written and read by the browser, never compared against a
+    server-side timestamp -- host clock skew would otherwise disconnect a fresh panel
+    or disable the bound entirely, both silently.
     """
     sid = _safe(dash_id)
 
@@ -536,6 +547,28 @@ def _build_dashboard_shell(dash_id: str) -> str:
       $(ID + '-notice').textContent = msg;
       $(ID + '-btn-disconnect').style.display = 'none';
       $(ID + '-btn-connect').style.display = 'none';
+      if (dashEl) dashEl.classList.add('stale');
+    }}
+    function setReplayed(msg) {{
+      $(ID + '-dot').style.background = '#f59e0b';
+      $(ID + '-dot').style.animation = 'none';
+      $(ID + '-status').textContent = 'DISCONNECTED';
+      $(ID + '-status').style.color = '#f59e0b';
+      $(ID + '-notice').style.display = 'block';
+      $(ID + '-notice').textContent = msg;
+      $(ID + '-btn-disconnect').style.display = 'none';
+      $(ID + '-btn-connect').style.display = '';
+      if (dashEl) dashEl.classList.add('stale');
+    }}
+    function setRevoked(msg) {{
+      $(ID + '-dot').style.background = '#64748b';
+      $(ID + '-dot').style.animation = 'none';
+      $(ID + '-status').textContent = 'DENIED';
+      $(ID + '-status').style.color = '#64748b';
+      $(ID + '-notice').style.display = 'block';
+      $(ID + '-notice').textContent = msg;
+      $(ID + '-btn-disconnect').style.display = 'none';
+      $(ID + '-btn-connect').style.display = '';
       if (dashEl) dashEl.classList.add('stale');
     }}
     function setError(msg) {{
@@ -1591,18 +1624,26 @@ def _build_dashboard_shell(dash_id: str) -> str:
 
     var sock = null;
     var gotData = false;
+    var hbTimer = null;
+
+    function freshToken() {{
+      try {{ return localStorage.getItem("token"); }} catch (e) {{ return null; }}
+    }}
 
     function connectDashboard() {{
       if (typeof io === "undefined") {{ setStatic('Live updates unavailable (socket client missing).'); return; }}
-      var token = null;
-      try {{ token = localStorage.getItem("token"); }} catch (e) {{}}
+      var token = freshToken();
       if (!token) {{ setStatic('Live updates require Open WebUI\\'s iframe same-origin setting (Settings \\u2192 Interface).'); return; }}
       var origin = "";
       try {{ origin = parent.location.origin; }} catch (e) {{ origin = ""; }}
-      sock = io(origin || undefined, {{ reconnection: true, reconnectionDelay: 1000, reconnectionDelayMax: 5000, randomizationFactor: 0.5, path: "/ws/socket.io", transports: ["websocket", "polling"], auth: {{ token: token }} }});
+      sock = io(origin || undefined, {{ reconnection: true, reconnectionDelay: 1000, reconnectionDelayMax: 5000, randomizationFactor: 0.5, path: "/ws/socket.io", transports: ["websocket", "polling"], auth: function(cb) {{ cb({{ token: freshToken() }}); }} }});
       sock.on("connect", function() {{
+        if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
+        hbTimer = setInterval(function() {{
+          try {{ if (sock && sock.connected) sock.emit("heartbeat", {{}}); }} catch (e) {{}}
+        }}, {_PD_HEARTBEAT_MS});
         try {{
-          sock.emit("user-join", {{ auth: {{ token: token }} }}, function() {{
+          sock.emit("user-join", {{ auth: {{ token: freshToken() || token }} }}, function() {{
             try {{ sock.emit("{SUB_EVENT}"); }} catch (e) {{}}
           }});
         }} catch (e) {{}}
@@ -1619,9 +1660,13 @@ def _build_dashboard_shell(dash_id: str) -> str:
         if (cfgLoaded && d && d.rev != null) cfgOnEvent(d.rev);
       }});
       sock.on("{DENIED_EVENT}", function() {{
-        setStatic("Access to this dashboard was revoked.");
+        try {{ if (sock) sock.disconnect(); }} catch (e) {{}}
+        setRevoked(gotData
+          ? "Access to this dashboard was revoked. Press Connect to retry."
+          : "You are not authorized to view this dashboard.");
       }});
       sock.on("disconnect", function(reason) {{
+        if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
         if (reason === "io client disconnect" || reason === "io server disconnect") setDisconnected(); else setReconnecting();
       }});
       sock.on("connect_error", function() {{
@@ -1630,6 +1675,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     }}
 
     $(ID + '-btn-disconnect').addEventListener('click', function() {{
+      if (hbTimer) {{ clearInterval(hbTimer); hbTimer = null; }}
       if (sock) sock.disconnect();
       setDisconnected();
     }});
@@ -1641,7 +1687,17 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (sock) sock.connect(); else connectDashboard();
     }});
 
-    connectDashboard();
+    var FIRST_SEEN_KEY = 'owui_pd_first_' + ID;
+    var firstSeen = null;
+    try {{ firstSeen = localStorage.getItem(FIRST_SEEN_KEY); }} catch (e) {{}}
+    if (firstSeen === null) {{
+      try {{ localStorage.setItem(FIRST_SEEN_KEY, String(Date.now())); }} catch (e) {{}}
+      connectDashboard();
+    }} else if (Date.now() - Number(firstSeen) < {_PD_AUTOCONNECT_MAX_AGE_S} * 1000) {{
+      connectDashboard();
+    }} else {{
+      setReplayed('This panel was opened earlier and no longer updates on its own. Press Connect for live data.');
+    }}
 
     // Initial height report
     reportHeight();
@@ -1661,7 +1717,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
 async def handle_dashboard(ctx: CommandContext) -> str:
     """Display the live dashboard (OWUI socket.io transport)."""
     register_socket_handler()
-    dash_id = "dash-" + secrets.token_hex(4)
+    dash_id = "dash-" + secrets.token_hex(8)
     await ctx.emit_html(_build_dashboard_shell(dash_id))
     return (
         "Live dashboard rendered above. If no panel appears, enable iframe embeds "

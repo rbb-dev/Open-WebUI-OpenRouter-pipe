@@ -493,3 +493,135 @@ def test_synthesis_lifecycle_bakes_milestone_and_augments_reasoning():
     assert fd["reasoning"] == "synth-think"
     assert s.judge_reasoning_buf == "judge-think"
     assert s.synthesis_reasoning_buf == "synth-think"
+
+
+# ── Socket lifetime: a finished deliberation must not hold a connection ──
+
+
+def _js_fn_body(js: str, name: str) -> str:
+    """The body of a JS function declaration, by brace matching.
+
+    An identifier appearing says nothing about what it does: a ``freshToken`` that
+    memoises its first read satisfies every name-based check while replaying the
+    render-time token on every reconnect forever.
+    """
+    start = js.index("function " + name)
+    open_brace = js.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[open_brace + 1:i]
+    raise AssertionError(f"unbalanced braces in {name}")
+
+
+def _socket_block(html: str) -> str:
+    """The bootstrap's socket IIFE, up to the point it actually dials out."""
+    return html[html.index("fusionLiveSocket"):html.index("io(origin")]
+
+
+def test_finished_deliberation_does_not_open_a_socket():
+    """A replayed answer can never receive a fusion event, so it must not connect.
+
+    Without the gate, opening a chat with N finished fusion answers opens N websockets
+    and registers N OWUI sessions, each also joining ``user:{id}`` and so multiplying
+    fan-out of every streaming event for that user.
+    """
+    import re
+
+    html = build_fusion_embed_html(FusionDeliberationState(), final=True)
+    assert "var _FUSION_FINAL = true;" in html
+    assert re.search(r"if\s*\(\s*_FUSION_FINAL\s*\)\s*\{?\s*return", _socket_block(html))
+
+
+def test_live_deliberation_still_opens_a_socket():
+    """The mirror of the above: the gate must not disarm the live path."""
+    html = build_fusion_embed_html(FusionDeliberationState(), final=False)
+    assert "var _FUSION_FINAL = false;" in html
+    assert "io(origin" in html
+
+
+def test_live_embed_releases_its_socket_after_the_answer_completes():
+    """A finished run must not keep receiving every later event for the user.
+
+    The socket sits in ``user:{id}``, and Open WebUI fans every event to that room, so a
+    still-armed iframe from a finished deliberation gets a full copy of every subsequent
+    generation's stream and throws it away client-side.
+
+    The terminal flag must be STICKY rather than a branch: the analysis synthesised after
+    the stream loop arrives as a fusion event *after* ``response.output_text.done``, so a
+    plain "re-arm unless this is the terminal event" would restart the long backstop.
+    """
+    import re
+
+    html = build_fusion_embed_html(FusionDeliberationState(), final=False)
+    assert "function armIdle()" in html
+    assert 'd.data.event.type === "response.output_text.done"' in html
+    # Defined is not called: deleting both call sites leaves the socket never released.
+    connect_body = html[html.index('sock.on("connect", function(){'):html.index('sock.on("disconnect"')]
+    assert "armIdle();" in connect_body, "the timer is never armed on connect"
+    events_body = html[html.index('sock.on("events"'):]
+    assert "armIdle();" in events_body, "the timer is never re-armed by activity"
+    # Sticky: a latch, never a branch. An else-arm resetting it to false would let the
+    # post-stream analysis event restart the long backstop.
+    assert re.findall(r"finished\s*=\s*(\w+)", html) == ["false", "true"]
+    # The latch must sit ON the terminal branch, and every other event must still re-arm.
+    latch = re.search(r'if \(d\.data\.event\.type === "response\.output_text\.done"\) \{([^}]*)\}', events_body)
+    assert latch is not None and "finished = true" in latch.group(1), \
+        "the latch is not on the terminal-event branch"
+    after_latch = events_body[events_body.index(latch.group(0)) + len(latch.group(0)):]
+    assert "armIdle();" in after_latch, "non-terminal events no longer re-arm the idle timer"
+
+    # Both bounds are parsed, never substring-matched: "600000" is a substring of
+    # "6000000", so a presence check cannot tell ten minutes from a hundred.
+    # The effect must be bound to the timer, not merely present somewhere in the embed:
+    # a callback that touches the socket without disconnecting never releases it.
+    m = re.search(
+        r"idleTimer = setTimeout\(function\s*\(\)\s*\{(.*?)\}\s*,\s*finished \? (\d+) : (\d+)\)",
+        html, re.S)
+    assert m is not None, "idle release is not a sticky two-bound timer"
+    assert "sock.disconnect()" in m.group(1), "the idle timer fires but never releases the socket"
+    after_answer, backstop = int(m.group(2)), int(m.group(3))
+    assert after_answer <= 30_000, "a finished run holds its socket too long"
+    assert backstop <= 600_000, "the quiet-run backstop is longer than agreed"
+    assert after_answer < backstop
+
+    disconnect = html[html.index('sock.on("disconnect"'):][:250]
+    assert "clearTimeout(idleTimer)" in disconnect
+
+
+def test_fusion_socket_does_not_heartbeat():
+    """Fusion events route by room membership, never through OWUI's SESSION_POOL.
+
+    OWUI's heartbeat handler writes SESSION_POOL and issues an unthrottled
+    Users.update_last_active_by_id UPDATE per beat. Nothing on the fusion path reads
+    either, so a beat here is a database write per embed per interval buying nothing.
+    """
+    html = build_fusion_embed_html(FusionDeliberationState(), final=False)
+    assert "heartbeat" not in html.replace('emitReserved("heartbeat")', "")
+    assert "hbTimer" not in html
+
+
+def test_fusion_credentials_are_read_at_handshake():
+    import re
+
+    html = build_fusion_embed_html(FusionDeliberationState(), final=False)
+    assert "auth: function(cb)" in html
+    assert "auth: { token: token }" not in html
+
+    # The helper must read storage on every call and hold nothing between them.
+    body = _js_fn_body(html, "freshToken")
+    assert 'localStorage.getItem("token")' in body, "freshToken does not read storage"
+    assert re.search(r"[^=!<>]=(?!=)", body) is None, \
+        "freshToken keeps state across calls, so a rotated token never reaches the server"
+
+    # And the fresh read must win the fallback, not lose to the captured value.
+    handshake = re.search(r"auth:\s*function\(cb\)\{\s*cb\(\{\s*token:\s*([^}]+?)\s*\}\)", html)
+    assert handshake is not None, "handshake auth is not a function form"
+    assert handshake.group(1).strip().startswith("freshToken()")
+    join = re.search(r'user-join",\s*\{\s*auth:\s*\{\s*token:\s*([^}]+?)\s*\}', html)
+    assert join is not None, "user-join payload not found"
+    assert join.group(1).strip().startswith("freshToken()"), "the captured token wins the fallback"
