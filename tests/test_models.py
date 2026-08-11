@@ -4276,6 +4276,44 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
 
 
 @pytest.mark.parametrize(
+    ("features", "expects_default"),
+    [
+        ({"image_output"}, True),
+        ({"video_generation"}, True),
+        ({"image_output", "vision"}, True),
+        ({"vision"}, False),
+        (set(), False),
+    ],
+)
+@pytest.mark.parametrize("valve_on", [True, False])
+def test_media_models_arrive_with_builtin_tools_unticked(features, expects_default, valve_on):
+    """A model that answers with a picture or a clip is offered no built-in tools.
+
+    The box is unticked rather than the tools withheld at request time, so an operator can
+    see the setting instead of wondering why tools went quiet.
+    """
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.models.catalog_manager import builtin_tools_default
+
+    valves = Valves()
+    valves.DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS = valve_on
+    valves.UPDATE_MODEL_CAPABILITIES = True
+
+    defaults = builtin_tools_default(
+        valves,
+        {
+            "image_output": "image_output" in features,
+            "video_generation": "video_generation" in features,
+            "vision": "vision" in features,
+        },
+    )
+
+    assert (defaults.get("builtin_tools") is False) is (expects_default and valve_on), (
+        f"features={sorted(features)} valve_on={valve_on} produced {defaults!r}"
+    )
+
+
+@pytest.mark.parametrize(
     "media_valve",
     [
         "ENABLE_VIDEO_GENERATION",

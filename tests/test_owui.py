@@ -293,6 +293,7 @@ async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monke
                 profile_image_url=None,
                 update_capabilities=True,
                 update_images=False,
+                capability_defaults={"builtin_tools": True, "status_updates": True},
             )
 
             # Confirm merge: existing `builtin_tools`/`file_context` were preserved.
@@ -302,8 +303,13 @@ async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monke
             assert meta_dict.get("capabilities") == {
                 "builtin_tools": False,
                 "file_context": False,
+                "status_updates": True,
                 "vision": True,
-            }
+            }, (
+                "a default fills a gap and never overwrites a choice already recorded: "
+                "status_updates was absent so it lands, builtin_tools was already set to "
+                "False by hand so the default leaves it alone"
+            )
         finally:
             pipe.shutdown()
             try:

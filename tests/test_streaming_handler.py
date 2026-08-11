@@ -251,6 +251,26 @@ class TestLooksLikeResponsesUnsupported:
         )
         assert StreamingHandler._looks_like_responses_unsupported(error) is True
 
+    @pytest.mark.parametrize(
+        "model", ["qwen/qwen-image-3", "openai/gpt-image-2", "krea/krea-2-large"]
+    )
+    def test_an_image_model_404_does_not_read_as_a_responses_problem(self, model):
+        """The 404 says 'chat/completions', which is the phrase this predicate hunts for.
+
+        If it matched, the fallback would retry the request on the very endpoint the error
+        just refused, turning one failure into two and billing the retry.
+        """
+        error = OpenRouterAPIError(
+            status=404,
+            reason="Not Found",
+            provider="openrouter",
+            openrouter_message=(
+                f"{model} is an image generation model and cannot be used with the "
+                "chat/completions endpoint. Use the /api/v1/images endpoint instead."
+            ),
+        )
+        assert StreamingHandler._looks_like_responses_unsupported(error) is False
+
     def test_looks_like_responses_unsupported_message_patterns(self):
         """Test detecting unsupported responses from error messages."""
         patterns = [

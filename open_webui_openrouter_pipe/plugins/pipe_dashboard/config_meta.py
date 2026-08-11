@@ -822,6 +822,11 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Models & Catalog/Model Metadata",
         "detail": "Keeps each model's Open WebUI capability checkboxes - vision, file input, web search, and the like - in step with what OpenRouter reports for it.\n\nAt each catalog refresh the reported flags replace those checkboxes, so a box an admin ticked or cleared by hand reverts to OpenRouter's value next time; capabilities OpenRouter doesn't report are left untouched. On by default. To freeze one model's checkboxes while the others keep updating, add `disable_capability_updates` to that model's advanced parameters, or `disable_model_metadata_sync` to opt it out of every sync. Its siblings `Sync model descriptions` and `Sync model icons` cover the other card fields."
     },
+    "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS": {
+        "title": "Turn off built-in tools for image and video models",
+        "group": "Models & Catalog/Model Metadata",
+        "detail": "Unticks Open WebUI's `Built-in tools` box on every model that produces images or video, at the moment the pipe first adds it.\n\nThese models reply with a picture or a clip, not a tool call. Offering them web search, code execution and the rest usually ends in a turn that fails or comes back empty, and the cause is hard to see because the box still looks ticked. On by default. Because the box is unticked rather than the tools quietly withheld, you can see the setting on the model's page. Tick it back on for a single model and your choice sticks - the pipe fills this in only when the model has no setting yet, and never overwrites one you made. Needs `Sync model capabilities` on, since that is the switch that lets the pipe write to these boxes at all."
+    },
     "UPDATE_MODEL_DESCRIPTIONS": {
         "title": "Sync model descriptions",
         "group": "Models & Catalog/Model Metadata",

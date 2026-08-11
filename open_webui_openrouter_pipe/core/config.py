@@ -1609,6 +1609,19 @@ class Valves(BaseModel):
         default=True,
         description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. Disable to manage capabilities manually.",
     )
+    DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS: bool = Field(
+        default=True,
+        description=(
+            "Turn off Open WebUI's built-in tools for models that produce images or video. "
+            "These models answer with a picture or a clip rather than a tool call, and "
+            "offering them web search, code execution and the rest tends to make a turn "
+            "fail or come back empty. With this on, each image or video model arrives in "
+            "your workspace with 'Built-in tools' already unticked, so you can see the "
+            "setting rather than wonder why tools are quiet. Tick it back on for any single "
+            "model and your choice stays put; the pipe only sets it the first time it adds "
+            "the model. Requires model capability syncing to be enabled."
+        ),
+    )
     UPDATE_MODEL_DESCRIPTIONS: bool = Field(
         default=False,
         description=(

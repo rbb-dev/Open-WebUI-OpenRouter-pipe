@@ -83,7 +83,24 @@ AUTO_ATTACH_VIDEO_FILTERS = True        # attaches each filter to its model
 AUTO_DEFAULT_VIDEO_FILTERS = True       # filter is on-by-default per chat
 MAX_CONCURRENT_VIDEO_GENS = 2           # global cap per pipe process
 MAX_CONCURRENT_VIDEO_GENS_PER_USER = 2  # per-user cap
+DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS = True   # see below
 ```
+
+#### Built-in tools on video models
+
+A video model answers with a clip, not a tool call. Offering it Open WebUI's
+built-in tools usually ends in a turn that fails or comes back empty, and the
+cause is hard to spot because the model's `Built-in tools` box still looks
+ticked.
+
+With `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` on, which is the default, the pipe
+unticks that box on each video model at the moment it first adds the model, so
+the state is visible on the model's page rather than being applied invisibly at
+request time. Tick it back on for a model if you want tools there — your choice
+is kept, because the pipe fills this setting in only where a model has none yet.
+
+The same setting covers image models. It needs `UPDATE_MODEL_CAPABILITIES` on,
+since that is the switch that lets the pipe write to capability boxes at all.
 
 If the per-model filters do not appear in the Integrations menu, check:
 - `AUTO_INSTALL_VIDEO_FILTERS` and `AUTO_ATTACH_VIDEO_FILTERS` are both

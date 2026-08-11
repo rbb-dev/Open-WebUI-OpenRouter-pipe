@@ -98,7 +98,28 @@ ENABLE_OPENROUTER_IMAGE_GENERATION = True
 AUTO_INSTALL_IMAGE_FILTERS = True       # creates the 7 filter rows
 AUTO_ATTACH_IMAGE_FILTERS  = True       # attaches each filter to its models
 AUTO_DEFAULT_IMAGE_FILTERS = True       # filter is on-by-default per chat
+DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS = True   # see below
 ```
+
+#### Built-in tools on image and video models
+
+An image or video model answers with a picture or a clip, not a tool call.
+Offering it Open WebUI's built-in tools — web search, code execution and the
+rest — usually ends in a turn that fails or comes back empty, and the cause is
+hard to spot because the model's `Built-in tools` box still looks ticked.
+
+With `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` on, which is the default, the pipe
+unticks that box on each image and video model at the moment it first adds the
+model. The box is unticked rather than the tools quietly withheld, so the state
+is visible on the model's page.
+
+If you want tools on one of these models, tick the box back on for it. Your
+choice is kept: the pipe fills this setting in only where a model has none yet,
+and never overwrites one you made. Turning the valve off stops the pipe setting
+it on any model.
+
+This needs `UPDATE_MODEL_CAPABILITIES` on, since that is the switch that lets
+the pipe write to a model's capability boxes at all.
 
 If the per-model filters do not appear in the Integrations menu, check:
 

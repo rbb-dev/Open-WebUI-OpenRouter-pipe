@@ -235,6 +235,22 @@ def _apply_provider_routing_default_filter_ids(
     return True
 
 
+def builtin_tools_default(valves: Any, pipe_capabilities: dict[str, bool]) -> dict[str, Any]:
+    """Capability defaults for a model, applied only where the model has no setting yet.
+
+    A model that answers with an image or a clip cannot use a tool call, so Open WebUI's
+    built-in tools are unticked rather than withheld at request time: the operator can see
+    the box, and a box they tick themselves is left alone from then on.
+    """
+    if not getattr(valves, "UPDATE_MODEL_CAPABILITIES", False):
+        return {}
+    if not getattr(valves, "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS", False):
+        return {}
+    if pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output"):
+        return {"builtin_tools": False}
+    return {}
+
+
 def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
     """Whether any enabled feature reads something only the frontend catalog carries.
 
@@ -1368,6 +1384,7 @@ class ModelCatalogManager:
                 }
 
                 capabilities = None
+                capability_defaults = builtin_tools_default(valves, pipe_capabilities)
                 if valves.UPDATE_MODEL_CAPABILITIES:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):
@@ -1502,6 +1519,7 @@ class ModelCatalogManager:
                             profile_image_url,
                             valves.UPDATE_MODEL_CAPABILITIES,
                             valves.UPDATE_MODEL_IMAGES,
+                            capability_defaults=capability_defaults,
                             filter_function_id=web_tools_filter_function_id,
                             filter_supported=web_tools_supported,
                             auto_attach_filter=web_tools_supported,
@@ -1656,6 +1674,7 @@ class ModelCatalogManager:
         update_capabilities: bool,
         update_images: bool,
         *,
+        capability_defaults: dict[str, Any] | None = None,
         filter_function_id: str | None = None,
         filter_supported: bool = False,
         auto_attach_filter: bool = False,
@@ -1978,11 +1997,13 @@ class ModelCatalogManager:
 
             meta_updated = False
 
-            if update_capabilities and capabilities is not None:
+            if update_capabilities and (capabilities is not None or capability_defaults):
                 existing_caps = meta_dict.get("capabilities")
                 merged_caps: dict[str, Any] = dict(existing_caps) if isinstance(existing_caps, dict) else {}
-                for key, value in capabilities.items():
+                for key, value in (capabilities or {}).items():
                     merged_caps[key] = value
+                for key, value in (capability_defaults or {}).items():
+                    merged_caps.setdefault(key, value)
                 if merged_caps != existing_caps:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
