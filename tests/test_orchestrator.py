@@ -2175,6 +2175,348 @@ class TestImageModelHelp:
         assert result == "generated"
 
 
+class TestDedicatedImageApiDispatch:
+    @staticmethod
+    def _arm(pipe, monkeypatch, *, modalities, resolved=True):
+        from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+        from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        monkeypatch.setattr(
+            OpenRouterModelRegistry,
+            "spec",
+            staticmethod(lambda model_id: {"architecture": {"output_modalities": list(modalities)}}),
+        )
+        monkeypatch.setattr(
+            OpenRouterModelRegistry,
+            "api_model_id",
+            staticmethod((lambda m: f"{m}-RESOLVED") if resolved else (lambda m: "")),
+        )
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(
+            return_value=("chat_completions", False)
+        )
+
+        recorded: dict[str, Any] = {}
+
+        class _RecordingAdapter:
+            async def generate(self, **kwargs):
+                recorded["adapter"] = self
+                recorded.update(kwargs)
+                return "![Generated image](/api/v1/files/f1/content)"
+
+        monkeypatch.setattr(ImageGenerationAdapter, "generate", _RecordingAdapter.generate)
+        return recorded
+
+    @pytest.mark.parametrize("prompt", ["draw a leaf", "help"])
+    @pytest.mark.parametrize("enabled", [True, False])
+    @pytest.mark.asyncio
+    async def test_the_master_valve_decides_whether_the_image_transport_opens(
+        self, enabled, prompt, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"])
+        mock_valves.ENABLE_OPENROUTER_IMAGE_GENERATION = enabled
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="upstream")
+
+        lookups: list[str] = []
+
+        async def _record_lookup(_self, _session, _valves, api_model_id, **_kw):
+            lookups.append(api_model_id)
+            return None, ""
+
+        monkeypatch.setattr(ImageGenerationAdapter, "_endpoint_record", _record_lookup)
+
+        await orchestrator.process_request(
+            body={
+                "model": "qwen/qwen-image-3",
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"chat_id": "c1", "message_id": "m1"},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="qwen/qwen-image-3",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert bool(recorded) is (enabled and prompt != "help"), (
+            "the video dispatch is gated on ENABLE_VIDEO_GENERATION; with image generation "
+            "switched off nothing may open the image transport, and help never generates"
+        )
+        assert bool(lookups) is (enabled and prompt == "help"), (
+            "the help card consults the model's published contract, so it too must be gated: "
+            "with the feature off an operator still got an authenticated GET to OpenRouter "
+            f"on every help. prompt={prompt!r} enabled={enabled} lookups={lookups!r}"
+        )
+
+    @pytest.mark.parametrize("normalized", ["qwen.qwen-image-3", "recraft.recraft-v3"])
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_api_id_falls_back_to_the_normalized_id(
+        self, normalized, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"], resolved=False)
+
+        await orchestrator.process_request(
+            body={
+                "model": normalized,
+                "messages": [{"role": "user", "content": "draw a leaf"}],
+                "stream": True,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"chat_id": "c1", "message_id": "m1"},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id=normalized,
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert recorded, "the dispatch never reached ImageGenerationAdapter.generate"
+        assert recorded["api_model_id"] == normalized, (
+            "when the registry cannot resolve an api id the request must still name a model; "
+            f"an empty string reaches OpenRouter as a 400. got {recorded['api_model_id']!r}"
+        )
+
+    @pytest.mark.parametrize("asked", ["help", "  HELP  "])
+    @pytest.mark.asyncio
+    async def test_help_outranks_the_dedicated_image_dispatch(
+        self, asked, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"])
+
+        result = await orchestrator.process_request(
+            body={
+                "model": "recraft/recraft-v3",
+                "messages": [{"role": "user", "content": asked}],
+                "stream": True,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"chat_id": "c1", "message_id": "m1"},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="recraft/recraft-v3",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert not recorded, (
+            "typing help at an image-only model must not bill a generated picture of the word "
+            "help; the help card is that model's only in-product documentation"
+        )
+        assert isinstance(result, str) and "recraft" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_an_image_only_model_reaches_the_image_adapter_not_the_upstream_loop(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"])
+
+        async def forbidden(*a, **k):
+            raise AssertionError("an image-only model must not reach the upstream streaming loop")
+
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=forbidden)
+        metadata = {"chat_id": "c1", "message_id": "m1"}
+
+        result = await orchestrator.process_request(
+            body={
+                "model": "qwen/qwen-image-3",
+                "messages": [{"role": "user", "content": "draw a leaf"}],
+                "stream": True,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=metadata,
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="qwen/qwen-image-3",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert result == "![Generated image](/api/v1/files/f1/content)"
+        assert recorded, "the dispatch never reached ImageGenerationAdapter.generate"
+        assert recorded["api_model_id"] == "qwen.qwen-image-3-RESOLVED", (
+            "api_model_id must come from OpenRouterModelRegistry.api_model_id, not from the "
+            f"normalized id; got {recorded['api_model_id']!r}"
+        )
+        assert recorded["normalized_model_id"] != recorded["api_model_id"]
+        assert recorded["valves"] is mock_valves
+        assert recorded["session"] is mock_session
+        assert recorded["metadata"] is metadata
+        assert recorded["body"]["messages"][0]["content"] == "draw a leaf"
+        assert recorded["responses_body"] is not None
+        adapter = recorded["adapter"]
+        assert adapter is pipe._image_generation_adapter, (
+            "the dispatch must go through the pipe's lazy factory, not a hand-placed attribute"
+        )
+        assert adapter._pipe is pipe
+        assert adapter._logger is pipe.logger
+        assert pipe._ensure_image_generation_adapter() is adapter, (
+            "the adapter must be memoised; a fresh one per request throws away the endpoint cache"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_multimodal_image_model_still_goes_upstream(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image", "text"])
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="generated")
+
+        result = await orchestrator.process_request(
+            body={
+                "model": "google/gemini-3.1-flash-image",
+                "messages": [{"role": "user", "content": "draw a leaf"}],
+                "stream": True,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="google/gemini-3.1-flash-image",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert result == "generated"
+        assert not recorded, "a text-capable image model must not be diverted to the image API"
+
+
+    @pytest.mark.parametrize(
+        "model_id",
+        ["qwen/qwen-image-3", "recraft/recraft-v3", "black-forest-labs/flux.2-pro"],
+    )
+    @pytest.mark.asyncio
+    async def test_every_image_only_vendor_reaches_the_dispatch(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch, model_id
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"])
+
+        async def forbidden(*a, **k):
+            raise AssertionError(f"{model_id} must not reach the upstream streaming loop")
+
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=forbidden)
+
+        await orchestrator.process_request(
+            body={"model": model_id, "messages": [{"role": "user", "content": "draw"}], "stream": True},
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id=model_id,
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert recorded, (
+            f"{model_id} is image-only on the recorded /images/models roster; a vendor-shaped "
+            "condition at the dispatch site would send it back to chat/completions, which 404s it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_housekeeping_task_never_bills_an_image_generation(
+        self, orchestrator_and_pipe, mock_valves, mock_session, monkeypatch
+    ):
+        orchestrator, pipe = orchestrator_and_pipe
+        recorded = self._arm(pipe, monkeypatch, modalities=["image"])
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="a title")
+        pipe._ensure_task_model_adapter = Mock(
+            return_value=Mock(_run_task_model_request=AsyncMock(return_value="a title"))
+        )
+
+        result = await orchestrator.process_request(
+            body={
+                "model": "qwen/qwen-image-3",
+                "messages": [{"role": "user", "content": "draw a leaf"}],
+                "stream": False,
+            },
+            __user__={"id": "u"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__="title_generation",
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="qwen/qwen-image-3",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids=set(),
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
+        assert not recorded, (
+            "OWUI runs title, tag and follow-up generation against the selected model; none may "
+            f"be billed as an image generation. got {sorted(recorded)}"
+        )
+        assert result is not None
+
+
 class TestFusionInternalDivert:
     def _divert(self, **kw):
         from open_webui_openrouter_pipe.requests.orchestrator import _fusion_internal_divert

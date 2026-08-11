@@ -501,3 +501,129 @@ def test_debug_print_response_redacts_payload(caplog):
     joined = "\n".join(record.message for record in caplog.records)
     assert "OpenRouter response payload" in joined
     assert "[REDACTED]" in joined
+
+
+@pytest.mark.parametrize("length", [50_000, 200_000])
+def test_bare_base64_blobs_are_truncated_like_data_urls(length):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    blob = "A" * length
+    redacted = _redact_payload_blobs({"data": [{"b64_json": blob}], "created": 1})
+
+    kept = redacted["data"][0]["b64_json"]
+    assert len(kept) < 1000, (
+        "OpenRouter's image API returns bare base64 under b64_json rather than a data: URL; "
+        "left unredacted a 50MB image writes ~67MB into the debug log"
+    )
+    assert f"({length} chars)" in kept, (
+        "the reported length must come from the blob, not be a fixed string; "
+        f"got {kept!r}"
+    )
+    assert redacted["created"] == 1
+
+
+def test_ordinary_long_strings_are_not_truncated():
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    prompt = "a leaf " * 40_000
+    assert _redact_payload_blobs({"prompt": prompt})["prompt"] == prompt, (
+        "truncating every long string would hide the prompt, which is the field an operator "
+        "turns DEBUG on to read"
+    )
+
+
+def test_a_data_url_is_still_truncated_with_its_header_intact():
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    redacted = _redact_payload_blobs({"x": "data:image/png;base64," + "A" * 200_000})["x"]
+    assert redacted.startswith("data:image/png;base64,")
+    assert len(redacted) < 1000
+
+
+@pytest.mark.parametrize("key", ["result", "imageB64", "data"])
+def test_a_blob_under_any_key_is_truncated(key):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    blob = "A" * 120_000
+    redacted = _redact_payload_blobs({"item": {key: blob}})
+
+    assert len(redacted["item"][key]) < 1000, (
+        f"streaming_core decodes {key!r} as an image blob and the DEBUG dump runs before the "
+        "scrub, so an unrecognised blob key writes megabytes to the log"
+    )
+
+
+def test_a_blob_key_is_truncated_even_when_the_value_is_not_base64_shaped():
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    value = ("A" * 60_000) + " " + ("B" * 60_000)
+    assert len(_redact_payload_blobs({"b64_json": value})["b64_json"]) < 1000
+
+
+def test_a_long_non_base64_string_under_an_unknown_key_is_kept():
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    text = "a leaf " * 20_000
+    assert _redact_payload_blobs({"result": text})["result"] == text
+
+
+@pytest.mark.parametrize(("length", "truncated"), [(1023, False), (1025, True)])
+def test_the_shape_rule_fires_only_above_its_threshold(length, truncated):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    value = "A" * length
+    kept = _redact_payload_blobs({"result": value})["result"]
+    assert (kept != value) is truncated, (
+        "below the threshold a base64-looking string is ordinary content; above it, it is a "
+        f"blob. length={length} kept={len(kept)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "key", ["b64_json", "b64", "base64", "image_base64", "thumb_b64"]
+)
+@pytest.mark.parametrize(("length", "truncated"), [(255, False), (300, True)])
+def test_a_known_blob_key_truncates_at_max_chars(key, length, truncated):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    value = "A" * length
+    kept = _redact_payload_blobs({key: value})[key]
+    assert (kept != value) is truncated, (
+        "below the shape threshold the key list is the only rule that can fire, so every "
+        f"advertised blob key must be exercised here. key={key} length={length}"
+    )
+
+
+def test_a_blob_key_reaches_through_a_list():
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    out = _redact_payload_blobs({"b64_json": ["A" * 300, "A" * 300]})
+    assert all(len(v) < 300 for v in out["b64_json"]), (
+        "the key must be carried into list elements; providers return arrays of blobs"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        ("A" * 2000) + " and then some prose the operator needs to read",
+        "some prose the operator needs to read " + ("A" * 2000),
+    ],
+)
+def test_the_shape_rule_requires_the_whole_string_to_be_base64(value):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    assert _redact_payload_blobs({"result": value})["result"] == value, (
+        "a partial match would truncate any long value that merely starts or ends "
+        "base64-shaped, taking the prose beside it out of the debug log"
+    )
+
+
+@pytest.mark.parametrize(("max_chars", "prefix_len"), [(64, 16), (256, 64)])
+def test_the_retained_prefix_scales_with_max_chars(max_chars, prefix_len):
+    from open_webui_openrouter_pipe.core.utils import _redact_payload_blobs
+
+    kept = _redact_payload_blobs({"b64_json": "A" * 5000}, max_chars=max_chars)["b64_json"]
+    assert len(kept.split("…", 1)[0]) == prefix_len, (
+        "the retained prefix must be derived from max_chars, not a constant"
+    )

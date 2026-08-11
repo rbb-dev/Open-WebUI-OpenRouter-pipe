@@ -53,6 +53,47 @@ if TYPE_CHECKING:
 
 # Standalone Utility Functions
 
+_IMAGE_EXTENSIONS = frozenset(
+    {
+        "png", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "avif", "heic", "heif",
+        "apng", "ico", "x-icon", "jxl", "pjpeg",
+    }
+)
+
+_IMAGE_EXTENSION_ALIASES = {"jpg": "jpeg", "svg+xml": "svg", "tif": "tiff"}
+
+
+def canonical_image_mime(declared: str) -> str | None:
+    """Return the media type the pipe will store, or None when the declaration is unknown.
+
+    Takes the declaration as the reply gave it -- casing and parameters included -- because
+    media types are case-insensitive and a caller that had to normalise first would be one
+    more place for the two spellings to diverge.
+
+    The declaration comes from the upstream reply, so it reaches a stored filename and a
+    content-type header. Answering from the same closed set the extension comes from is
+    what keeps those two from drifting, and what keeps an arbitrary string out of both.
+    """
+    if not isinstance(declared, str):
+        return None
+    normalised = declared.split(";", 1)[0].strip().lower()
+    if not normalised.startswith("image/"):
+        return None
+    ext = image_extension_for_mime(normalised)
+    if ext == "png" and not normalised.startswith("image/png"):
+        return None
+    return "image/svg+xml" if ext == "svg" else f"image/{ext}"
+
+
+def image_extension_for_mime(mime_type: str | None) -> str:
+    """Return the filename extension every persistence path uses for an image mime type."""
+    ext = "png"
+    if isinstance(mime_type, str) and "/" in mime_type:
+        ext = (mime_type.split("/")[-1] or "png").split("+")[0]
+    ext = _IMAGE_EXTENSION_ALIASES.get(ext, ext)
+    return ext if ext in _IMAGE_EXTENSIONS else "png"
+
+
 def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
     """Guess MIME type for image data by inspecting magic bytes and URL extension.
 

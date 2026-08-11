@@ -52,6 +52,7 @@ from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 from ..models.registry import ModelFamily, supports_phase_model
 
 # Import from storage
+from ..storage.multimodal import image_extension_for_mime
 from ..storage.owui_files import (
     extract_internal_file_id,
     is_internal_file_url,
@@ -565,7 +566,7 @@ async def transform_messages_to_input(
                         try:
                             parsed = pipe._multimodal_handler._parse_data_url(url)
                             if parsed:
-                                ext = parsed["mime_type"].split("/")[-1]
+                                ext = image_extension_for_mime(parsed["mime_type"])
                                 stored_id = await _save_image_bytes(
                                     parsed["data"],
                                     parsed["mime_type"],
@@ -588,7 +589,7 @@ async def transform_messages_to_input(
                             if downloaded:
                                 filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
                                 if "." not in filename:
-                                    ext = downloaded["mime_type"].split("/")[-1]
+                                    ext = image_extension_for_mime(downloaded["mime_type"])
                                     filename = f"{filename}.{ext}"
 
                                 stored_id = await _save_image_bytes(

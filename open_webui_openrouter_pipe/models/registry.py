@@ -168,6 +168,21 @@ def supports_phase_model(model_id: str) -> bool:
 
 # OpenRouterModelRegistry Class
 
+def uses_dedicated_image_api(spec: Any) -> bool:
+    """True when a model emits images and no text, so it answers only on the image API.
+
+    The router and the ZDR gate must agree on this: one decides which transport opens, the
+    other decides whether a retention control can be carried on it. Two copies would drift
+    into a state where a request is admitted on one reading and stripped on the other.
+    """
+    if not isinstance(spec, dict):
+        return False
+    modalities = (spec.get("architecture") or {}).get("output_modalities") or []
+    if not isinstance(modalities, list):
+        return False
+    return "image" in modalities and "text" not in modalities
+
+
 class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
@@ -924,6 +939,8 @@ class OpenRouterModelRegistry:
         lookup = norm if norm in cls._specs else base_norm
         spec = cls._specs.get(lookup) or cls._specs.get(base_norm) or {}
         if "video_generation" in set(spec.get("features") or set()):
+            return False
+        if uses_dedicated_image_api(spec):
             return False
         if cls._zdr_model_ids is None:
             return None

@@ -1,0 +1,45 @@
+{
+ "method": "POST",
+ "request": {
+  "aspect_ratio": "1:1",
+  "model": "recraft/recraft-v3",
+  "prompt": "a single red maple leaf on white paper, flat lay, studio light"
+ },
+ "response": {
+  "created": 1786276465,
+  "data": [
+   {
+    "b64_json": "<redacted 1949885 base64 chars>",
+    "b64_json_description": {
+     "bytes": 1462414,
+     "container": "webp/VP8L",
+     "height": 1024,
+     "sha256": "20088a8be13d62f98fbd9dba680450340980af8a01cb01641c5dce7a070878ff",
+     "width": 1024
+    },
+    "media_type": "image/webp"
+   }
+  ],
+  "usage": {
+   "completion_tokens": 4175,
+   "completion_tokens_details": {
+    "image_tokens": 4175,
+    "reasoning_tokens": 0
+   },
+   "cost": 0.04,
+   "cost_details": {
+    "upstream_inference_completions_cost": 0.04,
+    "upstream_inference_cost": 0.04,
+    "upstream_inference_prompt_cost": 0
+   },
+   "is_byok": false,
+   "prompt_tokens": 16,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   },
+   "total_tokens": 4191
+  }
+ },
+ "status": 200,
+ "url": "https://openrouter.ai/api/v1/images"
+}

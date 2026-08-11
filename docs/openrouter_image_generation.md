@@ -6,8 +6,16 @@ header (just like any other LLM), type a prompt, and the pipe submits a
 chat-completions request with `modalities: ["image"]` (or
 `["image", "text"]` for multimodal models), receives the generated image
 inline as base64, persists it to OWUI file storage, and renders it inline
-with `![alt](url)` markdown. No polling, no separate endpoint — image
-generation is synchronous over `/api/v1/chat/completions`.
+with `![alt](url)` markdown. There is no polling; both transports answer
+synchronously.
+
+OpenRouter is migrating image models onto a dedicated image endpoint one at
+a time, and a migrated model refuses the chat transport outright. The pipe
+therefore routes on the model's declared output modalities: a model that
+emits only images goes to the dedicated endpoint, while a multimodal model
+that also emits text stays on chat completions. No catalog field predicts
+which models have migrated, so the routing follows the modality rather than
+a per-model list.
 
 The feature is on by default (`ENABLE_OPENROUTER_IMAGE_GENERATION=True`).
 If you want to disable it, set that valve to `False` in Admin → Functions
@@ -1080,27 +1088,28 @@ catalog metadata — display name, description, output/input modalities.
 
 ## Output rendering and message format
 
-Image responses follow the existing chat-completion image rendering
-pipeline that has handled `gpt-5-image` and similar multimodal models
-since well before this feature. **No new adapter, no new streaming
-handler, no new storage helper.** The pipeline:
+Multimodal image responses follow the chat-completion image rendering
+pipeline that has always handled `gpt-5-image` and similar models. Models
+that emit only images take the dedicated image adapter instead, described
+above; both end at the same persisted file URL and the same markdown. The
+chat pipeline:
 
 1. **OpenRouter response** comes back with `message.images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]`.
-2. [`api/gateway/chat_completions_adapter.py:418-447`](../open_webui_openrouter_pipe/api/gateway/chat_completions_adapter.py)
+2. [`api/gateway/chat_completions_adapter.py`](../open_webui_openrouter_pipe/api/gateway/chat_completions_adapter.py)
    parses `message.images` and emits an `image_generation_call` item.
-3. [`streaming/streaming_core.py:595-631`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+3. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
    `_materialize_image_entry()` recursively resolves dicts (`url`,
    `image_url`, `imageUrl`, `content_url`), decodes base64 fields
    (`b64_json`, `b64`, `base64`, `data`, `image_base64`, `imageB64`),
-   validates size against `REMOTE_IMAGE_MAX_SIZE_MB`, persists via
+   validates size against `BASE64_MAX_SIZE_MB`, persists via
    `_persist_generated_image`, returns `/api/v1/files/{stored}/content`.
-4. [`streaming/streaming_core.py:633-661`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+4. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
    `_collect_image_output_urls()` resolves entries to a list of file
    URLs.
-5. [`streaming/streaming_core.py:663-672`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+5. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
    `_render_image_markdown()` produces `![alt](url)` markdown that
    OWUI renders inline.
-6. The renderer at [`streaming/streaming_core.py:1656-1692`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+6. The renderer at [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
    emits status, dedupes, and handles the final write.
 
 The rendered message looks like:
@@ -1152,7 +1161,7 @@ Related (existing) valves:
 | Valve | Default | Purpose |
 |-------|---------|---------|
 | `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. |
-| `REMOTE_IMAGE_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
+| `BASE64_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
 
 Tuning hints:
 
@@ -1263,7 +1272,7 @@ Check:
 
 - The OpenRouter response has `message.images` populated (not an
   empty list).
-- `REMOTE_IMAGE_MAX_SIZE_MB` is large enough — if the decoded image
+- `BASE64_MAX_SIZE_MB` is large enough — if the decoded image
   exceeds it, persistence fails silently and the markdown contains a
   broken file reference.
 - The pipe has filesystem write access to its temp dir and OWUI
@@ -1324,25 +1333,41 @@ pipe(body, ...)
         └─ Sourceful Options: model gate; merge font_inputs + super_resolution_references
               └─ pre-validate cardinality and JSON shape; raise ImageGenerationError on fail
 
-  └─ chat-completions request to OpenRouter → response with message.images[0]
-  └─ chat_completions_adapter parses message.images
-  └─ streaming_core._materialize_image_entry → _persist_generated_image → file URL
-  └─ streaming_core._render_image_markdown → "![alt](file_url)"
+  └─ multimodal model (emits image and text)
+  │     └─ chat-completions request → response with message.images[0]
+  │     └─ chat_completions_adapter parses message.images
+  │     └─ streaming_core materialises the entry → persists → file URL
+  │     └─ streaming_core renders "![alt](file_url)"
+  └─ image-only model
+        └─ dedicated image request → response with inline base64
+        └─ image adapter validates knobs against the model's endpoint record
+        └─ image adapter persists each image → file URL
+        └─ image adapter renders "![alt](file_url)"
   └─ OWUI renders inline image
 ```
 
-Key invariant: **the existing image rendering pipeline is unmodified
-by this feature**. Pure-image-only models work end-to-end through the
-same `_materialize_image_entry` → `_persist_generated_image` →
-`_render_image_markdown` path that has handled `gpt-5-image` since
-well before this PR.
+Both branches emit the same `![alt](file_url)` markdown, which is what keeps
+iterative editing working: the next request re-parses that markdown back into
+an input image.
+
+Key invariant: **both branches render the same markdown**. Multimodal
+models keep the streaming path that has always handled them.
 
 Key files:
 
 - [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py)
   — TTL-gated catalog fetch + master-disable cleanup.
 - [`integrations/image_client.py`](../open_webui_openrouter_pipe/integrations/image_client.py)
-  — HTTP client for `/api/v1/models?output_modalities=image`.
+  — HTTP client for the image model catalog, the per-model endpoint record
+  that publishes which knobs a model accepts, and image generation itself.
+- [`integrations/image.py`](../open_webui_openrouter_pipe/integrations/image.py)
+  — the adapter for image-only models: gates each requested knob against the
+  model's published contract, reports the ones it withheld, persists the
+  returned images and renders the markdown.
+- [`integrations/provider_options.py`](../open_webui_openrouter_pipe/integrations/provider_options.py)
+  — the single reader of a request's provider block, the per-transport set of
+  provider keys OpenRouter documents, and the choice of which provider slug
+  carries a value that cannot be duplicated across providers.
 - [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
   — `_IMAGE_PER_MODEL_HELP_DATA` (32 entries), `_IMAGE_KNOB_GATE`,
   `render_image_help()`.
@@ -1368,8 +1393,8 @@ Key files:
 
 **Files NOT touched** (pre-existing, reused as-is):
 
-- `chat_completions_adapter.py:418-447` — `message.images` parser.
-- `streaming/streaming_core.py:595-672` — image materialization, file
+- `chat_completions_adapter.py` — `message.images` parser.
+- `streaming/streaming_core.py` — image materialization, file
   persistence, markdown rendering.
 - `storage/multimodal.py` — `_persist_generated_image` and friends.
 - The legacy `openrouter_image_gen` filter (OpenAI Responses-tool wiring).

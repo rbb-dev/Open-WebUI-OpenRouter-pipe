@@ -1,0 +1,40 @@
+{
+ "arms": {
+  "flat": {
+   "request_provider": {
+    "options": {
+     "seed": {
+      "watermark": true
+     }
+    }
+   },
+   "request_top_level_watermark": null,
+   "status": 202,
+   "watermark_rendered": true
+  },
+  "toplevel": {
+   "request_provider": null,
+   "request_top_level_watermark": true,
+   "status": 202,
+   "watermark_rendered": false
+  },
+  "wrapped": {
+   "request_provider": {
+    "options": {
+     "seed": {
+      "parameters": {
+       "watermark": true
+      }
+     }
+    }
+   },
+   "request_top_level_watermark": null,
+   "status": 202,
+   "watermark_rendered": false
+  }
+ },
+ "knob": "watermark",
+ "model": "bytedance-seed/seedance-2.0-fast",
+ "note": "All three placements are accepted with a job id, so the HTTP status does not discriminate. Only the rendered frame does: the placement the provider honours draws the watermark, the placements it ignores do not.",
+ "observation": "whether the 'AI generated' watermark is rendered in the produced frame"
+}

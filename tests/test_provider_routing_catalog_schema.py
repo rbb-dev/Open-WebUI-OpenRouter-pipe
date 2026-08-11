@@ -477,8 +477,44 @@ def test_frontend_fallback_map_uses_single_featured_endpoint(pipe_instance) -> N
     provider_map = catalog_manager._build_model_provider_map(FRONTEND_CATALOG_SAMPLE)
     assert "openai/gpt-5.1" in provider_map
     assert "anthropic/claude-3.5-sonnet" in provider_map
-    assert provider_map["openai/gpt-5.1"]["providers"] == ["openai/default"]
+    assert provider_map["openai/gpt-5.1"]["providers"] == ["openai/default"], (
+        "provider_info.slug is the endpoint's identity and the sub-slug is where the live "
+        "catalog puts xai/zdr and google-vertex/eu; collapsing it to the parent turns an "
+        "admin's ZDR or EU-residency pin into a plain provider pin with the label unchanged"
+    )
     assert provider_map["anthropic/claude-3.5-sonnet"]["providers"] == ["amazon-bedrock"]
+
+
+@pytest.mark.parametrize(
+    ("raw_slug", "expected"),
+    [("fal", ["fal"]), (" fal ", ["fal"]), ("\tfal\n", ["fal"]), ("xai/zdr", ["xai/zdr"])],
+)
+def test_the_provider_slug_is_the_exact_token_the_carrier_compares(
+    pipe_instance, raw_slug, expected
+) -> None:
+    """`carrier_slug` and `_select_endpoint` compare this by string equality.
+
+    A padded slug never matches, so the passthrough option is written under a provider that
+    will never serve the request and OpenRouter drops it without complaint.
+    """
+    catalog_manager = pipe_instance._ensure_catalog_manager()
+    sample = {
+        "data": [
+            {
+                "slug": "vendor/model",
+                "endpoint": {
+                    "model_variant_slug": "vendor/model",
+                    "provider_info": {"slug": raw_slug, "displayName": "Fal"},
+                },
+            }
+        ]
+    }
+
+    provider_map = catalog_manager._build_model_provider_map(sample)
+
+    assert provider_map["vendor/model"]["providers"] == expected, (
+        f"got {provider_map['vendor/model']['providers']!r} for {raw_slug!r}"
+    )
 
 
 ENDPOINTS_API_SAMPLE_JSON = r"""

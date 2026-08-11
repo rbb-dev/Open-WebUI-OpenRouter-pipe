@@ -132,6 +132,78 @@ async def _consume_pipe_result(result: Any) -> Any:
     return result
 
 
+
+class _StubCatalogManager:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def get_cached_provider_map(self):
+        return self._mapping
+
+
+def _pipe_with_provider_map(mapping) -> Pipe:
+    pipe = Pipe()
+    pipe._catalog_manager = cast(Any, _StubCatalogManager(mapping))
+    return pipe
+
+
+def _provider_params(payload, slug):
+    return ((payload.get("provider") or {}).get("options") or {}).get(slug) or {}
+
+
+_ROUTED_SLUGS = {
+    "alibaba/wan-2.6": "atlas-cloud",
+    "alibaba/wan-2.7": "atlas-cloud",
+    "google/veo-3.1": "google-vertex",
+    "kwaivgi/kling-v3.0-std": "atlas-cloud",
+    "bytedance/seedance-2.0": "seed",
+}
+
+_ROUTED_PROVIDER_MAP = {
+    model_id: {"providers": [slug]} for model_id, slug in _ROUTED_SLUGS.items()
+}
+
+
+@pytest.mark.parametrize(
+    ("flag", "declared", "promoted"),
+    [
+        ("seed", True, True),
+        ("seed", False, False),
+        ("seed", 1, False),
+        ("seed", {"min": 0, "max": 9}, False),
+        ("generate_audio", True, True),
+        ("generate_audio", 1, False),
+        ("generate_audio", "yes", False),
+    ],
+)
+def test_a_capability_flag_promotes_only_on_a_published_boolean(flag, declared, promoted):
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    top_level, _ = VideoGenerationAdapter._split_allowed_parameters(
+        object.__new__(VideoGenerationAdapter), {flag: declared}
+    )
+
+    assert (flag in top_level) is promoted, (
+        "the image half of this changeset reads capabilities as descriptor objects, so a "
+        "video catalog adopting that shape is exactly the drift this conjunct decides; "
+        "a truthy read would ship a range descriptor as if it were the flag"
+    )
+
+
+@pytest.mark.parametrize("declared", [[], {}, "16:9", None, 0])
+def test_a_non_list_capability_declaration_does_not_promote_the_knob(declared):
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    top_level, _ = VideoGenerationAdapter._split_allowed_parameters(
+        object.__new__(VideoGenerationAdapter), {"supported_aspect_ratios": declared}
+    )
+
+    assert ("aspect_ratio" in top_level) is isinstance(declared, list), (
+        "only a published list of ratios makes aspect_ratio a documented top-level field; "
+        "anything else must leave it in provider passthrough where OpenRouter can reject it"
+    )
+
+
 def test_video_registry_marks_models_non_zdr_and_filterable():
     OpenRouterModelRegistry._zdr_model_ids = {"openai.sora-2-pro"}
     OpenRouterModelRegistry.register_video_models([VIDEO_BY_ID["openai/sora-2-pro"]])
@@ -143,6 +215,28 @@ def test_video_registry_marks_models_non_zdr_and_filterable():
     pipe.valves.ZDR_MODELS_ONLY = True
     filtered = pipe._apply_model_filters(OpenRouterModelRegistry.list_models(), pipe.valves)
     assert filtered == []
+
+
+@pytest.mark.parametrize("listed_as_zdr", [True, False])
+def test_a_transport_that_cannot_carry_retention_outranks_the_zdr_roster(listed_as_zdr):
+    """The exemption has to beat set membership, not merely fill in when the set is silent.
+
+    A model reachable only over the image API cannot carry a retention key at all, so an
+    upstream roster listing it as ZDR-capable is answering about a transport this model
+    never uses. Enforcement must refuse it rather than generate with the control stripped.
+    """
+    OpenRouterModelRegistry._specs["vendor.image-only"] = {
+        "architecture": {"output_modalities": ["image"]},
+        "features": {"image_output"},
+    }
+    OpenRouterModelRegistry._zdr_model_ids = (
+        {"vendor.image-only"} if listed_as_zdr else set()
+    )
+
+    assert OpenRouterModelRegistry.is_zdr_capable("vendor.image-only") is False, (
+        "an image-only model has no transport that defines a retention key; being named on "
+        f"the ZDR roster cannot change that. listed_as_zdr={listed_as_zdr}"
+    )
 
 
 def test_model_specific_filters_hide_unsupported_controls():
@@ -641,7 +735,7 @@ def test_sora_drops_all_attachments():
 @pytest.mark.asyncio
 async def test_payload_routes_video_attachment_url_to_video_field_for_wan_2_7():
     """`_build_payload` routes a single video data URL to params.video for Wan 2.7."""
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     data_url = "data:video/mp4;base64,AAAA"
     payload = await adapter._build_payload(
@@ -653,12 +747,12 @@ async def test_payload_routes_video_attachment_url_to_video_field_for_wan_2_7():
         provider_options={},
         video_attachment_urls=[data_url],
     )
-    assert payload["video"] == data_url
-
+    assert _provider_params(payload, "atlas-cloud")["video"] == data_url
+    assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
 @pytest.mark.asyncio
 async def test_payload_routes_multiple_video_urls_to_videos_array_for_wan_2_7():
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     urls = ["data:video/mp4;base64,AAAA", "data:video/mp4;base64,BBBB"]
     payload = await adapter._build_payload(
@@ -670,12 +764,12 @@ async def test_payload_routes_multiple_video_urls_to_videos_array_for_wan_2_7():
         provider_options={},
         video_attachment_urls=urls,
     )
-    assert payload["videos"] == [{"url": urls[0]}, {"url": urls[1]}]
-
+    assert _provider_params(payload, "atlas-cloud")["videos"] == [{"url": urls[0]}, {"url": urls[1]}]
+    assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
 @pytest.mark.asyncio
 async def test_payload_routes_audio_attachment_for_wan_2_6():
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     data_url = "data:audio/mpeg;base64,AAAA"
     payload = await adapter._build_payload(
@@ -687,12 +781,12 @@ async def test_payload_routes_audio_attachment_for_wan_2_6():
         provider_options={},
         audio_attachment_url=data_url,
     )
-    assert payload["audio"] == data_url
-
+    assert _provider_params(payload, "atlas-cloud")["audio"] == data_url
+    assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
 @pytest.mark.asyncio
 async def test_payload_routes_audio_attachment_for_wan_2_7():
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     data_url = "data:audio/mpeg;base64,AAAA"
     payload = await adapter._build_payload(
@@ -704,14 +798,14 @@ async def test_payload_routes_audio_attachment_for_wan_2_7():
         provider_options={},
         audio_attachment_url=data_url,
     )
-    assert payload["audio"] == data_url
-
+    assert _provider_params(payload, "atlas-cloud")["audio"] == data_url
+    assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
 @pytest.mark.asyncio
 async def test_data_urls_bypass_ssrf_validator():
     """Data URLs are inline content with no network fetch — must be allowed through
     `_validate_passthrough_urls` without DNS resolution."""
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
@@ -721,7 +815,7 @@ async def test_data_urls_bypass_ssrf_validator():
         frame_images=[],
         provider_options={},
     )
-    assert payload["audio"].startswith("data:audio/")
+    assert _provider_params(payload, "atlas-cloud")["audio"].startswith("data:audio/")
 
 
 def test_sniff_video_mime_and_extension_match_container():
@@ -1341,22 +1435,22 @@ async def test_message_lock_cancellation_after_release_yields_lock_to_next_waite
     assert pipe._video_message_lock_refs == {}
 
 
-def test_provider_options_normalise_to_parameters_wrapper():
+def test_provider_options_are_emitted_flat_and_legacy_wrappers_are_unwrapped():
     adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
 
-    wrapped = adapter._normalise_provider_options(
+    flattened = adapter._normalise_provider_options(
         {
-            "google": {"negativePrompt": "blur"},
+            "google-vertex": {"negativePrompt": "blur"},
             "fal": {"parameters": {"motion": "slow"}},
         }
     )
 
-    assert wrapped["google"] == {"parameters": {"negativePrompt": "blur"}}
-    assert wrapped["fal"] == {"parameters": {"motion": "slow"}}
+    assert flattened["google-vertex"] == {"negativePrompt": "blur"}
+    assert flattened["fal"] == {"motion": "slow"}
 
 
 @pytest.mark.asyncio
-async def test_video_payload_drops_unsupported_passthrough_and_preserves_provider_casing():
+async def test_video_payload_drops_unsupported_passthrough_and_sends_documented_aspect_ratio():
     adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
 
     unsupported = await adapter._build_payload(
@@ -1377,8 +1471,9 @@ async def test_video_payload_drops_unsupported_passthrough_and_preserves_provide
     )
 
     assert "surprise" not in unsupported
-    assert veo["aspectRatio"] == "16:9"
-    assert "aspect_ratio" not in veo
+    assert veo["aspect_ratio"] == "16:9"
+    assert "aspectRatio" not in veo
+    assert "aspectRatio" not in _provider_params(veo, "google-vertex")
 
 
 @pytest.mark.asyncio
@@ -1745,7 +1840,7 @@ async def test_payload_drops_seed_for_seed_incapable_models(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_audio_does_not_clobber_audio_url_on_wan(monkeypatch):
-    pipe = Pipe()
+    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     monkeypatch.setattr(
         pipe._multimodal_handler, "_request_ips_blocking", lambda url: ["203.0.113.9"]
@@ -1760,14 +1855,15 @@ async def test_generate_audio_does_not_clobber_audio_url_on_wan(monkeypatch):
         provider_options={},
     )
 
-    assert payload["audio"] == "https://example.com/voice.mp3"
+    assert _provider_params(payload, "atlas-cloud")["audio"] == "https://example.com/voice.mp3"
     assert payload["generate_audio"] is True
 
 
 @pytest.mark.asyncio
 async def test_unsafe_url_in_passthrough_raises():
-    pipe = Pipe()
-    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(_ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
 
     with pytest.raises(VideoGenerationError, match="Refusing to forward unsafe URL"):
         await adapter._build_payload(
@@ -1777,6 +1873,95 @@ async def test_unsafe_url_in_passthrough_raises():
             video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
             frame_images=[],
             provider_options={},
+        )
+
+
+@pytest.mark.parametrize("supplied", [4, 25])
+@pytest.mark.asyncio
+async def test_the_passthrough_url_budget_bounds_entries_awaits_and_reporting(supplied):
+    from open_webui_openrouter_pipe.integrations.video import _MAX_PASSTHROUGH_URLS
+
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(_ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
+    checked: list[str] = []
+
+    async def _is_safe(url):
+        checked.append(url)
+        return True
+
+    cast(Any, adapter._pipe)._multimodal_handler._is_safe_url = _is_safe
+    withheld: list[tuple[str, str]] = []
+    urls = [f"https://example.invalid/{index}.mp4" for index in range(supplied)]
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {"videos": urls}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        withheld=withheld,
+    )
+
+    expected = min(supplied, _MAX_PASSTHROUGH_URLS)
+    options = (payload.get("provider") or {}).get("options") or {}
+    kept = next((entry["videos"] for entry in options.values() if "videos" in entry), [])
+
+    assert len(kept) == expected, f"kept {len(kept)}, expected {expected}"
+    assert len(checked) == expected, (
+        "each entry costs a name resolution awaited one at a time while the deployment-wide "
+        f"video semaphore is held; {len(checked)} lookups for {supplied} supplied URLs"
+    )
+    assert bool(withheld) is (supplied > expected), (
+        f"a drop must be reported and a non-drop must not. withheld={withheld!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_passthrough_url_is_withheld_when_no_provider_slug_is_known():
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+    withheld: list[tuple[str, str]] = []
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="a campfire",
+        video_meta={"params": {"audio": "https://example.invalid/a.mp3"}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        withheld=withheld,
+    )
+
+    assert "provider" not in payload, (
+        "with no catalog slug there is no key OpenRouter would match, so the parameter must "
+        f"not be written under a guessed one. got {payload.get('provider')!r}"
+    )
+    notice = VideoGenerationAdapter._withheld_notice(withheld)
+    assert "audio" in notice, (
+        "the requester set this and it is not being sent; silence here is what made the "
+        f"vendor-prefix guess look like it worked for years. got {notice!r}"
+    )
+    assert "publishes no provider slug" in notice, (
+        "this was withheld for want of a slug, not because the API rejects the field; "
+        f"telling the user to set it on a chat model instead is unfollowable. got {notice!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unsafe_url_in_the_operator_provider_options_hatch_raises():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(_ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
+
+    with pytest.raises(VideoGenerationError, match="Refusing to forward unsafe URL"):
+        await adapter._build_payload(
+            api_model_id="alibaba/wan-2.7",
+            prompt="a campfire",
+            video_meta={"params": {}},
+            video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+            frame_images=[],
+            provider_options={"atlas-cloud": {"audio": "file:///etc/passwd"}},
         )
 
 
@@ -2624,4 +2809,636 @@ async def test_a_temp_directory_that_cannot_be_removed_is_reported(monkeypatch, 
     assert any("leak one" in m for m in caplog.messages), (
         f"rmtree failed and nothing was reported; messages were {caplog.messages!r}. "
         "The directory leaks once per generation and the operator never finds out."
+    )
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        {"negativePrompt": "blur", "steps": 40},
+        {"parameters": {"negativePrompt": "blur", "steps": 40}},
+        {"parameters": {"negativePrompt": "blur"}, "steps": 40},
+    ],
+)
+def test_provider_options_emit_one_flat_shape_however_the_operator_nested_them(written):
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+
+    result = adapter._normalise_provider_options({"google-vertex": written})
+
+    assert result == {"google-vertex": {"negativePrompt": "blur", "steps": 40}}, (
+        "OpenRouter reads provider.options.<slug> flat — the ByteDance watermark A/B proved a "
+        "`parameters` wrapper is inert. Emitting a different shape because of an unrelated "
+        "sibling key means the same operator config silently works or does nothing."
+    )
+
+
+def test_derived_provider_params_beat_a_legacy_parameters_block():
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+
+    result = adapter._normalise_provider_options(
+        {"seed": {"parameters": {"watermark": True}, "watermark": False}}
+    )
+
+    assert result["seed"]["watermark"] is False, (
+        "_build_payload merges derived filter params over the manual hatch as siblings; "
+        "flattening must not invert that precedence."
+    )
+
+
+@pytest.mark.parametrize(
+    ("model_id", "routed_slug"),
+    [
+        ("google/veo-3.1", "google-vertex"),
+        ("kwaivgi/kling-v3.0-std", "atlas-cloud"),
+        ("bytedance/seedance-2.0", "seed"),
+    ],
+)
+def test_provider_slug_comes_from_the_catalog_not_the_model_id_prefix(model_id, routed_slug):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({model_id: {"providers": [routed_slug]}}),
+        logger=_test_logger(),
+    )
+
+    candidates = adapter._provider_slug_candidates({"id": model_id}, model_id)
+
+    assert candidates == [routed_slug], (
+        "the vendor prefix is a fallback for the empty-catalog case, not an addition: writing "
+        f"the same params under a second, wrong slug is a silent drop. got {candidates!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_id", ["openai/sora-2-pro", "google/veo-3.1", "kwaivgi/kling-v2.5-turbo-pro"]
+)
+def test_the_vendor_prefix_is_never_used_as_a_provider_slug(caplog, model_id):
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    video_module._warned_provider_slug_guess.clear()
+    adapter = VideoGenerationAdapter(pipe=_pipe_with_provider_map({}), logger=_test_logger())
+
+    with caplog.at_level(logging.DEBUG):
+        candidates = adapter._provider_slug_candidates({"id": model_id}, model_id)
+
+    assert candidates == [], (
+        "google/veo is served by google-vertex and kwaivgi/kling by atlas-cloud, so a vendor "
+        "prefix is not a provider slug. Writing parameters under one keys them to a provider "
+        f"OpenRouter never matches and drops them silently. got {candidates!r}"
+    )
+
+
+def test_a_missing_provider_slug_warns_once_per_model(caplog):
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    video_module._warned_provider_slug_guess.clear()
+    adapter = VideoGenerationAdapter(pipe=_pipe_with_provider_map({}), logger=_test_logger())
+
+    with caplog.at_level(logging.DEBUG):
+        adapter._provider_slug_candidates({"id": "openai/sora-2-pro"}, "openai/sora-2-pro")
+        adapter._provider_slug_candidates({"id": "openai/sora-2-pro"}, "openai/sora-2-pro")
+        adapter._provider_slug_candidates({"id": "meta/movie-gen"}, "meta/movie-gen")
+
+    levels = [
+        record.levelno
+        for record in caplog.records
+        if "No catalog provider slug" in record.getMessage()
+    ]
+    assert levels == [logging.WARNING, logging.DEBUG, logging.WARNING], (
+        "warn-once means the first miss for a model warns, repeats drop to DEBUG, and a "
+        f"different model warns again; got {levels!r}"
+    )
+
+
+def test_the_catalog_slug_is_found_through_a_tilde_alias():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(_ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
+
+    assert adapter._provider_slug_candidates(
+        {"id": "~alibaba/wan-2.7"}, "~alibaba/wan-2.7"
+    ) == ["atlas-cloud"]
+
+
+@pytest.mark.asyncio
+async def test_a_documented_top_level_field_is_never_shipped_inside_provider_options():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={
+            "params": {
+                "duration": 5,
+                "resolution": "1080p",
+                "size": "1920x1080",
+                "provider": "not-a-provider",
+                "callback_url": "https://evil.example/hook",
+                "negativePrompt": "blur",
+            }
+        },
+        video_model={
+            "id": "vendor/model",
+            "allowed_passthrough_parameters": [
+                "duration",
+                "resolution",
+                "size",
+                "provider",
+                "callback_url",
+                "negativePrompt",
+            ],
+            "supported_durations": [5, 10],
+            "supported_resolutions": ["1080p"],
+            "supported_sizes": ["1920x1080"],
+        },
+        frame_images=[],
+        provider_options={},
+    )
+
+    assert payload["duration"] == 5
+    assert payload["resolution"] == "1080p"
+    assert payload["size"] == "1920x1080"
+    assert "resolution" not in _provider_params(payload, "slug-x")
+    assert "size" not in _provider_params(payload, "slug-x")
+    assert _provider_params(payload, "slug-x") == {"negativePrompt": "blur"}, (
+        "the subtraction must be selective: a documented top-level name is removed from the "
+        "passthrough set, everything else still goes through"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_inline_attachment_is_not_duplicated_once_per_provider_slug():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(
+            {"alibaba/wan-2.7": {"providers": ["atlas-cloud", "alibaba", "fal"]}}
+        ),
+        logger=_test_logger(),
+    )
+    data_url = "data:video/mp4;base64," + ("A" * 200_000)
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {"negative_prompt": "blur"}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        video_attachment_urls=[data_url],
+    )
+
+    serialized = len(json.dumps(payload))
+    assert serialized < int(len(data_url) * 1.2), (
+        "the attachment must appear once however many providers the catalog lists; "
+        f"payload is {serialized} bytes for a {len(data_url)}-byte attachment"
+    )
+    options = payload["provider"]["options"]
+    assert set(options) == {"atlas-cloud", "alibaba", "fal"}
+    assert all(entry.get("negative_prompt") == "blur" for entry in options.values()), (
+        "the scalar knobs must still reach every candidate; only the bulky values are pinned"
+    )
+    carriers = [slug for slug, entry in options.items() if "video" in entry]
+    assert carriers == ["atlas-cloud"]
+
+
+@pytest.mark.asyncio
+async def test_a_parameter_that_reaches_neither_destination_is_reported(caplog):
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    video_module._warned_dropped_video_param.clear()
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        payload = await adapter._build_payload(
+            api_model_id="vendor/model",
+            prompt="x",
+            video_meta={
+                "params": {"resolution": "1080p", "surprise": "x", "negativePrompt": "blur"}
+            },
+            video_model={
+                "id": "vendor/model",
+                "allowed_passthrough_parameters": ["resolution", "negativePrompt"],
+            },
+            frame_images=[],
+            provider_options={},
+        )
+
+    assert "resolution" not in payload
+    assert "resolution" not in _provider_params(payload, "slug-x")
+    dropped = [r for r in caplog.records if "resolution" in r.getMessage() and "Dropping" in r.getMessage()]
+    other = [r for r in caplog.records if "surprise" in r.getMessage() and "Dropping" in r.getMessage()]
+    assert other and other[0].levelno == logging.WARNING, (
+        "the latch keys on model+parameter: the operator must learn about every dropped knob, "
+        "not just the first one for that model"
+    )
+    assert dropped, (
+        "a supplied parameter that reaches neither the top level nor provider.options is a "
+        "silent drop unless the operator can find it in the log"
+    )
+    assert dropped[0].levelno == logging.WARNING, (
+        "the first drop for a model must be visible to an operator running at the default "
+        f"level, not buried at DEBUG; got {logging.getLevelName(dropped[0].levelno)}"
+    )
+
+
+def test_the_catalog_id_comes_from_the_model_record_not_the_request_id():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(_ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
+
+    assert adapter._provider_slug_candidates(
+        {"id": "google/veo-3.1"}, "some/other-id"
+    ) == ["google-vertex"], "video_model['id'] is the catalog key when it is present"
+    assert adapter._provider_slug_candidates({}, "google/veo-3.1") == ["google-vertex"], (
+        "api_model_id is the fallback when the record carries no id"
+    )
+
+
+@pytest.mark.asyncio
+async def test_derived_params_reach_every_provider_the_catalog_lists():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["a", "b"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {"negativePrompt": "blur"}},
+        video_model={
+            "id": "vendor/model",
+            "allowed_passthrough_parameters": ["negativePrompt"],
+        },
+        frame_images=[],
+        provider_options={},
+    )
+
+    assert set(payload["provider"]["options"]) == {"a", "b"}, (
+        "OpenRouter picks the serving provider; options under only one of the candidates are "
+        "silently ignored if it routes to the other"
+    )
+
+
+@pytest.mark.parametrize("value", [{"k": 1}, {"k": 2}])
+def test_the_operator_provider_options_reach_the_extractor_from_the_request(value):
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+
+    assert adapter._extract_provider_options({"options": {"slug-x": value}}, {}) == {
+        "slug-x": value
+    }
+
+
+@pytest.mark.parametrize("value", [{"k": 1}, {"k": 2}])
+def test_the_operator_provider_options_fall_back_to_pipe_metadata(value):
+    from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+
+    assert adapter._extract_provider_options(
+        None, {_PIPE_METADATA_KEY: {"provider": {"options": {"slug-x": value}}}}
+    ) == {"slug-x": value}
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_the_requester_is_told_which_video_preferences_were_withheld():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+    withheld: list[tuple[str, str]] = []
+
+    await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {}},
+        video_model={"id": "vendor/model"},
+        frame_images=[],
+        provider_options={},
+        provider_block={"zdr": True, "data_collection": "deny", "only": ["fal"]},
+        withheld=withheld,
+    )
+
+    notice = VideoGenerationAdapter._withheld_notice(withheld)
+    for key in ("zdr", "data_collection", "only"):
+        assert key in notice, (
+            "an admin who set a retention control and never hears otherwise believes it is "
+            f"in force; a log line the requester cannot see is not telling them. got {notice!r}"
+        )
+    assert "does not define this key" in notice, (
+        f"these were withheld because the schema has no such field. got {notice!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_video_payload_carries_only_what_the_video_schema_defines(caplog):
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    video_module._warned_video_provider_keys.clear()
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        payload = await adapter._build_payload(
+            api_model_id="vendor/model",
+            prompt="x",
+            video_meta={"params": {"negativePrompt": "blur"}},
+            video_model={"id": "vendor/model", "allowed_passthrough_parameters": ["negativePrompt"]},
+            frame_images=[],
+            provider_options={},
+            provider_block={"only": ["fal"], "sort": "price", "zdr": True},
+        )
+
+    provider = payload["provider"]
+    assert set(provider) == {"options"}, (
+        "VideoGenerationRequestProvider defines exactly one property, options. zdr and the "
+        "routing keys are undefined there and no additionalProperties:false rejects them, so "
+        f"sending them buys nothing and reads as a control in force. sent={sorted(provider)}"
+    )
+    assert provider["options"]["slug-x"] == {"negativePrompt": "blur"}
+    warned = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    for key in ("only", "sort", "zdr"):
+        assert key in warned, (
+            f"{key} was withheld but the operator was never told; a silently dropped privacy "
+            "preference is indistinguishable from an honoured one"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_drop_reason_distinguishes_its_two_causes(caplog):
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    video_module._warned_dropped_video_param.clear()
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        await adapter._build_payload(
+            api_model_id="vendor/model",
+            prompt="x",
+            video_meta={"params": {"resolution": "1080p", "surprise": "x"}},
+            video_model={
+                "id": "vendor/model",
+                "allowed_passthrough_parameters": ["resolution"],
+            },
+            frame_images=[],
+            provider_options={},
+        )
+
+    drops = [m for m in caplog.messages if "Dropping video parameter" in m]
+    assert len(drops) == 2, f"expected two drop records, got {drops!r}"
+    documented = next(m for m in drops if "resolution" in m)
+    unknown = next(m for m in drops if "surprise" in m)
+    assert documented != unknown
+    assert "documented top-level field" in documented, (
+        "the catalog DOES list resolution as an allowed passthrough; saying otherwise sends the "
+        f"operator to check a claim that is false. got {documented!r}"
+    )
+    assert "does not list it as an allowed passthrough" in unknown
+
+
+@pytest.mark.parametrize("pin", ["fal", "atlas-cloud"])
+@pytest.mark.asyncio
+async def test_a_pin_the_video_api_never_receives_does_not_decide_the_carrier(pin):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(
+            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
+        ),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {"negative_prompt": "blur"}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        provider_block={"only": [pin]},
+        video_attachment_urls=["data:video/mp4;base64,AAAA"],
+    )
+
+    options = payload["provider"]["options"]
+    carriers = [slug for slug, entry in options.items() if "video" in entry or "videos" in entry]
+    assert carriers == ["alibaba"], (
+        "VideoGenerationRequestProvider carries no `only`, so routing never sees the pin. "
+        "Keying the attachment to it would guarantee the provider that does serve the "
+        f"request receives nothing. got {options!r}"
+    )
+    assert set(payload["provider"]) == {"options"}
+
+
+@pytest.mark.asyncio
+async def test_without_a_pin_the_attachment_uses_the_first_candidate():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(
+            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud"]}}
+        ),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        video_attachment_urls=["data:video/mp4;base64,AAAA"],
+    )
+
+    options = payload["provider"]["options"]
+    carriers = [slug for slug, entry in options.items() if "video" in entry]
+    assert carriers == ["alibaba"]
+
+
+@pytest.mark.parametrize("order", [["fal", "atlas-cloud"], ["atlas-cloud", "fal"]])
+@pytest.mark.asyncio
+async def test_provider_order_decides_the_attachment_carrier_without_an_only(order):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(
+            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
+        ),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        provider_block={"order": order},
+        video_attachment_urls=["data:video/mp4;base64,AAAA"],
+    )
+
+    options = payload["provider"]["options"]
+    carriers = [slug for slug, entry in options.items() if "video" in entry]
+    assert carriers == [order[0]], (
+        "provider.order is a routing preference; the attachment must follow the provider "
+        f"routing will try first. got {options!r}"
+    )
+
+
+@pytest.mark.parametrize("derived", ["blur", "grain"])
+@pytest.mark.asyncio
+async def test_a_request_param_overrides_a_stale_operator_hatch_entry(derived):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {"negativePrompt": derived}},
+        video_model={"id": "vendor/model", "allowed_passthrough_parameters": ["negativePrompt"]},
+        frame_images=[],
+        provider_options={"slug-x": {"negativePrompt": "stale"}},
+    )
+
+    assert _provider_params(payload, "slug-x")["negativePrompt"] == derived, (
+        "a leftover entry in the operator's JSON hatch must not override what the user just "
+        "set in the video filter"
+    )
+
+
+@pytest.mark.parametrize("field", ["video", "videos", "images", "last_image", "audio"])
+@pytest.mark.asyncio
+async def test_no_bulky_attachment_is_duplicated_across_provider_slugs(field):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(
+            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
+        ),
+        logger=_test_logger(),
+    )
+    blob = "data:video/mp4;base64," + ("A" * 200_000)
+    value = [{"url": blob}] if field in ("videos", "images") else blob
+
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {field: value}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+    )
+
+    options = (payload.get("provider") or {}).get("options") or {}
+    carriers = [slug for slug, entry in options.items() if field in entry]
+    assert len(carriers) <= 1, (
+        f"{field} is bounded by VIDEO_MAX_SIZE_MB per copy; writing it under every candidate "
+        f"multiplies the request by the provider count. carried by {carriers}"
+    )
+    if carriers:
+        assert len(json.dumps(payload)) < int(len(blob) * 1.3)
+
+
+@pytest.mark.asyncio
+async def test_a_non_dict_provider_options_entry_is_ignored_not_fatal():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {}},
+        video_model={"id": "vendor/model", "allowed_passthrough_parameters": []},
+        frame_images=[],
+        provider_options={"slug-x": "not-a-dict"},
+    )
+
+    assert "slug-x" not in ((payload.get("provider") or {}).get("options") or {}), (
+        "an operator typo in VIDEO_PROVIDER_OPTIONS_JSON must not raise inside payload building"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_plain_video_request_emits_no_empty_provider_block():
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {}},
+        video_model={"id": "vendor/model", "allowed_passthrough_parameters": []},
+        frame_images=[],
+        provider_options={},
+    )
+
+    assert "provider" not in payload
+
+
+@pytest.mark.parametrize("documented", ["model", "prompt", "frame_images", "input_references"])
+@pytest.mark.asyncio
+async def test_every_documented_top_level_name_is_kept_out_of_provider_options(documented):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {documented: "value-x", "negativePrompt": "blur"}},
+        video_model={
+            "id": "vendor/model",
+            "allowed_passthrough_parameters": [documented, "negativePrompt"],
+        },
+        frame_images=[],
+        provider_options={},
+    )
+
+    assert documented not in _provider_params(payload, "slug-x"), (
+        f"{documented} is a documented top-level field; smuggling it into provider.options is "
+        "what the subtraction exists to prevent"
+    )
+    assert _provider_params(payload, "slug-x")["negativePrompt"] == "blur"
+
+
+def test_a_provider_options_slug_is_matched_after_trimming():
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+
+    assert adapter._normalise_provider_options({"  slug-x  ": {"k": 1}}) == {"slug-x": {"k": 1}}
+
+
+@pytest.mark.parametrize("value", ["blur", "grain"])
+@pytest.mark.asyncio
+async def test_every_serving_candidate_receives_the_knobs(value):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map({"vendor/model": {"providers": ["slug-x"]}}),
+        logger=_test_logger(),
+    )
+
+    payload = await adapter._build_payload(
+        api_model_id="vendor/model",
+        prompt="x",
+        video_meta={"params": {"negativePrompt": value}},
+        video_model={"id": "vendor/model", "allowed_passthrough_parameters": ["negativePrompt"]},
+        frame_images=[],
+        provider_options={},
+        provider_block={"only": ["fal"]},
+    )
+
+    options = (payload.get("provider") or {}).get("options") or {}
+    assert options.get("slug-x", {}).get("negativePrompt") == value, (
+        "a scalar knob can be duplicated across slugs, so every provider routing might "
+        f"select must carry it. got {options!r}"
+    )
+    assert "fal" not in options, (
+        "the video API carries no `only`, so a slug drawn from an unsent pin can never be "
+        f"selected; writing knobs there is dead weight on the request. got {options!r}"
     )

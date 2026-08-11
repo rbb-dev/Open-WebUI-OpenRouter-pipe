@@ -11065,8 +11065,11 @@ class TestJpgMimeTypeConversion:
             user_id="user-123",
         )
 
-        if uploaded:
-            assert "jpeg" in uploaded[0]["filename"] or uploaded[0]["mime_type"] == "image/jpg"
+        assert uploaded, "the image never reached storage, so this test proved nothing"
+        assert uploaded[0]["filename"].endswith(".jpeg"), (
+            "image/jpg is an alias browsers and providers both emit; it must land as a .jpeg "
+            f"file, not as {uploaded[0]['filename']!r}"
+        )
 
 
 class TestOpenRouterServerToolCards:

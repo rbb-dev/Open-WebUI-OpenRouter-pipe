@@ -822,5 +822,67 @@ def _image_render_catalog_fallback(model_id: str, image_model: dict[str, Any] | 
     return "\n".join(parts)
 
 
-def render_image_help(model_id: str, image_model: dict[str, Any] | None = None) -> str:
-    return _image_render_template((model_id or "").strip(), image_model)
+_IMAGE_KNOB_PARAM: dict[str, str] = {
+    "Image aspect ratio": "aspect_ratio",
+    "Image size": "resolution",
+    "Image aspect ratio (Gemini extended)": "aspect_ratio",
+    "Image size (Gemini-only 0.5K)": "resolution",
+    "Font inputs (JSON array)": "font_inputs",
+    "Super-resolution references (JSON array)": "super_resolution_references",
+    "Scoring prompt": "scoring_prompt",
+    "Scoring rubric": "scoring_rubric",
+    "Background mode": "background_mode",
+    "Background hex color": "background_hex_color",
+    "Strength (image-to-image)": "strength",
+    "RGB color palette (JSON array)": "rgb_colors",
+    "Background RGB color (JSON array)": "background_rgb_color",
+    "Recraft style": "style",
+    "Text layout (JSON array)": "text_layout",
+    "Image aspect ratio (Grok Imagine)": "aspect_ratio",
+    "Number of images (1-10)": "n",
+}
+
+
+def published_parameter_names(record: dict[str, Any] | None) -> frozenset[str] | None:
+    """Return the knob names the model's endpoint record advertises, or None if unreadable.
+
+    The generation path gates every knob on this record. Help has to answer from the same
+    authority or it advertises knobs the very next message refuses to send. A record that is
+    readable but advertises nothing returns an empty set, not None: those are opposite states,
+    and folding them together makes help offer every knob to a model that accepts none.
+    """
+    if not isinstance(record, dict):
+        return None
+    names: set[str] = set()
+    supported = record.get("supported_parameters")
+    if isinstance(supported, dict):
+        names.update(name for name in supported if isinstance(name, str))
+    allowed = record.get("allowed_passthrough_parameters")
+    if isinstance(allowed, list):
+        names.update(name for name in allowed if isinstance(name, str))
+    return frozenset(names)
+
+
+def render_image_help(
+    model_id: str,
+    image_model: dict[str, Any] | None = None,
+    *,
+    published: frozenset[str] | None = None,
+) -> str:
+    rendered = _image_render_template((model_id or "").strip(), image_model)
+    if published is None:
+        return rendered
+    withheld = [
+        (param, label)
+        for label, param in _IMAGE_KNOB_PARAM.items()
+        if param not in published and label in rendered
+    ]
+    if not withheld:
+        return rendered
+    tokens = [f"`{param}`" for param, _ in withheld] + [f"`{label}`" for _, label in withheld]
+    lines = [
+        line
+        for line in rendered.splitlines()
+        if not any(token in line for token in tokens)
+    ]
+    return "\n".join(lines)

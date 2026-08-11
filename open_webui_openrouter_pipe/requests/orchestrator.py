@@ -33,7 +33,8 @@ from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import _select_best_effort_fallback
 from ..filters.fusion_filter_renderer import is_fusion_model
-from ..integrations.image_help import render_image_help
+from ..integrations.image_help import published_parameter_names, render_image_help
+from ..integrations.provider_options import requested_provider_block
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
 from ..storage.users import get_user_by_id
@@ -45,6 +46,9 @@ from .task_model_adapter import TaskModelAdapter
 if TYPE_CHECKING:
     from ..pipe import Pipe
     from ..streaming.event_emitter import EventEmitter
+
+
+from ..models.registry import uses_dedicated_image_api
 
 
 def _inject_image_modalities(
@@ -888,13 +892,46 @@ class RequestOrchestrator:
             if prompt_text.strip().lower() == "help":
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
                 image_model = video_spec.get("image_model") if isinstance(video_spec, dict) else None
-                help_content = render_image_help(api_model_id, image_model if isinstance(image_model, dict) else None)
+                published = None
+                if valves.ENABLE_OPENROUTER_IMAGE_GENERATION and uses_dedicated_image_api(video_spec):
+                    adapter = self._pipe._ensure_image_generation_adapter()
+                    published = published_parameter_names(
+                        (await adapter._endpoint_record(
+                            session,
+                            valves,
+                            api_model_id,
+                            user=user_model,
+                            owui_chat_id=(__metadata__ or {}).get("chat_id"),
+                            requested=requested_provider_block(responses_body, __metadata__),
+                        ))[0]
+                    )
+                help_content = render_image_help(
+                    api_model_id,
+                    image_model if isinstance(image_model, dict) else None,
+                    published=published,
+                )
                 if __event_emitter__:
                     await __event_emitter__({"type": "chat:message:delta", "data": {"content": help_content}})
                     await self._pipe._event_emitter_handler._emit_completion(
                         __event_emitter__, content=help_content, done=True,
                     )
                 return help_content
+
+            if valves.ENABLE_OPENROUTER_IMAGE_GENERATION and uses_dedicated_image_api(video_spec):
+                api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
+                return await self._pipe._ensure_image_generation_adapter().generate(
+                    body=body,
+                    responses_body=responses_body,
+                    valves=valves,
+                    session=session,
+                    event_emitter=__event_emitter__,
+                    metadata=__metadata__,
+                    user=__user__,
+                    request=__request__,
+                    user_obj=user_model,
+                    normalized_model_id=normalized_model_id,
+                    api_model_id=api_model_id,
+                )
 
         tools_registry = __tools__
         if inspect.isawaitable(tools_registry):

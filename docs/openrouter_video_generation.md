@@ -29,7 +29,6 @@ pipe → Valves.
 - [Configuration valves (admin)](#configuration-valves-admin)
 - [Errors and troubleshooting](#errors-and-troubleshooting)
 - [Architecture overview](#architecture-overview)
-- [Phase 0 probe](#phase-0-probe)
 - [Limitations and non-goals](#limitations-and-non-goals)
 
 ---
@@ -686,7 +685,7 @@ the catalog condition under which the valve renders.
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 14 |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 14 |
 | `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 13 (all except Sora 2 Pro) |
-| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | Veo trio, Kling, Wan 2.6, Wan 2.7 |
+| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | Veo trio, Kling, Wan 2.6, Wan 2.7 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | top-level `generate_audio: true` in catalog | 12 (all except Hailuo and Grok Imagine Video) |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | top-level `seed: true` in catalog | 8 (Veo trio, Wan 2.6, Wan 2.7, Seedance trio) |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` in `allowed_passthrough_parameters` | Wan 2.6, Wan 2.7 |
@@ -741,18 +740,17 @@ overrides them. Specifically:
   `resolution`, `size`, `seed`, `generate_audio`, `negative_prompt`,
   `frame_images`, `input_references`): set directly in the
   `/videos` POST body. The adapter's
-  `_select_passthrough_key` ([video.py:732](../open_webui_openrouter_pipe/integrations/video.py#L732))
+  `_select_passthrough_key` ([video.py](../open_webui_openrouter_pipe/integrations/video.py#L732))
   decides this from the model's `allowed_passthrough_parameters` plus
   hardcoded core fields.
 - **Provider passthrough** fields (everything else —
-  `personGeneration`, `watermark`, etc.): land at top-level too, since
-  OpenRouter "passes through to the provider". The pipe trusts
-  OpenRouter's documented behaviour here — see
-  [Provider passthrough](#provider-passthrough) for the alternative
-  `provider.options.<slug>` path used for advanced overrides.
-- `VIDEO_PROVIDER_OPTIONS_JSON` is the only valve that writes to
-  `provider.options.<slug>.parameters.<field>` — it's the explicit
-  escape hatch.
+  `personGeneration`, `watermark`, etc.): go under
+  `provider.options.<slug>`, keyed by the provider slug the catalog
+  publishes for the model. Written at the request root they are accepted
+  and ignored, which is indistinguishable from working.
+- `VIDEO_PROVIDER_OPTIONS_JSON` writes to the same place. It is the
+  escape hatch for fields the pipe has no typed valve for, not a
+  different destination.
 
 ---
 
@@ -909,21 +907,28 @@ For advanced users or future fields not yet typed, the
 ```json
 {
   "google-vertex": {
-    "parameters": {
-      "experimentalFlag": "value"
-    }
+    "experimentalFlag": "value"
   }
 }
 ```
 
 The pipe deep-merges this into `provider.options` after typed valves are
-written. The filter normalises the shape — you can write the inner object
-either with or without an explicit `parameters` wrapper, and the filter
-wraps it correctly per the
-[Phase 0 probe](#phase-0-probe) decision.
+written. Provider parameters sit directly under the slug; a `parameters`
+wrapper is accepted for convenience and flattened away, because a wrapped
+value is silently discarded by OpenRouter rather than rejected.
 
-Chat-routing fields (`order`, `sort`, `max_price`, `zdr`) are NEVER
-forwarded to `/videos`. Only model-relevant `options` survive.
+OpenRouter's video request schema defines exactly one provider property,
+`options`. Chat-routing and privacy fields — `only`, `order`, `sort`,
+`max_price`, `zdr`, `data_collection` and the rest — are not part of it, and
+the schema does not reject unknown keys, so sending them would be accepted
+and ignored. The pipe withholds them and logs which ones it withheld, so a
+preference that cannot be honoured on this transport is visible rather than
+silently absent.
+
+The same reasoning decides which provider carries an attachment. Because the
+video request carries no `only`, routing never sees an operator's pin, so the
+pipe keys attachments to a provider drawn from the catalog rather than to the
+pin. On the image endpoint `only` *is* accepted, so there the pin decides.
 
 ---
 

@@ -235,6 +235,26 @@ def _apply_provider_routing_default_filter_ids(
     return True
 
 
+def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
+    """Whether any enabled feature reads something only the frontend catalog carries.
+
+    Two gates decide whether the fetch happens -- an early return in the sync routine and
+    the fetch itself -- and a term added to one and not the other leaves the feature
+    silently unserved. One predicate so they cannot drift.
+    """
+    return bool(
+        provider_routing_enabled
+        or valves.UPDATE_MODEL_IMAGES
+        or valves.UPDATE_MODEL_CAPABILITIES
+        or valves.UPDATE_MODEL_DESCRIPTIONS
+        or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+        or valves.ENABLE_VIDEO_GENERATION
+        or valves.AUTO_INSTALL_VIDEO_FILTERS
+        or valves.AUTO_INSTALL_IMAGE_FILTERS
+        or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+    )
+
+
 class ModelCatalogManager:
     """Manages model metadata synchronization from OpenRouter to Open WebUI."""
 
@@ -683,8 +703,11 @@ class ModelCatalogManager:
 
             provider_info = endpoint.get("provider_info")
             if isinstance(provider_info, dict):
-                provider_slug = provider_info.get("slug")
-                if isinstance(provider_slug, str) and provider_slug:
+                raw_provider_slug = provider_info.get("slug")
+                provider_slug = (
+                    raw_provider_slug.strip() if isinstance(raw_provider_slug, str) else ""
+                )
+                if provider_slug:
                     if model_slug not in model_providers:
                         model_providers[model_slug] = set()
                     model_providers[model_slug].add(provider_slug)
@@ -992,13 +1015,7 @@ class ModelCatalogManager:
         session = self._pipe._create_http_session()
         try:
             frontend_data = None
-            if (
-                valves.UPDATE_MODEL_IMAGES
-                or valves.UPDATE_MODEL_CAPABILITIES
-                or valves.UPDATE_MODEL_DESCRIPTIONS
-                or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
-                or provider_routing_enabled
-            ):
+            if needs_frontend_catalog(valves, provider_routing_enabled):
                 frontend_data = await self._fetch_frontend_model_catalog(session)
 
             if frontend_data is None:
@@ -1045,11 +1062,20 @@ class ModelCatalogManager:
                     admin_routing_models,
                     user_routing_models,
                 )
+            else:
+                provider_map = self._build_model_provider_map(frontend_data)
+            if provider_map or not self._cached_provider_map:
                 self._cached_provider_map = provider_map
                 self.logger.info(
                     "Provider map built: %d models have provider info. Sample keys: %s",
                     len(provider_map),
                     list(provider_map.keys())[:5] if provider_map else "[]",
+                )
+            else:
+                self.logger.warning(
+                    "Provider map rebuild returned 0 models; keeping the previous map of %d. "
+                    "Provider routing options and video provider slugs are now stale.",
+                    len(self._cached_provider_map),
                 )
 
             maker_mapping: dict[str, str] = {}

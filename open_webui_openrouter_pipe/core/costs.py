@@ -113,3 +113,42 @@ async def maybe_dump_costs_snapshot(
         pipe.logger.debug(
             "Cost snapshot write failed for user=%s: %s", user_id, exc, exc_info=True
         )
+
+
+def chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
+    """Normalise Chat Completions usage counters into the Responses-style keys this pipe reads."""
+    if not isinstance(raw_usage, dict):
+        return {}
+    usage: dict[str, Any] = {}
+
+    prompt_tokens = raw_usage.get("prompt_tokens")
+    completion_tokens = raw_usage.get("completion_tokens")
+    total_tokens = raw_usage.get("total_tokens")
+    if prompt_tokens is not None:
+        usage["input_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["output_tokens"] = completion_tokens
+    if total_tokens is not None:
+        usage["total_tokens"] = total_tokens
+
+    for key in ("cost", "cache_discount", "cache_discount_pct"):
+        if key in raw_usage:
+            usage[key] = raw_usage[key]
+
+    cost_details = raw_usage.get("cost_details")
+    if isinstance(cost_details, dict) and cost_details:
+        usage["cost_details"] = dict(cost_details)
+
+    prompt_details = raw_usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict) and prompt_details:
+        usage["input_tokens_details"] = dict(prompt_details)
+
+    completion_details = raw_usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict) and completion_details:
+        usage["output_tokens_details"] = dict(completion_details)
+
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        if key in raw_usage and key not in usage:
+            usage[key] = raw_usage[key]
+
+    return usage

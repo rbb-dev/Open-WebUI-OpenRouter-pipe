@@ -339,7 +339,7 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 
 **Skip-when-default sentinel**: a valve set to its default value (`""`, `0`, `0.0`, or `"model_default"`) is **NOT** included in the request body. The upstream provider's own default applies. 3-state Literals translate `"on"` → `True`, `"off"` → `False`, `"model_default"` → omitted.
 
-**Routing**: top-level fields (`duration`, `aspect_ratio`, `resolution`, `size`, `seed`, `generate_audio`, `negative_prompt`, `frame_images`) land at the request body root. Other passthrough fields land at the body root too — OpenRouter "passes them through to the provider". `VIDEO_PROVIDER_OPTIONS_JSON` is the only valve that writes to `provider.options.<slug>.parameters.<field>` (Phase-0-probe-confirmed nesting).
+**Routing**: the fields the model's catalog entry publishes as supported (`duration`, `aspect_ratio`, `resolution`, `size`, `seed`, `generate_audio`) land at the request body root. Every other passthrough field, `negative_prompt` included, goes under `provider.options.<slug>` keyed by the provider slug the catalog publishes — written at the root it is accepted and ignored. `VIDEO_PROVIDER_OPTIONS_JSON` writes to the same place; it is the escape hatch for untyped fields, not a different destination. The placement is recorded in `tests/fixtures/openrouter_video_passthrough_probe.json`: the same knob sent three ways, and only the `provider.options.<slug>` form changed the produced video.
 
 ### OpenRouter video intent classifier
 

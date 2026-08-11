@@ -3326,6 +3326,24 @@ async def test_chat_completions_nonstreaming_error_response(pipe_instance_async)
 # ============================================================================
 
 
+def test_the_translated_usage_shares_no_dict_with_the_raw_envelope():
+    raw_usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 7,
+        "total_tokens": 12,
+        "cost_details": {"upstream_inference_cost": 0.25},
+    }
+
+    out = ChatCompletionsAdapter._chat_usage_to_responses_usage(raw_usage)
+
+    assert out["cost_details"] is not raw_usage["cost_details"], (
+        "the raw envelope is logged and redacted downstream; a shared dict lets a later "
+        "mutation of the translated usage reach back into what gets logged"
+    )
+    out["cost_details"]["upstream_inference_cost"] = 99
+    assert raw_usage["cost_details"]["upstream_inference_cost"] == 0.25
+
+
 def test_chat_usage_to_responses_usage_basic():
     """Test conversion of chat usage to responses format."""
     raw_usage = {
@@ -4737,3 +4755,22 @@ async def test_chat_completions_streaming_retries_before_first_emit(pipe_instanc
     assert session.calls == 2, "pre-output failure must be retried"
 
     await pipe.close()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+            {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+        ),
+        ({"prompt_tokens": 1, "input_tokens": 99}, {"input_tokens": 1}),
+    ],
+)
+def test_a_usage_envelope_already_in_responses_spelling_survives(raw, expected):
+    from open_webui_openrouter_pipe.core.costs import chat_usage_to_responses_usage
+
+    assert chat_usage_to_responses_usage(raw) == expected, (
+        "the chat spelling is the translation source; a responses-spelling value must not "
+        "overwrite a counter that was already translated"
+    )

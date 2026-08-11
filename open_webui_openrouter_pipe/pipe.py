@@ -157,6 +157,7 @@ if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from .api.gateway.responses_adapter import ResponsesAdapter
     from .filters import FilterManager
+    from .integrations.image import ImageGenerationAdapter
     from .integrations.video import VideoGenerationAdapter
     from .plugins.registry import PluginRegistry
     from .requests.orchestrator import RequestOrchestrator
@@ -396,6 +397,7 @@ class Pipe:
         self._request_orchestrator: RequestOrchestrator | None = None
         self._filter_manager: FilterManager | None = None
         self._video_generation_adapter: VideoGenerationAdapter | None = None
+        self._image_generation_adapter: ImageGenerationAdapter | None = None
         self._plugin_registry: PluginRegistry | None = None
         self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._video_active_tasks_dict_lock: asyncio.Lock = asyncio.Lock()
@@ -939,6 +941,15 @@ class Pipe:
                 logger=self.logger,
             )
         return self._video_generation_adapter
+
+    def _ensure_image_generation_adapter(self) -> ImageGenerationAdapter:
+        if self._image_generation_adapter is None:
+            from .integrations.image import ImageGenerationAdapter
+            self._image_generation_adapter = ImageGenerationAdapter(
+                pipe=self,
+                logger=self.logger,
+            )
+        return self._image_generation_adapter
 
     async def _dispatch_plugin_event(self, method: str, *args: Any, **kwargs: Any) -> None:
         """Guarded plugin-event dispatch; never raises into the request path.

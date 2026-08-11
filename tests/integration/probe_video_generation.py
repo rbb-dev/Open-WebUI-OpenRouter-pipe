@@ -31,6 +31,14 @@ ONE_PIXEL_PNG_DATA_URL = (
 )
 
 
+class ProbeFailure(AssertionError):
+    """A gate proved the production assumption wrong."""
+
+
+class Inconclusive(AssertionError):
+    """A gate could not distinguish the outcomes it exists to distinguish."""
+
+
 def _headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {API_KEY}",
@@ -64,6 +72,15 @@ async def _post(session: aiohttp.ClientSession, path: str, payload: dict[str, An
         if resp.status >= 400:
             raise RuntimeError(f"POST {path} failed HTTP {resp.status}: {data}")
         return data
+
+
+async def _post_record(
+    session: aiohttp.ClientSession, path: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """POST and record the status instead of raising, so a rejection is evidence."""
+    url = f"{BASE_URL}{path}"
+    async with session.post(url, headers=_headers(), json=payload) as resp:
+        return {"url": url, "status": resp.status, "response": await _json_or_text(resp)}
 
 
 async def _poll(session: aiohttp.ClientSession, job_id: str, label: str) -> dict[str, Any]:
@@ -123,6 +140,65 @@ async def _submit_and_require_success(
     return terminal
 
 
+PASSTHROUGH_MODEL = "alibaba/wan-2.7"
+PASSTHROUGH_SLUG = "atlas-cloud"
+PASSTHROUGH_KEY = "ratio"
+BAD_RATIO = "99:1"
+
+
+async def _gate_passthrough_placement(session: aiohttp.ClientSession) -> None:
+    """Prove the flat provider.options placement reaches the provider, not just OpenRouter.
+
+    Acceptance is not evidence: a discarded parameter still yields a completed video. The
+    discriminator is a value the provider itself must reject, attributed by provider_name.
+    """
+    base = {
+        "model": PASSTHROUGH_MODEL,
+        "prompt": "A short product shot of a blue cube rotating on a white background.",
+    }
+    flat = await _post_record(
+        session,
+        "/videos",
+        {**base, "provider": {"options": {PASSTHROUGH_SLUG: {PASSTHROUGH_KEY: BAD_RATIO}}}},
+    )
+    wrapped = await _post_record(
+        session,
+        "/videos",
+        {
+            **base,
+            "provider": {
+                "options": {PASSTHROUGH_SLUG: {"parameters": {PASSTHROUGH_KEY: BAD_RATIO}}}
+            },
+        },
+    )
+    _write_fixture(
+        "openrouter_video_passthrough_probe.json", {"flat": flat, "wrapped": wrapped}
+    )
+
+    if flat["status"] == wrapped["status"]:
+        raise Inconclusive(
+            "passthrough gate has lost its discriminating power: the flat and wrapped "
+            f"placements both returned HTTP {flat['status']}. The provider may be coercing "
+            f"{PASSTHROUGH_KEY!r} rather than rejecting it; pick a key it validates."
+        )
+    if 200 <= flat["status"] < 300:
+        raise ProbeFailure(
+            "the flat placement was accepted with a value the provider should reject, so the "
+            f"pipe's placement may be inert: {flat}"
+        )
+    rendered = json.dumps(flat["response"])
+    if BAD_RATIO not in rendered:
+        raise ProbeFailure(
+            "the flat placement was rejected but the response does not echo the value we sent, "
+            f"so the rejection cannot be attributed to the provider: {rendered[:400]}"
+        )
+    if not ((flat["response"].get("error") or {}).get("metadata") or {}).get("provider_name"):
+        raise ProbeFailure(
+            "the flat placement's rejection carries no provider_name, so it may have come from "
+            f"OpenRouter's own validator rather than the provider: {rendered[:400]}"
+        )
+
+
 async def main() -> int:
     if not API_KEY:
         print("OPENROUTER_API_KEY is required for the live video probe.", file=sys.stderr)
@@ -161,43 +237,8 @@ async def main() -> int:
             },
         )
 
-        shape_a = {
-            "model": "google/veo-3.1-fast",
-            "prompt": "A short product shot of a red cube rotating on a white background.",
-            "provider": {
-                "options": {
-                    "google-vertex": {
-                        "parameters": {
-                            "negativePrompt": "blur, flicker",
-                        }
-                    }
-                }
-            },
-        }
-        shape_b = {
-            "model": "google/veo-3.1-fast",
-            "prompt": "A short product shot of a blue cube rotating on a white background.",
-            "provider": {
-                "options": {
-                    "google-vertex": {
-                        "negativePrompt": "blur, flicker",
-                    }
-                }
-            },
-        }
-        shape_results: dict[str, str] = {}
-        for label, payload in (("provider_parameters_wrapper", shape_a), ("provider_bare_options", shape_b)):
-            try:
-                await _submit_and_require_success(session, label=label, payload=payload)
-                shape_results[label] = "accepted"
-            except Exception as exc:
-                shape_results[label] = f"rejected: {exc}"
+        await _gate_passthrough_placement(session)
 
-        _write_fixture("openrouter_video_provider_passthrough_probe.json", shape_results)
-        if shape_results.get("provider_parameters_wrapper") != "accepted":
-            raise AssertionError(f"provider.options.<slug>.parameters shape failed: {shape_results}")
-        if all(value != "accepted" for value in shape_results.values()):
-            raise AssertionError(f"No provider passthrough shape was accepted: {shape_results}")
     print("OpenRouter video probe passed.")
     return 0
 

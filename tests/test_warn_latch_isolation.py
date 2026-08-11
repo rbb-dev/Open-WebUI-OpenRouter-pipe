@@ -24,11 +24,18 @@ PACKAGE_DIR = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 EXPECTED_LATCHES = {
     "_warned_chat_chunk_parse",
     "_warned_collectors",
+    "_warned_dropped_video_param",
     "_warned_image_catalog",
+    "_warned_dropped_image_param",
+    "_warned_image_cost_snapshot",
+    "_warned_image_endpoints",
+    "_warned_image_provider_keys",
     "_warned_forward_headers",
     "_warned_import_sites",
+    "_warned_pinned_attachment",
     "_warned_pipes_maintenance",
     "_warned_plugin_dispatch",
+    "_warned_provider_slug_guess",
     "_warned_queue_backlog",
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
@@ -37,6 +44,7 @@ EXPECTED_LATCHES = {
     "_warned_timing_file",
     "_warned_user_valves",
     "_warned_video_catalog",
+    "_warned_video_provider_keys",
 }
 
 _LATCH_RE = re.compile(

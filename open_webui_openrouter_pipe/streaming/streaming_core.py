@@ -99,7 +99,7 @@ from ..models.registry import (
 from ..requests.sanitizer import _sanitize_request_input
 
 # Imports from storage.persistence
-from ..storage.multimodal import _guess_image_mime_type
+from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.persistence import normalize_persisted_item
 from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
 from .constants import ReasoningStatusThrottle
@@ -687,12 +687,7 @@ class StreamingHandler:
             upload_request, upload_user = await _get_storage_context()
             if not upload_request or not upload_user:
                 return None
-            ext = "png"
-            if isinstance(mime_type, str) and "/" in mime_type:
-                ext = (mime_type.split("/")[-1] or "png").split("+")[0]
-            if ext == "jpg":
-                ext = "jpeg"
-            filename = f"generated-image-{uuid.uuid4().hex}.{ext}"
+            filename = f"generated-image-{uuid.uuid4().hex}.{image_extension_for_mime(mime_type)}"
             return await self._pipe._file_gateway.upload_to_owui_storage(
                 request=upload_request,
                 user=upload_user,

@@ -1,0 +1,47 @@
+{
+ "method": "POST",
+ "request": {
+  "aspect_ratio": "1:2",
+  "model": "qwen/qwen-image-3",
+  "n": 1,
+  "prompt": "a single red maple leaf on white paper, flat lay, studio light",
+  "resolution": "2K"
+ },
+ "response": {
+  "created": 1786276459,
+  "data": [
+   {
+    "b64_json": "<redacted 3633281 base64 chars>",
+    "b64_json_description": {
+     "bytes": 2724961,
+     "container": "png",
+     "height": 2048,
+     "sha256": "5638bdb6268450a7157585d15669e652fda5b1fcdce1c0ed5b3ad071aea6f508",
+     "width": 1024
+    },
+    "media_type": "image/png"
+   }
+  ],
+  "usage": {
+   "completion_tokens": 4175,
+   "completion_tokens_details": {
+    "image_tokens": 4175,
+    "reasoning_tokens": 0
+   },
+   "cost": 0.03,
+   "cost_details": {
+    "upstream_inference_completions_cost": 0.03,
+    "upstream_inference_cost": 0.03,
+    "upstream_inference_prompt_cost": 0
+   },
+   "is_byok": false,
+   "prompt_tokens": 16,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   },
+   "total_tokens": 4191
+  }
+ },
+ "status": 200,
+ "url": "https://openrouter.ai/api/v1/images"
+}

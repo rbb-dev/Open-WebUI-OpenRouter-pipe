@@ -438,12 +438,17 @@ def _unwrap_config_value(value: Any) -> Any:
 # Marker for redacted data URLs
 _REDACTED_DATA_URL_MARKER = "[REDACTED]"
 
+_BARE_BASE64_KEYS = frozenset({"b64_json", "b64", "image_base64", "base64"})
+
+_BARE_BASE64_SHAPE = re.compile(r"[A-Za-z0-9+/_-]{1024,}={0,2}\Z")
+
 
 def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
-    """Return a copy of ``value`` with large data:...;base64,... blobs truncated.
+    """Return a copy of ``value`` with large base64 blobs truncated.
 
-    This keeps DEBUG logs readable and prevents multi-megabyte payloads from being emitted
-    when images/files are inlined for providers.
+    Blobs arrive either as a ``data:...;base64,...`` URL or bare under a key such as
+    ``b64_json``; both are truncated. This keeps DEBUG logs readable and prevents
+    multi-megabyte payloads from being emitted when images/files cross the wire.
     """
 
     def _redact_data_url(text: str) -> str:
@@ -456,14 +461,24 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
         keep = max(8, min(64, max_chars // 4))
         return f"{header},{b64[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(b64)} chars)…"
 
-    def _walk(obj: Any) -> Any:
+    def _redact_bare_blob(text: str) -> str:
+        if len(text) <= max_chars:
+            return text
+        keep = max(8, min(64, max_chars // 4))
+        return f"{text[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(text)} chars)…"
+
+    def _walk(obj: Any, key: str = "") -> Any:
         if isinstance(obj, dict):
-            return {k: _walk(v) for k, v in obj.items()}
+            return {k: _walk(v, k if isinstance(k, str) else "") for k, v in obj.items()}
         if isinstance(obj, list):
-            return [_walk(v) for v in obj]
+            return [_walk(v, key) for v in obj]
         if isinstance(obj, tuple):
-            return tuple(_walk(v) for v in obj)
+            return tuple(_walk(v, key) for v in obj)
         if isinstance(obj, str):
+            if key in _BARE_BASE64_KEYS or key.endswith("_b64"):
+                return _redact_bare_blob(obj)
+            if len(obj) > max_chars and _BARE_BASE64_SHAPE.fullmatch(obj):
+                return _redact_bare_blob(obj)
             return _redact_data_url(obj)
         return obj
 

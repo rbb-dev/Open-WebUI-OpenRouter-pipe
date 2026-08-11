@@ -1,0 +1,16 @@
+{
+  "1K": {
+    "bytes": 788598,
+    "container": "png",
+    "height": 1024,
+    "sha256": "efa6093de22e1311fff987d2d28dc5048917680885005b470b1c28c28d8763e5",
+    "width": 512
+  },
+  "2K": {
+    "bytes": 2724961,
+    "container": "png",
+    "height": 2048,
+    "sha256": "5638bdb6268450a7157585d15669e652fda5b1fcdce1c0ed5b3ad071aea6f508",
+    "width": 1024
+  }
+}

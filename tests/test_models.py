@@ -15,6 +15,7 @@ These tests target coverage of model catalog operations including:
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -4271,4 +4272,98 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     assert (failed, total) == (1, 2), (
         f"the warning reported {failed}/{total} model(s) failed; one of two did. An "
         "operator sizes the blast radius from these numbers."
+    )
+
+
+@pytest.mark.parametrize(
+    "media_valve",
+    [
+        "ENABLE_VIDEO_GENERATION",
+        "AUTO_INSTALL_VIDEO_FILTERS",
+        "AUTO_INSTALL_IMAGE_FILTERS",
+        "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_provider_map_is_built_when_no_routing_models_are_configured(
+    pipe_instance_async, monkeypatch, media_valve
+) -> None:
+    """Each media valve alone must reach the fetch, with every legacy trigger switched off.
+
+    Setting UPDATE_MODEL_CAPABILITIES here would make this pass on a legacy valve and prove
+    nothing about the media ones -- the provider map would still be empty in exactly the
+    configuration the video adapter needs it.
+    """
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+    pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
+    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
+    pipe.valves.UPDATE_MODEL_IMAGES = False
+    for name in (
+        "ENABLE_VIDEO_GENERATION",
+        "AUTO_INSTALL_VIDEO_FILTERS",
+        "AUTO_INSTALL_IMAGE_FILTERS",
+        "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    ):
+        setattr(pipe.valves, name, name == media_valve)
+    manager._update_or_insert_model_with_metadata = AsyncMock()
+    monkeypatch.setattr(
+        manager,
+        "_fetch_frontend_model_catalog",
+        AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "slug": "google/veo-3.1",
+                        "endpoint": {
+                            "model_variant_slug": "google/veo-3.1",
+                            "provider_info": {"slug": "google-vertex", "displayName": "Vertex"},
+                        },
+                    }
+                ]
+            }
+        ),
+    )
+
+    await manager._sync_model_metadata_to_owui(
+        [{"id": "google.veo-3.1", "name": "Veo"}], pipe_identifier="test_pipe"
+    )
+
+    assert manager.get_cached_provider_map().get("google/veo-3.1", {}).get("providers") == [
+        "google-vertex"
+    ], (
+        "provider routing is off by default, yet the video adapter reads this map to key "
+        f"provider.options; {media_valve} alone must reach the fetch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
+    pipe_instance_async, monkeypatch, caplog
+) -> None:
+    pipe = pipe_instance_async
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+    pipe.valves.UPDATE_MODEL_IMAGES = False
+    manager._update_or_insert_model_with_metadata = AsyncMock()
+    manager._cached_provider_map = {"google/veo-3.1": {"providers": ["google-vertex"]}}
+    monkeypatch.setattr(
+        manager, "_fetch_frontend_model_catalog", AsyncMock(return_value={"data": []})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await manager._sync_model_metadata_to_owui(
+            [{"id": "google.veo-3.1", "name": "Veo"}], pipe_identifier="test_pipe"
+        )
+
+    assert manager.get_cached_provider_map() == {
+        "google/veo-3.1": {"providers": ["google-vertex"]}
+    }, "a failed rebuild must not clobber a good map"
+    assert any("keeping the previous map" in record.getMessage() for record in caplog.records), (
+        "silently keeping a stale map is how an operator loses provider options with no signal"
     )

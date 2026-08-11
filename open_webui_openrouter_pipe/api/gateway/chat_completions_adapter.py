@@ -27,6 +27,7 @@ from ...core.config import (
 )
 
 # Imports from core.errors
+from ...core.costs import chat_usage_to_responses_usage
 from ...core.errors import (
     RequiredInternalFileError,
     _build_openrouter_api_error,
@@ -908,37 +909,5 @@ class ChatCompletionsAdapter:
     # Tool Context Shutdown
 
     @staticmethod
-    @timed
     def _chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
-        """Normalise Chat Completions usage counters into the Responses-style keys used by this pipe."""
-        if not isinstance(raw_usage, dict):
-            return {}
-        usage: dict[str, Any] = {}
-
-        prompt_tokens = raw_usage.get("prompt_tokens")
-        completion_tokens = raw_usage.get("completion_tokens")
-        total_tokens = raw_usage.get("total_tokens")
-        if prompt_tokens is not None:
-            usage["input_tokens"] = prompt_tokens
-        if completion_tokens is not None:
-            usage["output_tokens"] = completion_tokens
-        if total_tokens is not None:
-            usage["total_tokens"] = total_tokens
-
-        for key in ("cost", "cache_discount", "cache_discount_pct"):
-            if key in raw_usage:
-                usage[key] = raw_usage[key]
-
-        cost_details = raw_usage.get("cost_details")
-        if isinstance(cost_details, dict) and cost_details:
-            usage["cost_details"] = dict(cost_details)
-
-        prompt_details = raw_usage.get("prompt_tokens_details")
-        if isinstance(prompt_details, dict) and prompt_details:
-            usage["input_tokens_details"] = dict(prompt_details)
-
-        completion_details = raw_usage.get("completion_tokens_details")
-        if isinstance(completion_details, dict) and completion_details:
-            usage["output_tokens_details"] = dict(completion_details)
-
-        return usage
+        return chat_usage_to_responses_usage(raw_usage)

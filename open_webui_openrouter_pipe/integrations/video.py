@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable
 from datetime import UTC
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
@@ -24,6 +25,7 @@ from ..core.utils import (
     _iter_kind_marker_spans,
     _serialize_kind_marker,
 )
+from ..core.warn_latch import warn_level
 from ..media import (
     FrameExtractionError,
     extract_frame,
@@ -37,6 +39,15 @@ from ..storage.owui_files import (
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
+from .image_types import summarise_names
+from .provider_options import (
+    VIDEO_PROVIDER_KEYS,
+    carrier_slug,
+    merge_provider_options,
+    requested_provider_block,
+    requested_provider_options,
+    restrict_provider_block,
+)
 from .video_client import OpenRouterVideoClient, extension_for_video_mime
 from .video_help import render_video_help
 from .video_intent import (
@@ -50,6 +61,46 @@ from .video_intent import (
     should_emit_confirmation_footer,
 )
 from .video_types import DownloadedVideo, VideoGenerationError, VideoLifecycleResult
+
+_warned_provider_slug_guess: set[str] = set()
+
+_warned_video_provider_keys: set[str] = set()
+
+# Every entry costs a DNS resolution, awaited one at a time while the deployment-wide video
+# semaphore is held, and the list arrives from the request. The models take a handful of
+# reference clips; a cap well above that bounds the work without reaching real usage.
+_MAX_PASSTHROUGH_URLS = 16
+
+_NO_SLUG = (
+    "this model's catalog entry publishes no provider slug to key it under"
+)
+
+_NOT_IN_SCHEMA = (
+    "OpenRouter's video API does not define this key; set it on a chat model instead"
+)
+
+_OVER_URL_BUDGET = (
+    f"only the first {_MAX_PASSTHROUGH_URLS} passthrough URLs in a request are forwarded"
+)
+
+_warned_dropped_video_param: set[str] = set()
+
+_warned_pinned_attachment: set[str] = set()
+
+_DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = frozenset({
+    "model",
+    "prompt",
+    "duration",
+    "resolution",
+    "aspect_ratio",
+    "size",
+    "frame_images",
+    "input_references",
+    "generate_audio",
+    "seed",
+    "callback_url",
+    "provider",
+})
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -380,18 +431,28 @@ class VideoGenerationAdapter:
             audio_attachment_url = await self._encode_audio_attachment(
                 video_meta, valves, user_obj=user_obj or user,
             )
+            provider_block = requested_provider_block(
+                SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
+            )
             provider_options = self._extract_provider_options(getattr(responses_body, "provider", None), metadata)
+            withheld: list[tuple[str, str]] = []
             payload = await self._build_payload(
                 api_model_id=api_model_id,
                 prompt=prompt,
                 video_meta=video_meta,
                 video_model=video_model,
+                provider_block=provider_block,
                 frame_images=frame_images,
                 input_references=input_references,
                 provider_options=provider_options,
                 video_attachment_urls=video_attachment_urls,
                 audio_attachment_url=audio_attachment_url,
+                withheld=withheld,
             )
+            if withheld and event_emitter:
+                await self._pipe._event_emitter_handler._emit_notification(
+                    event_emitter, self._withheld_notice(withheld), level="warning"
+                )
             await self._emit_status(event_emitter, "Submitting video generation job...", done=False)
 
             client = OpenRouterVideoClient(
@@ -939,50 +1000,168 @@ class VideoGenerationAdapter:
         video_model: Any,
         frame_images: list[dict[str, Any]],
         provider_options: dict[str, Any],
+        provider_block: dict[str, Any] | None = None,
         video_attachment_urls: list[str] | None = None,
         audio_attachment_url: str = "",
         input_references: list[dict[str, Any]] | None = None,
+        withheld: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": api_model_id,
             "prompt": prompt,
         }
         params = video_meta.get("params")
-        allowed = self._allowed_passthrough(video_model)
+        top_level, passthrough = self._split_allowed_parameters(video_model)
+        provider_params: dict[str, Any] = {}
         if isinstance(params, dict):
             for key, value in params.items():
                 if value is None or value == "":
                     continue
-                target = self._select_passthrough_key(key, allowed)
+                if key in top_level:
+                    payload[key] = value
+                    continue
+                target = self._select_passthrough_key(key, passthrough)
                 if target:
-                    payload[target] = value
+                    provider_params[target] = value
+                    continue
+                documented = _clean_str(key) in _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
+                self.logger.log(
+                    warn_level(_warned_dropped_video_param, f"{api_model_id}:{key}"),
+                    "Dropping video parameter %r for %r: %s",
+                    key,
+                    api_model_id,
+                    "it is a documented top-level field, but this model's catalog entry publishes "
+                    "no matching supported_* list, so the pipe will neither validate it nor ship "
+                    "it inside provider.options"
+                    if documented
+                    else "the catalog entry does not list it as an allowed passthrough parameter",
+                )
         if video_attachment_urls:
-            if "videos" in allowed and len(video_attachment_urls) > 1:
-                payload["videos"] = [{"url": u} for u in video_attachment_urls]
-            elif "video" in allowed:
-                payload["video"] = video_attachment_urls[0]
-            elif "videos" in allowed:
-                payload["videos"] = [{"url": video_attachment_urls[0]}]
-        if audio_attachment_url and "audio" in allowed:
-            payload["audio"] = audio_attachment_url
-        await self._validate_passthrough_urls(payload)
+            if "videos" in passthrough and len(video_attachment_urls) > 1:
+                provider_params["videos"] = [{"url": u} for u in video_attachment_urls]
+            elif "video" in passthrough:
+                provider_params["video"] = video_attachment_urls[0]
+            elif "videos" in passthrough:
+                provider_params["videos"] = [{"url": video_attachment_urls[0]}]
+        if audio_attachment_url and "audio" in passthrough:
+            provider_params["audio"] = audio_attachment_url
         if frame_images:
             payload["frame_images"] = frame_images
         if input_references:
             payload["input_references"] = input_references
-        if provider_options:
-            payload["provider"] = {"options": self._normalise_provider_options(provider_options)}
+        merged_options = dict(provider_options) if isinstance(provider_options, dict) else {}
+        if provider_params:
+            bulky = {
+                key: provider_params.pop(key)
+                for key in ("video", "videos", "audio", "images", "last_image")
+                if key in provider_params
+            }
+            candidates = self._provider_slug_candidates(video_model, api_model_id)
+            if not candidates and withheld is not None:
+                withheld.extend(
+                    (name, _NO_SLUG) for name in sorted(provider_params) + sorted(bulky)
+                )
+            carrier = carrier_slug(provider_block or {}, candidates, pin_routes=False)
+            if bulky and len(candidates) > 1:
+                self.logger.log(
+                    warn_level(_warned_pinned_attachment, api_model_id),
+                    "%r lists %d providers; the attached %s is sent under %r only. The video "
+                    "API accepts no provider routing controls, so if OpenRouter routes "
+                    "elsewhere the attachment is ignored.",
+                    api_model_id,
+                    len(candidates),
+                    ", ".join(sorted(bulky)),
+                    carrier,
+                )
+            targets = candidates
+            for slug in targets:
+                existing = merged_options.get(slug)
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                merged.update(provider_params)
+                if merged:
+                    merged_options[slug] = merged
+            if bulky and carrier:
+                existing = merged_options.get(carrier)
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                merged.update(bulky)
+                merged_options[carrier] = merged
+        normalised = self._normalise_provider_options(merged_options)
+        routing = {
+            key: value
+            for key, value in (provider_block or {}).items()
+            if key != "options"
+        }
+        block, unsupported = restrict_provider_block(
+            merge_provider_options({**routing, "options": normalised}, None, {}),
+            VIDEO_PROVIDER_KEYS,
+        )
+        if unsupported:
+            if withheld is not None:
+                withheld.extend((name, _NOT_IN_SCHEMA) for name in unsupported)
+            self.logger.log(
+                warn_level(_warned_video_provider_keys, str(payload.get("model", ""))),
+                "Provider preferences not accepted by the video API were not sent for %r: %s. "
+                "Sending them would read as a control in force while nothing enforces it.",
+                payload.get("model"),
+                ", ".join(unsupported),
+            )
+        if block:
+            payload["provider"] = block
+        await self._validate_passthrough_urls(payload, withheld)
         return payload
 
-    async def _validate_passthrough_urls(self, payload: dict[str, Any]) -> None:
+    @staticmethod
+    def _withheld_notice(withheld: list[tuple[str, str]]) -> str:
+        """Group withheld items by cause, so one sentence never speaks for three of them.
+
+        A key the schema does not define, a parameter with no slug to key it under, and a
+        URL list past the request ceiling are three different problems with three different
+        remedies; rendering them under one clause makes two of the three untrue.
+        """
+        grouped: dict[str, list[str]] = {}
+        for item, reason in withheld:
+            grouped.setdefault(reason, []).append(item)
+        return "; ".join(
+            f"{summarise_names(items, 16)} was not sent ({reason})"
+            for reason, items in grouped.items()
+        )
+
+    async def _validate_passthrough_urls(
+        self,
+        payload: dict[str, Any],
+        withheld: list[tuple[str, str]] | None = None,
+        seen: dict[str, bool] | None = None,
+        budget: list[int] | None = None,
+    ) -> None:
+        seen = {} if seen is None else seen
+        budget = [_MAX_PASSTHROUGH_URLS] if budget is None else budget
+        provider = payload.get("provider")
+        options = provider.get("options") if isinstance(provider, dict) else None
+        if isinstance(options, dict):
+            for nested in options.values():
+                if isinstance(nested, dict):
+                    await self._validate_passthrough_urls(nested, withheld, seen, budget)
         url_fields = ("audio", "last_image", "video")
         array_fields = ("videos", "images")
         handler = self._pipe._multimodal_handler
 
+        def _spend(url: str) -> bool:
+            """One pool for the whole request: breadth, depth and array length draw on it."""
+            if url in seen:
+                return True
+            if budget[0] <= 0:
+                return False
+            budget[0] -= 1
+            return True
+
         async def _check(url: str, field_name: str) -> None:
             if url.startswith("data:"):
                 return
-            if not await handler._is_safe_url(url):
+            safe = seen.get(url)
+            if safe is None:
+                safe = bool(await handler._is_safe_url(url))
+                seen[url] = safe
+            if not safe:
                 raise VideoGenerationError(
                     f"Refusing to forward unsafe URL in '{field_name}'. Use https:// or "
                     f"an allowlisted http:// destination."
@@ -996,6 +1175,11 @@ class VideoGenerationAdapter:
             if not cleaned:
                 payload.pop(field_name, None)
                 continue
+            if not _spend(cleaned):
+                if withheld is not None:
+                    withheld.append((field_name, _OVER_URL_BUDGET))
+                payload.pop(field_name, None)
+                continue
             await _check(cleaned, field_name)
             payload[field_name] = cleaned
 
@@ -1003,6 +1187,7 @@ class VideoGenerationAdapter:
             items = payload.get(field_name)
             if not isinstance(items, list):
                 continue
+            dropped = 0
             validated: list[Any] = []
             for idx, item in enumerate(items):
                 if isinstance(item, dict):
@@ -1014,6 +1199,9 @@ class VideoGenerationAdapter:
                 if not isinstance(url, str) or not url.strip():
                     continue
                 cleaned = url.strip()
+                if not _spend(cleaned):
+                    dropped += 1
+                    continue
                 await _check(cleaned, f"{field_name}[{idx}]")
                 if isinstance(item, dict):
                     new_item = dict(item)
@@ -1021,6 +1209,10 @@ class VideoGenerationAdapter:
                     validated.append(new_item)
                 else:
                     validated.append(cleaned)
+            if dropped and withheld is not None:
+                withheld.append(
+                    (f"{dropped} of {len(items)} {field_name} entries", _OVER_URL_BUDGET)
+                )
             payload[field_name] = validated
 
     @staticmethod
@@ -1029,10 +1221,10 @@ class VideoGenerationAdapter:
         for slug, payload in provider_options.items():
             if not isinstance(slug, str) or not slug.strip() or not isinstance(payload, dict):
                 continue
-            if isinstance(payload.get("parameters"), dict):
-                normalised[slug.strip()] = payload
-            else:
-                normalised[slug.strip()] = {"parameters": dict(payload)}
+            inner = payload.get("parameters")
+            flattened = dict(inner) if isinstance(inner, dict) else {}
+            flattened.update({key: value for key, value in payload.items() if key != "parameters"})
+            normalised[slug.strip()] = flattened
         return normalised
 
     async def _encode_frame_images(
@@ -1630,41 +1822,63 @@ class VideoGenerationAdapter:
             return None
 
     def _extract_provider_options(self, response_provider: Any, metadata: dict[str, Any]) -> dict[str, Any]:
-        provider = response_provider if isinstance(response_provider, dict) else {}
-        options = provider.get("options") if isinstance(provider, dict) else None
-        if not isinstance(options, dict):
-            pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
-            provider_meta = pipe_meta.get("provider") if isinstance(pipe_meta, dict) else None
-            options = provider_meta.get("options") if isinstance(provider_meta, dict) else None
-        return dict(options) if isinstance(options, dict) else {}
+        return requested_provider_options(
+            SimpleNamespace(provider=response_provider), metadata
+        )
 
-    def _allowed_passthrough(self, video_model: Any) -> set[str]:
-        if not isinstance(video_model, dict):
-            return set()
-        raw = video_model.get("allowed_passthrough_parameters")
-        if not isinstance(raw, list):
-            allowed: set[str] = set()
-        else:
-            allowed = {item for item in raw if isinstance(item, str) and item}
-        if (
-            isinstance(video_model.get("supported_aspect_ratios"), list)
-            and not allowed.intersection({"aspect_ratio", "aspectRatio", "ratio"})
-        ):
-            allowed.add("aspect_ratio")
-        if (
-            isinstance(video_model.get("supported_durations"), list)
-            and not allowed.intersection({"duration", "duration_seconds"})
-        ):
-            allowed.add("duration")
-        if isinstance(video_model.get("supported_resolutions"), list):
-            allowed.add("resolution")
-        if isinstance(video_model.get("supported_sizes"), list) or isinstance(video_model.get("supported_size_options"), list):
-            allowed.add("size")
-        if video_model.get("seed") is True:
-            allowed.add("seed")
-        if video_model.get("generate_audio") is True:
-            allowed.add("generate_audio")
-        return allowed
+    def _split_allowed_parameters(self, video_model: Any) -> tuple[set[str], set[str]]:
+        passthrough = set()
+        if isinstance(video_model, dict):
+            raw = video_model.get("allowed_passthrough_parameters")
+            if isinstance(raw, list):
+                passthrough = {item for item in raw if isinstance(item, str) and item}
+        top_level: set[str] = set()
+        if isinstance(video_model, dict):
+            if isinstance(video_model.get("supported_aspect_ratios"), list):
+                top_level.add("aspect_ratio")
+            if isinstance(video_model.get("supported_durations"), list):
+                top_level.add("duration")
+            if isinstance(video_model.get("supported_resolutions"), list):
+                top_level.add("resolution")
+            if isinstance(video_model.get("supported_sizes"), list) or isinstance(
+                video_model.get("supported_size_options"), list
+            ):
+                top_level.add("size")
+            if video_model.get("seed") is True:
+                top_level.add("seed")
+            if video_model.get("generate_audio") is True:
+                top_level.add("generate_audio")
+        passthrough -= _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
+        return top_level, passthrough
+
+    def _provider_slug_candidates(self, video_model: Any, api_model_id: str) -> list[str]:
+        model_id = api_model_id
+        if isinstance(video_model, dict):
+            candidate = video_model.get("id")
+            if isinstance(candidate, str) and candidate:
+                model_id = candidate
+        model_id = model_id.lstrip("~")
+
+        candidates: list[str] = []
+        catalog_manager = getattr(self._pipe, "_catalog_manager", None)
+        getter = getattr(catalog_manager, "get_cached_provider_map", None)
+        if callable(getter):
+            cached = getter() or {}
+            entry = cached.get(model_id) if isinstance(cached, dict) else None
+            providers = entry.get("providers") if isinstance(entry, dict) else None
+            if isinstance(providers, list):
+                candidates.extend(p for p in providers if isinstance(p, str) and p)
+
+        if not candidates:
+            self.logger.log(
+                warn_level(_warned_provider_slug_guess, model_id),
+                "No catalog provider slug for %r. The vendor prefix of a model id is not a "
+                "provider slug -- google/veo is served by google-vertex, kwaivgi/kling by "
+                "atlas-cloud -- so guessing one would key every provider parameter to a "
+                "provider OpenRouter will never match, and it would drop them silently.",
+                model_id,
+            )
+        return candidates
 
     def _supported_frame_types(self, video_model: Any) -> set[str]:
         if not isinstance(video_model, dict):
@@ -1681,11 +1895,7 @@ class VideoGenerationAdapter:
         aliases = {
             "aspect_ratio": ["aspect_ratio", "aspectRatio", "ratio"],
             "duration": ["duration", "duration_seconds"],
-            "generate_audio": ["generate_audio"],
             "negative_prompt": ["negative_prompt", "negativePrompt"],
-            "resolution": ["resolution"],
-            "seed": ["seed"],
-            "size": ["size"],
         }
         candidates = aliases.get(raw, [raw])
         if not allowed:
