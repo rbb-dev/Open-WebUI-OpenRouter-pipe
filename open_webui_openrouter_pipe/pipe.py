@@ -2414,6 +2414,7 @@ class Pipe:
                     api_key=api_key_value or "",
                     logger=self.logger,
                     cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+                    with_contracts=False,
                 )
         except ValueError as exc:
             await self._ensure_error_formatter()._emit_error(

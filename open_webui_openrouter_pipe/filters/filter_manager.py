@@ -14,7 +14,6 @@ FilterManager handles:
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import itertools
 import json
@@ -28,6 +27,7 @@ from ..core.config import (
     _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_FUSION_FILTER_MARKER,
     _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
+    _OPENROUTER_IMAGE_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
@@ -200,9 +200,10 @@ class FilterManager:
     def validate_filter_source(source: str) -> tuple[bool, str | None]:
         """Validate generated Python source code for syntactic correctness.
 
-        Uses Python's ast.parse() to verify that generated filter source code
-        is syntactically valid before it is stored and potentially executed
-        by Open WebUI.
+        Compiles the source the way Open WebUI will, before it is stored and executed.
+        ``ast.parse`` is a weaker check than it looks: it accepts a file whose
+        ``from __future__`` import is no longer first, which ``compile`` rejects, so a
+        broken filter could pass validation and then fail to load forever.
 
         Security Purpose:
             This serves as a defense-in-depth measure. Even if string escaping
@@ -236,7 +237,7 @@ class FilterManager:
             return False, "Empty or invalid source"
 
         try:
-            ast.parse(source)
+            compile(source, "<generated-filter>", "exec")
             return True, None
         except SyntaxError as e:
             if e.lineno:
@@ -1197,68 +1198,37 @@ class Filter:
         )
 
 
-    _GEMINI_IMAGE_PATTERN = re.compile(r"^~?google/gemini-3.*flash-image.*$")
-    _SOURCEFUL_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2-(pro|fast)$")
-    _SOURCEFUL_V25_IMAGE_PATTERN = re.compile(r"^~?sourceful/riverflow-v2\.5-(pro|fast)$")
-    _RECRAFT_COMMON_IMAGE_PATTERN = re.compile(r"^~?recraft/recraft-")
-    _RECRAFT_V3_IMAGE_PATTERN = re.compile(r"^~?recraft/recraft-v3$")
-    _GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^~?x-ai/grok-imagine-image-")
 
     @staticmethod
-    def render_openrouter_image_filter_source(variant: str) -> str:
+    def render_openrouter_image_filter_source(
+        *,
+        model_id: str,
+        image_model: dict[str, Any] | None = None,
+        endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
+    ) -> str:
         from .image_filter_renderer import (
-            render_gemini_image_filter_source,
-            render_generic_image_filter_source,
-            render_grok_image_filter_source,
-            render_recraft_common_image_filter_source,
-            render_recraft_v3_image_filter_source,
-            render_sourceful_image_filter_source,
-            render_sourceful_v25_image_filter_source,
+            build_image_model_filter_spec,
+            render_image_model_filter_source,
         )
-        if variant == "generic":
-            return render_generic_image_filter_source()
-        if variant == "gemini":
-            return render_gemini_image_filter_source()
-        if variant == "sourceful":
-            return render_sourceful_image_filter_source()
-        if variant == "sourceful_v25":
-            return render_sourceful_v25_image_filter_source()
-        if variant == "recraft":
-            return render_recraft_common_image_filter_source()
-        if variant == "recraft_v3":
-            return render_recraft_v3_image_filter_source()
-        if variant == "grok":
-            return render_grok_image_filter_source()
-        raise ValueError(f"Unknown image filter variant: {variant!r}")
+
+        return render_image_model_filter_source(
+            build_image_model_filter_spec(model_id, image_model, endpoint_record)
+        )
 
     @timed
     async def ensure_openrouter_image_filter_function_ids(
         self,
         models: list[dict[str, Any]],
     ) -> dict[str, list[str]]:
-        """Install image filters lazily and return per-model attachment list.
+        """Install one filter per image model and return its attachment list.
 
-        Returns `dict[model_id, list[function_id]]` where each list contains:
-        - generic_id always (for any model with `image_output` feature)
-        - generic_id + gemini_id for Gemini Flash Image Preview models
-        - generic_id + sourceful_id for Riverflow V2 Pro/Fast models
-        - generic_id + sourceful_v25_id for Riverflow 2.5 Pro/Fast models
-          (one dedicated Sourceful filter per Riverflow version — never both)
-        - generic_id + recraft_id for any Recraft model (V3, V4, V4 Pro)
-        - generic_id + recraft_id + recraft_v3_id for Recraft V3 only
-        - generic_id + grok_id for any Grok Imagine image model
-
+        Each filter offers exactly the knobs that model's published contract names. The
+        seven fixed variants this replaces assigned knobs by a regex on the model id, so a
+        model was handed the same ten aspect ratios whatever it actually accepted.
         """
-        from ..models.registry import ModelFamily
+        from ..models.registry import ModelFamily, OpenRouterModelRegistry
 
         installed: dict[str, list[str]] = {}
-        generic_id: str | None = None
-        gemini_id: str | None = None
-        sourceful_id: str | None = None
-        sourceful_v25_id: str | None = None
-        recraft_id: str | None = None
-        recraft_v3_id: str | None = None
-        grok_id: str | None = None
         for model in models:
             model_id = model.get("id")
             if not isinstance(model_id, str) or not model_id.strip():
@@ -1271,137 +1241,137 @@ class Filter:
                 continue
 
             original_id = model.get("original_id")
-            canonical_id = original_id if isinstance(original_id, str) and original_id.strip() else model_id
-            ids: list[str] = []
+            canonical_id = (
+                original_id if isinstance(original_id, str) and original_id.strip() else model_id
+            )
+            spec = OpenRouterModelRegistry.spec(model_id)
+            image_model = spec.get("image_model") if isinstance(spec, dict) else None
+            endpoint_record = OpenRouterModelRegistry.image_endpoint(
+                canonical_id
+            ) or OpenRouterModelRegistry.image_endpoint(model_id)
+            if not isinstance(image_model, dict):
+                image_model = dict(model)
 
-            if generic_id is None:
-                try:
-                    generic_id = await self._ensure_single_image_filter_function_id("generic")
-                except Exception as exc:
-                    self.logger.warning("Generic image filter install failed: %s", exc, exc_info=True)
-                    generic_id = ""
-            if generic_id:
-                ids.append(generic_id)
+            try:
+                function_id = await self._ensure_single_image_filter_function_id(
+                    model_id=canonical_id,
+                    image_model=image_model,
+                    endpoint_record=endpoint_record,
+                )
+            except Exception as exc:
+                # One model's install failure costs that model its filter and nothing
+                # else. The catch is deliberately broad: the install path reaches Open
+                # WebUI's database, whose driver errors are not in any tuple this module
+                # could enumerate, and one of them must not skip every remaining model.
+                self.logger.warning(
+                    "Image filter install failed for %r: %s", canonical_id, exc, exc_info=True
+                )
+                continue
 
-            if self._GEMINI_IMAGE_PATTERN.match(canonical_id):
-                if gemini_id is None:
-                    try:
-                        gemini_id = await self._ensure_single_image_filter_function_id("gemini")
-                    except Exception as exc:
-                        self.logger.warning("Gemini image filter install failed: %s", exc, exc_info=True)
-                        gemini_id = ""
-                if gemini_id:
-                    ids.append(gemini_id)
-
-            if self._SOURCEFUL_IMAGE_PATTERN.match(canonical_id):
-                if sourceful_id is None:
-                    try:
-                        sourceful_id = await self._ensure_single_image_filter_function_id("sourceful")
-                    except Exception as exc:
-                        self.logger.warning("Sourceful image filter install failed: %s", exc, exc_info=True)
-                        sourceful_id = ""
-                if sourceful_id:
-                    ids.append(sourceful_id)
-
-            if self._SOURCEFUL_V25_IMAGE_PATTERN.match(canonical_id):
-                if sourceful_v25_id is None:
-                    try:
-                        sourceful_v25_id = await self._ensure_single_image_filter_function_id("sourceful_v25")
-                    except Exception as exc:
-                        self.logger.warning("Sourceful V2.5 image filter install failed: %s", exc, exc_info=True)
-                        sourceful_v25_id = ""
-                if sourceful_v25_id:
-                    ids.append(sourceful_v25_id)
-
-            if self._RECRAFT_COMMON_IMAGE_PATTERN.match(canonical_id):
-                if recraft_id is None:
-                    try:
-                        recraft_id = await self._ensure_single_image_filter_function_id("recraft")
-                    except Exception as exc:
-                        self.logger.warning("Recraft image filter install failed: %s", exc, exc_info=True)
-                        recraft_id = ""
-                if recraft_id:
-                    ids.append(recraft_id)
-
-            if self._RECRAFT_V3_IMAGE_PATTERN.match(canonical_id):
-                if recraft_v3_id is None:
-                    try:
-                        recraft_v3_id = await self._ensure_single_image_filter_function_id("recraft_v3")
-                    except Exception as exc:
-                        self.logger.warning("Recraft V3 image filter install failed: %s", exc, exc_info=True)
-                        recraft_v3_id = ""
-                if recraft_v3_id:
-                    ids.append(recraft_v3_id)
-
-            if self._GROK_IMAGINE_IMAGE_PATTERN.match(canonical_id):
-                if grok_id is None:
-                    try:
-                        grok_id = await self._ensure_single_image_filter_function_id("grok")
-                    except Exception as exc:
-                        self.logger.warning("Grok Imagine image filter install failed: %s", exc, exc_info=True)
-                        grok_id = ""
-                if grok_id:
-                    ids.append(grok_id)
-
-            if ids:
-                installed[model_id] = list(ids)
+            if function_id:
+                installed[model_id] = [function_id]
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
-                    installed[original_id] = list(ids)
+                    installed[original_id] = [function_id]
+
+        await self._retire_variant_image_filters()
         return installed
+
+    async def _image_filter_exists(self, function_id: str) -> bool:
+        """Whether a filter row is already installed under this id."""
+        try:
+            from open_webui.models.functions import Functions
+
+            return await Functions.get_function_by_id(function_id) is not None
+        except Exception as exc:
+            self.logger.debug(
+                "Could not check for an existing filter %r: %s", function_id, exc, exc_info=True
+            )
+            return False
+
+    async def _retire_variant_image_filters(self) -> None:
+        """Deactivate image filters left over from the fixed-variant design.
+
+        Those rows carry the image marker but no ``IMAGE_FILTER_MODEL_ID``, so nothing
+        re-selects or overwrites them. The generic one has no model gate at all, so left
+        active and attached it keeps writing its invented ratio list into every request
+        for the model -- and it stays attached precisely to the models that now get no
+        filter of their own.
+        """
+        try:
+            from open_webui.models.functions import Functions
+
+            rows = await Functions.get_functions_by_type("filter", active_only=True)
+        except Exception as exc:
+            self.logger.debug("Could not list filters to retire old ones: %s", exc, exc_info=True)
+            return
+
+        for row in rows or []:
+            content = getattr(row, "content", "")
+            row_id = getattr(row, "id", "")
+            if not isinstance(content, str) or not row_id:
+                continue
+            if _OPENROUTER_IMAGE_FILTER_MARKER not in content:
+                continue
+            if "IMAGE_FILTER_MODEL_ID" in content:
+                continue
+            try:
+                await Functions.update_function_by_id(row_id, {"is_active": False})
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not retire superseded image filter %r: %s", row_id, exc, exc_info=True
+                )
+                continue
+            self.logger.info(
+                "Retired superseded image filter %r; each model now has its own.", row_id
+            )
 
     async def _ensure_single_image_filter_function_id(
         self,
-        variant: str,
+        *,
+        model_id: str,
+        image_model: dict[str, Any] | None,
+        endpoint_record: list[dict[str, Any]] | dict[str, Any] | None,
     ) -> str | None:
-        from .image_filter_renderer import (
-            build_gemini_image_filter_spec,
-            build_generic_image_filter_spec,
-            build_grok_image_filter_spec,
-            build_recraft_common_image_filter_spec,
-            build_recraft_v3_image_filter_spec,
-            build_sourceful_image_filter_spec,
-            build_sourceful_v25_image_filter_spec,
-        )
-        if variant == "generic":
-            spec = build_generic_image_filter_spec()
-        elif variant == "gemini":
-            spec = build_gemini_image_filter_spec()
-        elif variant == "sourceful":
-            spec = build_sourceful_image_filter_spec()
-        elif variant == "sourceful_v25":
-            spec = build_sourceful_v25_image_filter_spec()
-        elif variant == "recraft":
-            spec = build_recraft_common_image_filter_spec()
-        elif variant == "recraft_v3":
-            spec = build_recraft_v3_image_filter_spec()
-        elif variant == "grok":
-            spec = build_grok_image_filter_spec()
-        else:
-            raise ValueError(f"Unknown image filter variant: {variant!r}")
+        from .image_filter_renderer import build_image_model_filter_spec
 
-        marker_token = f'OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"'
-        variant_token = f'IMAGE_FILTER_VARIANT = "{spec.variant}"'
+        spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
+        if spec.knob_count == 0 and not await self._image_filter_exists(spec.function_id):
+            # Nothing to offer and nothing already installed, so install nothing. If a
+            # filter IS installed, fall through and overwrite it: a contract that shrank
+            # to nothing must not leave the previous controls on screen, writing values
+            # the model no longer accepts into every request.
+            return None
+
+        # Built with the same expression the renderer emits, not a reconstruction of it.
+        # Rebuilding the literal by hand missed any id whose repr needs an escape -- an
+        # invisible soft hyphen was enough -- and a filter that cannot be re-identified is
+        # installed again under a new suffix on every catalog refresh.
+        model_id_token = f"IMAGE_FILTER_MODEL_ID = {spec.model_id!r}"
 
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
-            return (
-                marker_token in content
-                and variant_token in content
-                and "class Filter" in content
-            )
+            if _OPENROUTER_IMAGE_FILTER_MARKER not in content:
+                return False
+            if model_id_token not in content:
+                return False
+            return "class Filter" in content
 
-        desired_source = self.render_openrouter_image_filter_source(variant).strip() + "\n"
+        desired_source = self.render_openrouter_image_filter_source(
+            model_id=model_id,
+            image_model=image_model,
+            endpoint_record=endpoint_record,
+        ).strip() + "\n"
         valid, error = self.validate_filter_source(desired_source)
         if not valid:
-            raise ValueError(f"Generated OpenRouter image filter ({variant}) is invalid: {error}")
+            raise ValueError(f"Generated OpenRouter image filter is invalid: {error}")
 
         return await self._ensure_filter_installed(
             desired_source=desired_source,
             desired_name=spec.display_name[:80],
             desired_meta={
                 "description": (
-                    f"Configure OpenRouter native image generation ({spec.variant})."
+                    f"Configure OpenRouter native image generation for {spec.display_name}."
                 ),
                 "toggle": True,
                 "manifest": {
@@ -1413,7 +1383,7 @@ class Filter:
             },
             preferred_id=spec.function_id,
             auto_install_valve="AUTO_INSTALL_IMAGE_FILTERS",
-            log_label=f"OpenRouter image filter ({spec.variant})",
+            log_label=f"OpenRouter image filter for {spec.model_id}",
             matches_candidate=_matches,
         )
 

@@ -16,6 +16,7 @@ from ..core.warn_latch import warn_level
 from ..requests.fusion_engine import latest_user_text
 from .image_client import OpenRouterImageClient
 from .image_types import (
+    TOP_LEVEL_PARAMS,
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
@@ -47,17 +48,7 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
     rendered = text if isinstance(text, str) else str(text)
     return rendered if len(rendered) <= limit else f"{rendered[:limit]}…"
 
-_TOP_LEVEL_PARAMS = (
-    "aspect_ratio",
-    "resolution",
-    "size",
-    "n",
-    "seed",
-    "quality",
-    "background",
-    "output_format",
-    "output_compression",
-)
+_TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
 
 _BILLING_MULTIPLIERS = frozenset({"n"})
 
@@ -146,6 +137,16 @@ class ImageGenerationAdapter:
                 return high, f"capped at {high}"
             if isinstance(low, (int, float)) and not isinstance(low, bool) and value < low:
                 return low, f"raised to {low}"
+            return value, ""
+        if kind == "boolean":
+            # OpenRouter uses this to say the model *supports* the parameter, not that
+            # its value is true or false -- their own model schema words it "whether the
+            # model supports deterministic generation via seed parameter", and no such
+            # descriptor ever carries a domain. The request itself takes a number, so
+            # that is what is checked here.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, "expects a number"
+            return value, ""
         return value, ""
 
     @staticmethod
@@ -177,10 +178,27 @@ class ImageGenerationAdapter:
             )
 
         for key, value in raw.items():
-            if value is None or value == "":
+            # `image_config` arrives from the client, so a key need not be a string.
+            if not isinstance(key, str) or value is None or value == "":
                 continue
             shown = _clamp(key)
-            name = _LEGACY_PARAM_NAMES.get(key, key)
+            # The alias is a compatibility spelling for a retired filter. A key the
+            # model's own record claims as a provider option keeps that spelling, or the
+            # rename would route it into a different published parameter and silently
+            # overwrite whatever the user chose there.
+            name = key if key in allowed_passthrough else _LEGACY_PARAM_NAMES.get(key, key)
+            if name != key and raw.get(name) not in (None, ""):
+                # Both spellings of one parameter were supplied -- the compatibility one
+                # from the older filter and the published one from this model's own. They
+                # would write the same destination, and whichever came later in the dict
+                # would win silently. The spelling the model publishes is the one that
+                # means something, so it wins and the user is told the other was ignored.
+                _note(
+                    "superseded",
+                    name,
+                    f"{shown} was ignored because {name} was set explicitly",
+                )
+                continue
             if name in _TOP_LEVEL_PARAMS:
                 if declared is None:
                     if name in _BILLING_MULTIPLIERS:
@@ -232,6 +250,23 @@ class ImageGenerationAdapter:
                 _Note("overflow", "*", f"{unreported} further image_config key(s) were not sent")
             )
         return top_level, provider, notes
+
+    async def _published_records(
+        self,
+        session: Any,
+        valves: Any,
+        api_model_id: str,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Every record this model publishes, not the one a request would route to.
+
+        Describing what a model offers is a different question from choosing who serves
+        one request, and answering it with a single provider's record lists controls the
+        model's filter -- built from the intersection -- does not draw.
+        """
+        await self._endpoint_record(session, valves, api_model_id, **kwargs)
+        cached = self._endpoint_cache.get(api_model_id)
+        return list(cached[1]) if cached else []
 
     async def _endpoint_record(
         self,

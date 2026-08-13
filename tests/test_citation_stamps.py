@@ -20,7 +20,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
 # Interpolated into the failure message, never retyped there: the message used to quote
 # a stale literal while the assertion compared a different one.
-_EXPECTED_OWUI_IMPORTS = (17, 73)
+_EXPECTED_OWUI_IMPORTS = (17, 75)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
@@ -462,6 +462,26 @@ async def test_the_emitted_citation_stamp_is_the_local_calendar_day():
         time.tzset()
 
 
+_EXPECTED_RENDERERS = 9
+"""How many filter renderers the package defines. A count, not a floor."""
+
+
+def _image_model_filter_spec_for_stamp_check():
+    """One real spec, so the per-model renderer is exercised like the fixed ones were."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    return build_image_model_filter_spec(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        {
+            "provider_slug": "recraft",
+            "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+        },
+    )
+
+
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
     reason="in a bundle the loaded code is the artifact, not this source tree, so a source scan proves nothing about what is running",
@@ -487,8 +507,8 @@ def test_the_installed_filters_guard_their_open_webui_import():
     manager.valves = Pipe.Valves()
 
     # Discovered, not enumerated. The previous version listed five renderers by hand
-    # while the package renders eleven, so the fusion and provider-routing templates
-    # and six of the seven image variants could lose their guard with the suite green.
+    # while the package renders several, so the fusion and provider-routing templates
+    # could lose their guard with the suite green.
     # The coverage assertion below is what makes renderer twelve a failure rather than
     # a silent omission.
     ARGS: dict[str, dict[str, object]] = {
@@ -497,7 +517,10 @@ def test_the_installed_filters_guard_their_open_webui_import():
         },
         "render_openrouter_image_gen_filter_source": {},
         "render_direct_uploads_filter_source": {},
-        "render_openrouter_image_filter_source": {"variant": "generic"},
+        "render_openrouter_image_filter_source": {
+            "model_id": "recraft/recraft-v3",
+            "image_model": {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        },
         "render_openrouter_video_gen_filter_source": {
             "model_id": "google/veo-3",
             "video_model": {"id": "google/veo-3", "name": "Veo 3"},
@@ -507,13 +530,9 @@ def test_the_installed_filters_guard_their_open_webui_import():
             "quantizations": ["fp16"], "visibility": "both",
         },
         "render_openrouter_fusion_filter_source": {"marker": "fusion"},
-        "render_generic_image_filter_source": {},
-        "render_gemini_image_filter_source": {},
-        "render_sourceful_image_filter_source": {},
-        "render_sourceful_v25_image_filter_source": {},
-        "render_recraft_common_image_filter_source": {},
-        "render_recraft_v3_image_filter_source": {},
-        "render_grok_image_filter_source": {},
+        "render_image_model_filter_source": {
+            "spec": _image_model_filter_spec_for_stamp_check(),
+        },
         "render_video_filter_source": {
             "model_id": "google/veo-3",
             "video_model": {"id": "google/veo-3", "name": "Veo 3"},
@@ -557,9 +576,11 @@ def test_the_installed_filters_guard_their_open_webui_import():
         else:
             rendered[name] = fn(**kwargs)
 
-    assert len(rendered) >= 14, (
-        f"only {len(rendered)} renderers were exercised; the package has more, and a "
-        "shrinking sweep is how the previous five-entry list stopped covering things"
+    assert len(discovered) == _EXPECTED_RENDERERS, (
+        f"{len(discovered)} filter renderers found, expected {_EXPECTED_RENDERERS}. Update "
+        "this deliberately -- the two membership assertions above already force ARGS and "
+        "the discovered set to match each other, so they cannot notice a coordinated "
+        "shrink where a module and its ARGS entries are dropped in one edit."
     )
 
     template_total, template_offenders = 0, []

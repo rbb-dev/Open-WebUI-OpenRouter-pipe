@@ -90,8 +90,9 @@ def _apply_list_filter_ids(
     auto_attach: bool,
     prune_key: str,
 ) -> bool:
-    if not filter_function_ids or not auto_attach:
+    if not auto_attach:
         return False
+    filter_function_ids = filter_function_ids or []
     normalized = _normalize_id_list(meta_dict, "filterIds")
     pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
     previous_ids: list[str] = []
@@ -123,26 +124,52 @@ def _apply_list_filter_ids(
     return True
 
 
+def _detached_by_this_pass(
+    meta_dict: dict, *, prune_key: str, filter_function_ids: list[str] | None
+) -> set[str]:
+    """Ids this family attached last time and is not attaching now.
+
+    Read before the attach pass, which rewrites the ownership record with the current
+    ids -- so afterwards there is nothing left to compare against.
+    """
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    previous: list[str] = []
+    if isinstance(pipe_meta, dict):
+        recorded = pipe_meta.get(prune_key)
+        if isinstance(recorded, list):
+            previous = [p for p in recorded if isinstance(p, str) and p]
+    return set(previous) - set(filter_function_ids or [])
+
+
 def _apply_list_default_filter_ids(
     meta_dict: dict,
     *,
     filter_function_ids: list[str] | None,
     filter_supported: bool,
     auto_default: bool,
+    detached: set[str] | None = None,
 ) -> bool:
-    if (
-        not auto_default
-        or not filter_function_ids
-        or not filter_supported
-    ):
+    if not auto_default:
         return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
-    for fid in filter_function_ids:
-        if fid in filter_ids and fid not in default_ids:
-            default_ids.append(fid)
-            changed = True
+    if filter_supported:
+        for fid in filter_function_ids or []:
+            if fid in filter_ids and fid not in default_ids:
+                default_ids.append(fid)
+                changed = True
+
+    # A filter this routine detached must not stay on by default, or a superseded one
+    # goes on applying itself to every request. `detached` is computed by the caller
+    # before the attach pass runs, because that pass rewrites the ownership record with
+    # the current ids -- reading it here would find nothing to prune. Scoped rather than
+    # blanket, because Open WebUI lets a *global* filter be default-on for a model
+    # without ever appearing in filterIds, and those belong to other owners.
+    kept = [fid for fid in default_ids if fid not in (detached or set())]
+    if len(kept) != len(default_ids):
+        default_ids = kept
+        changed = True
     if not changed:
         return False
     meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
@@ -158,8 +185,7 @@ def _apply_video_gen_filter_ids(
 ) -> bool:
     """Apply video-gen filter auto-attach to `meta_dict["filterIds"]`.
 
-    Single-id form (each video model has its own per-model filter, unlike image
-    which has a small set of shared filters).
+    Single-id form, the same shape image now uses: one filter per model.
     """
     if not video_gen_filter_function_id or not auto_attach_video_gen_filter:
         return False
@@ -1210,6 +1236,18 @@ class ModelCatalogManager:
                         "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
                     )
                     image_filter_function_ids = {}
+            else:
+                # Retirement is not installation: it deactivates rows a previous design
+                # left behind. It has to run with the valves off too, because that is
+                # exactly the upgrade where nothing supersedes them -- the old ungated
+                # filter would otherwise stay attached and keep writing its invented
+                # values into every request.
+                try:
+                    await self._pipe._ensure_filter_manager()._retire_variant_image_filters()
+                except Exception as exc:
+                    self.logger.debug(
+                        "Retiring superseded image filters failed: %s", exc, exc_info=True
+                    )
 
             fusion_filter_function_id: str | None = None
             if valves.ENABLE_OPENROUTER_FUSION and (
@@ -1466,9 +1504,10 @@ class ModelCatalogManager:
                         or image_filter_function_ids.get(str(original_id or ""))
                         or []
                     )
+                # Not gated on there being ids: a model that loses its filter still has
+                # to have the old one detached, and that is this pass's job.
                 auto_attach_image_filter = bool(
-                    image_filter_ids_for_model
-                    and valves.AUTO_ATTACH_IMAGE_FILTERS
+                    valves.AUTO_ATTACH_IMAGE_FILTERS
                     and valves.ENABLE_OPENROUTER_IMAGE_GENERATION
                     and pipe_capabilities.get("image_output")
                 )
@@ -2053,6 +2092,11 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
+            image_detached = _detached_by_this_pass(
+                meta_dict,
+                prune_key="image_filter_ids",
+                filter_function_ids=image_filter_function_ids,
+            )
             if _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=image_filter_function_ids,
@@ -2064,12 +2108,18 @@ class ModelCatalogManager:
 
             if _apply_list_default_filter_ids(
                 meta_dict,
+                detached=image_detached,
                 filter_function_ids=image_filter_function_ids,
                 filter_supported=image_filter_supported,
                 auto_default=auto_default_image_filter,
             ):
                 meta_updated = True
 
+            fusion_detached = _detached_by_this_pass(
+                meta_dict,
+                prune_key="fusion_filter_ids",
+                filter_function_ids=fusion_filter_function_ids,
+            )
             if _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=fusion_filter_function_ids,
@@ -2081,6 +2131,7 @@ class ModelCatalogManager:
 
             if _apply_list_default_filter_ids(
                 meta_dict,
+                detached=fusion_detached,
                 filter_function_ids=fusion_filter_function_ids,
                 filter_supported=fusion_filter_supported,
                 auto_default=auto_default_fusion_filter,
@@ -2153,6 +2204,11 @@ class ModelCatalogManager:
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_default_video_gen_filter=auto_default_video_gen_filter,
             )
+            image_detached = _detached_by_this_pass(
+                meta_dict,
+                prune_key="image_filter_ids",
+                filter_function_ids=image_filter_function_ids,
+            )
             _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=image_filter_function_ids,
@@ -2162,6 +2218,7 @@ class ModelCatalogManager:
             )
             _apply_list_default_filter_ids(
                 meta_dict,
+                detached=image_detached,
                 filter_function_ids=image_filter_function_ids,
                 filter_supported=image_filter_supported,
                 auto_default=auto_default_image_filter,

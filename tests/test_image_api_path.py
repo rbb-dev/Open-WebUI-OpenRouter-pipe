@@ -516,7 +516,7 @@ def _register_live_image_catalog():
     from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
     catalog = json.loads(
-        (Path(__file__).resolve().parent / "fixtures" / "image_models_catalog.json").read_text()
+        (Path(__file__).resolve().parent / "fixtures" / "openrouter_image_models.json").read_text()
     )["data"]
     OpenRouterModelRegistry.register_image_models(catalog)
     return {entry["id"]: entry for entry in catalog}
@@ -1385,14 +1385,15 @@ async def test_a_blank_model_id_never_reaches_the_network():
         assert not mocked.requests
 
 
-_MULTIMODAL_EXEMPT_FROM_THE_DEDICATED_API = {
-    "openai/gpt-5-image",
-    "openai/gpt-5-image-mini",
-    "openai/gpt-5.4-image-2",
-    "google/gemini-2.5-flash-image",
-    "google/gemini-3-pro-image-preview",
-    "google/gemini-3.1-flash-image-preview",
-}
+def _also_emits_text(entry: dict) -> bool:
+    """Whether a model answers with text as well as images.
+
+    Read from the model's own declared modalities rather than a hand-kept list of ids.
+    The list this replaces named six models and went stale the moment OpenRouter added
+    a seventh, at which point the test reported a routing bug that was not one.
+    """
+    modalities = (entry.get("architecture") or {}).get("output_modalities") or []
+    return "text" in modalities
 
 
 def _recorded_image_api_roster() -> list[str]:
@@ -1415,7 +1416,7 @@ def test_every_recorded_image_api_model_routes_there_unless_it_also_emits_text()
             continue
         checked += 1
         routed = uses_dedicated_image_api({"architecture": entry.get("architecture") or {}})
-        if not routed and model_id not in _MULTIMODAL_EXEMPT_FROM_THE_DEDICATED_API:
+        if not routed and not _also_emits_text(entry):
             misrouted.append(model_id)
 
     assert checked >= 20, (
@@ -1428,22 +1429,33 @@ def test_every_recorded_image_api_model_routes_there_unless_it_also_emits_text()
     )
 
 
-def test_every_exemption_is_actually_exempt():
+def test_the_routing_rule_is_exactly_does_this_model_also_emit_text():
+    """One rule decides the transport, and it is the model's own declared modalities.
+
+    This replaces a hand-listed set of exempt ids. That list named six models and went
+    stale as soon as OpenRouter published a seventh, at which point the roster test
+    above reported a routing bug that was not one.
+    """
     catalog = _register_live_image_catalog()
-    inert = [
-        model_id
-        for model_id in _MULTIMODAL_EXEMPT_FROM_THE_DEDICATED_API
-        if model_id in catalog
-        and uses_dedicated_image_api({"architecture": catalog[model_id].get("architecture") or {}})
-    ]
-    assert not inert, (
-        "these ids are listed as exempt but already route to the dedicated API; a stale "
-        f"exemption hides the next real misrouting: {sorted(inert)}"
+    assert catalog, "the recorded catalogue must not be empty"
+
+    disagreements = []
+    both_kinds = set()
+    for model_id, entry in catalog.items():
+        architecture = entry.get("architecture") or {}
+        routed = uses_dedicated_image_api({"architecture": architecture})
+        emits_text = _also_emits_text(entry)
+        both_kinds.add(emits_text)
+        if routed == emits_text:
+            disagreements.append((model_id, routed, emits_text))
+
+    assert not disagreements, (
+        "a model must take the dedicated image API if and only if it does not also emit "
+        f"text; these disagree: {disagreements}"
     )
-    covered = [m for m in _MULTIMODAL_EXEMPT_FROM_THE_DEDICATED_API if m in catalog]
-    assert covered, (
-        "not one exemption is present in the catalog fixture, so this set exempts nothing and "
-        "the roster test above is vacuous"
+    assert both_kinds == {True, False}, (
+        "the catalogue must contain models of both kinds or this proves nothing about "
+        f"the rule; saw only {both_kinds}"
     )
 
 
@@ -2083,83 +2095,10 @@ async def test_upstream_text_cannot_size_the_failure_message(entry_count, key_le
     )
 
 
-@pytest.mark.parametrize(
-    ("published", "advertised"),
-    [
-        (frozenset({"style", "controls", "text_layout"}), False),
-        (frozenset({"style", "strength", "rgb_colors"}), True),
-        (None, True),
-    ],
-)
-def test_help_only_advertises_knobs_the_request_path_will_send(published, advertised):
-    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
-
-    rendered = render_image_help("recraft/recraft-v4", None, published=published)
-
-    assert ("Strength (image-to-image)" in rendered) is advertised, (
-        "help is a model's only in-product documentation; advertising a knob the very next "
-        "message withholds sends the user to a control that cannot work"
-    )
 
 
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ({"supported_parameters": {"n": {}, "aspect_ratio": {}}}, frozenset({"n", "aspect_ratio"})),
-        ({"allowed_passthrough_parameters": ["style", "controls"]}, frozenset({"style", "controls"})),
-        (
-            {"supported_parameters": {"n": {}}, "allowed_passthrough_parameters": ["style"]},
-            frozenset({"n", "style"}),
-        ),
-        ({"supported_parameters": {}, "allowed_passthrough_parameters": []}, frozenset()),
-        ({}, frozenset()),
-        (None, None),
-        ("not a record", None),
-    ],
-)
-def test_published_parameter_names_reads_both_halves_of_the_contract(record, expected):
-    from open_webui_openrouter_pipe.integrations.image_help import published_parameter_names
-
-    assert published_parameter_names(record) == expected, (
-        "a knob is published if the record advertises it under either half, and a readable "
-        "record that advertises nothing is an empty set, not None: None means the contract "
-        "could not be read, which is the opposite instruction to the help renderer"
-    )
 
 
-@pytest.mark.parametrize("advertised", [["style"], ["style", "text_layout"]])
-@pytest.mark.asyncio
-async def test_the_help_card_is_gated_by_the_record_the_endpoint_actually_published(advertised):
-    import aiohttp
-
-    from open_webui_openrouter_pipe.integrations.image_help import (
-        published_parameter_names,
-        render_image_help,
-    )
-
-    adapter = _adapter(_KeyPipe("sk-x"))
-    with aioresponses() as mocked:
-        mocked.get(
-            f"{BASE}/images/models/recraft/recraft-v3/endpoints",
-            payload={
-                "endpoints": [
-                    {"provider_slug": "recraft", "allowed_passthrough_parameters": advertised}
-                ]
-            },
-        )
-        async with aiohttp.ClientSession() as session:
-            record, _ = await adapter._endpoint_record(
-                session, _StubValves("sk-x"), "recraft/recraft-v3"
-            )
-
-    rendered = render_image_help(
-        "recraft/recraft-v3", None, published=published_parameter_names(record)
-    )
-    assert "`strength`" not in rendered, (
-        "the endpoint did not advertise strength, so the request path will refuse it; help "
-        "must not send the user to a control that cannot work"
-    )
-    assert ("`text_layout`" in rendered) is ("text_layout" in advertised)
 
 
 @pytest.mark.parametrize("mode", ["empty", "raises"])
@@ -3575,3 +3514,134 @@ async def test_the_latch_key_does_not_widen_with_an_unknown_request_key():
         "without limit across requests even when each single request is budgeted. entries: "
         f"{sorted(image_module._warned_dropped_image_param)}"
     )
+
+
+@pytest.mark.parametrize(
+    "advertised",
+    [["style"], ["style", "text_layout"], ["style", "controls", "text_layout"]],
+)
+def test_help_advertises_only_what_the_request_path_will_actually_send(advertised):
+    """Help is a model's only in-product documentation.
+
+    Naming a control the very next message withholds sends the user to something that
+    cannot work. Both surfaces read the same record, so the check is that everything help
+    names survives the adapter's split rather than being reported back as not offered.
+    """
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    record = {
+        "provider_slug": "recraft",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+        "allowed_passthrough_parameters": advertised,
+    }
+    model = {"id": "recraft/recraft-v3", "name": "Recraft V3"}
+    rendered = render_image_help("recraft/recraft-v3", model, endpoint_record=record)
+
+    controls = rendered.split("## Controls", 1)[1]
+    named = [
+        line.split("**")[1]
+        for line in controls.splitlines()
+        if line.startswith("- **") and "**" in line[4:]
+    ]
+    assert named, "the model publishes controls, so help must list them"
+
+    for passthrough in advertised:
+        assert passthrough in named, f"{passthrough} is published and must be named"
+
+    # Everything help named must survive the split the request path performs.
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    spec = build_image_model_filter_spec("recraft/recraft-v3", model, record)
+    config = {name: values[0] for name, values in spec.enums}
+    config.update({name: "a_value" for name in spec.passthrough})
+    top_level, provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": config}, allowed_passthrough=tuple(advertised), record=record
+    )
+    assert notes == [], f"help named something the request path refuses: {notes}"
+    assert set(top_level) | set(provider) == set(config), (
+        f"every named control must arrive somewhere; top={top_level} provider={provider}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "asked", "fitted", "note"),
+    [
+        ({"type": "boolean"}, 12345, 12345, ""),
+        ({"type": "boolean"}, 0, 0, ""),
+        ({"type": "boolean"}, True, None, "expects a number"),
+        ({"type": "boolean"}, False, None, "expects a number"),
+        ({"type": "boolean"}, "abc", None, "expects a number"),
+    ],
+)
+def test_a_supported_parameter_carries_a_number(descriptor, asked, fitted, note):
+    """OpenRouter writes `boolean` to say the model SUPPORTS a parameter.
+
+    Their own model schema words it "whether the model supports deterministic generation
+    via seed parameter", and such a descriptor never carries a domain. The request takes
+    a number, so anything else is refused rather than forwarded unexamined.
+    """
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    got, got_note = ImageGenerationAdapter._fit_descriptor(descriptor, asked)
+    assert got == fitted, f"{asked!r} should fit to {fitted!r}, got {got!r}"
+    assert got_note == note
+
+
+@pytest.mark.asyncio
+async def test_help_is_given_every_published_record_not_the_one_a_request_would_use():
+    """Describing a model and routing a request are different questions.
+
+    `_select_endpoint` picks one provider because a request has to go somewhere. Handing
+    that single record to help would list controls built from one provider's superset,
+    while the model's filter is built from the intersection -- so help would name
+    controls the chat UI does not draw.
+    """
+    import aiohttp
+
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    wide = {
+        "provider_slug": "a",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+    }
+    narrow = {
+        "provider_slug": "b",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["4:3"]}},
+    }
+
+    adapter = _adapter(_KeyPipe("sk-x"))
+    with aioresponses() as mocked:
+        mocked.get(
+            f"{BASE}/images/models/vendor/model/endpoints",
+            payload={"endpoints": [wide, narrow]},
+        )
+        async with aiohttp.ClientSession() as session:
+            records = await adapter._published_records(
+                session, _StubValves("sk-x"), "vendor/model"
+            )
+
+    assert len(records) == 2, (
+        f"every published record must reach help, not just the routed one; got {records}"
+    )
+
+    spec = build_image_model_filter_spec(
+        "vendor/model", {"id": "vendor/model", "name": "M"}, records
+    )
+    assert spec.knob_count == 0, (
+        "the providers disagree, so the filter offers nothing -- and help built from the "
+        "same records must say the same"
+    )
+
+    from_first_only = build_image_model_filter_spec(
+        "vendor/model", {"id": "vendor/model", "name": "M"}, records[:1]
+    )
+    assert from_first_only.knob_count == 1, (
+        "sanity: one record alone would offer a control, which is what makes the "
+        "difference between the two shapes observable"
+    )
+

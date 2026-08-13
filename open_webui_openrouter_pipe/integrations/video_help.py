@@ -703,6 +703,19 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
             continue
         knob_lines.append(f"- `{knob}`: {description}")
 
+    # Settings the model publishes that have no purpose-built control are still drawn,
+    # as free text. Reading them from the same place the renderer does means help cannot
+    # omit a control the chat UI shows -- which is the failure the curated table above
+    # can produce on its own.
+    from ..filters.video_filter_renderer import (
+        _unhandled_params,
+        build_video_filter_spec,
+    )
+    from .image_types import PASSTHROUGH_DESCRIPTION
+
+    for name in _unhandled_params(build_video_filter_spec(model_id, model)):
+        knob_lines.append(f"- `{name}`: {PASSTHROUGH_DESCRIPTION}")
+
     pricing_block = _format_pricing_skus(model.get("pricing_skus") or {})
     pricing_section = ""
     if pricing_block:

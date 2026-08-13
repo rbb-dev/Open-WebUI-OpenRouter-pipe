@@ -80,7 +80,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_ATTACH_IMAGE_FILTERS": {
         "title": "Attach image controls to models",
         "group": "Filters & Integrations/Image",
-        "detail": "Puts the right image controls on every native image model, automatically.\n\nEach model gets the generic controls plus its family's controls where one exists. On by default; a single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. Needs the filters present first (see `Install native image filters`)."
+        "detail": "Puts each image model's own controls on it, automatically, so they appear in the chat settings when that model is selected.\n\nThe controls are that model's alone -- an aspect ratio it does not accept never appears, and a setting only it supports is not offered anywhere else. On by default; a single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. Needs the controls present first (see `Install native image filters`)."
     },
     "AUTO_ATTACH_IMAGE_GEN_FILTER": {
         "title": "Attach Image Generation toggle",
@@ -115,7 +115,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_DEFAULT_IMAGE_FILTERS": {
         "title": "Pre-enable image controls per chat",
         "group": "Filters & Integrations/Image",
-        "detail": "Starts each new chat with a native image model's generation controls already switched on, so its size, aspect-ratio, and provider options apply from the first message.\n\nThese models return images whether or not the controls are on - switching them off just falls back to the model's own defaults and does not stop image output. So this is a convenience: the size, aspect-ratio, and provider knobs are ready without the user enabling anything, and they can still turn them off per chat. On by default, and a cleared default comes back on its own. Effective only on models that carry those controls (see `Attach image controls to models`)."
+        "detail": "Starts each new chat with an image model's controls already switched on, so whatever that model accepts applies from the first message.\n\nThese models return images whether or not the controls are on - switching them off just falls back to the model's own defaults and does not stop image output. So this is a convenience: the settings are ready without the user enabling anything, and they can still turn them off per chat. On by default, and a cleared default comes back on its own. Effective only on models that carry controls (see `Attach image controls to models`)."
     },
     "AUTO_DEFAULT_VIDEO_FILTERS": {
         "title": "Pre-enable Video Generation per chat",
@@ -145,7 +145,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_INSTALL_IMAGE_FILTERS": {
         "title": "Install native image filters",
         "group": "Filters & Integrations/Image",
-        "detail": "Keeps the controls for OpenRouter's native image models available in this workspace and up to date.\n\nEvery native image model gets a generic set of size and aspect-ratio controls, and families such as Gemini and Sourceful add extra controls for their own settings. On by default; `Attach image controls to models` and `Pre-enable image controls per chat` do nothing until this is on, and it needs `Show native image models` on."
+        "detail": "Keeps a set of controls for each of OpenRouter's image models available in this workspace and up to date.\n\nEvery model gets its own, built from the settings that model tells OpenRouter it accepts -- so the aspect ratios, sizes and provider options a user sees are the ones that model will honour, and they change on their own when the model does. If a model's settings list cannot be read on a refresh, it keeps the settings from its last successful read; a model that has never been read offers no controls at all rather than a guessed set. The next refresh retries either way. On by default; `Attach image controls to models` and `Pre-enable image controls per chat` do nothing until this is on, and it needs `Show native image models` on."
     },
     "AUTO_INSTALL_IMAGE_GEN_FILTER": {
         "title": "Install Image Generation filter",
@@ -255,7 +255,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "ENABLE_OPENROUTER_IMAGE_GENERATION": {
         "title": "Show native image models",
         "group": "Files & Media/Image Generation",
-        "detail": "Adds OpenRouter's dedicated image-generating models to the model picker, so users can choose a model whose whole job is producing images.\n\nThese native image-output models (such as Flux or Seedream) return pictures instead of text; the pipe discovers them and lists them as selectable models. Multimodal text-and-image models (the GPT-5 and Gemini image variants) stay in the normal chat list and gain image controls there instead. Each surfaced model carries an image filter exposing its generation settings - size, aspect ratio, and provider-specific options. Generating images bills extra; check current rates on OpenRouter. On by default.\n\n**Note:** Unlike `Enable image generation` (a chat model making a picture inline), this adds separate image-only models to pick from."
+        "detail": "Adds OpenRouter's dedicated image-generating models to the model picker, so users can choose a model whose whole job is producing images.\n\nThese native image-output models (such as Flux or Seedream) return pictures instead of text; the pipe discovers them and lists them as selectable models. Multimodal text-and-image models (the GPT-5 and Gemini image variants) stay in the normal chat list and gain image controls there instead. Each surfaced model gets its own controls, built from the settings that model tells OpenRouter it accepts; a model whose settings list has not been read yet gets none and generates with its own defaults. Generating images bills extra; check current rates on OpenRouter. On by default.\n\n**Note:** Unlike `Enable image generation` (a chat model making a picture inline), this adds separate image-only models to pick from."
     },
     "ENABLE_PLUGIN_SYSTEM": {
         "title": "Enable plugin system",

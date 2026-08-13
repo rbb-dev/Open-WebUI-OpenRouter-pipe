@@ -190,9 +190,9 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get the generic image filter attached for `image_config` knobs. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Automatically install/update the OpenRouter native image filters in Open WebUI: `OR Image Filter` (generic, all image models), `Gemini Options` (Gemini Flash 3.x image only), `Sourceful Options` (Riverflow V2 Pro/Fast only), `Sourceful V2.5 Options` (Riverflow 2.5 Pro/Fast only — the single Sourceful filter for 2.5), `Recraft Options` (all Recraft models), `Recraft V3 Extras` (Recraft V3 only), `Grok Imagine Options` (Grok Imagine image models only). |
-| `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Automatically attach the appropriate native image filters to image-output models: generic to all, Gemini-extended to `^~?google/gemini-3.*flash-image.*$`, Sourceful to `^~?sourceful/riverflow-v2-(pro\|fast)$`, Sourceful V2.5 to `^~?sourceful/riverflow-v2\.5-(pro\|fast)$` (one Sourceful filter per Riverflow version), Recraft to `^~?recraft/recraft-`, Recraft V3 Extras to `recraft/recraft-v3` (or its `~` alias) exactly, Grok Imagine to `^~?x-ai/grok-imagine-image-`. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering exactly the settings that model publishes to OpenRouter. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read offers none rather than a guessed set. |
+| `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Attach each image model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_list_default_filter_ids` in `models/catalog_manager.py`. |
 
 Notes:
@@ -200,61 +200,35 @@ Notes:
 - Generated images are persisted via the canonical multimodal helpers (`_materialize_image_entry` → `_persist_generated_image` in `streaming/streaming_core.py`), reusing the same path that has handled `gpt-5-image` end-to-end since well before this feature.
 - The `image_config` request body field is typed as `Optional[Dict[str, Any]]` in [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py) (was `Optional[Union[str, float]]` which would have rejected dict writes from filters at `CompletionsBody.model_validate`).
 - `OR Web Tools` and `OR Web Search` overlays are **capability-gated to skip image-output models** — these models do not support tool use and would fail with HTTP 404 ("No endpoints found that support tool use") if web search were attached. The `web_tools_supported` check in `models/catalog_manager.py` excludes models with `image_output` or `video_generation` capability.
-- Pre-validation: the Sourceful filter rejects `font_inputs` > 2 entries and `super_resolution_references` > 4 entries **before** the HTTP call, surfacing a clear `ImageGenerationError` instead of an opaque provider 400.
+- Validation: a setting the model does not publish is dropped before the request goes out and the user is told which one, rather than being sent and refused by the provider. A provider option typed as a JSON list or object that does not parse is rejected as soon as it is entered, with the setting named.
 
 See: [OpenRouter Image Generation](openrouter_image_generation.md).
 
 #### Companion filter user valves (per-user, per-filter)
 
-Three filter functions are installed:
+One filter is installed per image model, named after that model, and attached
+only to it.
 
-| Filter ID | OWUI display name | Attached to |
-| --- | --- | --- |
-| `openrouter_image_filter_generic` | `OR Image Filter` | All image models |
-| `openrouter_image_filter_gemini` | `Gemini Options` | Gemini Flash 3.x image models |
-| `openrouter_image_filter_sourceful` | `Sourceful Options` | Sourceful Riverflow Pro/Fast models |
-| `openrouter_image_filter_recraft` | `Recraft Options` | All Recraft models (V3, V4, V4 Pro) |
-| `openrouter_image_filter_recraft_v3` | `Recraft V3 Extras` | Recraft V3 only |
+Its user valves are not fixed and are not listed here: they are built from the
+settings the model publishes to OpenRouter, so they differ per model and change
+when the model does. A typed parameter becomes a field named `IMAGE_<PARAMETER>`
+— `IMAGE_ASPECT_RATIO` for `aspect_ratio`, and so on. A provider-specific option
+becomes a free-text field under the same naming rule.
 
-**Generic filter UserValves** (always attached):
+For a worked example, `recraft/recraft-v3` publishes `aspect_ratio` (six
+choices), `n` (1 to 6) and the provider options `style`, `controls` and
+`text_layout`, so its filter carries `IMAGE_ASPECT_RATIO`, `IMAGE_N`,
+`IMAGE_STYLE`, `IMAGE_CONTROLS` and `IMAGE_TEXT_LAYOUT`.
 
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_ASPECT_RATIO` | `Literal["", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]` | `""` | `image_config.aspect_ratio` |
-| `IMAGE_SIZE` | `Literal["", "1K", "2K", "4K"]` | `""` | `image_config.image_size` |
+**Skip-when-default sentinel**: an empty string for text and choice fields, and
+an empty numeric field for numbers, means "not set" and is left out of the
+request, so the model's own default applies. Numbers use an empty field rather
+than `0` because `0` is a legal value for some published settings.
 
-**Gemini Options filter UserValves** (Gemini Flash 3.x image only):
-
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_ASPECT_RATIO_EXTENDED` | `Literal["", "1:4", "4:1", "1:8", "8:1"]` | `""` | `image_config.aspect_ratio` (overrides generic) |
-| `IMAGE_SIZE_GEMINI` | `Literal["", "0.5K"]` | `""` | `image_config.image_size` (overrides generic) |
-
-**Sourceful Options filter UserValves** (Sourceful Riverflow Pro/Fast only):
-
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_FONT_INPUTS_JSON` | `str` (JSON array) | `""` | `image_config.font_inputs` (max 2, +$0.03 each) |
-| `IMAGE_SUPER_RESOLUTION_REFERENCES_JSON` | `str` (JSON array) | `""` | `image_config.super_resolution_references` (max 4, +$0.20 each) |
-
-**Recraft Options filter UserValves** (all Recraft models):
-
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_STRENGTH` | `float` (`ge=0.0, le=1.0`) | `0.0` (skip sentinel) | `image_config.strength` |
-| `IMAGE_RGB_COLORS_JSON` | `str` (JSON array) | `""` | `image_config.rgb_colors` (each entry `[r,g,b]` 0-255) |
-| `IMAGE_BACKGROUND_RGB_JSON` | `str` (JSON array) | `""` | `image_config.background_rgb_color` (single `[r,g,b]` 0-255) |
-
-**Recraft V3 Extras filter UserValves** (Recraft V3 only):
-
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_RECRAFT_STYLE` | `str` | `""` | `image_config.style` |
-| `IMAGE_TEXT_LAYOUT_JSON` | `str` (JSON array) | `""` | `image_config.text_layout` (entries: `{text, bbox: 4×[x,y]}`) |
-
-**Skip-when-default sentinel**: empty string `""` (after `.strip()`) for `Literal` and `str` valves is **NOT** included in `body.image_config` — the upstream provider's own default applies. For float valves like `IMAGE_STRENGTH`, `0.0` is the skip sentinel (set `0.001` if you actually want strength `0.0`; visually identical effect).
-
-**Routing**: all five filters write to `body.image_config` via shallow merge. The Gemini Options, Sourceful Options, Recraft Options, and Recraft V3 Extras filters check `body.model` against their respective regex patterns at inlet time and return the body unchanged on non-match (defensive guard against operator misconfiguration). The Recraft V3 Extras filter also no-ops on V4/V4 Pro per OpenRouter docs (those models don't support `style` or `text_layout`). On collision, the more-specific filter overrides the generic per-key.
+**Routing**: the filter writes the chosen values flat into `body.image_config`.
+The image adapter then splits them, using the same published record, into
+top-level request parameters and provider-scoped options. A filter writes only
+for the model it belongs to, in any of the id forms Open WebUI produces.
 
 ### OpenRouter video generation
 

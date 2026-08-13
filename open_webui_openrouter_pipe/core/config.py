@@ -1689,26 +1689,28 @@ class Valves(BaseModel):
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
         description=(
-            "Expose OpenRouter native image-output models (Sourceful, Flux, "
-            "Seedream, etc.) as chat models. Multimodal text+image models "
-            "(gpt-5-image, gemini-image variants) stay in the chat catalog "
-            "and get the generic image filter attached for their image settings."
+            "Expose OpenRouter's image-generation models (Sourceful, Flux, Seedream and "
+            "the rest) as models you can pick in chat. Models that produce both text and "
+            "images stay where they already are in the chat list; this only adds the "
+            "image-only ones."
         ),
     )
     AUTO_INSTALL_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
-            "Automatically install/update the OpenRouter native image filters "
-            "in Open WebUI: a generic filter plus provider-specific ones for the "
-            "Gemini, Sourceful, Recraft, and Grok image families."
+            "Install and keep up to date one settings panel per image model, offering "
+            "exactly the settings that model tells OpenRouter it accepts -- so nobody is "
+            "shown an aspect ratio their model rejects. If a model's settings list cannot "
+            "be read on a refresh, it keeps the settings from the last successful read; a "
+            "model never read offers none rather than a guessed set."
         ),
     )
     AUTO_ATTACH_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
-            "Automatically attach the appropriate native image filters to "
-            "image-output models: a generic filter to all, plus provider-specific "
-            "filters to the Gemini, Sourceful/Riverflow, Recraft, and Grok families."
+            "Attach each image model's own settings panel to it, so the settings appear "
+            "in the chat controls when that model is selected. Turn this off to install "
+            "the panels but leave attaching them to you."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(

@@ -1,148 +1,479 @@
-"""Image generation filter source code renderer.
+"""Renders one Open WebUI filter per image model.
 
-Seven filter variants — `generic`, `gemini`, `sourceful`, `sourceful_v25`,
-`recraft`, `recraft_v3`, `grok` — written to `body.image_config` as top-level
-request fields per OpenRouter's
-[image-generation.md](.external/openrouter_docs/guides/overview/multimodal/image-generation.md).
-The pipe's orchestrator injects `body.modalities` separately based on the
-registered model's `architecture.output_modalities` so filters do not need
-runtime registry access.
-
-Filter assignment rules (driven by `filter_manager.ensure_openrouter_image_filter_function_ids`):
-- **All** models with `image` in `output_modalities` get the **generic** filter
-- Models matching `^~?google/gemini-3.*flash-image.*$` ALSO get **gemini** filter (extended aspect ratios + 0.5K — Flash 3.x only)
-- Models matching `^~?sourceful/riverflow-v2-(pro|fast)$` ALSO get **sourceful** filter
-  (font_inputs + super_resolution_references — Riverflow V2 only)
-- Models matching `^~?sourceful/riverflow-v2\\.5-(pro|fast)$` ALSO get **sourceful_v25** filter
-  (font_inputs + scoring_prompt + scoring_rubric + background_mode + background_hex_color).
-  Riverflow versions get ONE dedicated Sourceful filter each, never two — 2.5 dropped
-  super_resolution_references and added the scoring/background params, so stacking a
-  shared filter would expose dead knobs.
-- Models matching `^~?recraft/recraft-` ALSO get **recraft** filter (strength + rgb_colors + background_rgb_color)
-- Models matching `^~?recraft/recraft-v3$` ALSO get **recraft_v3** filter (style + text_layout — V3 only per OpenRouter docs)
-- Models matching `^~?x-ai/grok-imagine-image-` ALSO get **grok** filter (Grok-specific 14-value aspect_ratio set + `n` count)
+Each filter offers exactly the knobs that model's endpoint record publishes -- its
+``supported_parameters`` become typed fields, its ``allowed_passthrough_parameters``
+become free-text ones. The filter writes every chosen value flat into
+``body["image_config"]``; the image adapter is what decides, from the same record,
+which of those go at the top level of the request and which belong under
+``provider.options.<slug>``.
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
+from typing import Any
 
 from ..core.config import _OPENROUTER_IMAGE_FILTER_MARKER
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
+from ..integrations.image_types import (
+    PASSTHROUGH_DESCRIPTION,
+    RENDERABLE_FIELD_NAME_RE,
+    TOP_LEVEL_PARAMS,
+)
+from ..models.registry import sanitize_model_id
 
 
-@dataclass(frozen=True, slots=True)
-class ImageFilterSpec:
-    """Metadata for an image-generation filter variant."""
+def sanitize_image_filter_id(model_id: str) -> str:
+    """Derive one model's filter id, on the same terms as the video sibling.
 
-    variant: str
-    function_id: str
-    display_name: str
-    marker: str
-
-
-def sanitize_image_filter_id(variant: str) -> str:
-    raw = (variant or "generic").strip().lower()
+    The thresholds match ``sanitize_video_filter_id`` because both now take a model id:
+    the tighter 30/21 pair hashed away the readable part of most ids, and that string is
+    what an operator has to recognise in Open WebUI's function list. The empty-input
+    fallback is ``model`` rather than ``generic``, which was a retired filter's id.
+    """
+    raw = (model_id or "").strip().lower()
     cleaned = _IMAGE_FILTER_ID_RE.sub("_", raw)
     if not cleaned:
-        cleaned = "generic"
-    if len(cleaned) > 30:
-        suffix = hashlib.sha1(variant.encode("utf-8")).hexdigest()[:8]
-        cleaned = f"{cleaned[:21].rstrip('_')}_{suffix}"
+        cleaned = "model"
+    if len(cleaned) > 54:
+        suffix = hashlib.sha1((model_id or "").encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{cleaned[:45].rstrip('_')}_{suffix}"
     return f"openrouter_image_filter_{cleaned}"
 
 
-def build_generic_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="generic",
-        function_id=sanitize_image_filter_id("generic"),
-        display_name="OR Image Filter",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:generic",
-    )
+"""A passthrough name may become a Python identifier, so it must look like one.
+
+OpenRouter picks these names. One containing a hyphen -- ``cfg-scale`` is a real
+provider parameter -- renders ``IMAGE_CFG-SCALE:`` and the whole module stops parsing,
+which costs the model every other knob it publishes, not just the bad one.
+"""
+
+_NOT_A_KNOB = frozenset({"input_references"})
+"""Published parameters that are never a user control.
+
+``input_references`` counts the images the request carries; the adapter reads that limit
+straight off the endpoint record and fills the list from what the user attached. Excluded
+once, here, so it cannot be counted as a knob in one place and skipped in another.
+"""
 
 
-def build_gemini_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="gemini",
-        function_id=sanitize_image_filter_id("gemini"),
-        display_name="Gemini Options",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:gemini",
-    )
+@dataclass(frozen=True, slots=True)
+class ImageModelFilterSpec:
+    """What one image model actually accepts, read from its published endpoint record.
 
-
-def build_sourceful_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="sourceful",
-        function_id=sanitize_image_filter_id("sourceful"),
-        display_name="Sourceful Options",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:sourceful",
-    )
-
-
-def build_sourceful_v25_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="sourceful_v25",
-        function_id=sanitize_image_filter_id("sourceful_v25"),
-        display_name="Sourceful V2.5 Options",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:sourceful_v25",
-    )
-
-
-def build_recraft_common_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="recraft",
-        function_id=sanitize_image_filter_id("recraft"),
-        display_name="Recraft Options",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:recraft",
-    )
-
-
-def build_recraft_v3_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="recraft_v3",
-        function_id=sanitize_image_filter_id("recraft_v3"),
-        display_name="Recraft V3 Extras",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:recraft_v3",
-    )
-
-
-def build_grok_image_filter_spec() -> ImageFilterSpec:
-    return ImageFilterSpec(
-        variant="grok",
-        function_id=sanitize_image_filter_id("grok"),
-        display_name="Grok Imagine Options",
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:grok",
-    )
-
-
-def render_generic_image_filter_source() -> str:
-    """Render the generic image filter — aspect_ratio (10 standard) + image_size (1K/2K/4K).
-
-    Attached to ALL models with `image` in `output_modalities`. Inlet logic:
-    1. Read user-valves
-    2. Build image_config overrides dict
-    3. Shallow-merge into body.image_config (overrides per-key; preserves any
-       user-supplied keys not also set by this filter's UserValves)
+    Every knob here came from the model's own contract. A knob the model does not
+    publish has no field at all, which is the difference from the old fixed variants:
+    those offered the same ten aspect ratios to every model, and 33 of 40 rejected at
+    least one of them.
     """
-    spec = build_generic_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — generic."""
+
+    model_id: str
+    display_name: str
+    function_id: str
+    marker: str
+    dotted_id: str = ""
+    published_anything: bool = False
+    """Whether any record published a renderable setting, before agreement was applied.
+
+    A knobless spec has two causes that read very differently: the model offers nothing,
+    or its providers publish different things and nothing survives the intersection.
+    """
+    enums: tuple[tuple[str, tuple[Any, ...]], ...] = ()
+    ranges: tuple[tuple[str, int, int], ...] = ()
+    supported: tuple[str, ...] = ()
+    """Parameters the model declares it supports without publishing a domain.
+
+    OpenRouter writes these as ``{"type": "boolean"}``, which their model schema words as
+    "whether the model supports ..." -- a support flag, not a value. The request takes a
+    number, so the control is a number with no published bounds.
+    """
+    passthrough: tuple[str, ...] = ()
+
+    @property
+    def knob_count(self) -> int:
+        return len(self.enums) + len(self.ranges) + len(self.supported) + len(self.passthrough)
+
+    @property
+    def has_knobs(self) -> bool:
+        return bool(self.enums or self.ranges or self.supported or self.passthrough)
+
+
+def _descriptor_enum(descriptor: dict) -> tuple[Any, ...]:
+    """The published values, as published.
+
+    Stringifying them rendered a control whose every option the adapter then rejected,
+    because it compares the chosen value against the contract's own list -- ``"512"`` is
+    not ``512``.
+    """
+    values = descriptor.get("values")
+    if not isinstance(values, list):
+        return ()
+    return tuple(
+        v
+        for v in values
+        if isinstance(v, (str, int, float))
+        and not isinstance(v, bool)
+        and v != ""
+        # `repr(nan)` is the bare name `nan`, not a literal, so it would render a field
+        # annotation referring to an undefined name. JSON admits NaN and Infinity, so a
+        # catalog response can carry them.
+        and (not isinstance(v, float) or math.isfinite(v))
+    )
+
+
+def _descriptor_bound(descriptor: dict, key: str) -> int | None:
+    """The published bound, or None when it is not a whole number.
+
+    A bound the pipe cannot read is not a bound. Substituting a default produced a knob
+    advertising "accepts 0 to 0" whose only selectable value was the one the override
+    block refuses to send -- a control that looks live and can never do anything.
+    """
+    raw = descriptor.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if isinstance(raw, float) and raw != int(raw):
+        return None
+    return int(raw)
+
+
+def _published_records(endpoint_record: Any) -> list[dict]:
+    """Every record the model published, however the caller passed them."""
+    if isinstance(endpoint_record, dict):
+        return [endpoint_record]
+    if isinstance(endpoint_record, list):
+        return [item for item in endpoint_record if isinstance(item, dict)]
+    return []
+
+
+def _agreed_parameters(records: list[dict]) -> dict[str, dict]:
+    """The descriptors every provider of this model accepts.
+
+    A model served by several providers publishes one record each, and they disagree.
+    The routing decision is made per request, long after the controls are rendered, so
+    the only set that is right whichever provider serves is the one they all accept:
+    enum values intersected, ranges narrowed to the tightest published bounds.
+    """
+    if not records:
+        return {}
+    per_record = []
+    for record in records:
+        supported = record.get("supported_parameters")
+        per_record.append(supported if isinstance(supported, dict) else {})
+    if not per_record[0]:
+        return {}
+
+    agreed: dict[str, dict] = {}
+    for name, descriptor in per_record[0].items():
+        if not isinstance(descriptor, dict):
+            continue
+        others = [d.get(name) for d in per_record[1:]]
+        if any(not isinstance(other, dict) for other in others):
+            continue
+        kind = descriptor.get("type")
+        if any(other.get("type") != kind for other in others):  # type: ignore[union-attr]
+            continue
+        if kind == "enum":
+            if not isinstance(descriptor.get("values"), list):
+                continue
+            if any(not isinstance(other.get("values"), list) for other in others):  # type: ignore[union-attr]
+                continue
+            shared = [
+                value
+                for value in descriptor["values"]
+                if all(value in (other.get("values") or []) for other in others)  # type: ignore[union-attr]
+            ]
+            if shared:
+                agreed[name] = {"type": "enum", "values": shared}
+        elif kind == "range":
+            lows = [descriptor.get("min"), *(other.get("min") for other in others)]  # type: ignore[union-attr]
+            highs = [descriptor.get("max"), *(other.get("max") for other in others)]  # type: ignore[union-attr]
+            numeric = all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in (*lows, *highs)
+            )
+            if numeric:
+                agreed[name] = {"type": "range", "min": max(lows), "max": min(highs)}  # type: ignore[type-var]
+        else:
+            agreed[name] = descriptor
+    return agreed
+
+
+def _agreed_passthrough(records: list[dict]) -> tuple[str, ...]:
+    """Passthrough names every provider both names and can be addressed under.
+
+    A record with no provider slug cannot carry a provider option at all -- the adapter
+    drops the whole block -- so one such record means no passthrough control is offered.
+    """
+    if not records:
+        return ()
+    per_record: list[set[str]] = []
+    for record in records:
+        slug = record.get("provider_slug")
+        if not isinstance(slug, str) or not slug.strip():
+            return ()
+        names = record.get("allowed_passthrough_parameters")
+        if not isinstance(names, list):
+            return ()
+        per_record.append({name for name in names if isinstance(name, str) and name})
+    shared = set.intersection(*per_record) if per_record else set()
+    first = records[0].get("allowed_passthrough_parameters") or []
+    return tuple(name for name in first if name in shared)
+
+
+def build_image_model_filter_spec(
+    model_id: str,
+    image_model: dict | None = None,
+    endpoint_record: dict | list[dict] | None = None,
+) -> ImageModelFilterSpec:
+    """Turn one model's published contract into the knobs its filter should render.
+
+    ``endpoint_record`` is the model's entry from OpenRouter's per-model endpoint
+    listing. When it is missing the spec carries no knobs rather than guessing: an
+    invented ratio list is what the fixed variants did, and it is why a third of models
+    were offered values they reject.
+    """
+    model = image_model if isinstance(image_model, dict) else {}
+    canonical = (str(model.get("id") or model_id or "")).strip()
+    display = str(model.get("name") or canonical).strip() or canonical
+
+    records = _published_records(endpoint_record)
+    declared = _agreed_parameters(records)
+
+    enums: list[tuple[str, tuple[str, ...]]] = []
+    ranges: list[tuple[str, int, int]] = []
+    supported_names: list[str] = []
+    for name in TOP_LEVEL_PARAMS:
+        descriptor = declared.get(name)
+        if not isinstance(descriptor, dict):
+            continue
+        kind = descriptor.get("type")
+        if kind == "enum":
+            values = _descriptor_enum(descriptor)
+            if values:
+                enums.append((name, values))
+        elif kind == "range":
+            low = _descriptor_bound(descriptor, "min")
+            high = _descriptor_bound(descriptor, "max")
+            if low is not None and high is not None and high > low:
+                ranges.append((name, low, high))
+        elif kind == "boolean":
+            supported_names.append(name)
+
+    taken = {
+        _valve_name(name)
+        for name in (*(n for n, _ in enums), *(n for n, _, _ in ranges), *supported_names)
+    }
+    # `taken` grows as names are accepted, so two published names differing only in case
+    # cannot both render: they produce one field, and the second write would put a
+    # parameter on the wire that the user was never shown a control for.
+    accepted: list[str] = []
+    for name in _agreed_passthrough(records):
+        if (
+            name in TOP_LEVEL_PARAMS
+            or name in _NOT_A_KNOB
+            or not RENDERABLE_FIELD_NAME_RE.fullmatch(name)
+            or _valve_name(name) in taken
+        ):
+            continue
+        taken.add(_valve_name(name))
+        accepted.append(name)
+    passthrough = tuple(accepted)
+
+    return ImageModelFilterSpec(
+        model_id=canonical,
+        display_name=display,
+        function_id=sanitize_image_filter_id(canonical),
+        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
+        dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
+        published_anything=any(
+            isinstance((record.get("supported_parameters") or {}), dict)
+            and any(
+                name in TOP_LEVEL_PARAMS and name not in _NOT_A_KNOB
+                for name in (record.get("supported_parameters") or {})
+            )
+            or bool(record.get("allowed_passthrough_parameters"))
+            for record in records
+        ),
+        enums=tuple(enums),
+        ranges=tuple(ranges),
+        supported=tuple(supported_names),
+        passthrough=passthrough,
+    )
+
+
+_IMAGE_KNOB_TITLE_OVERRIDES = {
+    "aspect_ratio": ("Aspect ratio", "Frame shape."),
+    "resolution": ("Resolution", "Output size tier."),
+    "n": ("Number of images", "How many images this request asks for."),
+    "seed": (
+        "Seed",
+        (
+            "This model supports seeding. OpenRouter publishes no range for it, and does "
+            "not promise the same seed repeats an image."
+        ),
+    ),
+    "background": ("Background", "Background treatment."),
+    "quality": ("Quality", "Rendering quality tier."),
+    "output_format": ("Output format", "Container the image comes back in."),
+    "output_compression": ("Output compression", "Compression level, where the format allows one."),
+    "size": ("Output size", "Exact pixel dimensions, where the model takes them rather than a tier."),
+}
+
+IMAGE_KNOB_TITLES = {
+    name: _IMAGE_KNOB_TITLE_OVERRIDES.get(name, (name, "")) for name in TOP_LEVEL_PARAMS
+}
+"""A title for every parameter that can be rendered, derived from the one list.
+
+Keyed off ``TOP_LEVEL_PARAMS`` rather than written out again, so a name added there
+cannot arrive with no title and render a control labelled with its raw parameter name.
+"""
+
+assert set(_IMAGE_KNOB_TITLE_OVERRIDES) == set(TOP_LEVEL_PARAMS), (
+    "every renderable parameter needs a title, or its control is labelled with its raw "
+    "parameter name; and every title must name a parameter that can be rendered"
+)
+
+
+def _valve_name(published: str) -> str:
+    """The field name a published parameter is rendered under.
+
+    One producer, because the name decides three things that must agree: the field the
+    chat UI draws, the attribute the override block reads back, and whether a later
+    parameter would collide with it. Two names differing only in case render one field,
+    and pydantic keeps the last -- so the comparison has to be on this value, not on the
+    published spelling.
+    """
+    return f"IMAGE_{published.upper()}"
+
+
+def _image_field(text: str) -> str:
+    return "\n".join(f"        {line}" if line else "" for line in text.splitlines())
+
+
+def _image_literal_union(values: tuple[Any, ...]) -> str:
+    return ", ".join(repr(value) for value in values)
+
+
+def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
+    """Render only the knobs this model publishes, each with its published values.
+
+    An empty contract renders ``pass`` rather than an empty class body, which is not valid
+    Python. Callers decide separately whether a knobless filter is worth installing.
+    """
+    fields: list[str] = []
+    for name, values in spec.enums:
+        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        literals = _image_literal_union(("", *values))
+        fields.append(
+            _image_field(
+                f"{_valve_name(name)}: Literal[{literals}] = Field(\n"
+                '            default="",\n'
+                f'            title="{title}",\n'
+                f'            description="{description} Empty uses the model default.",\n'
+                "        )"
+            )
+        )
+    for name, low, high in spec.ranges:
+        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        fields.append(
+            _image_field(
+                f"{_valve_name(name)}: Optional[int] = Field(\n"
+                "            default=None,\n"
+                f"            ge={low},\n"
+                f"            le={high},\n"
+                f'            title="{title}",\n'
+                f'            description="{description} This model accepts {low} to {high}. '
+                'Leave it empty to use the model default.",\n'
+                "        )"
+            )
+        )
+    for name in spec.supported:
+        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        fields.append(
+            _image_field(
+                f"{_valve_name(name)}: Optional[int] = Field(\n"
+                "            default=None,\n"
+                f'            title="{title}",\n'
+                f'            description="{description} Leave it empty to use the model '
+                'default.",\n'
+                "        )"
+            )
+        )
+    for name in spec.passthrough:
+        fields.append(
+            _image_field(
+                f"{_valve_name(name)}: str = Field(\n"
+                '            default="",\n'
+                f"            title={name!r},\n"
+                f'            description="{PASSTHROUGH_DESCRIPTION}",\n'
+                "        )"
+            )
+        )
+    return "\n".join(fields) if fields else "        pass"
+
+
+def _render_image_overrides(spec: ImageModelFilterSpec) -> str:
+    """Read each rendered valve back out into the request, under its published name."""
+    lines: list[str] = []
+    for name, _values in spec.enums:
+        lines.append(f"        value = user_valves.{_valve_name(name)}")
+        lines.append('        if value != "":')
+        lines.append(f"            overrides[{name!r}] = value")
+    for name, _low, _high in spec.ranges:
+        lines.append(f"        count = user_valves.{_valve_name(name)}")
+        lines.append("        if count is not None:")
+        lines.append(f"            overrides[{name!r}] = int(count)")
+    for name in spec.supported:
+        lines.append(f"        chosen = user_valves.{_valve_name(name)}")
+        lines.append("        if chosen is not None:")
+        lines.append(f"            overrides[{name!r}] = int(chosen)")
+    for name in spec.passthrough:
+        lines.append(f'        raw = (user_valves.{_valve_name(name)} or "").strip()')
+        lines.append("        if raw:")
+        lines.append(f"            overrides[{name!r}] = self._decode(raw, {name!r})")
+    return "\n".join(lines) if lines else "        pass"
+
+
+def render_image_model_filter_source(spec: ImageModelFilterSpec) -> str:
+    """Render one model's filter, offering exactly the knobs its contract publishes."""
+    return f'''"""OpenRouter image companion filter."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
 except Exception:  # pragma: no cover - OWUI runtime only
     SRC_LOG_LEVELS = {{}}
 
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
+OWUI_OPENROUTER_PIPE_MARKER = {spec.marker!r}
+IMAGE_FILTER_MODEL_ID = {spec.model_id!r}
+IMAGE_FILTER_MODEL_DOTTED = {spec.dotted_id!r}
+
+
+def _matches_model(raw: str) -> bool:
+    # The pipe rewrites "/" to "." before Open WebUI ever sees a model id, and Open
+    # WebUI prefixes its own function id, so the runtime body carries
+    # "<function_id>.<vendor>.<model>" -- no slash. Normalise both sides to that dotted
+    # form and require a "." boundary, so "recraft.recraft-v3" cannot be matched by
+    # "notrecraft.recraft-v3". A leading "~" marks a catalog alias and is not part of
+    # the identity.
+    if not isinstance(raw, str) or not raw:
+        return False
+    normalised = raw.strip().lstrip("~").replace("/", ".").casefold()
+    return normalised == IMAGE_FILTER_MODEL_DOTTED or normalised.endswith(
+        "." + IMAGE_FILTER_MODEL_DOTTED
+    )
+
+
+class ImageFilterInputError(ValueError):
+    """A value the user typed that this filter will not put on the wire."""
 
 
 class Filter:
@@ -155,281 +486,59 @@ class Filter:
         )
 
     class UserValves(BaseModel):
-        IMAGE_ASPECT_RATIO: Literal[
-            "", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
-        ] = Field(
-            default="",
-            title="Image aspect ratio",
-            description="Aspect ratio for generated images. Empty = model default.",
-        )
-        IMAGE_SIZE: Literal["", "1K", "2K", "4K"] = Field(
-            default="",
-            title="Image size",
-            description="Image resolution tier. Empty = model default (1K).",
-        )
+        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
 
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {{}}
+            for name, field in cls.model_fields.items():
+                if name not in data:
+                    continue
+                annotated = (
+                    Annotated[tuple([field.annotation, *field.metadata])]
+                    if field.metadata
+                    else field.annotation
+                )
                 try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
+                    TypeAdapter(annotated).validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept
 
-        overrides: dict = {{}}
-        aspect = (user_valves.IMAGE_ASPECT_RATIO or "").strip()
-        if aspect:
-            overrides["aspect_ratio"] = aspect
-        size = (user_valves.IMAGE_SIZE or "").strip()
-        if size:
-            overrides["image_size"] = size
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_gemini_image_filter_source() -> str:
-    """Render the Gemini-specific image filter — extended aspect ratios + 0.5K size.
-
-    Attached only to models matching `^~?google/gemini-3.*flash-image.*$` (Flash 3.x).
-    Shallow-merges into body.image_config alongside the generic filter (per-key
-    overwrite; if both filters write the same key, the second one wins).
-    """
-    spec = build_gemini_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Gemini extensions."""
-
-from __future__ import annotations
-
-import json
-import logging
-import re
-from typing import Any, Literal, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-_GEMINI_MODEL_PATTERN = re.compile(r"^~?google/gemini-3.*flash-image.*$")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_ASPECT_RATIO_EXTENDED: Literal["", "1:4", "4:1", "1:8", "8:1"] = Field(
-            default="",
-            title="Image aspect ratio (Gemini extended)",
-            description="Gemini-only extended aspect ratios. Overrides the generic aspect_ratio when set. Empty = use generic filter's value.",
-        )
-        IMAGE_SIZE_GEMINI: Literal["", "0.5K"] = Field(
-            default="",
-            title="Image size (Gemini-only 0.5K)",
-            description="Gemini Flash Image only — 0.5K low-res tier. Empty = use generic filter's value.",
-        )
+{_render_image_model_user_valves(spec)}
 
     def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
+        self.log = logging.getLogger("openrouter.image.filter")
         self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
         self.toggle = True
         self.valves = self.Valves()
 
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _GEMINI_MODEL_PATTERN.match(_canonical_model_slug(model_id)):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
+    @staticmethod
+    def _decode(raw: str, field: str) -> Any:
+        """Parse a passthrough value only when the user wrote a JSON container.
 
-        overrides: dict = {{}}
-        ext_aspect = (user_valves.IMAGE_ASPECT_RATIO_EXTENDED or "").strip()
-        if ext_aspect:
-            overrides["aspect_ratio"] = ext_aspect
-        gemini_size = (user_valves.IMAGE_SIZE_GEMINI or "").strip()
-        if gemini_size:
-            overrides["image_size"] = gemini_size
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_sourceful_image_filter_source() -> str:
-    """Render the Sourceful V2 image filter — font_inputs + super_resolution_references.
-
-    Attached only to models matching `^~?sourceful/riverflow-v2-(pro|fast)$`.
-    Riverflow 2.5 has its own dedicated filter (`sourceful_v25`) because 2.5
-    dropped super_resolution_references — each Riverflow version gets exactly
-    one Sourceful filter, never a stacked pair.
-
-    Pre-validates cardinality caps (max 2 font_inputs, max 4 super_resolution_references)
-    and rejects invalid input BEFORE submission so users get clear errors instead of
-    cryptic provider 400s.
-    """
-    spec = build_sourceful_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Sourceful extensions."""
-
-from __future__ import annotations
-
-import json
-import logging
-import re
-from typing import Any, Literal, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-# V2 Pro/Fast ONLY — Riverflow 2.5 gets its own dedicated filter (sourceful_v25)
-# because 2.5 dropped super_resolution_references.
-_SOURCEFUL_MODEL_PATTERN = re.compile(r"^~?sourceful/riverflow-v2-(pro|fast)$")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-_MAX_FONT_INPUTS = 2
-_MAX_SUPER_RESOLUTION_REFERENCES = 4
-
-
-class ImageGenerationError(Exception):
-    """Raised at inlet when Sourceful-specific limits or input validation fail
-    (font_inputs cardinality > 2, super_resolution_references > 4, malformed
-    JSON, missing required fields)."""
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_FONT_INPUTS_JSON: str = Field(
-            default="",
-            title="Font inputs (JSON array)",
-            description=(
-                'Sourceful-only font rendering. JSON array of objects: '
-                '[{{"font_url": "https://...", "text": "..."}}]. Max 2 entries, +$0.03 each. '
-                'Empty = none.'
-            ),
-        )
-        IMAGE_SUPER_RESOLUTION_REFERENCES_JSON: str = Field(
-            default="",
-            title="Super-resolution references (JSON array)",
-            description=(
-                'Riverflow V2 image-to-image super-resolution (2.5 does not '
-                'support this). JSON array of URL strings. Max 4 entries, '
-                '+$0.20 each. Image-to-image only (requires input images in '
-                'messages). Empty = none.'
-            ),
-        )
-
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def _parse_json_list(self, raw: str, field: str) -> list:
-        cleaned = (raw or "").strip()
-        if not cleaned:
-            return []
+        Anything else is passed through as the string it is -- ``style`` really does take
+        a bare word like ``realistic_image``, and parsing it would turn ``null`` into
+        None and ``123`` into an int. A container that does not parse raises here, where
+        the message can name the field, rather than reaching the provider as a string
+        that produces an error about something else.
+        """
+        if raw[:1] not in ("[", "{{"):
+            return raw
         try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ImageGenerationError(
-                f"{{field}} is not valid JSON: {{exc}}"
-            )
-        if not isinstance(parsed, list):
-            raise ImageGenerationError(
-                f"{{field}} must be a JSON array, got {{type(parsed).__name__}}"
-            )
-        return parsed
+            return json.loads(raw)
+        except ValueError as exc:
+            raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
 
     def inlet(
         self,
@@ -439,12 +548,7 @@ class Filter:
     ) -> dict:
         if not isinstance(body, dict):
             return body
-        # Model gate: only emit V2-specific knobs for Riverflow V2 Pro/Fast.
-        # Riverflow 2.5 has its own dedicated filter; this one no-ops there.
-        # Defends against operator misconfiguration (filter manually attached
-        # to any other model would otherwise emit invalid params).
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _SOURCEFUL_MODEL_PATTERN.match(_canonical_model_slug(model_id)):
+        if not _matches_model(body.get("model")):
             return body
         user_valves = None
         if isinstance(__user__, dict):
@@ -462,750 +566,7 @@ class Filter:
             user_valves = self.UserValves()
 
         overrides: dict = {{}}
-
-        font_inputs = self._parse_json_list(
-            user_valves.IMAGE_FONT_INPUTS_JSON, "IMAGE_FONT_INPUTS_JSON"
-        )
-        if font_inputs:
-            if len(font_inputs) > _MAX_FONT_INPUTS:
-                raise ImageGenerationError(
-                    f"font_inputs has {{len(font_inputs)}} entries; max is {{_MAX_FONT_INPUTS}}."
-                )
-            for idx, entry in enumerate(font_inputs):
-                if not isinstance(entry, dict):
-                    raise ImageGenerationError(
-                        f"font_inputs[{{idx}}] must be an object with 'font_url' and 'text', "
-                        f"got {{type(entry).__name__}}."
-                    )
-                if not entry.get("font_url") or not entry.get("text"):
-                    raise ImageGenerationError(
-                        f"font_inputs[{{idx}}] requires non-empty 'font_url' and 'text'."
-                    )
-            overrides["font_inputs"] = font_inputs
-
-        super_refs = self._parse_json_list(
-            user_valves.IMAGE_SUPER_RESOLUTION_REFERENCES_JSON,
-            "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON",
-        )
-        if super_refs:
-            if len(super_refs) > _MAX_SUPER_RESOLUTION_REFERENCES:
-                raise ImageGenerationError(
-                    f"super_resolution_references has {{len(super_refs)}} entries; max is {{_MAX_SUPER_RESOLUTION_REFERENCES}}."
-                )
-            for idx, entry in enumerate(super_refs):
-                if not isinstance(entry, str) or not entry.strip():
-                    raise ImageGenerationError(
-                        f"super_resolution_references[{{idx}}] must be a non-empty URL string."
-                    )
-            overrides["super_resolution_references"] = super_refs
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_sourceful_v25_image_filter_source() -> str:
-    """Render the dedicated Riverflow 2.5 filter — fonts + scoring + background.
-
-    Attached only to models matching `^~?sourceful/riverflow-v2\\.5-(pro|fast)$`.
-    This is the SINGLE Sourceful filter for 2.5 models (the V2 `sourceful`
-    filter does not attach to them): it carries `font_inputs` over from V2
-    (same max-2 validation) plus everything 2.5 added — `scoring_prompt`,
-    `scoring_rubric`, `background_mode` (original/transparent/solid), and
-    `background_hex_color`. There is intentionally NO super_resolution_references
-    knob: Riverflow 2.5 dropped that parameter. The hex color requires
-    `background_mode=solid` — validated at inlet so users get a clear error
-    instead of a cryptic provider 400.
-    """
-    spec = build_sourceful_v25_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Sourceful Riverflow 2.5."""
-
-from __future__ import annotations
-
-import json
-import logging
-import re
-from typing import Any, Literal, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-_SOURCEFUL_V25_MODEL_PATTERN = re.compile(r"^~?sourceful/riverflow-v2\\.5-(pro|fast)$")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-_HEX_COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{{3}}|[0-9a-fA-F]{{6}})$")
-_MAX_FONT_INPUTS = 2
-
-
-class ImageGenerationError(Exception):
-    """Raised at inlet when Riverflow 2.5 input validation fails (malformed
-    JSON, font_inputs cardinality > 2, malformed hex color,
-    background_hex_color without background_mode=solid)."""
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_FONT_INPUTS_JSON: str = Field(
-            default="",
-            title="Font inputs (JSON array)",
-            description=(
-                'Sourceful-only font rendering. JSON array of objects: '
-                '[{{"font_url": "https://...", "text": "..."}}]. Max 2 entries, +$0.03 each. '
-                'Empty = none.'
-            ),
-        )
-        IMAGE_SCORING_PROMPT: str = Field(
-            default="",
-            title="Scoring prompt",
-            description=(
-                "Riverflow 2.5 only. Free-text instruction the model uses to "
-                "self-score candidate generations before returning the best "
-                "one. Empty = no scoring prompt."
-            ),
-        )
-        IMAGE_SCORING_RUBRIC: str = Field(
-            default="",
-            title="Scoring rubric",
-            description=(
-                "Riverflow 2.5 only. Free-text rubric describing what a good "
-                "output looks like; used with the scoring prompt to rank "
-                "candidates. Empty = no rubric."
-            ),
-        )
-        IMAGE_BACKGROUND_MODE: Literal["", "original", "transparent", "solid"] = Field(
-            default="",
-            title="Background mode",
-            description=(
-                "Riverflow 2.5 only. 'original' keeps the generated "
-                "background, 'transparent' removes it (PNG alpha), 'solid' "
-                "fills it with the hex color below. Empty = model default."
-            ),
-        )
-        IMAGE_BACKGROUND_HEX_COLOR: str = Field(
-            default="",
-            title="Background hex color",
-            description=(
-                "Riverflow 2.5 only. Solid background fill color as #RGB or "
-                "#RRGGBB (e.g. #FFFFFF). Requires background mode 'solid'. "
-                "Empty = none."
-            ),
-        )
-
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def _parse_json_list(self, raw: str, field: str) -> list:
-        cleaned = (raw or "").strip()
-        if not cleaned:
-            return []
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ImageGenerationError(
-                f"{{field}} is not valid JSON: {{exc}}"
-            )
-        if not isinstance(parsed, list):
-            raise ImageGenerationError(
-                f"{{field}} must be a JSON array, got {{type(parsed).__name__}}"
-            )
-        return parsed
-
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        # Model gate: only emit 2.5-specific knobs for Riverflow 2.5 Pro/Fast.
-        # Defends against operator misconfiguration (filter manually attached
-        # to another model would otherwise emit invalid params).
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _SOURCEFUL_V25_MODEL_PATTERN.match(_canonical_model_slug(model_id)):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
-
-        overrides: dict = {{}}
-
-        font_inputs = self._parse_json_list(
-            user_valves.IMAGE_FONT_INPUTS_JSON, "IMAGE_FONT_INPUTS_JSON"
-        )
-        if font_inputs:
-            if len(font_inputs) > _MAX_FONT_INPUTS:
-                raise ImageGenerationError(
-                    f"font_inputs has {{len(font_inputs)}} entries; max is {{_MAX_FONT_INPUTS}}."
-                )
-            for idx, entry in enumerate(font_inputs):
-                if not isinstance(entry, dict):
-                    raise ImageGenerationError(
-                        f"font_inputs[{{idx}}] must be an object with 'font_url' and 'text', "
-                        f"got {{type(entry).__name__}}."
-                    )
-                if not entry.get("font_url") or not entry.get("text"):
-                    raise ImageGenerationError(
-                        f"font_inputs[{{idx}}] requires non-empty 'font_url' and 'text'."
-                    )
-            overrides["font_inputs"] = font_inputs
-
-        scoring_prompt = (user_valves.IMAGE_SCORING_PROMPT or "").strip()
-        if scoring_prompt:
-            overrides["scoring_prompt"] = scoring_prompt
-
-        scoring_rubric = (user_valves.IMAGE_SCORING_RUBRIC or "").strip()
-        if scoring_rubric:
-            overrides["scoring_rubric"] = scoring_rubric
-
-        bg_mode = (user_valves.IMAGE_BACKGROUND_MODE or "").strip()
-        bg_hex = (user_valves.IMAGE_BACKGROUND_HEX_COLOR or "").strip()
-        if bg_hex:
-            if bg_mode != "solid":
-                raise ImageGenerationError(
-                    "IMAGE_BACKGROUND_HEX_COLOR requires background mode 'solid' "
-                    f"(current mode: {{bg_mode or 'model default'}})."
-                )
-            if not _HEX_COLOR_PATTERN.match(bg_hex):
-                raise ImageGenerationError(
-                    f"IMAGE_BACKGROUND_HEX_COLOR must be #RGB or #RRGGBB, got {{bg_hex!r}}."
-                )
-        if bg_mode:
-            overrides["background_mode"] = bg_mode
-        if bg_hex:
-            overrides["background_hex_color"] = bg_hex
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_recraft_common_image_filter_source() -> str:
-    """Render the Recraft common image filter — strength + rgb_colors + background_rgb_color.
-
-    Attached to all models matching `^~?recraft/recraft-` (V3, V4, V4 Pro). Validates
-    JSON shapes and RGB component ranges (0-255 ints) BEFORE submission so users
-    get clear errors instead of cryptic provider 400s.
-    """
-    spec = build_recraft_common_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Recraft common."""
-
-from __future__ import annotations
-
-import json
-import logging
-import re
-from typing import Any, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-_RECRAFT_MODEL_PATTERN = re.compile(r"^~?recraft/recraft-")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-
-
-class ImageGenerationError(Exception):
-    """Raised at inlet when Recraft-specific input validation fails (malformed
-    JSON, out-of-range RGB components, wrong array shape)."""
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_STRENGTH: float = Field(
-            default=0.0,
-            ge=0.0,
-            le=1.0,
-            title="Strength (image-to-image)",
-            description=(
-                "Recraft only. 0.0-1.0 — controls how much the output deviates "
-                "from input image during image-to-image. 0.0 = use model default "
-                "(0.5). Lower = closer to input; higher = more creative."
-            ),
-        )
-        IMAGE_RGB_COLORS_JSON: str = Field(
-            default="",
-            title="RGB color palette (JSON array)",
-            description=(
-                'Recraft only. JSON array of [r,g,b] arrays (each 0-255). '
-                'Example: [[255,0,0],[0,128,0]]. Empty = no palette hint.'
-            ),
-        )
-        IMAGE_BACKGROUND_RGB_JSON: str = Field(
-            default="",
-            title="Background RGB color (JSON array)",
-            description=(
-                'Recraft only. Single [r,g,b] array (each 0-255). '
-                'Example: [0,0,255]. Empty = no override.'
-            ),
-        )
-
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def _parse_json(self, raw: str, field: str) -> Any:
-        cleaned = (raw or "").strip()
-        if not cleaned:
-            return None
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ImageGenerationError(f"{{field}} is not valid JSON: {{exc}}")
-
-    def _validate_rgb_triple(self, value: Any, field: str) -> list:
-        if not isinstance(value, (list, tuple)):
-            raise ImageGenerationError(
-                f"{{field}} must be a 3-element [r,g,b] array, got {{type(value).__name__}}."
-            )
-        if len(value) != 3:
-            raise ImageGenerationError(
-                f"{{field}} must be a 3-element [r,g,b] array, got {{len(value)}} elements."
-            )
-        for idx, c in enumerate(value):
-            if isinstance(c, bool) or not isinstance(c, int):
-                raise ImageGenerationError(
-                    f"{{field}}[{{idx}}] must be an integer 0-255, got {{type(c).__name__}}."
-                )
-            if c < 0 or c > 255:
-                raise ImageGenerationError(
-                    f"{{field}}[{{idx}}] must be 0-255, got {{c}}."
-                )
-        return [int(c) for c in value]
-
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        # Model gate: only emit Recraft-specific knobs for recraft/recraft-* models.
-        # Defends against operator misconfiguration (filter manually attached to
-        # non-Recraft model would otherwise emit invalid params).
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _RECRAFT_MODEL_PATTERN.match(_canonical_model_slug(model_id)):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
-
-        overrides: dict = {{}}
-
-        # 0.0 is the skip sentinel — users wanting actual 0.0 strength can use
-        # 0.001 (visually identical effect; same convention as VIDEO_SEED).
-        if user_valves.IMAGE_STRENGTH > 0.0:
-            overrides["strength"] = float(user_valves.IMAGE_STRENGTH)
-
-        rgb_raw = self._parse_json(user_valves.IMAGE_RGB_COLORS_JSON, "IMAGE_RGB_COLORS_JSON")
-        if rgb_raw is not None:
-            if not isinstance(rgb_raw, list):
-                raise ImageGenerationError(
-                    f"IMAGE_RGB_COLORS_JSON must be a JSON array of [r,g,b] arrays, got {{type(rgb_raw).__name__}}."
-                )
-            validated_rgbs = []
-            for idx, entry in enumerate(rgb_raw):
-                validated_rgbs.append(self._validate_rgb_triple(entry, f"IMAGE_RGB_COLORS_JSON[{{idx}}]"))
-            if validated_rgbs:
-                overrides["rgb_colors"] = validated_rgbs
-
-        bg_raw = self._parse_json(user_valves.IMAGE_BACKGROUND_RGB_JSON, "IMAGE_BACKGROUND_RGB_JSON")
-        if bg_raw is not None:
-            overrides["background_rgb_color"] = self._validate_rgb_triple(bg_raw, "IMAGE_BACKGROUND_RGB_JSON")
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_recraft_v3_image_filter_source() -> str:
-    """Render the Recraft V3-only extras filter — style + text_layout.
-
-    Attached only to `recraft/recraft-v3` (or its `~` alias) exactly. V4 and V4 Pro do NOT support
-    these parameters per OpenRouter docs; the filter no-ops on those models even
-    if manually attached (defensive).
-    """
-    spec = build_recraft_v3_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Recraft V3 extras."""
-
-from __future__ import annotations
-
-import json
-import logging
-import re
-from typing import Any, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-_RECRAFT_V3_MODEL_PATTERN = re.compile(r"^~?recraft/recraft-v3$")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-
-
-class ImageGenerationError(Exception):
-    """Raised at inlet when Recraft V3 input validation fails (malformed JSON,
-    bbox out of 0-1 range, wrong array shape)."""
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_RECRAFT_STYLE: str = Field(
-            default="",
-            title="Recraft style",
-            description=(
-                'Recraft V3 only. Artistic style preset name, e.g. "Photorealism". '
-                'See https://www.recraft.ai/docs/api-reference/styles for the full '
-                'list. Vector styles are NOT supported. Empty = no style override.'
-            ),
-        )
-        IMAGE_TEXT_LAYOUT_JSON: str = Field(
-            default="",
-            title="Text layout (JSON array)",
-            description=(
-                'Recraft V3 only. JSON array of objects with `text` (str) and '
-                '`bbox` (4 [x,y] corners in 0-1 normalized coords, order TL, TR, '
-                'BR, BL). Example: '
-                '[{{"text":"Hello","bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}}]. '
-                'Empty = no text overlay.'
-            ),
-        )
-
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def _parse_json_list(self, raw: str, field: str) -> list:
-        cleaned = (raw or "").strip()
-        if not cleaned:
-            return []
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ImageGenerationError(f"{{field}} is not valid JSON: {{exc}}")
-        if not isinstance(parsed, list):
-            raise ImageGenerationError(
-                f"{{field}} must be a JSON array, got {{type(parsed).__name__}}."
-            )
-        return parsed
-
-    def _validate_text_layout(self, entries: list) -> list:
-        validated = []
-        for idx, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                raise ImageGenerationError(
-                    f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}] must be an object with 'text' and 'bbox', got {{type(entry).__name__}}."
-                )
-            text = entry.get("text")
-            if not isinstance(text, str) or not text.strip():
-                raise ImageGenerationError(
-                    f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}].text must be a non-empty string."
-                )
-            bbox = entry.get("bbox")
-            if not isinstance(bbox, list) or len(bbox) != 4:
-                raise ImageGenerationError(
-                    f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}].bbox must be a 4-element array of [x,y] points (TL,TR,BR,BL)."
-                )
-            for pt_idx, pt in enumerate(bbox):
-                if not isinstance(pt, list) or len(pt) != 2:
-                    raise ImageGenerationError(
-                        f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}].bbox[{{pt_idx}}] must be a 2-element [x,y] array."
-                    )
-                for axis_idx, c in enumerate(pt):
-                    if isinstance(c, bool) or not isinstance(c, (int, float)):
-                        raise ImageGenerationError(
-                            f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}].bbox[{{pt_idx}}][{{axis_idx}}] must be a number 0.0-1.0."
-                        )
-                    if c < 0.0 or c > 1.0:
-                        raise ImageGenerationError(
-                            f"IMAGE_TEXT_LAYOUT_JSON[{{idx}}].bbox[{{pt_idx}}][{{axis_idx}}] must be 0.0-1.0, got {{c}}."
-                        )
-            validated.append({{"text": text, "bbox": bbox}})
-        return validated
-
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        # Model gate: only emit V3-specific knobs for recraft/recraft-v3 EXACTLY.
-        # V4/V4 Pro silently no-op (per OpenRouter docs they don't support style
-        # or text_layout, so even if filter is manually attached to them we drop
-        # the params instead of sending invalid input).
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _RECRAFT_V3_MODEL_PATTERN.match(_canonical_model_slug(model_id)):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
-
-        overrides: dict = {{}}
-
-        style = (user_valves.IMAGE_RECRAFT_STYLE or "").strip()
-        if style:
-            overrides["style"] = style
-
-        text_layout_raw = self._parse_json_list(
-            user_valves.IMAGE_TEXT_LAYOUT_JSON, "IMAGE_TEXT_LAYOUT_JSON"
-        )
-        if text_layout_raw:
-            overrides["text_layout"] = self._validate_text_layout(text_layout_raw)
-
-        if overrides:
-            existing = body.get("image_config")
-            if not isinstance(existing, dict):
-                existing = {{}}
-            else:
-                existing = dict(existing)
-            existing.update(overrides)
-            body["image_config"] = existing
-        return body
-'''
-
-
-def render_grok_image_filter_source() -> str:
-    """Render the Grok Imagine image filter — Grok-specific aspect_ratio set + `n` count.
-
-    Attached only to models matching `^~?x-ai/grok-imagine-image-`. Provides:
-    - `aspect_ratio`: 14-value enum (Grok-supported ratios including tall phone
-      formats `9:19.5`/`19.5:9`/`9:20`/`20:9`/`1:2`/`2:1` and `auto`)
-    - `n`: int 1-10, number of images per request (0 = skip / use model default)
-
-    Shallow-merges into body.image_config alongside the generic filter (per-key
-    overwrite). When this filter's Grok aspect_ratio is set, it takes precedence
-    over the generic filter's standard 10-value ratio.
-    """
-    spec = build_grok_image_filter_spec()
-    return f'''"""OpenRouter image generation companion filter — Grok Imagine extensions."""
-
-from __future__ import annotations
-
-import logging
-import re
-from typing import Any, Literal, Optional
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # pragma: no cover
-    SRC_LOG_LEVELS = {{}}
-
-OWUI_OPENROUTER_PIPE_MARKER = "{spec.marker}"
-IMAGE_FILTER_VARIANT = "{spec.variant}"
-
-_GROK_IMAGINE_IMAGE_PATTERN = re.compile(r"^~?x-ai/grok-imagine-image-")
-
-
-def _canonical_model_slug(raw: str) -> str:
-    # OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>");
-    # the pipe id never contains "/", the slug always does, so strip a leading
-    # "<prefix>." before the vendor part so anchored patterns still match.
-    if "/" not in raw:
-        return raw
-    head, slash, tail = raw.partition("/")
-    return head.rsplit(".", 1)[-1] + slash + tail
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(default=0)
-
-    class UserValves(BaseModel):
-        IMAGE_GROK_ASPECT_RATIO: Literal[
-            "", "1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2",
-            "9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto",
-        ] = Field(
-            default="",
-            title="Image aspect ratio (Grok Imagine)",
-            description=(
-                "Grok Imagine supports 14 aspect ratios (including tall phone "
-                "formats and `auto`). Overrides the generic aspect_ratio when "
-                "set. Empty = use generic filter's value."
-            ),
-        )
-        IMAGE_GROK_N: int = Field(
-            default=0,
-            ge=0,
-            le=10,
-            title="Number of images (1-10)",
-            description=(
-                "Grok Imagine only. Number of images to generate per request "
-                "(1-10). 0 = skip / use model default (1). Higher values "
-                "multiply cost linearly."
-            ),
-        )
-
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.filter.{spec.variant}")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def inlet(
-        self,
-        body: dict,
-        __metadata__: Optional[dict] = None,
-        __user__: Optional[dict] = None,
-    ) -> dict:
-        if not isinstance(body, dict):
-            return body
-        # Model gate: only emit Grok-specific knobs for Grok Imagine image
-        # models. Defends against operator misconfiguration (filter manually
-        # attached to non-Grok model would otherwise emit invalid params).
-        model_id = body.get("model") or ""
-        if not isinstance(model_id, str) or not _GROK_IMAGINE_IMAGE_PATTERN.match(_canonical_model_slug(model_id)):
-            return body
-        user_valves = None
-        if isinstance(__user__, dict):
-            uv_raw = __user__.get("valves")
-            if uv_raw is not None and not isinstance(uv_raw, self.UserValves):
-                try:
-                    user_valves = self.UserValves.model_validate(
-                        uv_raw if isinstance(uv_raw, dict) else uv_raw.model_dump()
-                    )
-                except Exception:
-                    user_valves = self.UserValves()
-            elif isinstance(uv_raw, self.UserValves):
-                user_valves = uv_raw
-        if user_valves is None:
-            user_valves = self.UserValves()
-
-        overrides: dict = {{}}
-        grok_aspect = (user_valves.IMAGE_GROK_ASPECT_RATIO or "").strip()
-        if grok_aspect:
-            overrides["aspect_ratio"] = grok_aspect
-        # 0 is the skip sentinel — users wanting the default 1 can leave it at 0.
-        if user_valves.IMAGE_GROK_N > 0:
-            overrides["n"] = int(user_valves.IMAGE_GROK_N)
-
+{_render_image_overrides(spec)}
         if overrides:
             existing = body.get("image_config")
             if not isinstance(existing, dict):

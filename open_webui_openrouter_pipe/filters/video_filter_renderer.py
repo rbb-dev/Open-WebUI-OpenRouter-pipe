@@ -10,6 +10,10 @@ from typing import Any
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
 from ..core.utils import _clean_str
+from ..integrations.image_types import (
+    PASSTHROUGH_DESCRIPTION,
+    RENDERABLE_FIELD_NAME_RE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,14 +193,21 @@ def render_video_filter_source(
     admin_valves: Any = None,
 ) -> str:
     spec = build_video_filter_spec(model_id, video_model, admin_valves=admin_valves)
-    unhandled = sorted(set(spec.allowed_params) - _HANDLED_PASSTHROUGH_PARAMS)
-    if unhandled:
+    # Only the names that genuinely cannot be offered: one that is not a legal Python
+    # identifier has no field to carry it. Everything else the model publishes is
+    # rendered, typed where a purpose-built control exists and free text otherwise.
+    unreachable = sorted(
+        set(spec.allowed_params)
+        - _HANDLED_PASSTHROUGH_PARAMS
+        - set(_unhandled_params(spec))
+        - _purpose_built_published_names(spec)
+    )
+    if unreachable:
         logger.warning(
-            "Video filter renderer has no handler for passthrough parameter(s) %s on model %r — "
-            "they will be silently dropped from outbound requests. Add a branch in "
-            "_render_user_valves_fields and _render_param_lines, plus a `_KNOB_GATE` entry in video_help.py.",
-            unhandled,
+            "Model %r publishes parameter(s) %s whose names cannot become form fields, so "
+            "they are not offered. Every other parameter it publishes is.",
             spec.model_id,
+            unreachable,
         )
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
@@ -386,7 +397,33 @@ class Filter:
     return source
 
 
-def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
+def _unhandled_params(spec: VideoFilterSpec) -> tuple[str, ...]:
+    """Published parameters with no purpose-built control.
+
+    OpenRouter names these and publishes nothing about their values -- no choices, no
+    bounds -- so there is nothing to type them from. They are rendered as free text
+    rather than dropped, because a parameter the model accepts and the filter refuses to
+    offer is a capability the user simply cannot reach.
+
+    The exclusion is on the rendered field name, not the published spelling. A published
+    ``duration`` and the purpose-built duration control both want ``VIDEO_DURATION``, and
+    the later definition wins -- so a free-text box would silently replace the dropdown
+    built from the model's own published values.
+    """
+    taken = set(_purpose_built_field_names(spec))
+    accepted: list[str] = []
+    for name in spec.allowed_params:
+        if name in _HANDLED_PASSTHROUGH_PARAMS or not RENDERABLE_FIELD_NAME_RE.fullmatch(name):
+            continue
+        field = f"VIDEO_{name.upper()}"
+        if field in taken:
+            continue
+        taken.add(field)
+        accepted.append(name)
+    return tuple(accepted)
+
+
+def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
     fields = [
         _field_block(
             'VIDEO_PROVIDER_OPTIONS_JSON: str = Field(\n'
@@ -742,6 +779,48 @@ def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
                 '        )'
             )
         )
+    return fields
+
+
+_VIDEO_FIELD_DEF_RE = re.compile(r"^\s*(VIDEO_[A-Z0-9_]+)\s*:", re.MULTILINE)
+
+
+def _purpose_built_published_names(spec: VideoFilterSpec) -> frozenset[str]:
+    """Published names a purpose-built control already carries.
+
+    Derived from the rendered field names, so a name is never reported as unreachable
+    while a typed control for it is on screen.
+    """
+    emitted = _purpose_built_field_names(spec)
+    return frozenset(
+        name for name in spec.allowed_params if f"VIDEO_{name.upper()}" in emitted
+    )
+
+
+def _purpose_built_field_names(spec: VideoFilterSpec) -> frozenset[str]:
+    """The field names the purpose-built controls actually emit for this model.
+
+    Read back out of the rendered text rather than listed by hand, so a control added
+    later cannot be shadowed by a free-text field of the same name without anyone
+    noticing.
+    """
+    return frozenset(
+        _VIDEO_FIELD_DEF_RE.findall("\n".join(_render_purpose_built_fields(spec)))
+    )
+
+
+def _render_user_valves_fields(spec: VideoFilterSpec) -> str:
+    fields = _render_purpose_built_fields(spec)
+    for name in _unhandled_params(spec):
+        fields.append(
+            _field_block(
+                f"VIDEO_{name.upper()}: str = Field(\n"
+                '            default="",\n'
+                f"            title={name!r},\n"
+                f"            description={PASSTHROUGH_DESCRIPTION!r},\n"
+                "        )"
+            )
+        )
     return "\n".join(fields)
 
 
@@ -1006,6 +1085,19 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
                 '            params["style"] = style_value.strip()',
             ]
         )
+    for name in _unhandled_params(spec):
+        lines.extend([
+            f'        raw_value = getattr(user_valves, "VIDEO_{name.upper()}", "")',
+            "        if isinstance(raw_value, str) and raw_value.strip():",
+            "            trimmed = raw_value.strip()",
+            '            if trimmed[:1] in ("[", "{"):',
+            "                try:",
+            f"                    params[{name!r}] = json.loads(trimmed)",
+            "                except ValueError as exc:",
+            f"                    raise Exception(f\"{name} is not valid JSON: {{exc}}\") from exc",
+            "            else:",
+            f"                params[{name!r}] = trimmed",
+        ])
     return "\n".join(lines) if lines else "        pass"
 
 

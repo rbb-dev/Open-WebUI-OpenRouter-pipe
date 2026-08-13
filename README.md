@@ -34,10 +34,10 @@ GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, 
 ## What You Get
 
 🎯 **Every Model, One Place**
-340+ chat models, 16 video models, 36 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
+340+ chat models, 16 video models, 40 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
 
 🎨 **Image Generation, Inline**
-36 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Custom fonts, transparent backgrounds, and Gemini's ultrawide aspect ratios all exposed as one-click filters.
+40 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, Qwen, Krea, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Each model brings its own settings panel, offering exactly what that model accepts.
 
 🎬 **Video Generation**
 16 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, xAI Grok Imagine. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
@@ -67,7 +67,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## What's New
 
 - **Fusion, two engines** — multi-model deliberation (up to 8 panel models plus a judge), rendered as a **live, theme-aware HTML panel** that streams every model's answer and thinking, the judge's analysis, and the final answer. Switch between OpenRouter's hosted engine and the pipe's built-in engine, which gives every panelist full access to the user's knowledge bases, tools, and tool servers. Preset, panel, judge, and tool-budget knobs via the filter.
-- **Native image generation** — 36 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, xAI Grok Imagine, Microsoft MAI) with 7 per-family filters (generic, Gemini Options, Sourceful Options, Sourceful V2.5 Options, Recraft Options, Recraft V3 Extras, Grok Imagine Options).
+- **Native image generation** — 40 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, Qwen, Krea, xAI Grok Imagine, Microsoft MAI), each with its own settings panel built from the options that model publishes to OpenRouter.
 - **Video generation** — 16 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop.
 - **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.

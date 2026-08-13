@@ -33,7 +33,7 @@ from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import _select_best_effort_fallback
 from ..filters.fusion_filter_renderer import is_fusion_model
-from ..integrations.image_help import published_parameter_names, render_image_help
+from ..integrations.image_help import render_image_help
 from ..integrations.provider_options import requested_provider_block
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
@@ -892,23 +892,26 @@ class RequestOrchestrator:
             if prompt_text.strip().lower() == "help":
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
                 image_model = video_spec.get("image_model") if isinstance(video_spec, dict) else None
-                published = None
-                if valves.ENABLE_OPENROUTER_IMAGE_GENERATION and uses_dedicated_image_api(video_spec):
+                # Prefer the contract the model's filter was built from, so the controls
+                # help lists are the controls the chat UI drew. It is absent when nothing
+                # installs filters, and help still has to describe the model, so fall
+                # back to reading the contract directly -- one request, on an explicit
+                # user action, not on every message.
+                endpoint_record = OpenRouterModelRegistry.image_endpoint(api_model_id)
+                if endpoint_record is None and valves.ENABLE_OPENROUTER_IMAGE_GENERATION:
                     adapter = self._pipe._ensure_image_generation_adapter()
-                    published = published_parameter_names(
-                        (await adapter._endpoint_record(
-                            session,
-                            valves,
-                            api_model_id,
-                            user=user_model,
-                            owui_chat_id=(__metadata__ or {}).get("chat_id"),
-                            requested=requested_provider_block(responses_body, __metadata__),
-                        ))[0]
+                    endpoint_record = await adapter._published_records(
+                        session,
+                        valves,
+                        api_model_id,
+                        user=user_model,
+                        owui_chat_id=(__metadata__ or {}).get("chat_id"),
+                        requested=requested_provider_block(responses_body, __metadata__),
                     )
                 help_content = render_image_help(
                     api_model_id,
                     image_model if isinstance(image_model, dict) else None,
-                    published=published,
+                    endpoint_record=endpoint_record,
                 )
                 if __event_emitter__:
                     await __event_emitter__({"type": "chat:message:delta", "data": {"content": help_content}})

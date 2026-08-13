@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..storage.multimodal import image_extension_for_mime
+
+RENDERABLE_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,48}")
+"""A published name may become a form field only if it can be a Python identifier.
+
+One pattern for both renderers: a name one accepts and the other rejects would mean a
+setting reachable on video and not on image, for no reason a user could discover.
+"""
+
+PASSTHROUGH_DESCRIPTION = (
+    "A setting this model's provider accepts. Type a plain value, or JSON if it takes a "
+    "list or an object. Empty leaves it unset."
+)
+"""One sentence for one encoding rule, read by both renderers."""
+
+TOP_LEVEL_PARAMS: tuple[str, ...] = (
+    "aspect_ratio",
+    "resolution",
+    "size",
+    "n",
+    "seed",
+    "quality",
+    "background",
+    "output_format",
+    "output_compression",
+)
+"""Parameter names the Image API takes at the top level of the request.
+
+Read by both the adapter, which routes a key here or into the provider block, and the
+filter renderer, which decides whether to render a control for it. Two copies of this
+tuple had already drifted -- one carried ``size`` and the other did not, so a model
+publishing ``size`` was accepted by the adapter and offered no control.
+"""
 
 
 class ImageGenerationError(RuntimeError):

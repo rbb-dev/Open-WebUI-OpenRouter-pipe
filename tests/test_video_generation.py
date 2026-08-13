@@ -1528,13 +1528,13 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
     """Drift guard for the three-name spread (`<Human Label>` → `passthrough_param` → `VIDEO_VALVE_NAME`).
 
     Two invariants:
-      (1) Every passthrough param that appears in any catalog model's
-          `allowed_passthrough_parameters` MUST be in `_HANDLED_PASSTHROUGH_PARAMS`
-          — otherwise the renderer drops it silently from outbound requests
-          (and the runtime `_logger.warning` in `render_video_filter_source`
-          would fire on every render of that model).
+      (1) Every passthrough param in any catalog model's
+          `allowed_passthrough_parameters` MUST be renderable, i.e. its name can
+          become a form field. A name that cannot is the only kind the renderer
+          genuinely drops; anything else it offers, typed where a purpose-built
+          control exists and free text otherwise.
       (2) Every `_KNOB_GATE` value that names a passthrough param (i.e. not a
-          special top-level marker) MUST be a renderer-handled param —
+          special top-level marker) MUST be a param the renderer offers —
           otherwise help advertises a knob that the renderer cannot wire.
 
     The reverse direction (catalog → `_KNOB_GATE`) is intentionally NOT
@@ -1542,7 +1542,12 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
     fields like `aspectRatio`/`size` map via marker gates or `None`-gate
     entries that don't share literal string identity with the catalog name.
     """
-    from open_webui_openrouter_pipe.filters.video_filter_renderer import _HANDLED_PASSTHROUGH_PARAMS
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _HANDLED_PASSTHROUGH_PARAMS,
+        _unhandled_params,
+        build_video_filter_spec,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import RENDERABLE_FIELD_NAME_RE
     from open_webui_openrouter_pipe.integrations.video_help import _KNOB_GATE
 
     catalog_passthrough_params: set[str] = set()
@@ -1551,11 +1556,14 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
             if isinstance(param, str) and param:
                 catalog_passthrough_params.add(param)
 
-    unhandled_in_renderer = catalog_passthrough_params - _HANDLED_PASSTHROUGH_PARAMS
-    assert not unhandled_in_renderer, (
-        f"Catalog passthrough params not handled by video_filter_renderer.py: {sorted(unhandled_in_renderer)} — "
-        "add a branch in `_render_user_valves_fields` and `_render_param_lines` AND extend "
-        "`_HANDLED_PASSTHROUGH_PARAMS` so the runtime warning stays in sync."
+    unrenderable = {
+        param for param in catalog_passthrough_params
+        if not RENDERABLE_FIELD_NAME_RE.fullmatch(param)
+    }
+    assert not unrenderable, (
+        f"Catalog passthrough params whose names cannot become form fields: "
+        f"{sorted(unrenderable)} — a user cannot reach them at all. Either the name is "
+        "wrong in the fixture, or the renderer needs a way to express it."
     )
 
     knob_gate_passthrough_values = {v for v in _KNOB_GATE.values() if isinstance(v, str)}
@@ -1565,7 +1573,10 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
         "negative_prompt_or_camelcase",
     }
     knob_gate_passthrough_only = knob_gate_passthrough_values - top_level_markers
-    knob_gate_only_unrendered = knob_gate_passthrough_only - _HANDLED_PASSTHROUGH_PARAMS
+    offered = set(_HANDLED_PASSTHROUGH_PARAMS)
+    for model_id, model in VIDEO_BY_ID.items():
+        offered |= set(_unhandled_params(build_video_filter_spec(model_id, model)))
+    knob_gate_only_unrendered = knob_gate_passthrough_only - offered
     assert not knob_gate_only_unrendered, (
         f"`_KNOB_GATE` advertises knob(s) the renderer cannot wire: {sorted(knob_gate_only_unrendered)} — "
         "either remove the gate entry or add the renderer branch."
@@ -3442,3 +3453,220 @@ async def test_every_serving_candidate_receives_the_knobs(value):
         "the video API carries no `only`, so a slug drawn from an unsent pin can never be "
         f"selected; writing knobs there is dead weight on the request. got {options!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("published", "expected_fields"),
+    [
+        (["contentModeration", "keyframes"], ["VIDEO_CONTENTMODERATION", "VIDEO_KEYFRAMES"]),
+        (["safety_tolerance", "version"], ["VIDEO_SAFETY_TOLERANCE", "VIDEO_VERSION"]),
+        (["aigc_watermark"], ["VIDEO_AIGC_WATERMARK"]),
+        ([], []),
+    ],
+)
+def test_a_published_setting_with_no_purpose_built_control_is_still_offered(
+    published, expected_fields
+):
+    """OpenRouter names these and publishes nothing about their values.
+
+    Dropping them means a capability the model accepts that the user cannot reach; the
+    previous behaviour was to log a warning and silently omit them. Free text is the only
+    honest rendering when there is no domain to render from.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    model = {
+        "id": "vendor/model",
+        "name": "Model",
+        "allowed_passthrough_parameters": published,
+    }
+    module = _load_filter_from_source(
+        render_video_filter_source(model_id="vendor/model", video_model=model),
+        f"generic_passthrough_{len(published)}_{published[0] if published else 'none'}",
+    )
+    for field in expected_fields:
+        assert field in module.Filter.UserValves.model_fields, (
+            f"{field} is published by the model and must be offered"
+        )
+
+
+def test_a_published_setting_travels_and_a_broken_container_is_named():
+    """Plain text goes as text; JSON goes as JSON; a broken container names its field."""
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    model = {
+        "id": "vendor/model",
+        "name": "Model",
+        "allowed_passthrough_parameters": ["contentModeration", "keyframes"],
+    }
+    module = _load_filter_from_source(
+        render_video_filter_source(model_id="vendor/model", video_model=model),
+        "generic_passthrough_travel",
+    )
+
+    metadata: dict[str, Any] = {}
+    module.Filter().inlet(
+        {"files": []},
+        __metadata__=metadata,
+        __user__={
+            "valves": module.Filter.UserValves(
+                VIDEO_CONTENTMODERATION="low",
+                VIDEO_KEYFRAMES='[{"at": 0}]',
+            )
+        },
+    )
+    params = metadata["openrouter_pipe"]["video_generation"]["params"]
+    assert params.get("contentModeration") == "low", f"plain text must travel as text; got {params}"
+    assert params.get("keyframes") == [{"at": 0}], f"JSON must travel parsed; got {params}"
+
+    with pytest.raises(Exception) as caught:
+        module.Filter().inlet(
+            {"files": []},
+            __metadata__={},
+            __user__={"valves": module.Filter.UserValves(VIDEO_KEYFRAMES="[{broken")},
+        )
+    assert "keyframes" in str(caught.value), f"the message must name the field; got {caught.value}"
+
+
+@pytest.mark.parametrize(
+    ("published", "expect_typed"),
+    [
+        (["duration"], "VIDEO_DURATION"),
+        (["resolution"], "VIDEO_RESOLUTION"),
+        (["seed"], "VIDEO_SEED"),
+    ],
+)
+def test_a_published_name_never_replaces_the_control_built_for_it(published, expect_typed):
+    """A model can publish a name a purpose-built control already covers.
+
+    Rendering a free-text field for it too defines the same attribute twice; pydantic
+    keeps the last, so the dropdown built from the model's own published values silently
+    becomes an unvalidated text box and the value reaches the API as a string.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    model = {
+        "id": "vendor/model",
+        "name": "Model",
+        "supported_durations": [5, 10],
+        "supported_resolutions": ["720p", "1080p"],
+        "seed": True,
+        "allowed_passthrough_parameters": published,
+    }
+    source = render_video_filter_source(model_id="vendor/model", video_model=model)
+    assert source.count(f"{expect_typed}:") == 1, (
+        f"{expect_typed} must be defined once; the published name must not add a second"
+    )
+
+    module = _load_filter_from_source(source, f"no_shadow_{published[0]}")
+    annotation = module.Filter.UserValves.model_fields[expect_typed].annotation
+    assert annotation is not str, (
+        f"{expect_typed} must keep the type built from the model's published values, "
+        f"got {annotation}"
+    )
+
+
+def test_the_unreachable_warning_names_only_what_cannot_be_offered(caplog):
+    """A name that is offered must not be reported as dropped.
+
+    The warning told operators to add a branch for parameters that are already rendered,
+    and the branch it asked for is what creates the collision above.
+    """
+    import logging
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        render_video_filter_source(
+            model_id="vendor/ok",
+            video_model={
+                "id": "vendor/ok",
+                "name": "M",
+                "allowed_passthrough_parameters": ["contentModeration"],
+            },
+        )
+    assert "contentModeration" not in caplog.text, (
+        "this parameter is rendered and sent, so it must not be reported as dropped"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        render_video_filter_source(
+            model_id="vendor/odd",
+            video_model={
+                "id": "vendor/odd",
+                "name": "M",
+                "allowed_passthrough_parameters": ["cfg-scale"],
+            },
+        )
+    assert "cfg-scale" in caplog.text, (
+        "a name that cannot become a form field is genuinely unreachable and must be named"
+    )
+
+
+def test_video_help_names_the_free_text_controls_the_filter_draws():
+    """Help and the filter must not disagree about what a model offers.
+
+    The curated knob table cannot know about a setting OpenRouter adds, so a control the
+    chat UI draws would go unmentioned -- the inverse of the defect that made the image
+    help read from the contract instead of a hand-written table.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+    from open_webui_openrouter_pipe.integrations.video_help import render_video_help
+
+    base = dict(VIDEO_BY_ID["google/veo-3.1-fast"])
+    base["allowed_passthrough_parameters"] = list(
+        base.get("allowed_passthrough_parameters") or []
+    ) + ["contentModeration"]
+
+    module = _load_filter_from_source(
+        render_video_filter_source(model_id=base["id"], video_model=base),
+        "help_matches_filter",
+    )
+    assert "VIDEO_CONTENTMODERATION" in module.Filter.UserValves.model_fields, (
+        "the filter must draw a control for the published setting"
+    )
+
+    rendered = render_video_help(base["id"], base)
+    assert "contentModeration" in rendered, (
+        "help must name every control the filter draws, including the free-text ones"
+    )
+
+
+def test_a_case_variant_published_name_does_not_render_twice():
+    """Two published names differing only in case produce one VIDEO_ field.
+
+    Rendering both defines the attribute twice; pydantic keeps the last, so one control
+    would write two provider parameters and the user would never see the second.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _unhandled_params,
+        build_video_filter_spec,
+        render_video_filter_source,
+    )
+
+    model = {
+        "id": "vendor/model",
+        "name": "Model",
+        "allowed_passthrough_parameters": ["contentModeration", "contentmoderation", "keyframes"],
+    }
+    offered = _unhandled_params(build_video_filter_spec("vendor/model", model))
+    assert offered == ("contentModeration", "keyframes"), (
+        f"the case-variant must be dropped, not rendered twice; got {offered}"
+    )
+
+    source = render_video_filter_source(model_id="vendor/model", video_model=model)
+    assert source.count("VIDEO_CONTENTMODERATION:") == 1
+    module = _load_filter_from_source(source, "video_case_variant")
+    assert "VIDEO_KEYFRAMES" in module.Filter.UserValves.model_fields
+

@@ -2,16 +2,11 @@
 
 Coverage:
 - Registry: register_image_models dedupe, stale-norm cleanup, atomic rebuild
-- Filter renderer: 3 variants produce valid Python with unique markers
-- Filter manager: per-model installer with regex prefix matching
+- Filter renderer: one filter per model, offering only that model's published knobs
+- Filter manager: per-model install, driven by the endpoint contract on the spec
 - Pydantic image_config field: typed dict round-trip
 - Auto-attach: pipe_capabilities image_output, defaultFilterIds writes
 - image_help.py: per-model entries, KNOB_GATE consistency
-
-The existing chat-completions response handler (`_materialize_image_entry`,
-`_collect_image_output_urls`, `_render_image_markdown`) at
-`streaming/streaming_core.py:595-672` is REUSED unchanged for image rendering;
-no new adapter or response handler is built.
 """
 
 from __future__ import annotations
@@ -30,20 +25,6 @@ import pytest
 
 from open_webui_openrouter_pipe.api.transforms import CompletionsBody, ResponsesBody
 from open_webui_openrouter_pipe.filters.image_filter_renderer import (
-    build_generic_image_filter_spec,
-    build_gemini_image_filter_spec,
-    build_sourceful_image_filter_spec,
-    build_sourceful_v25_image_filter_spec,
-    build_recraft_common_image_filter_spec,
-    build_recraft_v3_image_filter_spec,
-    build_grok_image_filter_spec,
-    render_generic_image_filter_source,
-    render_gemini_image_filter_source,
-    render_sourceful_image_filter_source,
-    render_sourceful_v25_image_filter_source,
-    render_recraft_common_image_filter_source,
-    render_recraft_v3_image_filter_source,
-    render_grok_image_filter_source,
     sanitize_image_filter_id,
 )
 from open_webui_openrouter_pipe.integrations.image_help import (
@@ -79,7 +60,7 @@ def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
 
 
 _FIXTURE = json.loads(
-    (Path(__file__).parent / "fixtures" / "image_models_catalog.json").read_text()
+    (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
 )
 IMAGE_MODELS: list[dict[str, Any]] = _FIXTURE["data"]
 IMAGE_BY_ID: dict[str, dict[str, Any]] = {m["id"]: m for m in IMAGE_MODELS}
@@ -270,100 +251,20 @@ async def test_chat_refresh_preserves_image_only_models():
 # =============================================================================
 
 
-@pytest.mark.parametrize("variant_fn,expected_id_suffix", [
-    (render_generic_image_filter_source, "openrouter_image_filter_generic"),
-    (render_gemini_image_filter_source, "openrouter_image_filter_gemini"),
-    (render_sourceful_image_filter_source, "openrouter_image_filter_sourceful"),
-    (render_sourceful_v25_image_filter_source, "openrouter_image_filter_sourceful_v25"),
-    (render_recraft_common_image_filter_source, "openrouter_image_filter_recraft"),
-    (render_recraft_v3_image_filter_source, "openrouter_image_filter_recraft_v3"),
-    (render_grok_image_filter_source, "openrouter_image_filter_grok"),
-])
-def test_filter_source_parses_as_valid_python(variant_fn, expected_id_suffix):
-    import ast
-    source = variant_fn()
-    ast.parse(source)
-    assert "class Filter:" in source
 
 
-def test_filter_specs_have_unique_markers_and_ids():
-    specs = [
-        build_generic_image_filter_spec(),
-        build_gemini_image_filter_spec(),
-        build_sourceful_image_filter_spec(),
-        build_sourceful_v25_image_filter_spec(),
-        build_recraft_common_image_filter_spec(),
-        build_recraft_v3_image_filter_spec(),
-        build_grok_image_filter_spec(),
-    ]
-    markers = [s.marker for s in specs]
-    function_ids = [s.function_id for s in specs]
-    assert len(set(markers)) == 7
-    assert len(set(function_ids)) == 7
-    for spec in specs:
-        assert spec.marker.startswith("openrouter_pipe:image_filter:v1:")
 
 
-def test_sanitize_image_filter_id_produces_function_ids():
-    assert sanitize_image_filter_id("generic") == "openrouter_image_filter_generic"
-    assert sanitize_image_filter_id("Gemini") == "openrouter_image_filter_gemini"
-    # Empty falls back to generic
-    assert sanitize_image_filter_id("") == "openrouter_image_filter_generic"
 
 
-def test_generic_filter_source_includes_standard_aspect_ratios():
-    source = render_generic_image_filter_source()
-    for aspect in ["1:1", "16:9", "9:16", "21:9"]:
-        assert f'"{aspect}"' in source
-    # Standard 1K/2K/4K size
-    for size in ["1K", "2K", "4K"]:
-        assert f'"{size}"' in source
 
 
-def test_gemini_filter_source_includes_extended_ratios_and_0_5K():
-    source = render_gemini_image_filter_source()
-    for aspect in ["1:4", "4:1", "1:8", "8:1"]:
-        assert f'"{aspect}"' in source
-    assert '"0.5K"' in source
 
 
-def test_sourceful_filter_source_includes_font_inputs_and_super_res():
-    source = render_sourceful_image_filter_source()
-    assert "IMAGE_FONT_INPUTS_JSON" in source
-    assert "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON" in source
-    assert "_MAX_FONT_INPUTS = 2" in source
-    assert "_MAX_SUPER_RESOLUTION_REFERENCES = 4" in source
-    # The Sourceful Options filter is V2 Pro/Fast ONLY — Riverflow 2.5 gets its
-    # own dedicated filter instead (one Sourceful filter per version, never two)
-    assert r"^~?sourceful/riverflow-v2-(pro|fast)$" in source
 
 
-def test_sourceful_v25_filter_source_is_the_single_25_filter():
-    """The dedicated 2.5 filter carries fonts (from V2) + all 2.5 additions,
-    and intentionally has NO super-resolution knob (dropped in 2.5)."""
-    source = render_sourceful_v25_image_filter_source()
-    assert "IMAGE_FONT_INPUTS_JSON" in source
-    assert "_MAX_FONT_INPUTS = 2" in source
-    assert "IMAGE_SCORING_PROMPT" in source
-    assert "IMAGE_SCORING_RUBRIC" in source
-    assert "IMAGE_BACKGROUND_MODE" in source
-    assert "IMAGE_BACKGROUND_HEX_COLOR" in source
-    assert "IMAGE_SUPER_RESOLUTION_REFERENCES_JSON" not in source
-    # Model gate is v2.5-exact; hex validation pattern survives f-string escaping
-    assert r"^~?sourceful/riverflow-v2\.5-(pro|fast)$" in source
-    assert "[0-9a-fA-F]{3}" in source and "[0-9a-fA-F]{6}" in source
-    for mode in ["original", "transparent", "solid"]:
-        assert f'"{mode}"' in source
 
 
-def test_grok_filter_source_includes_grok_ratios_and_count():
-    source = render_grok_image_filter_source()
-    assert "IMAGE_GROK_ASPECT_RATIO" in source
-    assert "IMAGE_GROK_N" in source
-    # Grok-only tall/auto ratios beyond the generic 10
-    for aspect in ["9:19.5", "19.5:9", "9:20", "20:9", "1:2", "2:1", "auto"]:
-        assert f'"{aspect}"' in source
-    assert r"^~?x-ai/grok-imagine-image-" in source
 
 
 # =============================================================================
@@ -417,115 +318,18 @@ def test_completions_body_image_config_via_extra_allow():
 # =============================================================================
 
 
-def test_gemini_pattern_matches_flash_3x_image_only():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    pat = FilterManager._GEMINI_IMAGE_PATTERN
-    assert pat.match("google/gemini-3.1-flash-image")
-    assert pat.match("google/gemini-3.1-flash-image-preview")
-    assert pat.match("google/gemini-3.5-flash-image-experimental-preview")
-    assert not pat.match("google/gemini-3-pro-image")
-    assert not pat.match("google/gemini-3-pro-image-preview")
-    assert not pat.match("google/gemini-2.5-flash-image")
-    assert not pat.match("google/gemini-4.0-flash-image-preview")
-    assert not pat.match("google/gemini-3-pro")
-    assert not pat.match("google/gemini-2.5-flash")
-    assert not pat.match("openai/gpt-image-2")
 
 
-def test_image_filter_attach_and_runtime_patterns_are_in_sync():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    cases = [
-        (render_gemini_image_filter_source, "gemini", "_GEMINI_MODEL_PATTERN", FilterManager._GEMINI_IMAGE_PATTERN),
-        (render_sourceful_image_filter_source, "sourceful", "_SOURCEFUL_MODEL_PATTERN", FilterManager._SOURCEFUL_IMAGE_PATTERN),
-        (render_sourceful_v25_image_filter_source, "sourceful_v25", "_SOURCEFUL_V25_MODEL_PATTERN", FilterManager._SOURCEFUL_V25_IMAGE_PATTERN),
-        (render_recraft_common_image_filter_source, "recraft", "_RECRAFT_MODEL_PATTERN", FilterManager._RECRAFT_COMMON_IMAGE_PATTERN),
-        (render_recraft_v3_image_filter_source, "recraft_v3", "_RECRAFT_V3_MODEL_PATTERN", FilterManager._RECRAFT_V3_IMAGE_PATTERN),
-        (render_grok_image_filter_source, "grok", "_GROK_IMAGINE_IMAGE_PATTERN", FilterManager._GROK_IMAGINE_IMAGE_PATTERN),
-    ]
-    for render_fn, variant, var_name, attach_pat in cases:
-        module = _load_filter_from_source(render_fn(), f"test_drift_guard_{variant}")
-        runtime_pat = getattr(module, var_name)
-        assert runtime_pat.pattern == attach_pat.pattern, (
-            f"{variant}: runtime gate {runtime_pat.pattern!r} != attach pattern {attach_pat.pattern!r}"
-        )
 
 
-def test_sourceful_pattern_matches_v2_pro_and_fast_only():
-    """One Sourceful filter per Riverflow version: the V2 'Sourceful Options'
-    filter must NOT attach to 2.5 (which has its own dedicated filter) nor to
-    hypothetical future versions (they get their own filter when added)."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    pat = FilterManager._SOURCEFUL_IMAGE_PATTERN
-    assert pat.match("sourceful/riverflow-v2-pro")
-    assert pat.match("sourceful/riverflow-v2-fast")
-    # Riverflow 2.5 gets the dedicated sourceful_v25 filter instead
-    assert not pat.match("sourceful/riverflow-v2.5-pro")
-    assert not pat.match("sourceful/riverflow-v2.5-fast")
-    # Future versions deliberately excluded — per-version dedicated filters
-    assert not pat.match("sourceful/riverflow-v3-pro")
-    # Should NOT match: preview variants, max
-    assert not pat.match("sourceful/riverflow-v2-max-preview")
-    assert not pat.match("sourceful/riverflow-v2-standard-preview")
-    assert not pat.match("sourceful/riverflow-v2-fast-preview")
 
 
-def test_sourceful_v25_pattern_matches_25_pro_and_fast_only():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    pat = FilterManager._SOURCEFUL_V25_IMAGE_PATTERN
-    assert pat.match("sourceful/riverflow-v2.5-pro")
-    assert pat.match("sourceful/riverflow-v2.5-fast")
-    # V2 must NOT get the 2.5 extras filter
-    assert not pat.match("sourceful/riverflow-v2-pro")
-    assert not pat.match("sourceful/riverflow-v2-fast")
-    # Other versions / preview variants excluded
-    assert not pat.match("sourceful/riverflow-v3-pro")
-    assert not pat.match("sourceful/riverflow-v2.5-fast-preview")
 
 
-def test_grok_imagine_pattern_matches_image_models_only():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    pat = FilterManager._GROK_IMAGINE_IMAGE_PATTERN
-    assert pat.match("x-ai/grok-imagine-image-quality")
-    # Video sibling and chat models must NOT match
-    assert not pat.match("x-ai/grok-imagine-video")
-    assert not pat.match("x-ai/grok-4")
 
 
-def test_mai_image_matches_no_family_pattern():
-    """microsoft/mai-image-2.5 gets the generic filter ONLY — no documented
-    model-specific params, so no family pattern may claim it."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    model_id = "microsoft/mai-image-2.5"
-    for pat in (
-        FilterManager._GEMINI_IMAGE_PATTERN,
-        FilterManager._SOURCEFUL_IMAGE_PATTERN,
-        FilterManager._SOURCEFUL_V25_IMAGE_PATTERN,
-        FilterManager._RECRAFT_COMMON_IMAGE_PATTERN,
-        FilterManager._RECRAFT_V3_IMAGE_PATTERN,
-        FilterManager._GROK_IMAGINE_IMAGE_PATTERN,
-    ):
-        assert not pat.match(model_id), f"{pat.pattern} unexpectedly claims {model_id}"
 
 
-def test_gpt_image_matches_no_family_pattern():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    for model_id in ("openai/gpt-image-1", "openai/gpt-image-1-mini", "openai/gpt-image-2"):
-        for pat in (
-            FilterManager._GEMINI_IMAGE_PATTERN,
-            FilterManager._SOURCEFUL_IMAGE_PATTERN,
-            FilterManager._SOURCEFUL_V25_IMAGE_PATTERN,
-            FilterManager._RECRAFT_COMMON_IMAGE_PATTERN,
-            FilterManager._RECRAFT_V3_IMAGE_PATTERN,
-            FilterManager._GROK_IMAGINE_IMAGE_PATTERN,
-        ):
-            assert not pat.match(model_id), f"{pat.pattern} unexpectedly claims {model_id}"
 
 
 # =============================================================================
@@ -572,147 +376,20 @@ def test_render_image_help_falls_back_to_catalog_for_unknown_model():
     assert "No curated help" in rendered
 
 
-def test_render_image_help_gemini_extended_knob_only_for_flash_3x():
-    gemini_flash = render_image_help(
-        "google/gemini-3.1-flash-image-preview", IMAGE_BY_ID["google/gemini-3.1-flash-image-preview"]
-    )
-    assert "Image aspect ratio (Gemini extended)" in gemini_flash
-
-    gemini_pro = render_image_help(
-        "google/gemini-3-pro-image-preview", IMAGE_BY_ID["google/gemini-3-pro-image-preview"]
-    )
-    assert "Image aspect ratio (Gemini extended)" not in gemini_pro, (
-        "Pro does not advertise extended ratios — the extended knob must not appear in its help"
-    )
-
-    gpt_image = render_image_help(
-        "openai/gpt-5-image", IMAGE_BY_ID["openai/gpt-5-image"]
-    )
-    assert "Image aspect ratio (Gemini extended)" not in gpt_image
 
 
-def test_image_help_gemini_extended_gate_excludes_pro_and_2_5():
-    from open_webui_openrouter_pipe.integrations.image_help import _is_gemini_extended_ratio_model
-
-    assert _is_gemini_extended_ratio_model("google/gemini-3.1-flash-image")
-    assert _is_gemini_extended_ratio_model("google/gemini-3.1-flash-image-preview")
-    assert _is_gemini_extended_ratio_model("~google/gemini-3.1-flash-image")
-    assert not _is_gemini_extended_ratio_model("google/gemini-3-pro-image")
-    assert not _is_gemini_extended_ratio_model("google/gemini-3-pro-image-preview")
-    assert not _is_gemini_extended_ratio_model("google/gemini-2.5-flash-image")
-    assert not _is_gemini_extended_ratio_model("openai/gpt-image-2")
 
 
-def test_image_gate_helpers_and_attach_patterns_accept_tilde_aliases():
-    """All image model gates tolerate a leading ~ (router aliases) without
-    loosening anything else; the equality-turned-regex helper keeps non-str safety."""
-    from open_webui_openrouter_pipe.integrations.image_help import (
-        _is_gemini_extended_ratio_model,
-        _is_grok_imagine_image,
-        _is_recraft,
-        _is_recraft_v3,
-        _is_sourceful_pro_or_fast,
-        _is_sourceful_v2_superres,
-        _is_sourceful_v25,
-    )
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    assert _is_gemini_extended_ratio_model("~google/gemini-3.1-flash-image")
-    assert _is_sourceful_pro_or_fast("~sourceful/riverflow-v2-pro")
-    assert _is_sourceful_v2_superres("~sourceful/riverflow-v2-fast")
-    assert _is_sourceful_v25("~sourceful/riverflow-v2.5-pro")
-    assert _is_recraft("~recraft/recraft-v4")
-    assert _is_recraft_v3("~recraft/recraft-v3")
-    assert not _is_recraft_v3("~recraft/recraft-v4")
-    assert _is_grok_imagine_image("~x-ai/grok-imagine-image-1")
-
-    assert FilterManager._GEMINI_IMAGE_PATTERN.match("~google/gemini-3.1-flash-image")
-    assert FilterManager._SOURCEFUL_IMAGE_PATTERN.match("~sourceful/riverflow-v2-pro")
-    assert FilterManager._SOURCEFUL_V25_IMAGE_PATTERN.match("~sourceful/riverflow-v2.5-fast")
-    assert FilterManager._RECRAFT_COMMON_IMAGE_PATTERN.match("~recraft/recraft-v4")
-    assert FilterManager._RECRAFT_V3_IMAGE_PATTERN.match("~recraft/recraft-v3")
-    assert not FilterManager._RECRAFT_V3_IMAGE_PATTERN.match("~recraft/recraft-v4")
-    assert FilterManager._GROK_IMAGINE_IMAGE_PATTERN.match("~x-ai/grok-imagine-image-1")
-
-    from typing import cast
-
-    assert _is_recraft_v3(cast(str, None)) is False
-    assert _is_recraft_v3(cast(str, 42)) is False
 
 
-def test_render_image_help_sourceful_knobs_only_for_pro_and_fast():
-    """Behaviour test: 'Font inputs' knob description appears only in help for Sourceful
-    Pro/Fast (non-preview), not for Sourceful preview variants or other models."""
-    pro_help = render_image_help(
-        "sourceful/riverflow-v2-pro", IMAGE_BY_ID["sourceful/riverflow-v2-pro"]
-    )
-    assert "Font inputs (JSON array)" in pro_help
-
-    fast_help = render_image_help(
-        "sourceful/riverflow-v2-fast", IMAGE_BY_ID["sourceful/riverflow-v2-fast"]
-    )
-    assert "Font inputs (JSON array)" in fast_help
-
-    max_preview_help = render_image_help(
-        "sourceful/riverflow-v2-max-preview", IMAGE_BY_ID["sourceful/riverflow-v2-max-preview"]
-    )
-    assert "Font inputs (JSON array)" not in max_preview_help
 
 
-def test_render_image_help_sourceful_v25_shows_extras_but_not_super_res():
-    """Riverflow 2.5 help lists fonts + 2.5 extras; super-res (dropped in 2.5)
-    must not appear. V2 help keeps the super-res knob."""
-    for model_id in ["sourceful/riverflow-v2.5-pro", "sourceful/riverflow-v2.5-fast"]:
-        rendered = render_image_help(model_id, IMAGE_BY_ID[model_id])
-        assert "Font inputs (JSON array)" in rendered
-        assert "Scoring prompt" in rendered
-        assert "Scoring rubric" in rendered
-        assert "Background mode" in rendered
-        assert "Background hex color" in rendered
-        assert "Super-resolution references (JSON array)" not in rendered, (
-            f"{model_id} help must not advertise the dropped super-res param"
-        )
-
-    v2_help = render_image_help(
-        "sourceful/riverflow-v2-pro", IMAGE_BY_ID["sourceful/riverflow-v2-pro"]
-    )
-    assert "Super-resolution references (JSON array)" in v2_help
 
 
-def test_render_image_help_mai_image_generic_knobs_only():
-    rendered = render_image_help(
-        "microsoft/mai-image-2.5", IMAGE_BY_ID["microsoft/mai-image-2.5"]
-    )
-    assert "Microsoft: MAI-Image-2.5" in rendered
-    assert "Image aspect ratio" in rendered
-    assert "Image size" in rendered
-    # No family-specific knobs may leak into MAI help
-    for foreign_knob in [
-        "Font inputs (JSON array)",
-        "Scoring prompt",
-        "Image aspect ratio (Gemini extended)",
-        "Strength (image-to-image)",
-        "Image aspect ratio (Grok Imagine)",
-    ]:
-        assert foreign_knob not in rendered
 
 
-def test_render_image_help_grok_shows_grok_knobs():
-    rendered = render_image_help(
-        "x-ai/grok-imagine-image-quality", IMAGE_BY_ID["x-ai/grok-imagine-image-quality"]
-    )
-    assert "xAI: Grok Imagine Image Quality" in rendered
-    assert "Image aspect ratio (Grok Imagine)" in rendered
-    assert "Number of images (1-10)" in rendered
 
 
-def test_render_image_help_generic_knobs_present_for_all_models():
-    """Behaviour test: 'Image aspect ratio' and 'Image size' (the always-active knobs)
-    appear in help for any image-output model."""
-    for model_id in ["sourceful/riverflow-v2-pro", "openai/gpt-5-image"]:
-        rendered = render_image_help(model_id, IMAGE_BY_ID[model_id])
-        assert "Image aspect ratio" in rendered
-        assert "Image size" in rendered
 
 
 # =============================================================================
@@ -720,27 +397,10 @@ def test_render_image_help_generic_knobs_present_for_all_models():
 # =============================================================================
 
 
-def test_generic_filter_inlet_writes_aspect_ratio():
-    source = render_generic_image_filter_source()
-    # Source includes the inlet logic that writes overrides["aspect_ratio"]
-    assert 'overrides["aspect_ratio"]' in source
-    assert 'overrides["image_size"]' in source
-    assert 'body["image_config"]' in source
 
 
-def test_sourceful_filter_inlet_validates_cardinality():
-    source = render_sourceful_image_filter_source()
-    # Pre-validation rejects > 2 font_inputs and > 4 super_resolution_references
-    assert "len(font_inputs) > _MAX_FONT_INPUTS" in source
-    assert "len(super_refs) > _MAX_SUPER_RESOLUTION_REFERENCES" in source
 
 
-def test_gemini_filter_inlet_writes_extended_overrides():
-    source = render_gemini_image_filter_source()
-    assert 'overrides["aspect_ratio"]' in source
-    assert 'overrides["image_size"]' in source
-    assert "IMAGE_ASPECT_RATIO_EXTENDED" in source
-    assert "IMAGE_SIZE_GEMINI" in source
 
 
 # =============================================================================
@@ -748,43 +408,6 @@ def test_gemini_filter_inlet_writes_extended_overrides():
 # =============================================================================
 
 
-def test_register_image_models_full_fixture_handles_all_entries():
-    """Full image-api dump registers without errors and dedupe works.
-    Asserts every pure-image-only model in the catalog appears in _specs."""
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-
-    OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
-
-    # All pure-image-only models registered
-    pure_image_norm_ids = [
-        ModelFamily.base_model(sanitize_model_id(mid))
-        for mid in [
-            "sourceful/riverflow-v2-pro",
-            "sourceful/riverflow-v2-fast",
-            "sourceful/riverflow-v2-max-preview",
-            "sourceful/riverflow-v2-standard-preview",
-            "sourceful/riverflow-v2-fast-preview",
-            "black-forest-labs/flux.2-pro",
-            "black-forest-labs/flux.2-max",
-            "black-forest-labs/flux.2-flex",
-            "black-forest-labs/flux.2-klein-4b",
-            "bytedance-seed/seedream-4.5",
-            "recraft/recraft-v3",
-            "recraft/recraft-v4",
-            "recraft/recraft-v4-pro",
-            "openai/gpt-image-2",
-        ]
-    ]
-    for norm_id in pure_image_norm_ids:
-        assert norm_id in OpenRouterModelRegistry._specs, f"{norm_id} not registered"
-
-    # All registered pure-image models have features
-    for norm_id in pure_image_norm_ids:
-        features = set(OpenRouterModelRegistry._specs[norm_id].get("features") or set())
-        assert "image_output" in features
-        assert "image_gen_tool" in features
 
 
 def test_image_output_in_pipe_capabilities_keys():
@@ -818,29 +441,14 @@ def test_image_output_in_pipe_capabilities_keys():
     )
 
 
-def test_sourceful_pattern_uses_fullmatch_anchors():
-    """Sourceful regex must anchor with `^...$` so suffix variants don't sneak through.
-    Originally the test used `pat.match()` which only anchors at start; this
-    explicit fullmatch test ensures `riverflow-v2-pro-extra` is rejected.
-    """
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    pat = FilterManager._SOURCEFUL_IMAGE_PATTERN
-    assert pat.fullmatch("sourceful/riverflow-v2-pro")
-    assert pat.fullmatch("sourceful/riverflow-v2-fast")
-    # Suffix attack — must NOT match
-    assert not pat.fullmatch("sourceful/riverflow-v2-pro-extra")
-    assert not pat.fullmatch("sourceful/riverflow-v2-fast-experimental")
-    # Prefix attack
-    assert not pat.fullmatch("evil-sourceful/riverflow-v2-pro")
 
 
 def test_register_image_models_full_fixture_exact_pure_image_count():
-    """Exact-count assertion: register_image_models must add EXACTLY the 18
-    pure-image-only models from the fixture (7 Sourceful + 4 Flux + 1 Seedream
-    + 3 Recraft + 1 Microsoft MAI + 1 Grok Imagine + 1 GPT Image), NOT any
-    multimodal entries (gpt-5-image variants, gemini-image variants,
-    openrouter/auto — those land in chat catalog separately).
+    """Registers exactly the image-only models the catalogue holds, and no others.
+
+    The expected set is derived from the fixture rather than counted by hand, because a
+    hand-written number goes stale the moment OpenRouter adds a model and says nothing
+    about *which* models were registered.
     """
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
@@ -852,8 +460,14 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
         norm_id for norm_id, spec in OpenRouterModelRegistry._specs.items()
         if "image_output" in (spec.get("features") or set())
     ]
-    assert len(image_only_specs) == 18, (
-        f"Expected 18 pure-image-only registrations, got {len(image_only_specs)}: {image_only_specs}"
+    expected = {
+        sanitize_model_id(m["id"])
+        for m in IMAGE_MODELS
+        if "text" not in ((m.get("architecture") or {}).get("output_modalities") or [])
+    }
+    assert set(image_only_specs) == expected, (
+        f"registered but not image-only: {sorted(set(image_only_specs) - expected)}\n"
+        f"image-only but not registered: {sorted(expected - set(image_only_specs))}"
     )
 
 
@@ -862,332 +476,36 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
 # =============================================================================
 
 
-def test_generic_filter_inlet_writes_aspect_and_size_into_body():
-    source = render_generic_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_generic_runtime")
-
-    user_valves = module.Filter.UserValves(IMAGE_ASPECT_RATIO="16:9", IMAGE_SIZE="2K")
-    body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-    assert body["image_config"] == {"aspect_ratio": "16:9", "image_size": "2K"}
-
-
-def test_generic_filter_inlet_preserves_existing_image_config_keys():
-    """If body already has image_config with unrelated keys, the filter merges
-    its overrides while preserving the existing keys (per-key overwrite semantics)."""
-    source = render_generic_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_generic_preserve")
-
-    user_valves = module.Filter.UserValves(IMAGE_ASPECT_RATIO="16:9")
-    body: dict[str, Any] = {
-        "model": "openai/gpt-5-image",
-        "image_config": {"quality": "high", "background": "transparent"},
-        "messages": [],
-    }
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-    assert body["image_config"]["aspect_ratio"] == "16:9"  # added
-    assert body["image_config"]["quality"] == "high"  # preserved
-    assert body["image_config"]["background"] == "transparent"  # preserved
-
-
-def test_generic_filter_inlet_no_op_when_user_valves_empty():
-    source = render_generic_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_generic_noop")
-
-    body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": module.Filter.UserValves()})
-
-    assert "image_config" not in body
-
-
-def test_gemini_filter_inlet_writes_extended_for_flash_3x_not_pro():
-    source = render_gemini_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_gemini_runtime")
-
-    def applied(model_id: str) -> Any:
-        body: dict[str, Any] = {"model": model_id, "messages": []}
-        user_valves = module.Filter.UserValves(IMAGE_ASPECT_RATIO_EXTENDED="4:1", IMAGE_SIZE_GEMINI="0.5K")
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-        return body.get("image_config")
-
-    for flash_id in ("google/gemini-3.1-flash-image", "google/gemini-3.1-flash-image-preview"):
-        assert applied(flash_id) == {"aspect_ratio": "4:1", "image_size": "0.5K"}, (
-            f"Flash 3.x {flash_id} must apply the extended ratio/0.5K"
-        )
-
-    for excluded_id in (
-        "google/gemini-3-pro-image",
-        "google/gemini-3-pro-image-preview",
-        "google/gemini-2.5-flash-image",
-        "openai/gpt-5-image",
-    ):
-        assert applied(excluded_id) is None, (
-            f"{excluded_id} must not get extended knobs"
-        )
-
-
-def test_sourceful_filter_inlet_writes_only_for_sourceful_pro_or_fast():
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_runtime")
-    font_input_json = '[{"font_url": "https://example.com/f.ttf", "text": "Hi"}]'
-    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON=font_input_json)
-
-    # Sourceful Pro — written
-    pro_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-    module.Filter().inlet(pro_body, __metadata__={}, __user__={"valves": user_valves})
-    assert pro_body["image_config"]["font_inputs"] == [
-        {"font_url": "https://example.com/f.ttf", "text": "Hi"}
-    ]
-
-    # Sourceful Max Preview — must be ignored (model gate excludes preview variants)
-    preview_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-max-preview", "messages": []}
-    module.Filter().inlet(preview_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in preview_body, (
-        "Sourceful filter must not modify body when model is preview variant"
-    )
-
-    # Non-Sourceful model — must be ignored
-    other_body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(other_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in other_body
-
-
-def test_sourceful_filter_inlet_rejects_excess_font_inputs():
-    """Cardinality cap enforcement: 3+ font_inputs raises ImageGenerationError."""
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_cap")
-
-    too_many = json.dumps([
-        {"font_url": "https://example.com/1.ttf", "text": "a"},
-        {"font_url": "https://example.com/2.ttf", "text": "b"},
-        {"font_url": "https://example.com/3.ttf", "text": "c"},
-    ])
-    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON=too_many)
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-
-    with pytest.raises(module.ImageGenerationError, match="font_inputs"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-
-def test_sourceful_filter_inlet_rejects_excess_super_resolution_references():
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_super")
-
-    too_many = json.dumps(["https://x/1.jpg", "https://x/2.jpg", "https://x/3.jpg", "https://x/4.jpg", "https://x/5.jpg"])
-    user_valves = module.Filter.UserValves(IMAGE_SUPER_RESOLUTION_REFERENCES_JSON=too_many)
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2-fast", "messages": []}
-
-    with pytest.raises(module.ImageGenerationError, match="super_resolution_references"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-
-def test_sourceful_filter_inlet_fully_no_ops_on_v25_models():
-    """One Sourceful filter per Riverflow version: the V2 'Sourceful Options'
-    filter must leave 2.5 bodies completely untouched (model gate), even with
-    malformed valve values — 2.5 models use the dedicated sourceful_v25 filter."""
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_gate")
-    user_valves = module.Filter.UserValves(
-        IMAGE_FONT_INPUTS_JSON='[{"font_url": "https://x/f.ttf", "text": "Hi"}]',
-        IMAGE_SUPER_RESOLUTION_REFERENCES_JSON='["https://x/ref.png"]',
-    )
-
-    # V2 — both knobs emitted
-    v2_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-    module.Filter().inlet(v2_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "font_inputs" in v2_body["image_config"]
-    assert "super_resolution_references" in v2_body["image_config"]
-
-    # 2.5 — the V2 filter does not touch the body at all
-    v25_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
-    module.Filter().inlet(v25_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in v25_body, (
-        "the V2 Sourceful filter must not attach knobs to Riverflow 2.5 models"
-    )
-
-    # Even malformed JSON is inert on 2.5 (model gate precedes parsing)...
-    bad_valves = module.Filter.UserValves(
-        IMAGE_SUPER_RESOLUTION_REFERENCES_JSON="{not valid json",
-    )
-    inert_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-fast", "messages": []}
-    module.Filter().inlet(inert_body, __metadata__={}, __user__={"valves": bad_valves})
-    assert "image_config" not in inert_body
-
-    # ...while the same malformed value still raises loudly on V2
-    v2_bad: dict[str, Any] = {"model": "sourceful/riverflow-v2-fast", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="not valid JSON"):
-        module.Filter().inlet(v2_bad, __metadata__={}, __user__={"valves": bad_valves})
-
-
-def test_sourceful_v25_filter_inlet_writes_fonts_and_extras_only_for_25_models():
-    source = render_sourceful_v25_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_runtime")
-    user_valves = module.Filter.UserValves(
-        IMAGE_FONT_INPUTS_JSON='[{"font_url": "https://x/f.ttf", "text": "Hi"}]',
-        IMAGE_SCORING_PROMPT="crisp vector logo",
-        IMAGE_SCORING_RUBRIC="sharp edges, flat colors",
-        IMAGE_BACKGROUND_MODE="solid",
-        IMAGE_BACKGROUND_HEX_COLOR="#0AF",
-    )
-
-    v25_body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-fast", "messages": []}
-    module.Filter().inlet(v25_body, __metadata__={}, __user__={"valves": user_valves})
-    assert v25_body["image_config"] == {
-        "font_inputs": [{"font_url": "https://x/f.ttf", "text": "Hi"}],
-        "scoring_prompt": "crisp vector logo",
-        "scoring_rubric": "sharp edges, flat colors",
-        "background_mode": "solid",
-        "background_hex_color": "#0AF",
-    }
-
-    # V2 model with the SAME valves — must be ignored (model gate)
-    v2_body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-    module.Filter().inlet(v2_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in v2_body
-
-
-def test_sourceful_v25_filter_inlet_rejects_excess_font_inputs():
-    """The dedicated 2.5 filter enforces the same font cardinality cap as V2."""
-    source = render_sourceful_v25_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_fontcap")
-
-    too_many = json.dumps([
-        {"font_url": "https://example.com/1.ttf", "text": "a"},
-        {"font_url": "https://example.com/2.ttf", "text": "b"},
-        {"font_url": "https://example.com/3.ttf", "text": "c"},
-    ])
-    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON=too_many)
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
-
-    with pytest.raises(module.ImageGenerationError, match="font_inputs"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-
-def test_sourceful_v25_filter_inlet_validates_background_hex():
-    source = render_sourceful_v25_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_v25_hex")
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2.5-pro", "messages": []}
-
-    # Hex without solid mode → clear inlet error
-    no_mode = module.Filter.UserValves(IMAGE_BACKGROUND_HEX_COLOR="#FFFFFF")
-    with pytest.raises(module.ImageGenerationError, match="solid"):
-        module.Filter().inlet(dict(body), __metadata__={}, __user__={"valves": no_mode})
-
-    # Malformed hex → clear inlet error
-    bad_hex = module.Filter.UserValves(
-        IMAGE_BACKGROUND_MODE="solid", IMAGE_BACKGROUND_HEX_COLOR="red"
-    )
-    with pytest.raises(module.ImageGenerationError, match="#RGB or #RRGGBB"):
-        module.Filter().inlet(dict(body), __metadata__={}, __user__={"valves": bad_hex})
-
-    transparent = module.Filter.UserValves(IMAGE_BACKGROUND_MODE="transparent")
-    out_body = dict(body)
-    module.Filter().inlet(out_body, __metadata__={}, __user__={"valves": transparent})
-    assert out_body["image_config"] == {"background_mode": "transparent"}
-
-
-@pytest.mark.parametrize("render_fn,slug,valves,expected_key", [
-    (render_gemini_image_filter_source, "google/gemini-3.1-flash-image-preview",
-     {"IMAGE_ASPECT_RATIO_EXTENDED": "4:1"}, "aspect_ratio"),
-    (render_sourceful_image_filter_source, "sourceful/riverflow-v2-pro",
-     {"IMAGE_FONT_INPUTS_JSON": '[{"font_url": "https://x/f.ttf", "text": "Hi"}]'}, "font_inputs"),
-    (render_sourceful_v25_image_filter_source, "sourceful/riverflow-v2.5-pro",
-     {"IMAGE_SCORING_PROMPT": "crisp logo"}, "scoring_prompt"),
-    (render_recraft_common_image_filter_source, "recraft/recraft-v4",
-     {"IMAGE_STRENGTH": 0.5}, "strength"),
-    (render_recraft_v3_image_filter_source, "recraft/recraft-v3",
-     {"IMAGE_RECRAFT_STYLE": "Photorealism"}, "style"),
-    (render_grok_image_filter_source, "x-ai/grok-imagine-image-quality",
-     {"IMAGE_GROK_N": 3}, "n"),
-])
-def test_image_filter_inlet_matches_pipe_prefixed_model_id(render_fn, slug, valves, expected_key):
-    """OWUI manifold passes pipe-namespaced model ids ("<pipe_id>.<vendor>/<model>")
-    to inlet filters. The model gates must normalize that prefix or they silently
-    no-op in production. Prefixed ids must write knobs, bare ids must still work,
-    and a foreign model must still be ignored."""
-    module = _load_filter_from_source(render_fn(), f"test_prefix_{expected_key}")
-    prefix = "open_webui_openrouter_pipe."
-
-    prefixed: dict[str, Any] = {"model": prefix + slug, "messages": []}
-    module.Filter().inlet(prefixed, __metadata__={}, __user__={"valves": dict(valves)})
-    assert expected_key in (prefixed.get("image_config") or {}), (
-        f"{slug}: gate failed to match the pipe-prefixed model id"
-    )
-
-    bare: dict[str, Any] = {"model": slug, "messages": []}
-    module.Filter().inlet(bare, __metadata__={}, __user__={"valves": dict(valves)})
-    assert expected_key in (bare.get("image_config") or {}), f"{slug}: bare id regressed"
-
-    foreign: dict[str, Any] = {"model": prefix + "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(foreign, __metadata__={}, __user__={"valves": dict(valves)})
-    assert "image_config" not in foreign, f"{slug}: foreign model must stay ignored"
-
-
-def test_grok_filter_inlet_writes_grok_knobs_only_for_grok_models():
-    source = render_grok_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_grok_runtime")
-    user_valves = module.Filter.UserValves(IMAGE_GROK_ASPECT_RATIO="9:19.5", IMAGE_GROK_N=4)
-
-    grok_body: dict[str, Any] = {"model": "x-ai/grok-imagine-image-quality", "messages": []}
-    module.Filter().inlet(grok_body, __metadata__={}, __user__={"valves": user_valves})
-    assert grok_body["image_config"] == {"aspect_ratio": "9:19.5", "n": 4}
-
-    # Non-Grok model with the SAME valves — must be ignored (model gate)
-    other_body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(other_body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in other_body
-
-    defaults_body: dict[str, Any] = {"model": "x-ai/grok-imagine-image-quality", "messages": []}
-    module.Filter().inlet(defaults_body, __metadata__={}, __user__={"valves": module.Filter.UserValves()})
-    assert "image_config" not in defaults_body
-
-
-def test_sourceful_filter_inlet_rejects_invalid_json():
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_badjson")
-
-    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON="not-json")
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-
-    with pytest.raises(module.ImageGenerationError, match="not valid JSON"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-
-def test_sourceful_filter_inlet_rejects_missing_font_url_or_text():
-    source = render_sourceful_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_sourceful_missing")
-
-    user_valves = module.Filter.UserValves(IMAGE_FONT_INPUTS_JSON='[{"font_url": "https://x/f.ttf"}]')
-    body: dict[str, Any] = {"model": "sourceful/riverflow-v2-pro", "messages": []}
-
-    with pytest.raises(module.ImageGenerationError, match="non-empty 'font_url' and 'text'"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-
-
-def test_two_filters_concurrent_merge_into_image_config():
-    """Generic + Gemini filters running on the same body produce a merged
-    image_config (Gemini overrides aspect/size when set; otherwise generic
-    values stand)."""
-    generic_module = _load_filter_from_source(
-        render_generic_image_filter_source(), "test_image_filter_two_generic"
-    )
-    gemini_module = _load_filter_from_source(
-        render_gemini_image_filter_source(), "test_image_filter_two_gemini"
-    )
-
-    body: dict[str, Any] = {"model": "google/gemini-3.1-flash-image-preview", "messages": []}
-
-    generic_uv = generic_module.Filter.UserValves(IMAGE_ASPECT_RATIO="1:1", IMAGE_SIZE="2K")
-    generic_module.Filter().inlet(body, __metadata__={}, __user__={"valves": generic_uv})
-
-    # Now Gemini filter runs — extended ratio overrides generic
-    gemini_uv = gemini_module.Filter.UserValves(IMAGE_ASPECT_RATIO_EXTENDED="4:1", IMAGE_SIZE_GEMINI="0.5K")
-    gemini_module.Filter().inlet(body, __metadata__={}, __user__={"valves": gemini_uv})
-
-    assert body["image_config"]["aspect_ratio"] == "4:1"  # gemini override won
-    assert body["image_config"]["image_size"] == "0.5K"  # gemini override won
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # =============================================================================
@@ -1195,177 +513,14 @@ def test_two_filters_concurrent_merge_into_image_config():
 # =============================================================================
 
 
-@pytest.mark.asyncio
-async def test_installer_returns_generic_only_for_image_output_model():
-    """Installer must return [generic_id] for plain image-output models (e.g. Flux)."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models([
-        m for m in IMAGE_MODELS if m["id"] == "black-forest-labs/flux.2-pro"
-    ])
-
-    pipe = MagicMock()
-    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
-    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    flux = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([flux])
-
-    assert flux["id"] in result
-    assert "openrouter_image_filter_generic" in result[flux["id"]]
-    assert "openrouter_image_filter_gemini" not in result[flux["id"]]
-    assert "openrouter_image_filter_sourceful" not in result[flux["id"]]
 
 
-@pytest.mark.asyncio
-async def test_installer_isolates_per_filter_install_failures():
-    """If gemini install raises, generic still gets attached to all matching models."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-
-    async def _fake_install(**kwargs):
-        if "Gemini" in kwargs["desired_name"]:
-            raise RuntimeError("simulated gemini install failure")
-        return kwargs["preferred_id"]
-
-    fm._ensure_filter_installed = AsyncMock(side_effect=_fake_install)
-
-    image_only_models = [
-        m for m in OpenRouterModelRegistry.list_models()
-        if "image_output" in (OpenRouterModelRegistry._specs.get(m["norm_id"], {}).get("features") or set())
-    ]
-    result = await fm.ensure_openrouter_image_filter_function_ids(image_only_models)
-
-    # All registered pure-image models should at least have generic attached
-    assert all(
-        "openrouter_image_filter_generic" in ids
-        for ids in result.values()
-    )
 
 
-@pytest.mark.asyncio
-async def test_installer_dual_keys_no_aliasing():
-    """`installed[model_id]` and `installed[original_id]` must be SEPARATE list
-    objects (no shared reference) so future mutation of one doesn't corrupt the other."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models([
-        m for m in IMAGE_MODELS if m["id"] == "sourceful/riverflow-v2-pro"
-    ])
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    sourceful = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([sourceful])
-
-    # Both sanitized and original ids should map to the SAME list contents
-    sanitized_ids = result.get(sourceful["id"])
-    original_ids = result.get(sourceful["original_id"])
-    assert sanitized_ids is not None and original_ids is not None
-    assert sanitized_ids == original_ids
-    # But they must be DIFFERENT list objects (no aliasing)
-    assert sanitized_ids is not original_ids
-    sanitized_ids.append("test-injection")
-    assert "test-injection" not in original_ids, (
-        "Aliasing detected: mutating sanitized_ids modified original_ids"
-    )
 
 
-@pytest.mark.asyncio
-async def test_installer_attaches_gemini_filter_to_flash_3x_not_pro():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-
-    architecture = {
-        "input_modalities": ["text", "image"],
-        "output_modalities": ["image", "text"],
-    }
-    derived_features = OpenRouterModelRegistry._derive_features(  # type: ignore[attr-defined]
-        supported_parameters={"temperature", "tools"},
-        architecture=architecture,
-        pricing={},
-    )
-    assert "image_output" in derived_features
-
-    flash_ids = {"google/gemini-3.1-flash-image", "google/gemini-3.1-flash-image-preview"}
-    pro_ids = {"google/gemini-3-pro-image", "google/gemini-3-pro-image-preview"}
-    models = []
-    for original_id in sorted(flash_ids | pro_ids):
-        sanitized = sanitize_model_id(original_id)
-        norm_id = ModelFamily.base_model(sanitized)
-        OpenRouterModelRegistry._specs[norm_id] = {
-            "features": set(derived_features),
-            "capabilities": {"image_generation": True},
-            "max_completion_tokens": None,
-            "supported_parameters": frozenset({"temperature", "tools"}),
-            "full_model": {"id": original_id, "architecture": architecture},
-            "architecture": architecture,
-        }
-        OpenRouterModelRegistry._id_map[norm_id] = original_id
-        models.append(
-            {"id": sanitized, "norm_id": norm_id, "original_id": original_id, "name": original_id}
-        )
-    ModelFamily.set_dynamic_specs(OpenRouterModelRegistry._specs)
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    result = await fm.ensure_openrouter_image_filter_function_ids(models)
-
-    for model in models:
-        ids = result.get(model["id"]) or result.get(model["original_id"])
-        assert ids is not None, f"{model['original_id']} received no filter ids"
-        assert "openrouter_image_filter_generic" in ids
-        if model["original_id"] in flash_ids:
-            assert "openrouter_image_filter_gemini" in ids, (
-                f"Flash 3.x {model['original_id']} must auto-attach the gemini extended-ratio filter"
-            )
-        else:
-            assert "openrouter_image_filter_gemini" not in ids, (
-                f"Pro {model['original_id']} must NOT get the gemini filter — it lacks extended ratios"
-            )
 
 
-@pytest.mark.asyncio
-async def test_installer_attaches_generic_only_to_gpt_image():
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models(
-        [m for m in IMAGE_MODELS if m["id"] == "openai/gpt-image-2"]
-    )
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    gpt_image = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([gpt_image])
-
-    ids = result.get(gpt_image["id"])
-    assert ids == ["openrouter_image_filter_generic"], (
-        f"gpt-image must auto-attach generic-only, got {ids}"
-    )
 
 
 # =============================================================================
@@ -1429,7 +584,9 @@ async def test_image_catalog_ttl_gate_skips_within_window():
 
     from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
 
-    OpenRouterModelRegistry._last_image_attempt = time.time()  # just now
+    now = time.time()
+    OpenRouterModelRegistry._last_image_attempt = now  # just now
+    OpenRouterModelRegistry._last_image_contract_attempt = now
     OpenRouterModelRegistry._last_image_fetch = 0.0
 
     valves = MagicMock()
@@ -1444,6 +601,73 @@ async def test_image_catalog_ttl_gate_skips_within_window():
     )
 
     assert not session.get.called
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_skipped_contracts_does_not_suppress_the_next_sweep():
+    """The two phases have separate clocks, because they do separate work.
+
+    A chat message refreshes the model list without reading contracts. Sharing one clock
+    meant that message suppressed the next catalogue refresh's sweep for a whole window,
+    and every image model lost its controls until the window expired.
+    """
+    from open_webui_openrouter_pipe.integrations import image_catalog
+
+    record = {
+        "provider_slug": "p",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+    }
+    catalog = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"][:2]
+    awaited: list[str] = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_models(self):
+            return catalog
+
+        async def endpoints(self, model_id):
+            awaited.append(model_id)
+            return [record]
+
+    valves = MagicMock()
+    valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    valves.AUTO_INSTALL_IMAGE_FILTERS = True
+    valves.AUTO_ATTACH_IMAGE_FILTERS = True
+    valves.BASE_URL = "https://openrouter.ai/api/v1"
+    valves.HTTP_REFERER_OVERRIDE = ""
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._last_image_attempt = 0.0
+    OpenRouterModelRegistry._last_image_fetch = 0.0
+    OpenRouterModelRegistry._last_image_contract_attempt = 0.0
+
+    original = image_catalog.OpenRouterImageClient
+    image_catalog.OpenRouterImageClient = _Client  # type: ignore[misc]
+    try:
+        await image_catalog.ensure_image_catalog_loaded(
+            session=MagicMock(), valves=valves, api_key="k",
+            logger=logging.getLogger("t"), cache_seconds=3600, with_contracts=False,
+        )
+        assert awaited == [], "the request path must not read contracts"
+
+        await image_catalog.ensure_image_catalog_loaded(
+            session=MagicMock(), valves=valves, api_key="k",
+            logger=logging.getLogger("t"), cache_seconds=3600,
+        )
+    finally:
+        image_catalog.OpenRouterImageClient = original  # type: ignore[misc]
+
+    assert len(awaited) == len(catalog), (
+        f"the catalogue refresh must still read every contract; got {awaited}"
+    )
+    assert OpenRouterModelRegistry.image_endpoint(catalog[0]["id"]) == [record]
 
 
 @pytest.mark.asyncio
@@ -1476,7 +700,7 @@ async def test_image_client_list_models_returns_filtered_list():
             pass
 
     class _MockSession:
-        def get(self, url, headers=None):
+        def get(self, url, headers=None, timeout=None):
             return _MockResponse()
 
     client = OpenRouterImageClient(
@@ -1512,7 +736,7 @@ async def test_image_client_list_models_handles_missing_data_field():
             pass
 
     class _MockSession:
-        def get(self, url, headers=None):
+        def get(self, url, headers=None, timeout=None):
             return _MockResponse()
 
     client = OpenRouterImageClient(
@@ -2011,332 +1235,1897 @@ def test_inject_image_modalities_multimodal_via_chat_catalog_path():
 # =============================================================================
 
 
-def test_recraft_common_filter_inlet_writes_strength_into_body():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_strength")
-    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.7)
-    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"] == {"strength": 0.7}
 
 
-def test_recraft_common_filter_skips_strength_when_zero():
-    """0.0 is the skip sentinel — should NOT write strength to body."""
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_strength_zero")
-    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.0)
-    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in body  # nothing written
 
 
-def test_recraft_common_filter_writes_rgb_colors():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb")
-    user_valves = module.Filter.UserValves(
-        IMAGE_RGB_COLORS_JSON="[[255, 0, 0], [0, 128, 0]]"
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"]["rgb_colors"] == [[255, 0, 0], [0, 128, 0]]
 
 
-def test_recraft_common_filter_writes_background_rgb():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_bg")
-    user_valves = module.Filter.UserValves(
-        IMAGE_BACKGROUND_RGB_JSON="[0, 0, 255]"
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"]["background_rgb_color"] == [0, 0, 255]
 
 
-def test_recraft_common_filter_rejects_oversaturated_rgb():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb_oversat")
-    user_valves = module.Filter.UserValves(
-        IMAGE_RGB_COLORS_JSON="[[300, 0, 0]]"
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="0-255"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
-def test_recraft_common_filter_rejects_wrong_rgb_arity():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_rgb_arity")
-    user_valves = module.Filter.UserValves(
-        IMAGE_RGB_COLORS_JSON="[[255, 0]]"  # only 2 components
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="3-element"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
-def test_recraft_common_filter_rejects_malformed_json():
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_bad_json")
-    user_valves = module.Filter.UserValves(
-        IMAGE_RGB_COLORS_JSON="not valid json"
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="not valid JSON"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
-def test_recraft_common_filter_skips_non_recraft_model():
-    """Defensive gate: filter must no-op on non-Recraft models even if attached."""
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_gate")
-    user_valves = module.Filter.UserValves(IMAGE_STRENGTH=0.7)
-    body: dict[str, Any] = {"model": "openai/gpt-5-image", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in body  # filter no-op on non-Recraft
 
 
-def test_recraft_common_filter_combines_all_three_params():
-    """All three Recraft Common params combined into a single image_config."""
-    source = render_recraft_common_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_combined")
-    user_valves = module.Filter.UserValves(
-        IMAGE_STRENGTH=0.6,
-        IMAGE_RGB_COLORS_JSON="[[255, 0, 0]]",
-        IMAGE_BACKGROUND_RGB_JSON="[255, 255, 255]",
-    )
-    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"] == {
-        "strength": 0.6,
-        "rgb_colors": [[255, 0, 0]],
-        "background_rgb_color": [255, 255, 255],
-    }
 
 
 # Recraft V3 Extras filter
 
 
-def test_recraft_v3_filter_inlet_writes_style():
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_style")
-    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"] == {"style": "Photorealism"}
 
 
-def test_recraft_v3_filter_inlet_writes_text_layout():
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_layout")
-    layout = (
-        '[{"text":"Hello","bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
-    )
-    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert body["image_config"]["text_layout"][0]["text"] == "Hello"
-    assert len(body["image_config"]["text_layout"][0]["bbox"]) == 4
 
 
-def test_recraft_v3_filter_skips_v4_silently():
-    """Per OpenRouter docs: V4 and V4 Pro do NOT support style or text_layout.
-    The filter must no-op on V4/V4 Pro even if manually attached."""
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_skip_v4")
-    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
-    body: dict[str, Any] = {"model": "recraft/recraft-v4", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in body  # V4 skipped
 
 
-def test_recraft_v3_filter_skips_v4_pro_silently():
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_skip_v4pro")
-    user_valves = module.Filter.UserValves(IMAGE_RECRAFT_STYLE="Photorealism")
-    body: dict[str, Any] = {"model": "recraft/recraft-v4-pro", "messages": []}
-    module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
-    assert "image_config" not in body  # V4 Pro skipped too
 
 
-def test_recraft_v3_filter_rejects_bbox_out_of_range():
-    """bbox coords must be 0.0-1.0; 1.5 must raise."""
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_bbox_range")
-    layout = (
-        '[{"text":"Hello","bbox":[[1.5,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
-    )
-    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="0.0-1.0"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
-def test_recraft_v3_filter_rejects_wrong_bbox_arity():
-    """bbox must have exactly 4 corner points."""
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_bbox_arity")
-    layout = (
-        '[{"text":"Hello","bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55]]}]'  # only 3 corners
-    )
-    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="4-element"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
-def test_recraft_v3_filter_rejects_missing_text():
-    """text_layout entry without 'text' key must raise."""
-    source = render_recraft_v3_image_filter_source()
-    module = _load_filter_from_source(source, "test_image_filter_recraft_v3_no_text")
-    layout = '[{"bbox":[[0.3,0.45],[0.6,0.45],[0.6,0.55],[0.3,0.55]]}]'
-    user_valves = module.Filter.UserValves(IMAGE_TEXT_LAYOUT_JSON=layout)
-    body: dict[str, Any] = {"model": "recraft/recraft-v3", "messages": []}
-    with pytest.raises(module.ImageGenerationError, match="non-empty string"):
-        module.Filter().inlet(body, __metadata__={}, __user__={"valves": user_valves})
 
 
 # Pattern matching
 
 
-def test_recraft_common_pattern_matches_prefix():
-    """Recraft common pattern must match all recraft/recraft-* but not other prefixes."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-    pat = FilterManager._RECRAFT_COMMON_IMAGE_PATTERN
-    assert pat.match("recraft/recraft-v3")
-    assert pat.match("recraft/recraft-v4")
-    assert pat.match("recraft/recraft-v4-pro")
-    assert pat.match("recraft/recraft-v5-future")
-    # Wrong prefix
-    assert not pat.match("evil/recraft-v3")
-    assert not pat.match("recraft/other-model")
 
 
-def test_recraft_v3_pattern_uses_fullmatch_anchors():
-    """Recraft V3 pattern must match V3 EXACTLY (not V3-something or v30)."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-    pat = FilterManager._RECRAFT_V3_IMAGE_PATTERN
-    assert pat.fullmatch("recraft/recraft-v3")
-    # Suffix attacks
-    assert not pat.fullmatch("recraft/recraft-v30")
-    assert not pat.fullmatch("recraft/recraft-v3-extra")
-    assert not pat.fullmatch("recraft/recraft-v4")
-    assert not pat.fullmatch("recraft/recraft-v4-pro")
 
 
 # Installer auto-attach truth table for Recraft variants
 
 
-@pytest.mark.asyncio
-async def test_installer_attaches_recraft_v3_with_v3_extras():
-    """V3 model should get: generic + recraft + recraft_v3."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models([
-        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v3"
-    ])
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    v3 = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([v3])
-
-    ids = result[v3["id"]]
-    assert "openrouter_image_filter_generic" in ids
-    assert "openrouter_image_filter_recraft" in ids
-    assert "openrouter_image_filter_recraft_v3" in ids
-    assert "openrouter_image_filter_gemini" not in ids
-    assert "openrouter_image_filter_sourceful" not in ids
 
 
-@pytest.mark.asyncio
-async def test_installer_attaches_recraft_v4_without_v3_extras():
-    """V4 model should get: generic + recraft (NO recraft_v3)."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models([
-        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v4"
-    ])
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    v4 = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([v4])
-
-    ids = result[v4["id"]]
-    assert "openrouter_image_filter_generic" in ids
-    assert "openrouter_image_filter_recraft" in ids
-    assert "openrouter_image_filter_recraft_v3" not in ids
 
 
-@pytest.mark.asyncio
-async def test_installer_attaches_recraft_v4_pro_without_v3_extras():
-    """V4 Pro model should get: generic + recraft (NO recraft_v3) — same as V4."""
-    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
-
-    OpenRouterModelRegistry._specs = {}
-    OpenRouterModelRegistry._id_map = {}
-    OpenRouterModelRegistry._models = []
-    OpenRouterModelRegistry.register_image_models([
-        m for m in IMAGE_MODELS if m["id"] == "recraft/recraft-v4-pro"
-    ])
-
-    pipe = MagicMock()
-    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
-
-    v4pro = OpenRouterModelRegistry.list_models()[0]
-    result = await fm.ensure_openrouter_image_filter_function_ids([v4pro])
-
-    ids = result[v4pro["id"]]
-    assert "openrouter_image_filter_generic" in ids
-    assert "openrouter_image_filter_recraft" in ids
-    assert "openrouter_image_filter_recraft_v3" not in ids
 
 
 # Help coverage
 
 
-def test_help_covers_all_three_recraft_models():
-    """All 3 Recraft entries must have curated help with knob descriptions."""
-    for model_id in ("recraft/recraft-v3", "recraft/recraft-v4", "recraft/recraft-v4-pro"):
-        assert model_id in IMAGE_HELP_BY_MODEL, f"Missing help entry for {model_id}"
-        entry = IMAGE_HELP_BY_MODEL[model_id]
-        assert entry["display_name"].startswith("Recraft:")
-        assert entry["best_known_for"]
-        assert entry["tips_and_pitfalls"]
-        assert entry["knob_descriptions"]
 
 
-def test_help_renders_v3_only_knobs_only_for_v3():
-    """The `Recraft style` and `Text layout` knob descriptions must appear ONLY
-    in the rendered V3 help, not V4 or V4 Pro."""
-    v3_help = render_image_help("recraft/recraft-v3")
-    v4_help = render_image_help("recraft/recraft-v4")
-    v4pro_help = render_image_help("recraft/recraft-v4-pro")
-
-    assert "Recraft style" in v3_help
-    assert "Text layout" in v3_help
-    assert "Recraft style" not in v4_help
-    assert "Text layout" not in v4_help
-    assert "Recraft style" not in v4pro_help
-    assert "Text layout" not in v4pro_help
 
 
-def test_help_renders_recraft_common_knobs_for_all_three():
-    """`Strength`, `RGB color palette`, and `Background RGB color` must appear
-    in all three Recraft model help blurbs."""
-    for model_id in ("recraft/recraft-v3", "recraft/recraft-v4", "recraft/recraft-v4-pro"):
-        rendered = render_image_help(model_id)
-        assert "Strength (image-to-image)" in rendered, f"missing in {model_id}"
-        assert "RGB color palette" in rendered, f"missing in {model_id}"
-        assert "Background RGB color" in rendered, f"missing in {model_id}"
+
+
+def _recorded_endpoint(name: str) -> dict:
+    """The model's own published contract, as the live probe recorded it."""
+    import json
+
+    raw = json.loads(
+        (Path(__file__).parent / "fixtures" / f"openrouter_image_endpoints_{name}.json").read_text()
+    )
+    records = raw.get("endpoints") or [raw]
+    return records[0]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id", "expected_ratios", "expected_passthrough"),
+    [
+        (
+            "recraft_recraft-v3",
+            "recraft/recraft-v3",
+            ("1:1", "4:3", "3:4", "16:9", "9:16", "auto"),
+            ("style", "controls", "text_layout"),
+        ),
+        (
+            "qwen_qwen-image-3",
+            "qwen/qwen-image-3",
+            (
+                "1:1", "1:2", "1:4", "2:1", "2:3", "3:2", "3:4",
+                "4:1", "4:3", "4:5", "5:4", "9:16", "16:9",
+            ),
+            (),
+        ),
+    ],
+)
+def test_a_model_is_offered_the_ratios_its_own_contract_publishes(
+    fixture, model_id, expected_ratios, expected_passthrough
+):
+    """The fixed variants handed every model the same ten ratios.
+
+    Thirty-three of forty rejected at least one of them, and twenty-eight could not reach
+    a ratio they do support -- `auto` among them, which twenty-six publish and none were
+    offered. Reading the model's own record is what closes both gaps at once.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+    )
+
+    assert dict(spec.enums).get("aspect_ratio") == expected_ratios, (
+        f"got {dict(spec.enums).get('aspect_ratio')!r}"
+    )
+    assert spec.passthrough == expected_passthrough, (
+        "provider knobs come from allowed_passthrough_parameters, not from a regex on the "
+        f"model id. got {spec.passthrough!r}"
+    )
+
+
+def test_an_unreadable_contract_offers_no_knobs_rather_than_inventing_them():
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    spec = build_image_model_filter_spec("vendor/unknown", {"id": "vendor/unknown"}, None)
+
+    assert not spec.has_knobs, (
+        "with no published contract there is nothing to offer; guessing a knob set is how "
+        f"a third of models ended up rejecting values the filter presented. got {spec!r}"
+    )
+
+
+@pytest.mark.parametrize("failing", [0, 1, 3])
+@pytest.mark.asyncio
+async def test_a_model_whose_contract_cannot_be_read_is_simply_absent(failing, caplog):
+    """One unreachable contract must not cost the whole refresh.
+
+    Every model that did answer keeps its knobs; the ones that did not are absent, so
+    their filters render nothing this cycle and the next refresh retries.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.integrations.image_catalog import _fetch_endpoint_records
+
+    models = [{"id": f"vendor/model-{index}"} for index in range(3)]
+    broken = {f"vendor/model-{index}" for index in range(failing)}
+
+    class _Client:
+        async def endpoints(self, model_id: str):
+            if model_id in broken:
+                raise TimeoutError("upstream did not answer")
+            return [{"provider_slug": "p", "supported_parameters": {"n": {"type": "range", "min": 1, "max": 4}}}]
+
+    with caplog.at_level(_logging.DEBUG):
+        records = await _fetch_endpoint_records(
+            _Client(), models, _logging.getLogger("test.image.catalog")
+        )
+
+    assert set(records) == {m["id"] for m in models} - broken, (
+        f"{failing} unreachable contract(s) should leave {3 - failing} usable. got {sorted(records)}"
+    )
+    if failing:
+        assert "could not read the published knob contract" in caplog.text.lower(), (
+            "an operator whose filters lost their knobs needs to know why"
+        )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id", "expected_valves"),
+    [
+        (
+            "recraft_recraft-v3",
+            "recraft/recraft-v3",
+            ["IMAGE_ASPECT_RATIO", "IMAGE_CONTROLS", "IMAGE_N", "IMAGE_STYLE", "IMAGE_TEXT_LAYOUT"],
+        ),
+        (
+            "qwen_qwen-image-3",
+            "qwen/qwen-image-3",
+            ["IMAGE_ASPECT_RATIO", "IMAGE_N", "IMAGE_RESOLUTION", "IMAGE_SEED"],
+        ),
+    ],
+)
+def test_a_generated_filter_loads_and_offers_only_the_published_knobs(
+    fixture, model_id, expected_valves
+):
+    """Loaded the way Open WebUI loads one, then driven.
+
+    Asserting on the rendered source would pass on a comment; this executes the filter and
+    reads the fields it really exposes, then puts a value through inlet.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+    )
+    source = render_image_model_filter_source(spec)
+
+    module_name = f"generated_image_filter_{fixture}"
+    try:
+        module = _load_filter_from_source(source, module_name)
+
+        assert sorted(module.Filter.UserValves.model_fields) == expected_valves, (
+            "each knob comes from this model's own contract; a knob it does not publish "
+            f"must have no field at all. got {sorted(module.Filter.UserValves.model_fields)}"
+        )
+
+        chosen = spec.enums[0][1][0]
+        valves = module.Filter.UserValves(IMAGE_ASPECT_RATIO=chosen)
+        body = module.Filter().inlet({"model": model_id}, None, {"valves": valves})
+        assert body["image_config"]["aspect_ratio"] == chosen, (
+            f"the filter must write the chosen value through. got {body.get('image_config')!r}"
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+async def _install_ids(model_ids, endpoint_records):
+    """Run the real install loop over a registry holding just these models.
+
+    Sourced from the recorded sweep rather than the older curated catalog, because the
+    endpoint contracts these tests feed in were recorded against the same models.
+    """
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    catalog = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"]
+    wanted = set(model_ids)
+    picked = [m for m in catalog if m["id"] in wanted]
+    assert {m["id"] for m in picked} == wanted, (
+        f"missing from the recorded catalog: {sorted(wanted - {m['id'] for m in picked})}"
+    )
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.set_image_endpoints(endpoint_records)
+    OpenRouterModelRegistry.register_image_models(picked)
+
+    pipe = MagicMock()
+    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
+
+    models = OpenRouterModelRegistry.list_models()
+    return models, await fm.ensure_openrouter_image_filter_function_ids(models)
+
+
+@pytest.mark.asyncio
+async def test_each_model_gets_its_own_filter_not_a_shared_variant():
+    """Two models, two distinct filters.
+
+    The variants this replaced installed one shared `..._recraft` filter across all
+    eleven Recraft models, so a knob published by one reached the others.
+    """
+    models, result = await _install_ids(
+        ["recraft/recraft-v3", "qwen/qwen-image-3"],
+        {
+            "recraft/recraft-v3": _recorded_endpoint("recraft_recraft-v3"),
+            "qwen/qwen-image-3": _recorded_endpoint("qwen_qwen-image-3"),
+        },
+    )
+
+    ids = [result.get(m["id"]) or [] for m in models]
+    assert all(len(v) == 1 for v in ids), f"one filter per model, got {ids}"
+    assert len({v[0] for v in ids}) == 2, (
+        f"two models must not share one filter id, got {ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_model_with_no_published_contract_gets_no_filter():
+    """No contract means no knobs, and a filter offering nothing is not installed.
+
+    The alternative — installing it anyway — puts an empty toggle in the admin list and
+    an empty section in the chat controls for a model nothing is known about.
+    """
+    models, result = await _install_ids(["openai/gpt-image-2"], {})
+
+    assert models, "the model must still register and be selectable"
+    assert result == {}, f"a knobless model must attach no filter, got {result}"
+
+
+@pytest.mark.asyncio
+async def test_both_id_forms_map_to_separate_lists():
+    """`installed[model_id]` and `installed[original_id]` hold equal but distinct lists.
+
+    Sharing one list object means a later mutation through either key corrupts both.
+    """
+    models, result = await _install_ids(
+        ["recraft/recraft-v3"], {"recraft/recraft-v3": _recorded_endpoint("recraft_recraft-v3")}
+    )
+    model = models[0]
+
+    sanitized = result.get(model["id"])
+    original = result.get(model["original_id"])
+    assert sanitized is not None and original is not None
+    assert sanitized == original
+    assert sanitized is not original
+
+    sanitized.append("test-injection")
+    assert "test-injection" not in original, (
+        "mutating one key's list changed the other; they alias the same object"
+    )
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    [("recraft_recraft-v3", "recraft/recraft-v3"), ("qwen_qwen-image-3", "qwen/qwen-image-3")],
+)
+def test_the_filter_writes_for_the_id_open_webui_actually_sends(fixture, model_id):
+    """The id is built the way production builds it, never typed as a literal.
+
+    Open WebUI's model id is its function id joined to what `pipes()` returned, and
+    `pipes()` returns `sanitize_model_id`'s output, which has no slash. A filter that
+    only recognises the slash form is inert for every request, and a test that types the
+    slash form by hand cannot tell.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+    )
+    module = _load_filter_from_source(
+        render_image_model_filter_source(spec), f"owui_id_form_{fixture}"
+    )
+    ratio = spec.enums[0][1][0]
+    dotted = sanitize_model_id(model_id)
+
+    writes = {
+        "open_webui_openrouter_pipe." + dotted,   # what Open WebUI sends
+        "some_other_function_id." + dotted,       # any function id, not just ours
+        dotted,                                   # sanitized, unprefixed
+        model_id,                                 # the raw catalog slug
+        "~" + model_id,                           # catalog alias
+    }
+    ignores = {
+        "openai.gpt-image-2",                     # a different model
+        "not" + dotted,                           # shares a suffix, different model
+        "",
+    }
+
+    for sent in sorted(writes):
+        body = module.Filter().inlet(
+            {"model": sent}, None, {"valves": module.Filter.UserValves(IMAGE_ASPECT_RATIO=ratio)}
+        )
+        assert body.get("image_config") == {"aspect_ratio": ratio}, (
+            f"{sent!r} is a form Open WebUI can send; the filter must write for it"
+        )
+
+    for sent in sorted(ignores):
+        body = module.Filter().inlet(
+            {"model": sent}, None, {"valves": module.Filter.UserValves(IMAGE_ASPECT_RATIO=ratio)}
+        )
+        assert "image_config" not in body, (
+            f"{sent!r} is not this model; the filter must leave the body alone"
+        )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    [("recraft_recraft-v3", "recraft/recraft-v3"), ("qwen_qwen-image-3", "qwen/qwen-image-3")],
+)
+def test_the_chosen_value_is_the_value_that_travels(fixture, model_id):
+    """Two different choices must produce two different requests.
+
+    One choice cannot establish this: a filter that ignores the user and always writes
+    the model's first published ratio satisfies a single-value assertion.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+    )
+    module = _load_filter_from_source(
+        render_image_model_filter_source(spec), f"value_travels_{fixture}"
+    )
+    published = spec.enums[0][1]
+    first, last = published[0], published[-1]
+    assert first != last, "the fixture must publish at least two ratios for this to mean anything"
+
+    got = [
+        module.Filter()
+        .inlet({"model": model_id}, None, {"valves": module.Filter.UserValves(IMAGE_ASPECT_RATIO=v)})
+        .get("image_config", {})
+        .get("aspect_ratio")
+        for v in (first, last)
+    ]
+    assert got == [first, last], f"each choice must arrive as itself; got {got}"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    [("recraft_recraft-v3", "recraft/recraft-v3"), ("qwen_qwen-image-3", "qwen/qwen-image-3")],
+)
+def test_every_control_the_filter_shows_is_a_control_that_writes(fixture, model_id):
+    """A field the chat UI renders and `inlet` drops is worse than no field.
+
+    The expectation is derived from what was rendered, not hand-listed, so a knob kind
+    added later is covered the day it appears.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+    )
+    module = _load_filter_from_source(
+        render_image_model_filter_source(spec), f"every_control_{fixture}"
+    )
+
+    chosen: dict[str, object] = {}
+    expected: dict[str, object] = {}
+    for name, values in spec.enums:
+        chosen[f"IMAGE_{name.upper()}"] = values[0]
+        expected[name] = values[0]
+    for name, low, high in spec.ranges:
+        value = max(1, low)
+        chosen[f"IMAGE_{name.upper()}"] = value
+        expected[name] = value
+    for name in spec.supported:
+        chosen[f"IMAGE_{name.upper()}"] = 12345
+        expected[name] = 12345
+    for name in spec.passthrough:
+        chosen[f"IMAGE_{name.upper()}"] = "a_value"
+        expected[name] = "a_value"
+
+    assert set(chosen) == set(module.Filter.UserValves.model_fields), (
+        "the spec and the rendered fields must describe the same knob set"
+    )
+    body = module.Filter().inlet(
+        {"model": model_id}, None, {"valves": module.Filter.UserValves(**chosen)}
+    )
+    assert body.get("image_config") == expected, (
+        f"every rendered control must reach the request; got {body.get('image_config')}"
+    )
+
+
+def test_the_filter_adds_to_image_config_rather_than_replacing_it():
+    """A caller may send `image_config` itself; the filter contributes to it.
+
+    Replacing the dict destroys a key the user set directly, and writing an empty dict
+    when nothing was chosen puts `image_config` on every request from the model.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        _recorded_endpoint("recraft_recraft-v3"),
+    )
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "merge_semantics")
+    ratio = spec.enums[0][1][0]
+
+    merged = module.Filter().inlet(
+        {"model": "recraft/recraft-v3", "image_config": {"seed": 99}},
+        None,
+        {"valves": module.Filter.UserValves(IMAGE_ASPECT_RATIO=ratio)},
+    )
+    assert merged["image_config"] == {"seed": 99, "aspect_ratio": ratio}, (
+        f"a key the caller set must survive; got {merged['image_config']}"
+    )
+
+    untouched = module.Filter().inlet(
+        {"model": "recraft/recraft-v3"}, None, {"valves": module.Filter.UserValves()}
+    )
+    assert "image_config" not in untouched, (
+        f"nothing chosen means nothing written; got {untouched}"
+    )
+
+
+def _spec(**record):
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "expected_ranges"),
+    [
+        ({"type": "range", "min": 1, "max": 6}, (("n", 1, 6),)),
+        ({"type": "range", "min": "1", "max": "6"}, ()),
+        ({"type": "range", "min": 0, "max": None}, ()),
+        ({"type": "range", "min": 0.0, "max": 0.9}, ()),
+        ({"type": "range", "min": 2}, ()),
+        ({"type": "range", "min": 3, "max": 3}, ()),
+    ],
+)
+def test_a_range_the_pipe_cannot_read_becomes_no_knob(descriptor, expected_ranges):
+    """A bound that is not a whole number is not a bound.
+
+    Substituting a default produced a control advertising "accepts 0 to 0" whose only
+    value was the one the write path refuses to send.
+    """
+    spec = _spec(provider_slug="p", supported_parameters={"n": descriptor})
+    assert spec.ranges == expected_ranges, f"{descriptor} produced {spec.ranges}"
+    assert spec.knob_count == len(expected_ranges)
+
+
+def test_a_knob_the_renderer_skips_is_not_counted_as_a_knob():
+    """The install gate and the field renderer must agree on what a knob is.
+
+    `input_references` counts attached images; it is never a control. Counting it while
+    refusing to render it installs a filter whose whole body is `pass`.
+    """
+    only = _spec(
+        provider_slug="p",
+        supported_parameters={"input_references": {"type": "range", "min": 0, "max": 4}},
+    )
+    assert only.knob_count == 0, "a contract with no real control must count zero"
+
+    alongside = _spec(
+        provider_slug="p",
+        supported_parameters={
+            "input_references": {"type": "range", "min": 0, "max": 4},
+            "aspect_ratio": {"type": "enum", "values": ["1:1"]},
+        },
+    )
+    assert alongside.knob_count == 1, "the real control still counts"
+    assert [n for n, _ in alongside.enums] == ["aspect_ratio"]
+
+
+def test_passthrough_needs_a_provider_to_carry_it():
+    """Without a provider slug the adapter drops the whole provider block.
+
+    Rendering the control anyway shows the user a knob whose value is discarded on every
+    request.
+    """
+    named = {"allowed_passthrough_parameters": ["style"], "supported_parameters": {}}
+    assert _spec(**named).passthrough == (), "no slug means the value cannot be addressed"
+    assert _spec(provider_slug="   ", **named).passthrough == ()
+    assert _spec(provider_slug=["recraft"], **named).passthrough == ()
+    assert _spec(provider_slug="recraft", **named).passthrough == ("style",)
+
+
+def test_a_passthrough_name_cannot_shadow_a_published_control():
+    """When both name the same parameter, the one carrying allowed values wins.
+
+    Rendering both defines the field twice; pydantic keeps the last, so the validated
+    dropdown silently became a free-text box.
+    """
+    spec = _spec(
+        provider_slug="p",
+        supported_parameters={"quality": {"type": "enum", "values": ["low", "high"]}},
+        allowed_passthrough_parameters=["quality", "style"],
+    )
+    assert spec.passthrough == ("style",), f"quality must not be duplicated; got {spec.passthrough}"
+
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        render_image_model_filter_source,
+    )
+
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "no_shadow")
+    annotation = module.Filter.UserValves.model_fields["IMAGE_QUALITY"].annotation
+    assert annotation is not str, "the published values must survive as a choice, not free text"
+    body = module.Filter().inlet(
+        {"model": "v/m"}, None, {"valves": module.Filter.UserValves(IMAGE_QUALITY="low")}
+    )
+    assert body["image_config"] == {"quality": "low"}
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        'v/m"\nBREAKOUT = 1\nX = "v/m',
+        'v/m\u2028BREAKOUT = 1',
+        'v/m""" + __import__("os").getcwd() + """',
+    ],
+)
+def test_a_catalog_string_cannot_become_a_statement(hostile):
+    """Model ids and names come from OpenRouter and end up in code Open WebUI executes.
+
+    The check is on the compiled module's own constants, not on the text of the source:
+    the source containing the string is exactly what a successful injection looks like.
+    """
+    import ast
+
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    for spec in (
+        build_image_model_filter_spec(hostile, {"id": hostile, "name": "M"}, {}),
+        build_image_model_filter_spec("v/m", {"id": "v/m", "name": hostile}, {}),
+    ):
+        source = render_image_model_filter_source(spec)
+        tree = ast.parse(source)
+        assigned = {
+            t.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        assert "BREAKOUT" not in assigned, "a catalog string became a module-level assignment"
+        compile(source, "<hostile>", "exec")
+
+
+def test_a_name_that_is_not_an_identifier_costs_only_itself():
+    """`cfg-scale` is a real provider parameter and is not a legal Python name.
+
+    Rendering it stopped the whole module parsing, so the model lost every other knob it
+    published rather than just the one that could not be expressed.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        render_image_model_filter_source,
+    )
+
+    spec = _spec(
+        provider_slug="p",
+        supported_parameters={"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+        allowed_passthrough_parameters=["cfg-scale", "2fast", "", "style"],
+    )
+    assert spec.passthrough == ("style",), f"only the usable name survives; got {spec.passthrough}"
+
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "odd_names")
+    assert "IMAGE_ASPECT_RATIO" in module.Filter.UserValves.model_fields, (
+        "the knobs that can be expressed must still be offered"
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_models_install_failure_costs_only_that_model():
+    """A failure installing for one model must not skip the models after it.
+
+    The install path reaches Open WebUI's database, whose driver errors belong to no
+    tuple this package can enumerate, so the failure injected here is a RuntimeError --
+    a class no narrow catch would have listed.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    wanted = ["recraft/recraft-v3", "recraft/recraft-v4", "qwen/qwen-image-3"]
+    record = {
+        "provider_slug": "p",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+    }
+    catalog = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"]
+    picked = [m for m in catalog if m["id"] in set(wanted)]
+    assert len(picked) == len(wanted), "the recorded catalog must carry all three"
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    records = {m["id"]: record for m in picked}
+    OpenRouterModelRegistry.set_image_endpoints(records)
+    OpenRouterModelRegistry.register_image_models(picked)
+
+    doomed = "openrouter_image_filter_recraft_recraft_v3"
+
+    async def _install(**kwargs):
+        if kwargs["preferred_id"] == doomed:
+            raise RuntimeError("the database is locked")
+        return kwargs["preferred_id"]
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=_install)
+
+    models = OpenRouterModelRegistry.list_models()
+    result = await fm.ensure_openrouter_image_filter_function_ids(models)
+
+    assert fm._ensure_filter_installed.await_count == len(wanted), (
+        f"every model must be attempted; only {fm._ensure_filter_installed.await_count} were"
+    )
+    survivors = {fid for ids in result.values() for fid in ids}
+    assert doomed not in survivors, "the model whose install raised must not be reported installed"
+    assert len(survivors) == len(wanted) - 1, (
+        f"the other models keep their filters; got {sorted(survivors)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_models_of_the_same_family_do_not_share_one_filter():
+    """Same vendor, same family prefix, same provider -- still two filters.
+
+    A cross-vendor pair cannot show this: an id derived from the vendor, the family or
+    the provider slug would still produce two distinct values for models from different
+    vendors.
+    """
+    record = {
+        "provider_slug": "recraft",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
+    }
+    models, result = await _install_ids(
+        ["recraft/recraft-v3", "recraft/recraft-v4"],
+        {"recraft/recraft-v3": record, "recraft/recraft-v4": record},
+    )
+
+    ids = [result.get(m["id"]) or [] for m in models]
+    assert all(len(v) == 1 for v in ids), f"one filter per model, got {ids}"
+    assert len({v[0] for v in ids}) == 2, (
+        f"two models of one family must not share a filter id, got {ids}"
+    )
+
+
+def test_a_knob_is_offered_only_if_every_provider_of_the_model_accepts_it():
+    """Which provider serves a request is decided per request, after the controls exist.
+
+    A model served by several providers publishes one contract each and they disagree,
+    so the only set that is right whichever provider serves is the one they share. The
+    two checked-in fixtures each carry a single endpoint and cannot show this.
+    """
+    wide = {
+        "provider_slug": "a",
+        "supported_parameters": {
+            "aspect_ratio": {"type": "enum", "values": ["1:1", "16:9", "4:3"]},
+            "n": {"type": "range", "min": 1, "max": 6},
+        },
+        "allowed_passthrough_parameters": ["style", "controls"],
+    }
+    narrow = {
+        "provider_slug": "b",
+        "supported_parameters": {
+            "aspect_ratio": {"type": "enum", "values": ["1:1", "4:3"]},
+            "n": {"type": "range", "min": 2, "max": 4},
+        },
+        "allowed_passthrough_parameters": ["style"],
+    }
+
+    alone = _spec_from(wide)
+    assert dict(alone.enums)["aspect_ratio"] == ("1:1", "16:9", "4:3")
+    assert alone.ranges == (("n", 1, 6),)
+    assert alone.passthrough == ("style", "controls")
+
+    both = _spec_from([wide, narrow])
+    assert dict(both.enums)["aspect_ratio"] == ("1:1", "4:3"), (
+        "a ratio only one provider accepts must not be offered"
+    )
+    assert both.ranges == (("n", 2, 4),), "the range narrows to what both accept"
+    assert both.passthrough == ("style",), "a passthrough only one provider names is not offered"
+
+    unaddressable = _spec_from([wide, {"supported_parameters": {}, "allowed_passthrough_parameters": ["style"]}])
+    assert unaddressable.passthrough == (), (
+        "a record with no provider slug cannot carry a provider option, so none is offered"
+    )
+
+
+def _spec_from(record):
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+
+
+def test_a_filter_id_is_derived_from_the_model_id_and_stays_readable():
+    """The id is what an operator reads in Open WebUI's function list.
+
+    It is also derived on the same terms as the video sibling, because both take a model
+    id; the tighter thresholds this replaces hashed away the readable part of most ids.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        sanitize_video_filter_id,
+    )
+
+    assert sanitize_image_filter_id("recraft/recraft-v3") == "openrouter_image_filter_recraft_recraft_v3"
+    assert sanitize_image_filter_id("qwen/qwen-image-3") == "openrouter_image_filter_qwen_qwen_image_3"
+
+    long_id = "black-forest-labs/flux.2-klein-4b"
+    assert "flux_2_klein_4b" in sanitize_image_filter_id(long_id), (
+        "the readable part must survive; it is how an operator finds the row"
+    )
+    assert sanitize_image_filter_id(long_id).removeprefix(
+        "openrouter_image_filter_"
+    ) == sanitize_video_filter_id(long_id).removeprefix("openrouter_video_"), (
+        "both sanitizers take a model id and must shorten it on the same terms"
+    )
+
+    assert sanitize_image_filter_id("") == "openrouter_image_filter_model", (
+        "an unusable id must not fall back onto a retired filter's id"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filters_wanted", [True, False])
+async def test_the_catalog_publishes_contracts_the_installer_can_actually_read(filters_wanted):
+    """The wire between reading a contract and a model having knobs.
+
+    Both halves are tested on their own; nothing tested that they are connected, so
+    replacing the fetch with an empty dict left every model knobless with a green suite.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+    from open_webui_openrouter_pipe.integrations import image_catalog
+
+    record = {
+        "provider_slug": "recraft",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+    }
+    catalog = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"]
+    picked = [m for m in catalog if m["id"] == "recraft/recraft-v3"]
+    assert picked, "the recorded catalog must carry the model"
+    awaited = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_models(self):
+            return picked
+
+        async def endpoints(self, model_id):
+            awaited.append(model_id)
+            return [record]
+
+    valves = MagicMock()
+    valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    valves.AUTO_INSTALL_IMAGE_FILTERS = filters_wanted
+    valves.AUTO_ATTACH_IMAGE_FILTERS = filters_wanted
+    valves.BASE_URL = "https://openrouter.ai/api/v1"
+    valves.HTTP_REFERER_OVERRIDE = ""
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry._last_image_attempt = 0.0
+    OpenRouterModelRegistry._last_image_fetch = 0.0
+
+    original = image_catalog.OpenRouterImageClient
+    image_catalog.OpenRouterImageClient = _Client  # type: ignore[misc]
+    try:
+        await image_catalog.ensure_image_catalog_loaded(
+            session=MagicMock(),
+            valves=valves,
+            api_key="k",
+            logger=logging.getLogger("t"),
+            cache_seconds=0,
+        )
+    finally:
+        image_catalog.OpenRouterImageClient = original  # type: ignore[misc]
+
+    published = OpenRouterModelRegistry.image_endpoint("recraft/recraft-v3")
+    if filters_wanted:
+        assert awaited == ["recraft/recraft-v3"], "the contract must be read once for the model"
+        assert published == [record], f"what the client published must be what is stored; got {published}"
+        spec = build_image_model_filter_spec("recraft/recraft-v3", picked[0], published)
+        assert spec.knob_count > 0, "a model with a published contract must end up with knobs"
+    else:
+        assert awaited == [], "no filter consumes contracts, so none should be read"
+        assert published is None
+
+
+@pytest.mark.asyncio
+async def test_a_contract_already_read_survives_a_later_failed_read():
+    """A read that timed out is not a contract that changed.
+
+    Dropping it strips the model of its controls for a whole cycle, and disagrees with
+    the adapter, which keeps its own cached record on exactly the same failure.
+    """
+    from open_webui_openrouter_pipe.integrations.image_catalog import _fetch_endpoint_records
+
+    record = {"provider_slug": "p", "supported_parameters": {}}
+    OpenRouterModelRegistry._image_endpoints = {}
+    OpenRouterModelRegistry.set_image_endpoints({"a/b": [record]}, known_ids={"a/b", "c/d"})
+    assert OpenRouterModelRegistry.image_endpoint("a/b") == [record]
+    # The installer looks a model up by whichever id form it holds, so both must resolve.
+    assert OpenRouterModelRegistry.image_endpoint(sanitize_model_id("a/b")) == [record], (
+        "the sanitized form of a stored id must find the same record"
+    )
+    assert OpenRouterModelRegistry.image_endpoint("a.c") is None, (
+        "and an id belonging to no stored model must not match one by accident"
+    )
+
+    class _Failing:
+        async def endpoints(self, model_id):
+            raise TimeoutError("upstream is slow")
+
+    logs = []
+
+    class _Log:
+        def log(self, level, msg, *args):
+            logs.append(msg % args if args else msg)
+
+        def debug(self, *a, **k):
+            pass
+
+    failed = await _fetch_endpoint_records(_Failing(), [{"id": "a/b"}], _Log())
+    assert failed == {}, "a failed read publishes nothing"
+    OpenRouterModelRegistry.set_image_endpoints(failed, known_ids={"a/b", "c/d"})
+    assert OpenRouterModelRegistry.image_endpoint("a/b") == [record], (
+        "the contract the pipe already had must survive a failed refresh"
+    )
+
+    OpenRouterModelRegistry.set_image_endpoints({}, known_ids={"c/d"})
+    assert OpenRouterModelRegistry.image_endpoint("a/b") is None, (
+        "a model the catalog no longer lists must not keep its contract forever"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_contract_that_cannot_be_read_is_always_reported():
+    """A model absent from the result is always named, whatever went wrong.
+
+    A tuple of enumerated exception classes let anything unlisted be dropped by the
+    gather with no diagnostic at all -- and a mock client missing the method was
+    silently exercising that hole inside a test named "happy path".
+    """
+    from open_webui_openrouter_pipe.integrations.image_catalog import _fetch_endpoint_records
+
+    class _NoMethod:
+        pass
+
+    logs = []
+
+    class _Log:
+        def log(self, level, msg, *args):
+            logs.append(msg % args if args else msg)
+
+        def debug(self, *a, **k):
+            pass
+
+    records = await _fetch_endpoint_records(_NoMethod(), [{"id": "a/b"}, {"id": "c/d"}], _Log())
+    assert records == {}
+    assert logs, "a model that lost its contract must produce a diagnostic"
+    assert "a/b" in logs[0] and "c/d" in logs[0], f"both models must be named; got {logs}"
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ('{"artistic_level": 2}', {"artistic_level": 2}),
+        ('["a", "b"]', ["a", "b"]),
+        ("realistic_image", "realistic_image"),
+        ("null", "null"),
+        ("123", "123"),
+    ],
+)
+def test_a_passthrough_value_arrives_as_what_the_user_meant(typed, expected):
+    """Only a JSON container is parsed.
+
+    `style` really does take a bare word, so parsing everything turned `null` into None
+    and `123` into an int -- values the user never asked for.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        _recorded_endpoint("recraft_recraft-v3"),
+    )
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_ok")
+    body = module.Filter().inlet(
+        {"model": "recraft/recraft-v3"},
+        None,
+        {"valves": module.Filter.UserValves(IMAGE_CONTROLS=typed)},
+    )
+    assert body["image_config"]["controls"] == expected
+    assert type(body["image_config"]["controls"]) is type(expected)
+
+
+def test_a_container_that_does_not_parse_names_the_field_it_came_from():
+    """The user typed it, so the message has to say which control it was.
+
+    Sending it as a string instead produces a provider error about something else.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        _recorded_endpoint("recraft_recraft-v3"),
+    )
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_bad")
+    with pytest.raises(Exception) as caught:
+        module.Filter().inlet(
+            {"model": "recraft/recraft-v3"},
+            None,
+            {"valves": module.Filter.UserValves(IMAGE_TEXT_LAYOUT='[{"text":')},
+        )
+    assert "text_layout" in str(caught.value), (
+        f"the message must name the control the user typed into; got {caught.value}"
+    )
+
+
+def test_the_source_check_asks_the_question_open_webui_asks():
+    """Open WebUI compiles the filter; the check must too.
+
+    `ast.parse` accepts a module whose `from __future__` import is no longer first, so a
+    filter could pass validation, be stored, and then fail to load forever.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    ok, err = FilterManager.validate_filter_source("x = 1\n")
+    assert (ok, err) == (True, None)
+
+    ok, err = FilterManager.validate_filter_source("x = 1\nfrom __future__ import annotations\n")
+    assert ok is False and err, (
+        "a module Open WebUI cannot compile must not pass validation"
+    )
+
+
+@pytest.mark.asyncio
+async def test_both_catalog_reads_are_bounded():
+    """Unbounded, these run on the path that builds Open WebUI's model list.
+
+    The bound is read from the module constant, so raising it is a one-line change and
+    removing it is a test failure.
+    """
+    import aiohttp
+
+    from open_webui_openrouter_pipe.integrations import image_client as image_client_module
+    from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
+
+    seen = []
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {"data": []}
+
+        def raise_for_status(self):
+            return None
+
+    class _Session:
+        def get(self, url, headers=None, timeout=None):
+            seen.append(timeout)
+            return _Resp()
+
+    client = OpenRouterImageClient(
+        _Session(),  # type: ignore[arg-type]  - a stub standing in for the aiohttp session
+        base_url="https://x/api/v1",
+        api_key="k",
+        logger=logging.getLogger("t"),
+    )
+    await client.list_models()
+    await client.endpoints("a/b")
+
+    assert len(seen) == 2, "both reads must go through the session"
+    for timeout in seen:
+        assert isinstance(timeout, aiohttp.ClientTimeout)
+        assert timeout.total == image_client_module._CATALOG_TIMEOUT_SECONDS
+
+
+def test_a_numeric_published_value_stays_numeric():
+    """The adapter checks the chosen value against the contract's own list.
+
+    Stringifying rendered a control whose every option was then rejected, because "512"
+    is not 512 -- a knob built from the contract that the contract refuses.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    record = {
+        "provider_slug": "p",
+        "supported_parameters": {"resolution": {"type": "enum", "values": [512, 1024]}},
+    }
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+    assert dict(spec.enums)["resolution"] == (512, 1024), (
+        f"the values must survive as published; got {dict(spec.enums).get('resolution')}"
+    )
+
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "numeric_enum")
+    body = module.Filter().inlet(
+        {"model": "v/m"}, None, {"valves": module.Filter.UserValves(IMAGE_RESOLUTION=512)}
+    )
+    assert body["image_config"] == {"resolution": 512}
+
+    top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
+        body, allowed_passthrough=(), record=record
+    )
+    assert top_level == {"resolution": 512}, f"the adapter must accept it; notes were {notes}"
+    assert notes == []
+
+
+@pytest.mark.parametrize("published", ["1:1,16:9", {"a": 1}, None, 42])
+def test_a_values_field_that_is_not_a_list_yields_no_control(published):
+    """A malformed `values` was iterated, so a string became one option per character."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    spec = build_image_model_filter_spec(
+        "v/m",
+        {"id": "v/m", "name": "M"},
+        {"provider_slug": "p", "supported_parameters": {"aspect_ratio": {"type": "enum", "values": published}}},
+    )
+    assert spec.enums == (), f"{published!r} is not a published option list; got {spec.enums}"
+    assert spec.knob_count == 0
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    [("recraft_recraft-v3", "recraft/recraft-v3"), ("qwen_qwen-image-3", "qwen/qwen-image-3")],
+)
+def test_help_names_exactly_the_controls_the_filter_draws(fixture, model_id):
+    """One authority for what a model offers, read by both surfaces.
+
+    Help used to carry its own hand-written knob list, which is how it came to advertise
+    controls from filters that no longer exist. Deriving the expectation from the spec
+    means neither surface can drift from the other or from the contract.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        IMAGE_KNOB_TITLES,
+        build_image_model_filter_spec,
+    )
+
+    record = _recorded_endpoint(fixture)
+    model = {"id": model_id, "name": model_id}
+    spec = build_image_model_filter_spec(model_id, model, record)
+    rendered = render_image_help(model_id, model, endpoint_record=record)
+
+    expected = [IMAGE_KNOB_TITLES.get(n, (n, ""))[0] for n, _ in spec.enums]
+    expected += [IMAGE_KNOB_TITLES.get(n, (n, ""))[0] for n, _, _ in spec.ranges]
+    expected += [IMAGE_KNOB_TITLES.get(n, (n, ""))[0] for n in spec.supported]
+    expected += list(spec.passthrough)
+    assert expected, "the fixture must publish something for this to mean anything"
+
+    assert "## Controls" in rendered, "the section must exist for a model with a contract"
+    controls = rendered.split("## Controls", 1)[1]
+    named = [
+        line.split("**")[1]
+        for line in controls.splitlines()
+        if line.startswith("- **") and "**" in line[4:]
+    ]
+    assert named == expected, (
+        f"help must name exactly the controls the filter draws.\n  help: {named}\n  filter: {expected}"
+    )
+
+
+def test_help_says_so_when_a_model_publishes_no_controls():
+    """Silence would read as "the help is broken", which is a different thing."""
+    rendered = render_image_help(
+        "vendor/unknown", {"id": "vendor/unknown", "name": "Unknown"}, endpoint_record={}
+    )
+    assert "publishes no adjustable settings" in rendered, rendered
+
+
+def test_help_without_a_contract_still_describes_the_model():
+    """A contract that could not be read must not cost the user the prose as well."""
+    rendered = render_image_help("recraft/recraft-v3", {"id": "recraft/recraft-v3", "name": "R"})
+    assert rendered.strip(), "the model description must survive"
+    assert "## Controls" not in rendered, (
+        "with no contract there is nothing truthful to list, so nothing is listed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_help_reads_the_contract_itself_when_nothing_cached_it():
+    """Filters and help answer different questions.
+
+    Contracts are cached only because the installer needs them. An operator who installs
+    no filters still asks "what can this model do", and the answer must not become
+    nothing. The assertion is on the help a user would receive, driven through the
+    orchestrator -- comparing the renderer to itself proves only that it is a function.
+    """
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    record = _recorded_endpoint("recraft_recraft-v3")
+    model = {"id": "recraft/recraft-v3", "name": "Recraft V3"}
+
+    OpenRouterModelRegistry._image_endpoints = {}
+    assert OpenRouterModelRegistry.image_endpoint("recraft/recraft-v3") is None, (
+        "nothing cached, so the orchestrator must read the contract itself"
+    )
+
+    without = render_image_help("recraft/recraft-v3", model)
+    assert "## Controls" not in without, (
+        "with no contract at all there is nothing truthful to list"
+    )
+
+    with_record = render_image_help("recraft/recraft-v3", model, endpoint_record=record)
+    assert "## Controls" in with_record
+    assert "Aspect ratio" in with_record.split("## Controls", 1)[1], (
+        "the fetched contract must reach the rendered controls"
+    )
+    assert len(with_record) > len(without), (
+        "the fetched contract must add to what the user is told, not replace it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
+    """A model can lose every knob: a provider joins and the intersection empties.
+
+    Returning early left the previous filter installed, active and attached, so the user
+    kept a panel of controls the model no longer accepts and every message carried values
+    the request path then rejected.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    wide = {
+        "provider_slug": "a",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
+    }
+    disjoint = {
+        "provider_slug": "b",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["4:3"]}},
+    }
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    written: list[str] = []
+    fm._ensure_filter_installed = AsyncMock(
+        side_effect=lambda **kw: (written.append(kw["desired_source"]), kw["preferred_id"])[1]
+    )
+    fm._image_filter_exists = AsyncMock(return_value=True)
+
+    result = await fm._ensure_single_image_filter_function_id(
+        model_id="v/m", image_model={"id": "v/m", "name": "M"}, endpoint_record=[wide, disjoint]
+    )
+
+    assert result, "an installed filter must be reachable so it can be overwritten"
+    assert written, "the stored filter must be rewritten, not left as it was"
+    assert "IMAGE_ASPECT_RATIO" not in written[0], (
+        "the control the model no longer accepts must be gone from the stored filter"
+    )
+
+    fm._image_filter_exists = AsyncMock(return_value=False)
+    fm._ensure_filter_installed.reset_mock()
+    nothing = await fm._ensure_single_image_filter_function_id(
+        model_id="v/m2", image_model={"id": "v/m2", "name": "M"}, endpoint_record=[wide, disjoint]
+    )
+    assert nothing is None, "with nothing installed and nothing to offer, install nothing"
+    assert not fm._ensure_filter_installed.await_count
+
+
+
+
+@pytest.mark.asyncio
+async def test_retirement_touches_only_the_rows_the_previous_design_left():
+    """This is the one place the changeset deactivates rows in shared Open WebUI state.
+
+    Deactivating too much costs an operator filters they installed themselves; too little
+    leaves an ungated filter writing values into every request.
+    """
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    current = render_image_model_filter_source(
+        build_image_model_filter_spec(
+            "recraft/recraft-v3",
+            {"id": "recraft/recraft-v3", "name": "R"},
+            _recorded_endpoint("recraft_recraft-v3"),
+        )
+    )
+    rows = [
+        SimpleNamespace(id="old_variant", content=f'MARKER = "{_OPENROUTER_IMAGE_FILTER_MARKER}"'),
+        SimpleNamespace(id="current_per_model", content=current),
+        SimpleNamespace(id="another_pipe_filter", content='MARKER = "openrouter_pipe:image_gen_filter:v1"'),
+        SimpleNamespace(id="someone_elses", content="class Filter:\n    pass\n"),
+    ]
+    deactivated: list[str] = []
+
+    class _Functions:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=True):
+            return rows
+
+        @staticmethod
+        async def update_function_by_id(row_id, payload):
+            if payload.get("is_active") is False:
+                deactivated.append(row_id)
+            return True
+
+    module = ModuleType("open_webui.models.functions")
+    module.Functions = _Functions  # type: ignore[attr-defined]
+    saved = sys.modules.get("open_webui.models.functions")
+    sys.modules["open_webui.models.functions"] = module
+    try:
+        pipe = MagicMock()
+        fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+        await fm._retire_variant_image_filters()
+    finally:
+        if saved is not None:
+            sys.modules["open_webui.models.functions"] = saved
+        else:
+            sys.modules.pop("open_webui.models.functions", None)
+
+    assert deactivated == ["old_variant"], (
+        f"only the superseded row may be deactivated; got {deactivated}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    [("recraft_recraft-v3", "recraft/recraft-v3"), ("qwen_qwen-image-3", "qwen/qwen-image-3")],
+)
+def test_help_prose_never_names_a_setting_the_model_does_not_publish(fixture, model_id):
+    """The prose and the Controls list sit in one reply and must not disagree.
+
+    Hand-written prose describing which knobs exist is a second copy of the contract;
+    it drifted before and told users to use filters that no longer existed.
+    """
+    record = _recorded_endpoint(fixture)
+    model = {"id": model_id, "name": model_id}
+    rendered = render_image_help(model_id, model, endpoint_record=record)
+    prose = rendered.split("## Controls", 1)[0]
+
+    published = set((record.get("supported_parameters") or {}))
+    published |= set(record.get("allowed_passthrough_parameters") or [])
+
+    import re
+
+    from open_webui_openrouter_pipe.integrations.image_types import RENDERABLE_FIELD_NAME_RE
+
+    # Every backticked token that looks like a parameter name, rather than a fixed list --
+    # a list cannot see a passthrough name the model does not publish, which is most of
+    # what the curated prose talks about.
+    NOT_PARAMETERS = {
+        "help", "auto", "png", "jpeg", "webp", "svg", "true", "false", "null",
+    }
+    claimed = {
+        token
+        for token in re.findall(r"`([^`]+)`", prose)
+        if RENDERABLE_FIELD_NAME_RE.fullmatch(token) and token.lower() not in NOT_PARAMETERS
+    }
+    unpublished = sorted(claimed - published)
+    assert not unpublished, (
+        f"the prose names {unpublished}, which this model does not publish -- the Controls "
+        f"section below it correctly omits those controls. Published: {sorted(published)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_contract_sweep_is_bounded_as_a_whole_not_only_per_read():
+    """The number of models must not appear in the wait a user experiences.
+
+    This runs inside the call that builds Open WebUI's model list. Capping each read
+    still lets the catalogue's size multiply the stall.
+    """
+    import asyncio
+    import time
+
+    from open_webui_openrouter_pipe.integrations import image_catalog
+
+    class _Slow:
+        async def endpoints(self, model_id):
+            await asyncio.sleep(30)
+            return [{"provider_slug": "p", "supported_parameters": {}}]
+
+    logs: list[str] = []
+
+    class _Log:
+        def log(self, level, msg, *args):
+            logs.append(msg % args if args else msg)
+
+        def warning(self, msg, *args, **kwargs):
+            logs.append(msg % args if args else msg)
+
+        def debug(self, *a, **k):
+            pass
+
+    models = [{"id": f"v/m{i}"} for i in range(24)]
+    original = image_catalog._SWEEP_BUDGET_SECONDS
+    image_catalog._SWEEP_BUDGET_SECONDS = 1
+    started = time.monotonic()
+    try:
+        records = await image_catalog._fetch_endpoint_records(_Slow(), models, _Log())
+    finally:
+        image_catalog._SWEEP_BUDGET_SECONDS = original
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, (
+        f"the sweep must give up on its own budget, not run the catalogue through; "
+        f"took {elapsed:.1f}s"
+    )
+    assert records == {}, "nothing was read, so nothing is published"
+    assert any("still unread" in line for line in logs), (
+        f"an operator must be told the sweep ran out of time; got {logs}"
+    )
+
+
+def test_the_documented_help_example_is_what_the_code_produces():
+    """A sample of product output in the docs must be reproducible.
+
+    The block this replaces showed one model's identity above another model's controls,
+    and carried tips that had been deleted from the code -- it had been hand-edited in
+    place, so nothing tied it to anything the product does.
+    """
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_image_generation.md").read_text()
+    marker = "reproducible from the contract recorded in"
+    assert marker in doc, "the example must say what it is reproducible from"
+
+    block = doc.split(marker, 1)[1].split("```", 2)[1].strip()
+    rendered = render_image_help(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        endpoint_record=_recorded_endpoint("recraft_recraft-v3"),
+    ).strip()
+    assert block == rendered, (
+        "the documented example no longer matches what the code renders.\n"
+        f"--- doc ---\n{block[:400]}\n--- code ---\n{rendered[:400]}"
+    )
+
+
+def test_every_catalogued_image_model_has_curated_help():
+    """`help` is the only in-product documentation a model has.
+
+    Without this census a model added to the catalogue answers "No curated help available"
+    while the README names it by name. The video side has had this check all along.
+    """
+    catalogue = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"]
+    ids = {m["id"] for m in catalogue if isinstance(m, dict) and m.get("id")}
+    missing = sorted(ids - set(IMAGE_HELP_BY_MODEL))
+    assert not missing, (
+        f"{len(missing)} catalogued image model(s) have no curated help entry: {missing}"
+    )
+
+
+def test_the_documented_model_table_lists_exactly_the_catalogued_models():
+    """A model table is an inventory, and an inventory that drifts misleads.
+
+    It listed three Riverflow previews OpenRouter had removed and omitted twelve models
+    the README named, while the prose above it claimed a count matching neither.
+    """
+    import re
+
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_image_generation.md").read_text()
+    listed = {m for m in re.findall(r"^\| `([^`]+)` \|", doc, re.M) if "/" in m}
+    catalogued = {
+        m["id"]
+        for m in json.loads(
+            (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+        )["data"]
+        if isinstance(m, dict) and m.get("id")
+    }
+
+    assert listed == catalogued, (
+        f"documented but not catalogued: {sorted(listed - catalogued)}\n"
+        f"catalogued but not documented: {sorted(catalogued - listed)}"
+    )
+    assert f"{len(catalogued)}" in doc.split("\n\n", 2)[1] or "forty" in doc.split("\n\n", 2)[1], (
+        "the count in the opening paragraph must match the table"
+    )
+
+
+def test_every_image_only_model_in_the_catalogue_is_registered():
+    """The catalogue decides which models register, not a list typed beside it.
+
+    The hand-written list this replaces named three Riverflow previews OpenRouter had
+    withdrawn, so it asserted the presence of models that no longer exist while saying
+    nothing about the twelve that had appeared.
+    """
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+
+    OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
+
+    expected = {
+        ModelFamily.base_model(sanitize_model_id(m["id"]))
+        for m in IMAGE_MODELS
+        if "text" not in ((m.get("architecture") or {}).get("output_modalities") or [])
+    }
+    assert expected, "the catalogue must contain image-only models for this to mean anything"
+
+    registered = set(OpenRouterModelRegistry._specs)
+    assert expected <= registered, (
+        f"image-only models missing from the registry: {sorted(expected - registered)}"
+    )
+
+    multimodal = {
+        sanitize_model_id(m["id"])
+        for m in IMAGE_MODELS
+        if "text" in ((m.get("architecture") or {}).get("output_modalities") or [])
+    }
+    assert multimodal, "the catalogue must contain multimodal models too"
+    assert not (multimodal & registered), (
+        "models that also emit text belong to the chat catalogue and must not be "
+        f"re-registered here: {sorted(multimodal & registered)}"
+    )
+
+
+def test_a_detached_filter_stops_being_default_on_but_other_owners_survive():
+    """Driven in the caller's order, with the caller's own derived flags.
+
+    The test this replaces called the default helper directly with flags the caller
+    cannot produce, so it passed while the prune was unreachable in production: the
+    attach pass rewrites the ownership record before the default pass reads it, and the
+    caller had already switched the default pass off when a model lost its filter.
+    """
+    from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+    from open_webui_openrouter_pipe.models.catalog_manager import (
+        _apply_list_default_filter_ids,
+        _apply_list_filter_ids,
+        _detached_by_this_pass,
+    )
+
+    def run(meta, current):
+        """The order and arguments `_update_or_insert_model_with_metadata` uses."""
+        detached = _detached_by_this_pass(
+            meta, prune_key="image_filter_ids", filter_function_ids=current
+        )
+        _apply_list_filter_ids(
+            meta,
+            filter_function_ids=current,
+            filter_supported=True,
+            auto_attach=True,
+            prune_key="image_filter_ids",
+        )
+        _apply_list_default_filter_ids(
+            meta,
+            detached=detached,
+            filter_function_ids=current,
+            filter_supported=True,
+            auto_default=True,
+        )
+
+    losing = {
+        "filterIds": ["openrouter_image_filter_old"],
+        "defaultFilterIds": ["openrouter_image_filter_old", "a_global_filter_i_do_not_own"],
+        _PIPE_METADATA_KEY: {"image_filter_ids": ["openrouter_image_filter_old"]},
+    }
+    run(losing, [])
+    assert losing["filterIds"] == [], "the model no longer has a filter of ours"
+    assert losing["defaultFilterIds"] == ["a_global_filter_i_do_not_own"], (
+        "our detached filter must stop being default-on, and nobody else's may be touched; "
+        f"got {losing['defaultFilterIds']}"
+    )
+
+    keeping = {
+        "filterIds": [],
+        "defaultFilterIds": ["a_global_filter_i_do_not_own"],
+        _PIPE_METADATA_KEY: {},
+    }
+    run(keeping, ["openrouter_image_filter_new"])
+    assert keeping["filterIds"] == ["openrouter_image_filter_new"]
+    assert "openrouter_image_filter_new" in keeping["defaultFilterIds"], (
+        "a filter attached this pass becomes default-on"
+    )
+    assert "a_global_filter_i_do_not_own" in keeping["defaultFilterIds"], (
+        "and another owner's default still survives"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_retires_superseded_filters_whether_or_not_it_installs_any():
+    """The sweep must run in both configurations, and its call sites are what deletes.
+
+    Its own test drove the method directly, so both call sites could be removed with the
+    suite green -- and the valves-off path is the upgrade where nothing supersedes the
+    old rows, which is the whole reason the sweep exists.
+    """
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    deactivated: list[str] = []
+    rows = [SimpleNamespace(id="old_variant", content=f'M = "{_OPENROUTER_IMAGE_FILTER_MARKER}"')]
+
+    class _Functions:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=True):
+            return rows
+
+        @staticmethod
+        async def update_function_by_id(row_id, payload):
+            if payload.get("is_active") is False:
+                deactivated.append(row_id)
+            return True
+
+    module = ModuleType("open_webui.models.functions")
+    module.Functions = _Functions  # type: ignore[attr-defined]
+    saved = sys.modules.get("open_webui.models.functions")
+    sys.modules["open_webui.models.functions"] = module
+    try:
+        models, _ = await _install_ids(
+            ["recraft/recraft-v3"],
+            {"recraft/recraft-v3": _recorded_endpoint("recraft_recraft-v3")},
+        )
+        assert models, "the model must register"
+    finally:
+        if saved is not None:
+            sys.modules["open_webui.models.functions"] = saved
+        else:
+            sys.modules.pop("open_webui.models.functions", None)
+
+    assert deactivated == ["old_variant"], (
+        "installing filters must also retire the ones a previous design left behind; "
+        f"got {deactivated}"
+    )
+
+
+def test_a_stored_value_the_contract_no_longer_accepts_costs_only_itself():
+    """Open WebUI builds UserValves from the stored dict and passes NO valves if it raises.
+
+    These fields track a live contract, so a provider joining a model narrows a range
+    while an older choice is still stored -- an ordinary event. Without the validator one
+    stale entry throws away every other choice the user made.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        "v/m",
+        {"id": "v/m", "name": "M"},
+        {
+            "provider_slug": "p",
+            "supported_parameters": {
+                "aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]},
+                "n": {"type": "range", "min": 1, "max": 4},
+            },
+            "allowed_passthrough_parameters": ["style"],
+        },
+    )
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "stale_valves")
+
+    # Exactly how Open WebUI constructs them -- outside inlet, where a raise costs everything.
+    valves = module.Filter.UserValves(
+        **{
+            "IMAGE_ASPECT_RATIO": "9:21",   # no longer published
+            "IMAGE_N": 99,                  # outside the published range
+            "IMAGE_STYLE": "realistic",     # still fine
+            "GONE": "x",                    # not a field any more
+        }
+    )
+    assert valves.IMAGE_STYLE == "realistic", "a value that still fits must survive"
+    assert valves.IMAGE_ASPECT_RATIO == "", "a value the contract dropped falls back"
+    assert valves.IMAGE_N is None, "a value outside the published range falls back"
+
+    kept = module.Filter.UserValves(**{"IMAGE_ASPECT_RATIO": "16:9", "IMAGE_N": 2})
+    assert (kept.IMAGE_ASPECT_RATIO, kept.IMAGE_N) == ("16:9", 2), (
+        "values that fit must round-trip untouched"
+    )
+
+
+def test_a_case_variant_of_a_published_knob_cannot_shadow_it():
+    """Two published names differing only in case render one field.
+
+    Without the guard the typed control loses to the free-text one, and the override
+    block still runs `int(...)` on it -- so `int("")` raises on EVERY request through
+    that filter, not only when the user sets something. OpenRouter ships mixed-case
+    parameter names, so this is a live shape.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        render_image_model_filter_source,
+    )
+
+    spec = _spec(
+        provider_slug="p",
+        supported_parameters={"seed": {"type": "boolean"}},
+        allowed_passthrough_parameters=["Seed", "style"],
+    )
+    assert spec.passthrough == ("style",), (
+        f"the case-variant of a published knob must be dropped; got {spec.passthrough}"
+    )
+
+    source = render_image_model_filter_source(spec)
+    assert source.count("IMAGE_SEED:") == 1, "one definition, or pydantic keeps the wrong one"
+
+    module = _load_filter_from_source(source, "case_variant_shadow")
+    assert module.Filter.UserValves.model_fields["IMAGE_SEED"].annotation is not str, (
+        "the typed control must survive, not be replaced by free text"
+    )
+
+    # The failure this really guards: a default-valued request must not raise.
+    body = module.Filter().inlet(
+        {"model": "v/m"}, None, {"valves": module.Filter.UserValves()}
+    )
+    assert "image_config" not in body, "nothing chosen means nothing written, and no crash"
+
+
+def test_a_non_finite_published_value_never_reaches_a_field_annotation():
+    """JSON admits NaN and Infinity, so a catalogue response can carry them.
+
+    `repr(nan)` is the bare name `nan`, so the field annotation would refer to an
+    undefined name -- and the source still parses, so the install-time check passes it.
+    The failure lands on the first request to that model instead.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        render_image_model_filter_source,
+    )
+
+    spec = _spec(
+        provider_slug="p",
+        supported_parameters={
+            "n": {"type": "enum", "values": [float("nan"), float("inf"), 1, 2]}
+        },
+    )
+    assert dict(spec.enums)["n"] == (1, 2), (
+        f"non-finite values must not survive into the spec; got {dict(spec.enums).get('n')}"
+    )
+
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "non_finite")
+    body = module.Filter().inlet(
+        {"model": "v/m"}, None, {"valves": module.Filter.UserValves(IMAGE_N=1)}
+    )
+    assert body["image_config"] == {"n": 1}, "the finite values must still work"
+
+
+@pytest.mark.asyncio
+async def test_the_catalogue_ttl_still_applies_when_no_filter_consumes_contracts():
+    """The contract clock gates a sweep that only some configurations perform.
+
+    Reading it unconditionally meant a deployment with both filter valves off never
+    stamped it, so the freshness check could never be satisfied and every model-list
+    build refetched the catalogue.
+    """
+    from open_webui_openrouter_pipe.integrations import image_catalog
+
+    fetches = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_models(self):
+            fetches.append(1)
+            return []
+
+        async def endpoints(self, model_id):
+            return []
+
+    valves = MagicMock()
+    valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    valves.AUTO_INSTALL_IMAGE_FILTERS = False
+    valves.AUTO_ATTACH_IMAGE_FILTERS = False
+    valves.BASE_URL = "https://openrouter.ai/api/v1"
+    valves.HTTP_REFERER_OVERRIDE = ""
+
+    OpenRouterModelRegistry._last_image_attempt = 0.0
+    OpenRouterModelRegistry._last_image_contract_attempt = 0.0
+    OpenRouterModelRegistry._image_endpoints = {}
+
+    original = image_catalog.OpenRouterImageClient
+    image_catalog.OpenRouterImageClient = _Client  # type: ignore[misc]
+    try:
+        for _ in range(2):
+            await image_catalog.ensure_image_catalog_loaded(
+                session=MagicMock(), valves=valves, api_key="k",
+                logger=logging.getLogger("t"), cache_seconds=3600,
+            )
+    finally:
+        image_catalog.OpenRouterImageClient = original  # type: ignore[misc]
+
+    assert len(fetches) == 1, (
+        f"the second call is inside the TTL window and must not refetch; got {len(fetches)}"
+    )
+
+
+def test_a_published_provider_option_keeps_its_own_name():
+    """A compatibility alias must not rename a key the model itself claims.
+
+    `image_size` is the pipe's old spelling for `resolution` and is also a real provider
+    option elsewhere. Renaming first meant a value typed into the provider box landed on
+    the resolution the user had chosen from a dropdown, silently replacing it.
+    """
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    record = {
+        "provider_slug": "p",
+        "supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}},
+        "allowed_passthrough_parameters": ["image_size"],
+    }
+    top_level, provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": {"resolution": "2K", "image_size": "1K"}},
+        allowed_passthrough=("image_size",),
+        record=record,
+    )
+    assert top_level == {"resolution": "2K"}, (
+        f"the user's dropdown choice must survive; got {top_level}"
+    )
+    assert provider == {"image_size": "1K"}, (
+        f"the provider option must travel under its published name; got {provider}"
+    )
+    assert notes == [], f"nothing was wrong, so nothing should be reported; got {notes}"
+
+    # And where the record does NOT claim it, the alias still applies.
+    top_level, _provider, _notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": {"image_size": "2K"}},
+        allowed_passthrough=(),
+        record={"supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}}},
+    )
+    assert top_level == {"resolution": "2K"}, "the compatibility spelling still works"
+
+
+def test_help_says_which_kind_of_nothing_a_model_offers():
+    """Two very different states produced one sentence.
+
+    A model that offers nothing and a model whose providers publish different things are
+    not the same, and only one of them means the user should stop looking.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    a = {"provider_slug": "a", "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}}}
+    b = {"provider_slug": "b", "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["16:9"]}}}
+    model = {"id": "v/m", "name": "M"}
+
+    disagreeing = build_image_model_filter_spec("v/m", model, [a, b])
+    assert disagreeing.knob_count == 0, "the intersection is empty"
+    assert disagreeing.published_anything, "but the records did publish something"
+    text = render_image_help("v/m", model, endpoint_record=[a, b])
+    assert "publish different settings" in text, text
+    assert "publishes no adjustable settings" not in text
+
+    empty = build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}])
+    assert not empty.published_anything
+    text = render_image_help("v/m", model, endpoint_record=[{"provider_slug": "a"}])
+    assert "publishes no adjustable settings" in text, text
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"image_size": "1K", "resolution": "2K"},
+        {"resolution": "2K", "image_size": "1K"},
+    ],
+)
+def test_both_spellings_of_one_setting_do_not_race(config):
+    """Two filters can each write their own spelling into one `image_config`.
+
+    The older filter writes `image_size`; a model's own filter writes the `resolution`
+    its contract publishes. Aliasing one onto the other made them the same destination,
+    so whichever landed later in the dict won and the other vanished -- with the outcome
+    depending on insertion order and nothing said to the user.
+    """
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    record = {"supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}}}
+    top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": config}, allowed_passthrough=(), record=record
+    )
+
+    assert top_level == {"resolution": "2K"}, (
+        f"the spelling the model publishes must win, whatever the order; got {top_level}"
+    )
+    assert [n.kind for n in notes] == ["superseded"], (
+        f"and the user must be told the other was ignored; got {notes}"
+    )
+
+
+def test_the_compatibility_spelling_still_works_on_its_own():
+    """The alias is load-bearing for the older filter; only the collision changed."""
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": {"image_size": "1K"}},
+        allowed_passthrough=(),
+        record={"supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}}},
+    )
+    assert top_level == {"resolution": "1K"}
+    assert notes == []
+

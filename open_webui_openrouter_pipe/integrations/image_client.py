@@ -22,6 +22,14 @@ from ..requests.debug import (
     _debug_print_response,
 )
 from ..storage.multimodal import _guess_image_mime_type, canonical_image_mime
+
+_CATALOG_TIMEOUT_SECONDS = 15
+"""Cap on one catalog or published-contract read.
+
+The shared session leaves its total timeout unset so a long streaming reply is never cut
+off. These are small GETs on the path that builds Open WebUI's model list, and the
+contract read now runs once per model, so an unbounded wait here stalls the dropdown.
+"""
 from .image_types import (
     GeneratedImage,
     ImageGenerationError,
@@ -67,7 +75,9 @@ class OpenRouterImageClient:
         url = f"{self._base_url}/models?output_modalities=image"
         headers = self._headers()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=self._logger)
-        async with self._session.get(url, headers=headers) as resp:
+        async with self._session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=_CATALOG_TIMEOUT_SECONDS)
+        ) as resp:
             if resp.status >= 400:
                 await _debug_print_error_response(resp, logger=self._logger)
             resp.raise_for_status()
@@ -83,7 +93,9 @@ class OpenRouterImageClient:
         url = f"{self._base_url}/images/models/{safe_id}/endpoints"
         headers = self._headers()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=self._logger)
-        async with self._session.get(url, headers=headers) as resp:
+        async with self._session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=_CATALOG_TIMEOUT_SECONDS)
+        ) as resp:
             if resp.status >= 400:
                 await _debug_print_error_response(resp, logger=self._logger)
             resp.raise_for_status()

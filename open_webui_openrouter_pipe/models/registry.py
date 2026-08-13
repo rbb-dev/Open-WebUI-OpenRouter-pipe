@@ -694,6 +694,70 @@ class OpenRouterModelRegistry:
 
     _last_image_fetch: float = 0.0
     _last_image_attempt: float = 0.0
+    _image_endpoints: ClassVar[dict[str, list[dict[str, Any]]]] = {}
+    _last_image_contract_attempt: float = 0.0
+
+    @classmethod
+    def last_image_contract_attempt(cls) -> float:
+        """When the contract sweep last ran, separately from the model-list fetch.
+
+        A caller that skipped the sweep must not satisfy the freshness check that guards
+        it: a chat request refreshes the model list without reading contracts, and would
+        otherwise suppress the next catalog refresh's sweep for a whole TTL window --
+        leaving every model with no controls.
+        """
+        return cls._last_image_contract_attempt
+
+    @classmethod
+    def record_image_contract_attempt(cls) -> None:
+        cls._last_image_contract_attempt = time.time()
+
+    @classmethod
+    def set_image_endpoints(
+        cls, records: dict[str, Any] | None, *, known_ids: set[str] | None = None
+    ) -> None:
+        """Hold every published image contract, keyed by the model's OpenRouter id.
+
+        Kept here rather than on the model spec because ``register_image_models`` only
+        registers pure-image models -- a text+image model such as Gemini Flash Image
+        lives in the chat catalog, so a contract stored on its spec would have nowhere
+        to be written and its filter would silently offer nothing.
+        """
+        published: dict[str, list[dict[str, Any]]] = {}
+        for key, value in (records or {}).items():
+            if not isinstance(key, str) or not key.strip():
+                continue
+            offered = value if isinstance(value, list) else [value]
+            kept = [item for item in offered if isinstance(item, dict)]
+            if kept:
+                published[key.strip()] = kept
+
+        # A read that timed out is not a contract that changed. Keeping the previous
+        # record means one slow response does not strip a model of its controls for a
+        # whole refresh cycle -- which is what the adapter already does with its own
+        # cache, so the two now agree. ``known_ids`` bounds the carry-over to models the
+        # catalog still lists, so a retired model's contract does not live forever.
+        for key, previous in cls._image_endpoints.items():
+            if key in published:
+                continue
+            if known_ids is not None and key not in known_ids:
+                continue
+            published[key] = previous
+        cls._image_endpoints = published
+
+    @classmethod
+    def image_endpoint(cls, model_id: str) -> list[dict[str, Any]] | None:
+        """Return every published contract for a model, by original or sanitized id."""
+        if not isinstance(model_id, str) or not model_id.strip():
+            return None
+        wanted = model_id.strip()
+        record = cls._image_endpoints.get(wanted)
+        if record is not None:
+            return record
+        for original, published in cls._image_endpoints.items():
+            if sanitize_model_id(original) == wanted:
+                return published
+        return None
 
     @classmethod
     def last_image_fetch(cls) -> float:
@@ -727,7 +791,10 @@ class OpenRouterModelRegistry:
         cls._last_image_fetch = 0.0
 
     @classmethod
-    def register_image_models(cls, image_models: list[dict[str, Any]]) -> None:
+    def register_image_models(
+        cls,
+        image_models: list[dict[str, Any]],
+    ) -> None:
         """Register OpenRouter pure-image-only models as selectable models.
 
         Multimodal text+image models (output_modalities ⊇ {"text"}) already live
