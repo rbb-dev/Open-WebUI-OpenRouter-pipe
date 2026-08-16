@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -303,3 +305,143 @@ def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id):
         row = next(r for r in rendered.splitlines() if r.startswith(f"- **{title}** "))
         listed = row.split("Choices: ", 1)[1].split(".", 1)[0]
         assert listed == ", ".join(drawn[published.upper()]), row
+
+
+_MONEY_WORDS = re.compile(
+    r"\b(pric\w*|cost\w*|cheap\w*|expensive|bill|bills|billed|billing|rate|rates|"
+    r"charge\w*|spend\w*|paid|pay|per[- ]second|per[- ]token|per[- ]image)\b",
+    re.I,
+)
+
+_CURRENCY = re.compile(r"\$\s*\d")
+
+_MAGNITUDES = (
+    ("a percentage", re.compile(r"\d\s*%")),
+    ("a multiplier", re.compile(r"\d(?:\.\d+)?\s*[×x](?![\dx])")),
+    ("a magnitude in words", re.compile(
+        r"\b(half again|twice|double\w*|triple\w*|order of magnitude)\b", re.I
+    )),
+)
+
+
+def _price_claims(text: str) -> list[str]:
+    """Every way a curated string can state money the catalogue is free to change."""
+    found: list[str] = []
+    currency = _CURRENCY.search(text)
+    if currency:
+        found.append(f"a currency amount ({currency.group(0)!r})")
+    if _MONEY_WORDS.search(text):
+        for name, pattern in _MAGNITUDES:
+            hit = pattern.search(text)
+            if hit:
+                found.append(f"{name} ({hit.group(0)!r})")
+    return found
+
+
+def _curated_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _curated_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _curated_strings(item)
+
+
+@pytest.mark.parametrize(
+    ("text", "flagged"),
+    [
+        pytest.param("Billed at $0.12 per second of output.", True, id="currency"),
+        pytest.param(
+            "Chooses 720p or 1080p; 1080p costs roughly 50% more per second.",
+            True,
+            id="percentage-of-a-cost",
+        ),
+        pytest.param(
+            "Same controls as Standard but at roughly 1.33× the per-second price.",
+            True,
+            id="multiplier-of-a-price",
+        ),
+        pytest.param(
+            "Pricing is per-second of output and half again as much with audio on.",
+            True,
+            id="magnitude-in-words",
+        ),
+        pytest.param(
+            "Audio doubles the bill for the same clip.", True, id="doubles-the-bill"
+        ),
+        pytest.param(
+            "Pins exact pixel dimensions, 1920×1080 or 2048x2048; the rate is unchanged.",
+            False,
+            id="dimensions-are-not-a-multiplier",
+        ),
+        pytest.param(
+            "~3x slower than V4 due to the higher resolution.",
+            False,
+            id="a-magnitude-about-something-other-than-money",
+        ),
+        pytest.param(
+            "1080p is billed at a higher per-second rate, listed below.",
+            False,
+            id="a-direction-cannot-go-stale",
+        ),
+        pytest.param("Frame shape: 16:9, 9:16, or 21:9.", False, id="ratios-are-framings"),
+    ],
+)
+def test_the_price_claim_scanner_sees_every_form_it_is_meant_to(text, flagged):
+    """The guard it replaces matched `$` and a digit, and nothing else.
+
+    Every relative claim walked past it: "1.33×", "~33% more", "half again as much with
+    audio on". Those are the same defect as the sixteen currency literals this changeset
+    removed -- correct on the day they were typed, wrong after a reprice, and silent
+    either way -- so the scanner has to see a multiplier, a percentage and a magnitude
+    written out in words. It stays quiet for a magnitude that is not about money, and for
+    a direction ("a higher rate"), which survives any reprice.
+    """
+    assert bool(_price_claims(text)) is flagged, _price_claims(text)
+
+
+def test_no_curated_help_text_states_a_price_the_catalogue_can_move():
+    """The panel renders money from the contract; the curated tables must not.
+
+    Scanned over the tables rather than over one rendering of them: a knob description is
+    only rendered when the model publishes that capability, so the rendered-output guards
+    in the two generation test modules never see the gated ones at all.
+    """
+    from open_webui_openrouter_pipe.integrations.image_help import IMAGE_HELP_BY_MODEL
+    from open_webui_openrouter_pipe.integrations.video_help import VIDEO_HELP_BY_MODEL
+
+    offenders: list[str] = []
+    for table in (VIDEO_HELP_BY_MODEL, IMAGE_HELP_BY_MODEL):
+        for model_id, data in table.items():
+            for text in _curated_strings(data):
+                for claim in _price_claims(text):
+                    offenders.append(f"{model_id}: {claim} in {text[:120]!r}")
+
+    assert not offenders, "\n".join(offenders)
+
+
+def test_every_knob_help_names_is_a_control_the_panel_draws_under_that_name():
+    """A name only helps if it is the one printed above the control in the chat panel.
+
+    Help called the Seedance request-key control `Req key` while the panel titled it
+    `Request key`, so a user reading the panel found no entry for the control in front of
+    them, on all four Seedance models. Titles are read out of the generated filter source
+    rather than listed here, so renaming one without renaming the other reddens this.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    mismatched: list[str] = []
+    for model_id, model in VIDEO_BY_ID.items():
+        source = render_video_filter_source(model_id=model_id, video_model=model)
+        drawn = set(re.findall(r"""^\s+title=(?:"([^"]+)"|'([^']+)'),$""", source, re.M))
+        titles = {name for pair in drawn for name in pair if name}
+        assert titles, f"{model_id} draws no titled control, so this proves nothing"
+        for knob in re.findall(r"^- `([^`]+)`:", render_video_help(model_id, model), re.M):
+            if knob not in titles:
+                mismatched.append(f"{model_id}: help names {knob!r}, the panel does not")
+
+    assert not mismatched, "\n".join(mismatched)

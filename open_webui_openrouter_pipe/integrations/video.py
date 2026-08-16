@@ -1413,17 +1413,6 @@ class VideoGenerationAdapter:
         withheld: list[tuple[str, str]] | None = None,
         user_obj: Any = None,
     ) -> list[dict[str, Any]]:
-        """Encode prior-video frames intended as style/content reference images.
-
-        OpenRouter's /videos request accepts a top-level `input_references`
-        array of `ContentPartImage` objects (type=image_url, image_url={url}).
-        Unlike `frame_images`, these are not hard anchors — they guide the
-        model's generation without locking specific frames. The model decides
-        how to use them.
-
-        Returns the encoded list (possibly empty). Never raises on empty
-        input; raises VideoGenerationError on encoding/size failure.
-        """
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
             return []

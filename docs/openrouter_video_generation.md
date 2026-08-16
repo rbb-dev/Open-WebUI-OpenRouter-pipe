@@ -973,7 +973,7 @@ is also the spec for what you can change per-message.
 | Seed | int | 0 / 32-bit int | |
 | Provider options JSON | str | raw JSON | |
 | Watermark | Literal | model_default / on / off | Visible ByteDance watermark on output MP4. |
-| Req key | str | provider routing string | Volcengine ModelArk SKU/endpoint identifier. |
+| Request key | str | provider routing string | Volcengine ModelArk SKU/endpoint identifier. |
 
 **No negative prompt** on any Seedance variant — not in `allowed_passthrough_parameters`.
 

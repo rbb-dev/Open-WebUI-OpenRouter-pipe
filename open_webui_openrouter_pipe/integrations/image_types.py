@@ -60,10 +60,9 @@ PASSTHROUGH_ENUMS: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 
-def prompt_with_system(input_items: Any) -> str:
-    user = latest_user_text(input_items)
-    if not user.strip() or not isinstance(input_items, list):
-        return user
+def system_prompt_text(input_items: Any) -> str:
+    if not isinstance(input_items, list):
+        return ""
     system = [
         text.strip()
         for item in input_items
@@ -72,7 +71,15 @@ def prompt_with_system(input_items: Any) -> str:
         and isinstance(text := item_text(item), str)
         and text.strip()
     ]
-    return "\n\n".join([*system, user]) if system else user
+    return "\n\n".join(system)
+
+
+def prompt_with_system(input_items: Any) -> str:
+    user = latest_user_text(input_items)
+    if not user.strip():
+        return user
+    system = system_prompt_text(input_items)
+    return f"{system}\n\n{user}" if system else user
 
 
 def pixel_size(value: Any) -> tuple[int, int] | None:

@@ -63,7 +63,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio": "Whether a soundtrack is generated with the picture.",
             "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip — worth setting before you iterate.",
             "Watermark": "Whether the provider's visible branding overlay is burned into the output.",
-            "Req key": "Provider-side request identifier, for callers that need their own job reference carried through.",
+            "Request key": "Provider-side request identifier, for callers that need their own job reference carried through.",
             "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
         },
     },
@@ -239,9 +239,9 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Google: Veo 3.1 Fast",
         "best_known_for": (
             "Google DeepMind's speed-and-cost-optimised tier of Veo 3.1, generating 4-, 6-, "
-            "or 8-second clips up to 4K with native synchronised audio at roughly 2× the "
-            "speed and a fraction of the price of full Veo 3.1. Editor blind tests put "
-            "quality within ~1–8% of the full tier while costs run ~60% lower, making it "
+            "or 8-second clips up to 4K with native synchronised audio, rendering faster "
+            "than full Veo 3.1 and billed at a lower published rate. Editor blind tests "
+            "put its quality close to the full tier's, making it "
             "the workhorse choice for drafting, A/B-testing creative concepts, batch ad "
             "and social content, and image-to-video work where dialogue and SFX must land "
             "in sync."
@@ -371,11 +371,11 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "shots, marketing deliverables, and pre-vis where quality matters more "
             "than cost. Same capability matrix as Kling v3.0 Standard (granular "
             "3–15s durations, first/last-frame anchoring, native audio, 720p, three "
-            "aspects) but at roughly 1.33× the per-second price."
+            "aspects) at a higher per-second rate."
         ),
         "tips_and_pitfalls": [
             "Use Pro for finals and hero shots; iterate on Standard first to lock prompt and references — the visual delta is meaningful but not always worth the cost on drafts.",
-            "Pricing is per-second of output and half again as much with audio on, so the bill tracks the duration you pick — plan duration deliberately.",
+            "Pricing is per-second of output, with a separate higher rate when audio is on — both are listed below — so the bill tracks the duration you pick; plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move (slow dolly-in / tracking), motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
             "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
@@ -388,7 +388,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
             "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
             "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
-            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally (audio adds ~50% to the per-second cost).",
+            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally, since audio is billed at its own higher per-second rate, listed below.",
             "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
         },
     },
@@ -398,13 +398,13 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Kuaishou's standard tier of Kling v3.0 — the most cost-efficient Kling "
             "SKU OpenRouter exposes, with the same capability surface as Kling v3.0 "
             "Pro (granular 3–15s durations, first/last-frame anchoring, native "
-            "audio, 720p, three aspects) at roughly 0.75× the Pro per-second price. "
+            "audio, 720p, three aspects) at a lower per-second rate than Pro. "
             "Best suited for prompt iteration, drafts, and bulk pipelines where "
             "throughput and cost matter more than the last few percent of polish."
         ),
         "tips_and_pitfalls": [
-            "Use Standard for drafting, prompt and reference iteration, and bulk runs; switch to Pro for finals when the quality delta is worth ~33% more per-second.",
-            "Pricing is per-second of output and half again as much with audio on, so the bill tracks the duration you pick — plan duration deliberately.",
+            "Use Standard for drafting, prompt and reference iteration, and bulk runs; switch to Pro for finals when the quality delta is worth its higher per-second rate.",
+            "Pricing is per-second of output, with a separate higher rate when audio is on — both are listed below — so the bill tracks the duration you pick; plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move, motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
             "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
@@ -417,7 +417,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
             "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
             "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
-            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally (audio adds ~50% to the per-second cost).",
+            "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally, since audio is billed at its own higher per-second rate, listed below.",
             "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
         },
     },
@@ -516,7 +516,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Seed": "Integer that makes generations reproducible — same prompt + seed yields the same clip, useful for A/B testing prompt edits.",
             "Provider options JSON": "Free-form passthrough block forwarded to OpenRouter's provider field for routing/fallback control; not for model parameters.",
             "Watermark": "Controls whether the upstream provider stamps a visible watermark on the returned MP4 — model_default keeps the provider's policy, on forces the watermark, off requests an unwatermarked clip (subject to provider permission/billing).",
-            "Req key": "A ByteDance/Volcengine ModelArk routing string identifying which Seedance SKU/endpoint variant to dispatch to upstream; leave blank to use OpenRouter's default mapping.",
+            "Request key": "A ByteDance/Volcengine ModelArk routing string identifying which Seedance SKU/endpoint variant to dispatch to upstream; leave blank to use OpenRouter's default mapping.",
         },
     },
     "bytedance/seedance-2.0": {
@@ -549,7 +549,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Seed": "Locks the random seed for reproducible output, letting you re-run the same prompt and references to get a near-identical clip for iteration or A/B comparison.",
             "Provider options JSON": "Forwards advanced ByteDance/provider parameters not surfaced as dedicated knobs (e.g. reference-mode flags, multi-reference weighting), for power users following provider docs.",
             "Watermark": "Per-model passthrough that toggles ByteDance's visible video watermark on the output; turn off only if your provider account permits unwatermarked delivery.",
-            "Req key": "Per-model passthrough for an optional request/idempotency key forwarded to ByteDance, useful for tracing or de-duplicating long-running video jobs.",
+            "Request key": "Per-model passthrough for an optional request/idempotency key forwarded to ByteDance, useful for tracing or de-duplicating long-running video jobs.",
         },
     },
     "alibaba/wan-2.6": {
@@ -575,7 +575,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Selects 5s or 10s of video (Wan 2.6 OpenRouter SKU caps at 10s; the 15s tier from Alibaba Cloud is not exposed here).",
             "Aspect ratio": "Picks 16:9 (landscape) or 9:16 (portrait/vertical) framing for the output clip.",
-            "Resolution": "Chooses 720p or 1080p; 1080p costs roughly 50% more per second and is the model's native high-fidelity tier.",
+            "Resolution": "Chooses 720p or 1080p; 1080p is the model's native high-fidelity tier and is billed at a higher per-second rate — the rate for each is listed below.",
             "Size": "Direct pixel dimensions (1280×720, 1920×1080, 720×1280, 1080×1920) — overrides aspect/resolution if you need an exact frame size.",
             "Frames": "Attaches a first-frame reference image to anchor the opening shot; Wan 2.6 has no last-frame slot.",
             "Negative prompt": "Free-text list of things to avoid (artifacts, styles, objects, motion) — passed through to suppress unwanted features in the render.",
@@ -600,7 +600,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Korean, Spanish, plus dialects)."
         ),
         "tips_and_pitfalls": [
-            "Audio doubles the bill: video_tokens with audio is ~2× without audio, so toggle Audio off for silent B-roll, layout passes, or anything you'll dub later.",
+            "Audio is billed at a higher per-token rate than silent output — both rates are listed below — so toggle Audio off for silent B-roll, layout passes, or anything you'll dub later.",
             "Use 1.5 Pro for short, repeatable clips with simple camera work and known-good prompts; switch to 2.0 only when you need richer multimodal references, 2K output, or longer 15s shots — 1.5 Pro caps at 1080p and 12s.",
             "Long durations drift: 4–6s clips stay on-model, but 10–12s shots show face drift, color shift, and continuity errors — chain shorter shots with last_frame anchors and consistent character descriptions.",
             "last_frame is a directional guide, not a pixel-perfect target — pick an end frame with framing and lighting close to the start frame, or you'll get jumpy transitions in the final second.",
@@ -611,11 +611,11 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "Chooses 480p (fast previews), 720p (balanced), or native 1080p (final delivery); 1.5 Pro does not offer 2K, unlike Seedance 2.0.",
             "Size": "Selects from 21 exact pixel dimensions — the widest size matrix of any video model on OpenRouter — so you can hit platform-specific targets without post-crop.",
             "Frames": "Accepts a first_frame to lock identity/lighting and an optional last_frame to steer the ending, enabling match cuts and multi-shot continuity when you chain clips.",
-            "Audio": "Turns on the dual-branch joint generation so lip-sync and physics SFX are produced in the same pass; doubles the per-token price, so disable when you don't need sound.",
+            "Audio": "Turns on the dual-branch joint generation so lip-sync and physics SFX are produced in the same pass; it is billed at the higher with-audio rate, so disable when you don't need sound.",
             "Seed": "Fixes the random initialisation for reproducible outputs — essential when iterating on prompt wording without re-rolling the whole scene.",
             "Provider options JSON": "Free-form passthrough for any extra ByteDance fields not mapped to a dedicated valve; useful for experimental flags surfaced in OpenRouter's video API.",
             "Watermark": "Per-model passthrough that toggles the visible ByteDance watermark on the rendered output.",
-            "Req key": "Per-model passthrough idempotency/request token forwarded to ByteDance — set a stable value to dedupe retries on the provider side.",
+            "Request key": "Per-model passthrough idempotency/request token forwarded to ByteDance — set a stable value to dedupe retries on the provider side.",
         },
     },
     "openai/sora-2-pro": {
@@ -710,7 +710,7 @@ _KNOB_GATE: dict[str, str | None] = {
     "Enable prompt expansion": "enable_prompt_expansion",
     "Shot type": "shot_type",
     "Watermark": "watermark",
-    "Req key": "req_key",
+    "Request key": "req_key",
     "Quality": "quality",
     "Style": "style",
 }

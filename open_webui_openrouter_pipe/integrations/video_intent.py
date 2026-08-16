@@ -26,11 +26,13 @@ from ..core.utils import (
     _safe_marker_body,
     _serialize_kind_marker,
 )
+from ..requests.fusion_engine import latest_user_text
 from ..structured_task import (
     build_response_format,
     call_with_candidates,
     resolve_task_model_candidates,
 )
+from .image_types import system_prompt_text
 from .video_intent_prompts import (
     INTENT_JSON_SCHEMA,
     INTENT_SCHEMA_NAME,
@@ -358,6 +360,7 @@ def collect_attachments_from_video_meta(
 def build_task_payload(
     *,
     latest_user_text: str,
+    standing_instructions: str = "",
     conversation: list[dict[str, Any]],
     prior_videos: list[dict[str, Any]],
     attachments: list[dict[str, Any]],
@@ -380,6 +383,7 @@ def build_task_payload(
     return {
         "_version": SCHEMA_VERSION,
         "latest_user_text": latest_user_text,
+        "standing_instructions": standing_instructions,
         "conversation": conversation,
         "prior_videos": prior_videos,
         "attachments": attachments,
@@ -789,7 +793,8 @@ async def resolve_intent(
             max_clar = 1
 
         task_payload = build_task_payload(
-            latest_user_text=neutralise_control_tokens(fallback_prompt_text),
+            latest_user_text=neutralise_control_tokens(latest_user_text(messages)),
+            standing_instructions=neutralise_control_tokens(system_prompt_text(messages)),
             conversation=conversation,
             prior_videos=prior_videos,
             attachments=attachments,

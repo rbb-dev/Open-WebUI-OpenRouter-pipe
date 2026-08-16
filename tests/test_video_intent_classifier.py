@@ -629,3 +629,115 @@ class TestClarificationMessage:
         msg = render_clarification_message(r)
         assert "What style?" in msg
         assert "1." not in msg  # no numbered list
+
+
+# -----------------------------------------------------------------------------
+# What the classifier is told the user said
+# -----------------------------------------------------------------------------
+
+_STANDING = [
+    pytest.param("HOUSE STYLE: always cel-shaded, teal background", id="house-style"),
+    pytest.param("STUDIO RULE: hand-held camera, 35mm grain", id="studio-rule"),
+]
+
+_ASKS = [
+    pytest.param("a cat walking through tall grass", id="a-cat"),
+    pytest.param("a red mug on a windowsill", id="a-mug"),
+]
+
+
+def _intent_valves():
+    return SimpleNamespace(
+        VIDEO_INTENT_MAX_CLARIFICATIONS=1,
+        VIDEO_INTENT_TASK_MODEL_MODE="external",
+        VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
+        VIDEO_INTENT_TIMEOUT_S=5,
+    )
+
+
+def _intent_request():
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(
+            config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL="task-llm"),
+            MODELS={},
+        )),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_text", _ASKS)
+@pytest.mark.parametrize("standing_text", _STANDING)
+async def test_the_classifier_is_told_which_text_the_user_typed(standing_text, user_text):
+    """A Workspace model's own instructions are not something the user asked for.
+
+    Both generation APIs take one free-text prompt, so the pipe prepends the model's
+    system turns to the user's words before sending. That composed string used to be
+    handed to the classifier in the field its own system prompt calls "verbatim latest
+    user message text", so a house style read as part of the request: the classifier
+    could detect the admin's language instead of the user's, or ask a clarifying
+    question about styling nobody in the chat had mentioned. The two are sent
+    separately, each under a name that describes it.
+    """
+    sent: list[dict] = []
+
+    async def capture(form_data):
+        sent.append(form_data)
+        raise RuntimeError("stop once the request has been built")
+
+    composed = f"{standing_text}\n\n{user_text}"
+    result = await resolve_intent(
+        body={"messages": [
+            {"role": "system", "content": standing_text},
+            {"role": "user", "content": user_text},
+        ]},
+        video_meta={},
+        video_model={},
+        valves=_intent_valves(),
+        request=_intent_request(),
+        user_obj=SimpleNamespace(id="u1"),
+        chat_id="c1",
+        logger=logging.getLogger("test"),
+        invoke_chat_completion=capture,
+        fallback_prompt_text=composed,
+    )
+
+    assert sent, "the classifier was never called, so this proves nothing about the payload"
+    payload = json.loads(sent[0]["messages"][1]["content"])
+    assert payload["latest_user_text"] == user_text
+    assert payload["standing_instructions"] == standing_text
+    assert result.prompt == composed, (
+        "when the classifier is unavailable the model still has to be sent the style"
+    )
+
+
+def test_the_payload_names_exactly_the_fields_the_system_prompt_describes():
+    """A field the classifier was never told about, or told about and never sent.
+
+    The classifier reads this payload through the description in its own system prompt,
+    so a name that appears in one and not the other is a field it either ignores or
+    hallucinates. Underscore-prefixed keys are transport metadata rather than content
+    and are not described.
+    """
+    import re
+
+    from open_webui_openrouter_pipe.integrations.video_intent_prompts import (
+        INTENT_SYSTEM_PROMPT,
+    )
+
+    payload = build_task_payload(
+        latest_user_text="x",
+        standing_instructions="y",
+        conversation=[],
+        prior_videos=[],
+        attachments=[],
+        selected_model={},
+    )
+    sent = {key for key in payload if not key.startswith("_")}
+
+    block = INTENT_SYSTEM_PROMPT.split("A JSON payload with:\n", 1)[1].split("\n\n", 1)[0]
+    described = set(re.findall(r"^- `([a-z_]+)`", block, re.M))
+
+    assert described == sent, (
+        f"described and not sent: {sorted(described - sent)}; "
+        f"sent and not described: {sorted(sent - described)}"
+    )

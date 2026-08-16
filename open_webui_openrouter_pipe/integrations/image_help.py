@@ -435,7 +435,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "recraft/recraft-v4-pro": {
         "display_name": "Recraft: Recraft V4 Pro",
         "best_known_for": (
-            "Premium V4 — same design taste, 2x resolution. Outputs at 2048x2048 "
+            "Premium V4 — same design taste at a higher resolution. Outputs at 2048x2048 "
             "(~4 megapixels), ~30s/image. Built for print-ready work where fine "
             "detail matters: magazine layouts, posters, billboards, packaging, "
             "editorial illustration. Same prompt accuracy and creative judgment "
