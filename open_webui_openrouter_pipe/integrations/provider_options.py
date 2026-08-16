@@ -48,23 +48,10 @@ _ROUTING_PIN_KEYS = ("only", "order", "ignore")
 
 
 def options_key(slug: Any) -> str:
-    """The provider key a block of options is addressed under.
-
-    OpenRouter's ``ProviderOptions`` schema enumerates bare provider names and drops an
-    unrecognised key in silence, so a region shard such as ``black-forest-labs/us-3``
-    addresses nothing. The pipe's own routing dropdown emits the bare form already, which
-    is why both sides have to be reduced before they are compared.
-    """
     return slug.split("/", 1)[0].strip() if isinstance(slug, str) else ""
 
 
 def bare_pins(requested: dict[str, Any]) -> dict[str, Any]:
-    """The same routing request with every provider pin reduced to its bare key.
-
-    For matching a pin against a published record only. The pins themselves go out as the
-    operator wrote them: routing does understand a shard, and rewriting them on the wire
-    would throw away a region pin the user chose deliberately.
-    """
     normalised = dict(requested)
     for name in _ROUTING_PIN_KEYS:
         value = normalised.get(name)
@@ -76,14 +63,6 @@ def bare_pins(requested: dict[str, Any]) -> dict[str, Any]:
 def fan_provider_options(
     requested: dict[str, Any], slugs: list[str], params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Write one set of options under every provider that could serve this request.
-
-    Which provider serves is decided after the request leaves, so keying the options to
-    one guessed slug is a coin flip on a model several providers publish. ``options`` is
-    per-provider and duplicating it costs nothing, because OpenRouter reads only the block
-    belonging to whoever it picks. ``only``, ``order``, ``sort`` and ``ignore`` are
-    per-request directives with one value each and are never fanned.
-    """
     block = requested
     for slug in slugs or [""]:
         block = merge_provider_options(block, slug, params)
@@ -160,13 +139,6 @@ TRANSPORT_PROVIDER_KEYS: dict[str, frozenset[str]] = {
     "image": IMAGE_PROVIDER_KEYS,
     "video": VIDEO_PROVIDER_KEYS,
 }
-"""What each transport's own request schema defines, in one place.
-
-The routing picker draws a control per key and the adapters drop the keys their schema
-does not define. Read from one table by both, a control cannot be drawn for a key that
-will be dropped the moment it is set -- which is how a retention toggle came to be
-offered on a model whose request format has no field for it.
-"""
 
 
 def restrict_provider_block(

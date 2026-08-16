@@ -83,6 +83,7 @@ _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"
 # OpenRouter Image Generation filter
 _OPENROUTER_IMAGE_GEN_FILTER_MARKER = "openrouter_pipe:image_gen_filter:v1"
 _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID = "openrouter_image_gen"
+_OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL = "openai/gpt-5-image-mini"
 
 # OpenRouter Video Generation filter
 _OPENROUTER_VIDEO_GEN_FILTER_MARKER = "openrouter_pipe:video_filter:v1"

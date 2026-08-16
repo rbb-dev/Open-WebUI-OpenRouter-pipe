@@ -10,16 +10,6 @@ from ..storage.multimodal import image_extension_for_mime
 
 
 def capability_declared_off(value: Any) -> bool:
-    """Whether a published capability flag says the model does not have this.
-
-    Three states, not two: ``True`` declares the capability, ``False`` declares its
-    absence, and ``None`` -- which 7 of the 22 video contracts publish across ``seed``
-    and ``generate_audio`` -- declares nothing, so the control is offered and the model
-    applies its own documented default. Anything else is drift from a boolean flag
-    towards the descriptor objects the image contract uses, and counts as absent rather
-    than being read for truthiness: a truthy read would ship a range descriptor as if it
-    were the flag.
-    """
     return value is not None and value is not True
 
 RENDERABLE_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,48}")
@@ -55,30 +45,12 @@ publishing ``size`` was accepted by the adapter and offered no control.
 """
 
 SYSTEM_PROMPT_ROLES = frozenset({"system", "developer"})
-"""Roles whose text is instruction rather than request.
-
-Open WebUI pops a Workspace model's system prompt and injects it as one of these, so a
-generation adapter that reads only the user turn discards the house style an admin
-packaged into the model.
-"""
 
 SCHEMA_ONLY_PARAMS: tuple[str, ...] = ("size",)
-"""Request fields the wire schema defines and no model's contract ever declares.
-
-``size`` is a documented top-level field with no per-model descriptor in any published
-contract, so gating its control on the contract renders it never and the adapter then
-rejects it as unoffered. These names get a control whatever the contract says, and are
-sent without a per-model check -- which the control's own text states.
-"""
 
 CONTRACT_GATED_PARAMS: tuple[str, ...] = tuple(
     name for name in TOP_LEVEL_PARAMS if name not in SCHEMA_ONLY_PARAMS
 )
-"""The top-level names that get a control only when the model publishes a descriptor.
-
-Derived from the one ordered list rather than written out again, so a name added there
-lands in exactly one of the two groups and cannot end up absent from both.
-"""
 
 PASSTHROUGH_ENUMS: dict[str, tuple[tuple[str, ...], str]] = {
     "moderation": (
@@ -86,23 +58,9 @@ PASSTHROUGH_ENUMS: dict[str, tuple[tuple[str, ...], str]] = {
         "How strictly the company running this model screens what it will draw.",
     ),
 }
-"""Provider options whose accepted values OpenRouter publishes, with what they mean.
-
-A provider option is free text because a model's own contract names it and says nothing
-about its values. Where the published API schema does say, the control offers those
-values instead, so the setting is picked rather than typed and a misspelling cannot
-reach the wire.
-"""
 
 
 def prompt_with_system(input_items: Any) -> str:
-    """The user's request with the model's own instructions in front of it.
-
-    Both generation APIs take one free-text ``prompt``, so prepending is the only
-    destination a system turn has. It is prepended only when the user actually asked for
-    something: a request with no user text is not a request, and composing one out of the
-    house style alone would turn an empty submit into a billed generation.
-    """
     user = latest_user_text(input_items)
     if not user.strip() or not isinstance(input_items, list):
         return user
@@ -118,12 +76,6 @@ def prompt_with_system(input_items: Any) -> str:
 
 
 def pixel_size(value: Any) -> tuple[int, int] | None:
-    """The pixels an explicit ``size`` names, or None when it names a tier such as ``2K``.
-
-    ``str.isdigit`` is true for characters ``int()`` refuses -- superscripts among them --
-    so the ASCII test has to pass first, or a value the user typed raises here instead of
-    being reported as one this parameter does not take.
-    """
     if not isinstance(value, str):
         return None
     parts = value.strip().casefold().split("x")
@@ -134,11 +86,6 @@ def pixel_size(value: Any) -> tuple[int, int] | None:
 
 
 def reduced_ratio(value: Any) -> tuple[int, int] | None:
-    """A ``w:h`` ratio in lowest terms, so two spellings of one shape compare equal.
-
-    Reached with a published ratio and with one built from a pixel size, which is what
-    makes ``1920x1080`` and ``16:9`` comparable at all. Same ASCII rule as ``pixel_size``.
-    """
     if not isinstance(value, str):
         return None
     parts = value.strip().split(":")

@@ -68,11 +68,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Cost-optimized Gemini 3.1 with native image output AND unique "
             "extended knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for "
-            "ultrawide/tall layouts AND a 0.5K low-res tier for cheap "
+            "ultrawide/tall layouts AND a 512 low-res tier for cheap "
             "iteration. The Gemini 3.x Flash Image line (GA + preview) has these; Pro and 2.5 do not."
         ),
         "tips_and_pitfalls": [
-            "0.5K renders far fewer pixels than 1K, and this model bills by token, so an iteration pass at 0.5K costs materially less.",
+            "512 renders far fewer pixels than 1K, and this model bills by token, so an iteration pass at 512 costs materially less.",
         ],
     },
     "openrouter/auto": {
@@ -809,7 +809,10 @@ def render_image_help(
         return rendered
 
     from ..filters.image_filter_renderer import (
+        _SCHEMA_ONLY_CAVEAT,
+        ALWAYS_ON_CONTROLS,
         IMAGE_KNOB_TITLES,
+        _image_shared_by_some,
         _published_records,
         build_image_model_filter_spec,
     )
@@ -832,10 +835,20 @@ def render_image_help(
             )
         return "\n".join(lines) + "\n"
 
+    for _name, _annotation, _default, title, description in ALWAYS_ON_CONTROLS:
+        lines.append(f"- **{title}** — {description}".replace("  ", " "))
+    also_offered = dict(spec.narrowed)
     for name, values in spec.enums:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
-        offered = ", ".join(str(value) for value in values)
-        lines.append(f"- **{title}** — {description} Choices: {offered}.".replace("  ", " "))
+        also = also_offered.get(name, ())
+        offered = ", ".join(str(value) for value in (*values, *also))
+        caveat = f" {_image_shared_by_some(also)}" if also else ""
+        lines.append(
+            f"- **{title}** — {description} Choices: {offered}.{caveat}".replace("  ", " ")
+        )
+    for name in spec.schema_only:
+        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        lines.append(f"- **{title}** — {description} {_SCHEMA_ONLY_CAVEAT}".replace("  ", " "))
     for name, low, high in spec.ranges:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
         lines.append(f"- **{title}** — {description} Accepts {low} to {high}.".replace("  ", " "))

@@ -40,7 +40,7 @@ will be removed from the dropdown immediately.
 - [Pure-image-only vs multimodal](#pure-image-only-vs-multimodal)
 - [Per-model deep dive](#per-model-deep-dive)
 - [What settings a model offers](#what-settings-a-model-offers)
-- [The chat filter UI (UserValves)](#the-chat-filter-ui-uservalves)
+- [What the settings panel looks like](#what-the-settings-panel-looks-like)
 - [The `help` command](#the-help-command)
 - [Output rendering and message format](#output-rendering-and-message-format)
 - [Pricing and cost display](#pricing-and-cost-display)
@@ -65,13 +65,18 @@ will be removed from the dropdown immediately.
    prompt input). Each image model has one settings row of its own,
    auto-attached and default-on.
 4. (Optional) Click its settings icon to adjust the model's options
-   before you send. What you see there is what that model accepts —
-   nothing more. Two models rarely offer the same set, and a model that
-   does not accept an aspect ratio will not list it.
-5. Type your prompt and press send.
-6. The chat shows the generated image inline (typically 5–30 seconds).
+   before you send. Most of what you see there is what that model
+   accepts — two models rarely offer the same set, and a model that does
+   not accept an aspect ratio will not list it. Four controls are on
+   every panel whatever the model publishes: **Provider options**,
+   **Reference images**, **Reference image links** and **Output size**.
+5. (Optional) Attach images. They are sent as references for the model to
+   work from, newest last, unless you change **Reference images**.
+6. Type your prompt and press send.
+7. The chat shows the generated image inline (typically 5–30 seconds).
    The image renders as a normal image attachment that you can right-
-   click to download, copy, or open full-size.
+   click to download, copy, or open full-size. On models whose providers
+   render in passes, the status line reports each preview as it arrives.
 
 ### Model-specific help in chat
 
@@ -80,7 +85,9 @@ image model returns a curated model-specific help blurb covering:
 
 - What the model is best known for
 - Tips and pitfalls (how to prompt, when to use vs alternatives)
-- Every filter knob exposed for this model and what it does
+- What OpenRouter charges for it right now
+- The controls this model publishes and what they do (the four
+  always-present controls above are not repeated there)
 
 This is the fastest way to learn a model without leaving the chat. Try
 it on each image model — the answers are different for every one (the auto-router `openrouter/auto` is a routing layer rather than a generator).
@@ -117,15 +124,34 @@ it on any model.
 This needs `UPDATE_MODEL_CAPABILITIES` on, since that is the switch that lets
 the pipe write to a model's capability boxes at all.
 
+#### File context on image and video models
+
+`UPDATE_MODEL_CAPABILITIES` also unticks Open WebUI's `File context` box on
+image and video models, and it does so whatever
+`DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` is set to. Left on — which is Open
+WebUI's own default — an attachment makes Open WebUI run an extra billed
+round-trip that turns the conversation into search queries and pastes the
+retrieved text into what was meant to be a picture or clip prompt. As with the
+tools box, the pipe fills it in only where a model has no setting yet, so a box
+you tick yourself is left alone.
+
+There is one visible side effect on video models, and it is the desired one:
+once `File context` is off, attachments the model was sent stay in the chat as
+normal attachments instead of being taken out of the request.
+
 If the per-model filters do not appear in the Integrations menu, check:
 
 - `AUTO_INSTALL_IMAGE_FILTERS` and `AUTO_ATTACH_IMAGE_FILTERS` are both
   `True`.
-- The pipe has been called at least once with a logged-in user (the
-  filters install during `pipes()` warmup).
+- The pipe has been called at least once with a logged-in user.
 - Open WebUI Admin → Functions lists one entry per image model, each named
   after the model it belongs to. A model whose options have never been read
   from OpenRouter has no entry; the next catalogue refresh retries.
+
+If a panel is installed but out of date, check `AUTO_INSTALL_IMAGE_FILTERS`
+again: while it is off the pipe leaves an installed panel exactly as it is, and
+writes a warning to its log naming any panel whose stored version no longer
+matches what this release would install.
 
 **Access control for non-admin users.** Pure-image-only models (FLUX,
 Sourceful Riverflow non-multimodal, Seedream) are inserted PRIVATE by
@@ -146,10 +172,7 @@ search + web fetch + datetime) and the `OR Web Search` overlay are
 **capability-gated to skip image-output models** — these models do
 not support tool use and would fail with an HTTP 404 "No endpoints
 found that support tool use" if web search were attached. The same
-guard applies to video-generation models. See
-[`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-where `web_tools_supported` checks for `image_output` and
-`video_generation` capabilities.
+guard applies to video-generation models.
 
 See [Configuration valves](#configuration-valves-admin) for the
 image-specific valves; the master `MODEL_CATALOG_REFRESH_SECONDS`
@@ -170,7 +193,7 @@ TTL is shared with the video and chat catalogs.
 | `google/gemini-3-pro-image` | Google: Nano Banana Pro (Gemini 3 Pro Image) | text + image | Most capable Gemini image model |
 | `google/gemini-3-pro-image-preview` | Google: Gemini 3 Pro Image (Preview) | text + image | Premium Gemini 3 with image |
 | `google/gemini-3.1-flash-image` | Google: Nano Banana 2 (Gemini 3.1 Flash Image) | text + image | Pro-level quality at Flash speed |
-| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | Cost-optimized; 0.5K tier for cheap iteration |
+| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | Cost-optimized; 512 tier for cheap iteration |
 | `google/gemini-3.1-flash-lite-image` | Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) | text + image | Fastest, cheapest Gemini image model |
 | `krea/krea-2-large` | Krea: Krea 2 Large | image only | Rawer, less house-styled output |
 | `krea/krea-2-medium` | Krea: Krea 2 Medium | image only | Krea's balanced default |
@@ -221,7 +244,7 @@ Pick model selection rules of thumb:
   Imagine Image Quality (14-value Grok ratio set).
 - **Multiple variations per request** → Grok Imagine Image Quality
   (`n` up to 10 images per call; cost scales linearly).
-- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (far
+- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 512 (far
   fewer pixels than 1K on a token-billed model), FLUX.2 Klein 4B,
   Riverflow V2.5 Fast, or Recraft V4.1 Utility.
 - **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2.5 Pro,
@@ -315,11 +338,9 @@ Key behavior:
 ## Per-model deep dive
 
 This section is written-up prose about each model. The in-chat `help`
-command carries a shorter version of it, followed by that model's live
-control list. Skip to a model that matches your use case, or read them
-all to get a feel for the catalog. All curated entries live in
-[`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
-in `_IMAGE_PER_MODEL_HELP_DATA`.
+command carries a shorter version of it, followed by what the model
+charges and its live control list. Skip to a model that matches your use
+case, or read them all to get a feel for the catalog.
 
 ### OpenAI: GPT-5 Image
 
@@ -391,12 +412,12 @@ high-detail outputs.
 
 Cost-optimized Gemini 3.1 with native image output AND unique extended
 knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for ultrawide/tall
-layouts AND a 0.5K low-res tier for cheap iteration. **Only Gemini
+layouts AND a 512 low-res tier for cheap iteration. **Only Gemini
 variant with these extensions.**
 
 - Set aspect from this model's own aspect-ratio control; the values it
   offers are the ones this model published.
-- 0.5K is ~50% cheaper than 1K — good for prompt iteration.
+- 512 renders far fewer pixels than 1K — good for prompt iteration.
 
 ### OpenRouter: Auto (Image Routing)
 
@@ -777,17 +798,41 @@ accepts — which aspect ratios, which output sizes, how many images at once, an
 any options specific to the company that runs it. The pipe reads that list and
 builds the model's settings row from it.
 
-So there is no fixed set of controls, and no list of them in this document. What
-you see in a model's settings **is** what that model accepts. If a ratio is not
-offered, that model does not take it. If a setting appears for one model and not
-another, only the first one supports it.
+So most of a model's controls are not a fixed list, and are not listed in this
+document. Where a ratio, size or quality tier is offered, that model accepts it;
+where a setting appears for one model and not another, only the first supports
+it.
 
 This matters because the alternative — a fixed set offered to everything — is
-what the pipe used to do, and most models rejected part of it. A user could pick
-an aspect ratio the model would not honour and get something else back with no
-explanation.
+what the older built-in **Image Generation** filter still does. That one is the
+inline server tool a chat model calls mid-answer (see
+[`ENABLE_IMAGE_GENERATION`](valves_and_configuration_atlas.md)), and it carries
+the same six controls on every drawing model, so a value the chosen model does
+not accept can still be picked and quietly ignored. The per-model panels
+described here are the ones that match the model.
 
-Three consequences worth knowing:
+Four controls do appear on every per-model panel, because a request carries
+them for any model and no model's published list mentions them:
+
+- **Provider options** — extra settings for the company running the model, as a
+  JSON object keyed by its OpenRouter name. Use it for anything the panel does
+  not already offer.
+- **Reference images** — which of the pictures attached to the turn are sent as
+  references: every one of them (oldest first), only the most recent, or none.
+- **Reference image links** — a JSON list of `https` links or `data:` URLs to
+  use as well as, or instead of, the attached pictures. These go first, so they
+  survive on models that take only one reference.
+- **Output size** — exact pixel dimensions. This is the one control sent without
+  a check, because no model publishes what it accepts here; the value goes out
+  as typed and the company running the model decides, which the control says on
+  its face.
+
+A request carries at most 16 references. Where a model publishes a lower limit
+the lower one applies, and anything over the limit is dropped with a note saying
+how many and why. A reference link the deployment will not fetch fails the
+request outright rather than generating a picture that quietly ignored it.
+
+Other consequences worth knowing:
 
 - **The controls change when the model does.** If OpenRouter adds a size to a
   model, it appears after the next catalogue refresh without an update to the
@@ -795,17 +840,25 @@ Three consequences worth knowing:
 - **A settings list is kept once read.** If a later refresh cannot read it — the
   request timed out, say — the model keeps the settings from the last successful
   read rather than losing them. A model whose list has never been read gets no
-  settings row rather than a guessed one; it still generates images, using its
-  own defaults, and the next refresh retries.
-- **A model served by more than one company offers what they agree on.** Which
-  one serves a given request is decided when you send it, so offering a setting
-  only one of them takes would mean a control that sometimes silently does
-  nothing.
+  settings panel at all rather than a guessed one; it still generates images,
+  using its own defaults, and the next refresh retries.
+- **A model served by more than one company offers what they agree on, plus what
+  only some of them take.** Which company serves a given request is decided when
+  you send it. Values they all accept are offered plainly; a value only some of
+  them accept is offered too and says so on the control, and if the company that
+  takes the request will not accept it you are told, rather than getting
+  something else back with no explanation.
+- **A provider option with published choices becomes a dropdown.** Where
+  OpenRouter documents what a provider option accepts, the control lists those
+  values instead of taking free text, so a misspelling cannot reach the wire.
+  Today that is `moderation` on the OpenAI image models.
 
 To see what a specific model accepts, type `help` to it in a chat. The reply
-lists its settings, read from the same source the settings row is built from.
+lists the settings read from that model's published list — the four controls
+above are not repeated there, and a value only some providers accept is not
+shown among the choices.
 
-## The chat filter UI (UserValves)
+## What the settings panel looks like
 
 Each model's settings are visible to end users as form fields under that
 model's settings icon in the Integrations menu. A parameter the model
@@ -813,33 +866,25 @@ publishes gets a plain-English label — `n` appears as **Number of images**.
 An option specific to the provider keeps the name OpenRouter publishes for
 it, because only that provider's own documentation defines what it means.
 
-### Filter installation (admin)
+### Installing the panels (admin)
 
-Filter rows are auto-installed during `pipes()` warmup via
-[`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py).
-Each filter:
+Panels are installed and refreshed on their own while
+`AUTO_INSTALL_IMAGE_FILTERS` is on, one per image model, and only for models
+actually offered in this workspace. A model whose panel fails to install does
+not hold up the others.
 
-- Is installed lazily — only on first model that needs it (e.g. the
-  Sourceful filter is only installed if a Sourceful Pro/Fast model is
-  in the available list).
-- Is wrapped in its own `try/except` so one filter's install failure
-  doesn't block the others.
-- Returns `dict[model_id, list[function_id]]` mapping each model to its
-  applicable filter ids. Both `model_id` and `original_id` keys point
-  to **separate list instances** (no aliasing — modifying one list
-  doesn't affect the other).
+While that valve is **off**, an already-installed panel is left exactly as it
+is. If a newer release changes what that panel should offer, the change is not
+delivered and a warning is written to the pipe's log naming the panel; turn the
+valve back on to let it update.
 
-### Filter attachment (admin)
+### Attaching the panels (admin)
 
-The catalog metadata sync at [`models/catalog_manager.py::_apply_list_filter_ids`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-writes the per-model `filterIds` list into each model's metadata, with
-removal-set logic that drops previously-attached ids no longer in the
-current set. This handles renamed filter functions and capability
-flips (e.g. if a model loses its `image_output` capability, its image
-filters get cleaned up automatically).
-
-`_apply_list_default_filter_ids` mirrors this for the
-`defaultFilterIds` list (the "default-on" semantics).
+While `AUTO_ATTACH_IMAGE_FILTERS` is on, each model's panel is attached to that
+model, and a panel that no longer applies is detached again — which is what
+happens if a model stops producing images, or if a panel is renamed.
+`AUTO_DEFAULT_IMAGE_FILTERS` additionally starts each new chat with the panel
+already switched on.
 
 ---
 
@@ -847,13 +892,17 @@ filters get cleaned up automatically).
 
 Typing the literal word `help` (no other text — case does not matter,
 exactly four characters) in a chat against any image model returns a
-curated help blurb for that specific model. The renderer is
-[`integrations/image_help.py::render_image_help()`](../open_webui_openrouter_pipe/integrations/image_help.py).
+curated help blurb for that specific model.
 
-Help is the model's curated description, followed by a control list read from that
-model's own published settings. This is the real reply for `recraft/recraft-v3`,
-reproducible from the contract recorded in
-`tests/fixtures/openrouter_image_endpoints_recraft_recraft-v3.json`:
+Help is the model's curated description, followed by what it charges and a
+control list read from that model's own published settings.
+
+The reply below is for `recraft/recraft-v3`, reproducible from the contract recorded in
+this project's own test data for that model. **The money in it is an
+illustration, not a quote**: the live reply reads the rate from OpenRouter at
+the moment you ask, and the figure below was captured from one snapshot. For
+what a model costs today, run `help` against it or look it up on OpenRouter's
+pricing page.
 
 ```
 # Recraft: Recraft V3
@@ -875,7 +924,11 @@ Recraft's typography champion — the only AI image model that can render long-f
 The cost of each generation is reported on the status line when it finishes.
 
 ## Controls
+- **Provider options** — Extra settings for the company that runs this model, as a JSON object keyed by its OpenRouter name. Use it for anything this panel does not already offer. Empty sends nothing.
+- **Reference images** — Which attached images go to the model as references. auto sends every one on this turn, oldest first; latest-only sends just the most recent; none sends none of them.
+- **Reference image links** — Reference images to use as well as, or instead of, the attached ones: a JSON list of https links or data URLs. These are placed first, so they survive when the model takes fewer references than are on offer.
 - **Aspect ratio** — Frame shape. Choices: 1:1, 4:3, 3:4, 16:9, 9:16, auto.
+- **Output size** — Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.
 - **Number of images** — How many images this request asks for. Accepts 1 to 6.
 - **style** — a setting this model's provider accepts.
 - **controls** — a setting this model's provider accepts.
@@ -884,19 +937,27 @@ The cost of each generation is reported on the status line when it finishes.
 
 The `## Controls` section is read from the model's own published
 settings, so it lists that model's choices and no others. A model that
-publishes none says so rather than showing an empty section.
+publishes none says so rather than showing an empty section. It covers the
+published settings only: the four controls every panel carries — Provider
+options, Reference images, Reference image links and Output size — are not
+listed there, and where a value is accepted by only some of the companies
+serving the model, the panel offers it but this list does not.
 
-The `## Cost` section comes from the same record. Each published charge
-is one line — what is being charged for, at what rate, in the unit
-OpenRouter states (per image, per megapixel, or per million tokens,
-converted from the published per-token figure). A tier such as 1K, 2K
-or 4K gets its own line, because choosing a tier chooses a price. Where
-several companies serve the model and publish different figures, each
-line names the company. A token-billed model carries a note that the
-token count of a picture is not published, so the price of one image
-cannot be derived from the rate. A model that publishes no price says
-so rather than showing an empty section; three of the forty do
-(`krea/krea-2-large`, `krea/krea-2-medium`, `krea/krea-2-medium-turbo`).
+The `## Cost` section comes from the same record and is read fresh every
+time you ask, so it follows OpenRouter's rates without a new release.
+Each published charge is one line naming what is charged for — the
+images it makes, the images you supply, references, fonts, your prompt
+text — and the rate, in the unit OpenRouter states: per image, per
+megapixel, or per million tokens. A tier such as 1K, 2K or 4K gets its
+own line, because choosing a tier chooses a price. Where several
+companies serve the model and publish different figures, each line names
+the company. A token-billed model carries a note that the token count of
+a picture is not published, so the price of one image cannot be worked
+out from the rate. A charge whose unit is not one of the three gets a
+line saying so and pointing at OpenRouter, rather than a made-up
+conversion. A model that publishes no price says so rather than showing
+an empty section; three of the forty do (`krea/krea-2-large`,
+`krea/krea-2-medium`, `krea/krea-2-medium-turbo`).
 
 If a model isn't in the curated dataset (newly added by OpenRouter
 between catalog refreshes, for example), `help` falls back to the
@@ -1049,18 +1110,51 @@ completed since install. Check:
 
 That model does not publish it. The panel lists what the model told
 OpenRouter it accepts, so a missing setting means the model would not
-have honoured it. Type `help` to the model to see its full list.
+have honoured it. Type `help` to the model to see its published list.
 
-If a model shows **no** settings at all, its list has never been read
+Four controls are there on every panel whatever the model publishes —
+Provider options, Reference images, Reference image links and Output
+size — so if what you want is a provider-specific setting the panel does
+not name, put it in **Provider options** as a JSON object keyed by the
+company's OpenRouter name.
+
+If a model has **no panel at all**, its settings list has never been read
 successfully — the next refresh retries. It still generates images
 meanwhile, using its own defaults.
+
+### A choice is marked as accepted by only some providers
+
+Some models are served by several companies that do not all accept the
+same values. Rather than hide a value one of them does take, the panel
+offers it and says so on the control. Which company serves a request is
+decided when you send it, so if the one that takes it will not accept
+your choice, the setting is left out and you are told which one it was —
+the picture is still generated with that model's own default for it.
 
 ### A value I typed was rejected as invalid JSON
 
 Settings that take a list or an object — a provider's own options,
 usually — are typed as JSON. If what you typed starts with `[` or `{`
 it has to be valid JSON, and the error names the setting it came from.
-Plain words are sent as they are and do not need quoting.
+A bare number is read as a number, since several provider options take
+one. Everything else is sent as the text you typed and does not need
+quoting. `NaN`, `Infinity` and numbers too large to write down are
+refused rather than sent.
+
+### The picture appeared in stages, or the status line kept moving
+
+Some companies render an image in passes and publish that they can send
+it as it goes. Where every company that could serve the request does,
+the request asks for that form and each preview is reported on the
+status line. Vector models draw in text rather than pictures and report
+`Drawing the image…` once instead. Either way the finished image is what
+lands in the chat, and follow-up edits behave exactly as they do
+otherwise.
+
+If a streamed generation stops before the finished image arrives, it is
+a failed generation and there is nothing to salvage. It costs nothing:
+OpenRouter bills image generation all or nothing, so previews already
+delivered are not charged. Re-submit to retry.
 
 ### Aspect ratio not honored on `openrouter/auto`
 

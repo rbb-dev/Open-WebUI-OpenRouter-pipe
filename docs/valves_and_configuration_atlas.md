@@ -75,8 +75,8 @@ Defaults and valve names are verified against the source code and are intended t
 | `ZDR_ENFORCE` | `bool` | `False` | Enforce ZDR on every request by sending `provider.zdr=true` and rejecting non‑ZDR models. Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model, while a suffix OpenRouter lists as its own model (`:free`, `:thinking`) is judged on its own endpoints; `provider.zdr=true` then restricts routing to ZDR endpoints server-side. |
 | `ALLOW_USER_ZDR_OVERRIDE` | `bool` | `True` | Allow users to request ZDR per chat via `REQUEST_ZDR` (ignored when `ZDR_ENFORCE` is enabled). |
 | `UPDATE_MODEL_IMAGES` | `bool` | `True` | When enabled, sync OpenRouter model icons into Open WebUI model metadata (`meta.profile_image_url`) as PNG data URLs. Disabling avoids extra outbound fetches and model-metadata writes. |
-| `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Disabling avoids model-metadata writes. |
-| `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` | `bool` | `True` | Unticks Open WebUI's `Built-in tools` box on image and video models when the pipe first adds them, because those models answer with a picture or a clip rather than a tool call. Tick it back on for a single model and that choice is kept; the pipe fills this in only where no setting exists. Requires `UPDATE_MODEL_CAPABILITIES`. |
+| `UPDATE_MODEL_CAPABILITIES` | `bool` | `True` | When enabled, sync Open WebUI model capability checkboxes (`meta.capabilities`) from the OpenRouter catalog (and frontend capability signals like native web search). Also the switch that lets two boxes be unticked on models that answer with a picture or a clip: `File context` on every one of them, and `Built-in tools` when `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` is on. Both are written only where the model has no setting yet. Disabling avoids model-metadata writes. |
+| `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` | `bool` | `True` | Unticks Open WebUI's `Built-in tools` box on image and video models when the pipe first adds them, because those models answer with a picture or a clip rather than a tool call. Tick it back on for a single model and that choice is kept; the pipe fills this in only where no setting exists. Requires `UPDATE_MODEL_CAPABILITIES`. Covers `Built-in tools` alone — `File context` is unticked on the same models whenever `UPDATE_MODEL_CAPABILITIES` is on, whatever this is set to, because leaving it on makes an attachment trigger an extra billed round-trip whose retrieved text is pasted into a picture or clip prompt. |
 | `UPDATE_MODEL_DESCRIPTIONS` | `bool` | `False` | When enabled, sync Open WebUI model descriptions (`meta.description`) from the OpenRouter frontend catalog. Disabling avoids model-metadata writes and preserves operator-managed descriptions. |
 | `ENABLE_REASONING` | `bool` | `True` | Enable reasoning requests whenever supported by the selected model/provider. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Controls where in-progress thinking is surfaced while a response is being generated. |
@@ -190,17 +190,17 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` calls `register_image_models([])` and `reset_image_fetch_timestamp()` so pure-image-only models vanish from OWUI's dropdown immediately. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering exactly the settings that model publishes to OpenRouter. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read offers none rather than a guessed set. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` empties the image model list and clears its refresh timestamp, so pure-image-only models vanish from OWUI's dropdown immediately. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus four controls every panel carries (`IMAGE_PROVIDER_OPTIONS_JSON`, `IMAGE_REFERENCE_MODE`, `IMAGE_REFERENCE_URLS`, `IMAGE_SIZE`). If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Attach each image model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
-| `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_list_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` stops new models being defaulted but does not detach panels already marked default — clear those on the model itself. |
 
 Notes:
 - The image catalog uses the **shared** `MODEL_CATALOG_REFRESH_SECONDS` TTL (no separate cache valve).
-- Generated images are persisted via the canonical multimodal helpers (`_materialize_image_entry` → `_persist_generated_image` in `streaming/streaming_core.py`), reusing the same path that has handled `gpt-5-image` end-to-end since well before this feature.
-- The `image_config` request body field is typed as `Optional[Dict[str, Any]]` in [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py) (was `Optional[Union[str, float]]` which would have rejected dict writes from filters at `CompletionsBody.model_validate`).
-- `OR Web Tools` and `OR Web Search` overlays are **capability-gated to skip image-output models** — these models do not support tool use and would fail with HTTP 404 ("No endpoints found that support tool use") if web search were attached. The `web_tools_supported` check in `models/catalog_manager.py` excludes models with `image_output` or `video_generation` capability.
+- Generated images are stored, linked to the chat and rendered by the same path that has handled `gpt-5-image` end-to-end since long before this feature, so they behave like any other attachment in the conversation.
+- `OR Web Tools` and `OR Web Search` overlays are **capability-gated to skip image-output models** — these models do not support tool use and would fail with HTTP 404 ("No endpoints found that support tool use") if web search were attached. Video-generation models are skipped for the same reason.
 - Validation: a setting the model does not publish is dropped before the request goes out and the user is told which one, rather than being sent and refused by the provider. A provider option typed as a JSON list or object that does not parse is rejected as soon as it is entered, with the setting named.
+- Multimodal image models on the chat route are validated the same way. Their settings are put through the same published contract on the way out, so a value outside it is withheld and named rather than sent.
 
 See: [OpenRouter Image Generation](openrouter_image_generation.md).
 
@@ -220,27 +220,36 @@ choices), `n` (1 to 6) and the provider options `style`, `controls` and
 `text_layout`, so its filter carries `IMAGE_ASPECT_RATIO`, `IMAGE_N`,
 `IMAGE_STYLE`, `IMAGE_CONTROLS` and `IMAGE_TEXT_LAYOUT`.
 
-Three controls appear on **every** image model whatever its contract publishes,
-because the request format defines them and no model's contract describes them:
+Four controls appear on **every** image model that has a panel at all, whatever
+its contract publishes, because a request carries them for any model and no
+model's contract describes them:
 
-| Valve | Type | Default | Maps to |
-| --- | --- | --- | --- |
-| `IMAGE_PROVIDER_OPTIONS_JSON` | `str` (JSON object) | `""` | `provider.options`, keyed by provider slug |
-| `IMAGE_REFERENCE_MODE` | `Literal["auto", "latest-only", "none"]` | `"auto"` | which attached images become `input_references` |
-| `IMAGE_REFERENCE_URLS` | `str` (JSON array) | `""` | extra `input_references` entries, placed first |
-| `IMAGE_SIZE` | `str` | `""` | top-level `size`, sent unvalidated |
+| Valve | Title in chat | Type | Default | Maps to |
+| --- | --- | --- | --- | --- |
+| `IMAGE_PROVIDER_OPTIONS_JSON` | Provider options | `str` (JSON object) | `""` | `provider.options`, keyed by provider slug |
+| `IMAGE_REFERENCE_MODE` | Reference images | `Literal["auto", "latest-only", "none"]` | `"auto"` | which attached images become `input_references` |
+| `IMAGE_REFERENCE_URLS` | Reference image links | `str` (JSON array) | `""` | extra `input_references` entries, placed first |
+| `IMAGE_SIZE` | Output size | `str` | `""` | top-level `size`, sent unvalidated |
 
 `IMAGE_PROVIDER_OPTIONS_JSON` is the image sibling of
-`VIDEO_PROVIDER_OPTIONS_JSON` and writes the same metadata key the provider
-routing filter writes, merging into it rather than replacing it. Six of the forty
-recorded models publish an empty passthrough list, so it is the only way to
-address a provider on those. `IMAGE_SIZE` is rendered on every model because
-**no** endpoint record publishes a `size` descriptor; its value is sent as typed
-and the provider decides. `IMAGE_REFERENCE_URLS` entries go through the same
-`MultimodalHandler._is_safe_url` gate as every other fetched URL, and a refused
-link fails the request rather than generating without it. A request carries at
-most 16 references, the request format's own ceiling, whether or not the model's
-contract could be read.
+`VIDEO_PROVIDER_OPTIONS_JSON` and writes the same place the provider routing
+filter writes, merging into it rather than replacing it — so a user typing one
+option does not discard an operator's routing choice. Six of the forty recorded
+models publish an empty passthrough list, so it is the only way to address a
+provider on those. `IMAGE_SIZE` is rendered on every model because **no**
+endpoint record publishes a `size` descriptor; its value is sent as typed and
+the provider decides, which the control's own text says.
+
+`IMAGE_REFERENCE_MODE` chooses which of the pictures attached to the turn are
+sent as references: `auto` sends every one, oldest first; `latest-only` sends
+just the most recent; `none` sends none of them. `IMAGE_REFERENCE_URLS` takes a
+JSON list of `https` links or `data:` URLs, placed ahead of the attached ones so
+an explicit choice survives on the many models that take a single reference.
+Those links go through the same safety gate as every other URL the pipe fetches,
+and a refused link fails the request rather than generating without it. A
+request carries at most 16 references, the request format's own ceiling; where a
+model publishes a lower limit the lower one applies, and anything over it is
+dropped with a note in the chat saying how many and why.
 
 A provider option whose accepted values OpenRouter publishes renders as a choice
 rather than free text — today that is `moderation` (`auto`, `low`), delivered on
@@ -252,6 +261,16 @@ adapter fits the chosen value to whichever record serves the request and reports
 it if that provider does not accept it. Measured across all forty recorded
 models this affects one value: `4K` for `resolution` on
 `google/gemini-3-pro-image`.
+
+The prompt a model receives is the message typed in the chat with the model's
+own system text in front of it, so a Workspace model's house style reaches an
+image model instead of being dropped. A turn with no typed text is still refused
+rather than generating from the system text alone.
+
+Where every provider that could serve a request publishes native streaming, the
+request asks for the streamed form and each preview is reported as a status
+line; vector models stream text rather than pictures and report `Drawing the
+image…` once. Either way the answer is the same finished-image markdown.
 
 **Skip-when-default sentinel**: an empty string for text and choice fields, and
 an empty numeric field for numbers, means "not set" and is left out of the
@@ -270,11 +289,11 @@ for the model it belongs to, in any of the id forms Open WebUI produces.
 | `ENABLE_VIDEO_GENERATION` | `bool` | `True` | Expose OpenRouter async video-generation models as chat models. Video models are always treated as not ZDR-capable. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `bool` | `True` | Automatically install/update model-specific OpenRouter Video Generation companion filters in Open WebUI. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `bool` | `True` | Automatically attach each model-specific video filter to its matching OpenRouter video model. |
-| `AUTO_DEFAULT_VIDEO_FILTERS` | `bool` | `True` | Always keep the per-model video filter enabled by default on its video model. Re-asserted on every catalog metadata sync. Models that mandate a per-model parameter (`personGeneration` for Veo, `quality` for Sora) cannot be driven without the filter; parameter-free models still generate. Setting this to `False` suppresses auto-default but does not detach already-defaulted filters; see `_apply_video_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_VIDEO_FILTERS` | `bool` | `True` | Always keep the per-model video filter enabled by default on its video model. Re-asserted on every catalog metadata sync. Models that mandate a per-model parameter (`personGeneration` for Veo, `quality` for Sora) cannot be driven without the filter; parameter-free models still generate. Setting this to `False` stops new models being defaulted but does not detach filters already marked default — clear those on the model itself. |
 | `ENABLE_OPENROUTER_FUSION` | `bool` | `True` | Master switch for OpenRouter Fusion (multi-model judge panel) support. When enabled the pipe installs the **OpenRouter Fusion** filter, auto-wires it to the fusion models only, and guarantees deliberation on every fusion-model chat request by appending the activating `{"id": "fusion"}` plugins entry AND `tool_choice: "required"` (task/title requests are never injected or forced; a caller-supplied `tool_choice` or `enabled:false` entry wins). Setting to `False` deactivates the installed filter on the next `pipes()` call and stops the injection and forcing — Fusion is then fully off. See [openrouter_fusion.md](openrouter_fusion.md). |
 | `AUTO_INSTALL_FUSION_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Fusion filter function in Open WebUI. |
 | `AUTO_ATTACH_FUSION_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Fusion filter to the `openrouter/fusion` model **only** (never to other models). Other models can use Fusion only if an admin manually attaches the filter and turns on its `ALLOW_ON_NON_FUSION_MODELS` **filter** valve (default `False`; while off the filter no-ops on any non-fusion model — injecting no plugin and no forcing). The filter's own admin valves (`ALLOW_ON_NON_FUSION_MODELS`, `priority`) are filter `Valves`, not pipe valves — documented in [openrouter_fusion.md](openrouter_fusion.md#filter-admin-valves-on-the-filter-itself). |
-| `AUTO_DEFAULT_FUSION_FILTER` | `bool` | `True` | Mark the OpenRouter Fusion filter as a Default Filter on the `openrouter/fusion` model (pre-enabled per chat). Does **not** force Fusion to run — the per-user *Always run Fusion* toggle defaults off. Re-asserted on every catalog metadata sync; see `_apply_list_default_filter_ids` in `models/catalog_manager.py`. |
+| `AUTO_DEFAULT_FUSION_FILTER` | `bool` | `True` | Mark the OpenRouter Fusion filter as a Default Filter on the `openrouter/fusion` model (pre-enabled per chat). Does **not** force Fusion to run — the per-user *Always run Fusion* toggle defaults off. Re-asserted on every catalog metadata sync. |
 | `FUSION_BACKEND` | `Literal["openrouter", "internal"]` | `"internal"` | Which engine runs deliberation for the dedicated fusion models. `openrouter`: the hosted Fusion service runs the panel and judge server-side. `internal`: the pipe runs the same panel → judge → synthesis flow itself as ordinary pipe model calls — panel members inherit the chatting user's full Open WebUI tool surface (knowledge bases, tool servers, pipe server tools), every per-model dial applies (ZDR, reasoning effort, cost attribution), and a failed member degrades gracefully instead of killing the run. The live panel UI and per-chat controls are identical on both. See [openrouter_fusion.md](openrouter_fusion.md#engine-backends). |
 | `FUSION_PANEL_SYSTEM_PROMPT` | `str` | tuned multi-model default | System prompt every panel member receives on the internal fusion engine. Enforces independent, committed, citation-backed answers and forbids revealing the deliberation machinery. Edit to reshape panel behaviour; applies from the next fusion chat. |
 | `FUSION_JUDGE_SYSTEM_PROMPT` | `str` | tuned multi-model default | System prompt for the internal engine's judge (temperature 0). **Caution:** the judge must emit one strict JSON object with exactly the keys `consensus`, `contradictions`, `partial_coverage`, `unique_insights`, `blind_spots` — the live Analysis panel and the synthesis stage depend on that contract. A judge that stops producing valid JSON gets one repair attempt, then the run falls back to no-analysis mode. |
@@ -298,14 +317,19 @@ Notes:
 - The adapter persists a hidden `videojob` marker into the assistant message immediately after `submit()` returns a job_id, by emitting an OWUI socket `'message'` event (which routes through `Chats.upsert_message_to_chat_by_id_and_message_id`). A later request for the same message resumes polling that job instead of submitting a second job.
 - Chats with no stored row (`chat_id` beginning with `temporary:`, `local:` or `channel:`) cannot persist markers or final assistant content to Open WebUI chat storage. The on-submit `'message'` emit is skipped for them. They remain in-process only.
 - `Pipe.close()` cancels in-process video lifecycles. OpenRouter has no cancel endpoint here; the on-submit `videojob` marker is what allows the next user request for that message to resume polling rather than submit a duplicate job.
-- Video filters are generated per model from OpenRouter video metadata. Unsupported controls are not exposed: for example Sora text-only models do not show frame controls, and models without seed/audio/negative-prompt support do not show those controls.
-- User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) are validated against `MultimodalHandler._is_safe_url` before forwarding to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
+- Video filters are generated per model from OpenRouter video metadata. Unsupported controls are not exposed: for example Sora text-only models do not show frame controls, and a model with no negative-prompt passthrough does not show that control.
+- Seed and audio are offered unless the catalog says outright the model has neither. A published `false` hides the control; a published `null` — which the catalog uses for some models — shows it, and leaving it alone sends nothing so the model's own default applies. On the recorded catalog this is `minimax/hailuo-2.3` for seed and the two `alibaba/happyhorse` entries for audio.
+- Attachments the frame controls do not claim — extra images, a clip, a sound file — are sent as `input_references` rather than discarded. Each is checked against the same limits as a frame, but a reference that fails one is left out with a warning notice in the chat naming it and the reason, and the render proceeds; a frame that fails one fails the whole request. References draw on their own combined-size budget, separate from the frames'.
+- User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) go through the same safety gate as every other URL the pipe fetches before being forwarded to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
+- A request needs a prompt **or** something to generate from: a turn with no words but an attached image, reference or clip is submitted rather than refused.
+- A job that returns several clips has all of them delivered, each stored as its own file.
+- An explicit `VIDEO_SIZE` wins over a `VIDEO_RESOLUTION` tier or a `VIDEO_ASPECT_RATIO` that contradicts it: the losing one is dropped with a warning notice in the chat naming it, rather than sent and rejected upstream.
 
 See: [OpenRouter Video Generation](openrouter_video_generation.md).
 
 #### Companion filter user valves (per-user, per-model)
 
-Each video model gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model — the renderer ([`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)) gates each valve by the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union of valves across variants is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
+Each video model gets its OWN filter function in Open WebUI. The `UserValves` rendered into each filter source vary per model, gated on the model's catalog metadata (`supported_durations`, `allowed_passthrough_parameters`, top-level `seed` / `generate_audio` flags, etc.). The full union of valves across variants is below; the [OpenRouter Video Generation](openrouter_video_generation.md#filter-uservalve-identifiers-master-reference) doc has the per-model exposure matrix.
 
 **Core UserValves** — gated on `supported_*` catalog fields:
 
@@ -318,8 +342,8 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` (`WIDTHxHEIGHT`) | `supported_sizes` non-empty |
 | `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | shapes `frame_images[]` from chat-attached images | `supported_frame_images` non-empty |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` |
-| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | catalog top-level `generate_audio: true` |
-| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | catalog top-level `seed: true` |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | catalog top-level `generate_audio` present and not `false` |
+| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | catalog top-level `seed` present and not `false` |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed |
 | `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed |
@@ -413,9 +437,9 @@ These appear in the filter’s user-facing “knobs” UI and control what gets 
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs (e.g., `openai/gpt-4o, anthropic/claude-3.5-sonnet`) for which to generate admin-only provider routing filters. These filters enforce provider preferences (order, fallbacks, ZDR, etc.) that users cannot override or disable. Leave empty to disable. |
-| `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Models in both lists get filters with admin defaults and user overrides. |
-| `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` | `bool` | `True` | Pre-enables attached provider routing filters in new chats (via `defaultFilterIds`), so saved provider preferences apply without users switching the filter on per chat. The filter is a no-op until preferences are set. Disable to make users opt in per chat. |
+| `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs (e.g., `openai/gpt-4o, anthropic/claude-3.5-sonnet`) for which to generate admin-only provider routing filters. These filters enforce provider preferences (order, fallbacks, ZDR, etc.) that users cannot override or disable. Which of those a listed model actually offers depends on its request format — see the note below. Leave empty to disable. |
+| `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated list of model slugs for which to generate user-configurable provider routing filters. Users can toggle these filters per-chat and configure their own provider preferences via UserValves. Which preferences a listed model offers depends on its request format — see the note below. Models in both lists get filters with admin defaults and user overrides. |
+| `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` | `bool` | `True` | Pre-enables attached provider routing filters in new chats (via `defaultFilterIds`), so saved provider preferences apply without users switching the filter on per chat. The filter is a no-op until preferences are set. Disable to make users opt in per chat. A video model has no such filter to pre-enable. |
 
 Notes:
 - Provider routing filters are generated dynamically from OpenRouter's public per-model endpoints API (`/api/v1/models/{author}/{slug}/endpoints`), which lists every provider serving the model; the frontend catalog is only a degraded single-provider fallback when that fetch fails.
@@ -442,6 +466,15 @@ Each generated provider routing filter has these valves (admin and/or user depen
 | `MAX_PRICE_IMAGE` | `float` | `0` | `provider.max_price.image` — Max price per image ($/image), 0=no limit |
 | `MAX_PRICE_AUDIO` | `float` | `0` | `provider.max_price.audio` — Max price for audio ($/unit), 0=no limit |
 | `MAX_PRICE_REQUEST` | `float` | `0` | `provider.max_price.request` — Max price per request ($/request), 0=no limit |
+
+Which of these are drawn depends on the model's request format. A chat model
+carries all 18, including `SORT_PARTITION` (whether ranking groups endpoints by
+model first) and `ENFORCE_DISTILLABLE_TEXT`, and `SORT` accepts `exacto`
+alongside `price`, `throughput` and `latency`. A model that returns pictures and
+no text carries only `ORDER`, `ONLY`, `IGNORE`, `SORT`, `SORT_PARTITION` and
+`ALLOW_FALLBACKS`. A video model carries none, so listing one creates nothing
+and a filter left from an earlier release is deactivated. The full per-control
+reference is in [OpenRouter Provider Routing](openrouter_provider_routing.md).
 
 ### Reporting, UI behavior, and request identifiers
 

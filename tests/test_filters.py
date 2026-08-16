@@ -2519,6 +2519,7 @@ _INSTALLED_FILTER_RENDERER_ARGS: dict[str, dict[str, Any]] = {
     },
     "render_openrouter_fusion_filter_source": {"marker": "fusion"},
     "render_image_model_filter_source": {},
+    "render_image_gen_filter_source": {"catalog_match": True},
     "render_video_filter_source": {
         "model_id": "google/veo-3",
         "video_model": {"id": "google/veo-3", "name": "Veo 3"},
@@ -2568,7 +2569,7 @@ def _render_installed_filter(name: str) -> str:
     manager.valves = _Pipe.Valves()
 
     kwargs = dict(_INSTALLED_FILTER_RENDERER_ARGS[name])
-    if name == "render_image_model_filter_source":
+    if name in ("render_image_model_filter_source", "render_image_gen_filter_source"):
         kwargs["spec"] = build_image_model_filter_spec(
             "recraft/recraft-v3",
             {"id": "recraft/recraft-v3", "name": "Recraft V3"},

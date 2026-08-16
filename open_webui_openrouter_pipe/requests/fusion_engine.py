@@ -404,6 +404,10 @@ def latest_user_text(input_items: Any) -> str:
     return ""
 
 
+def asks_for_help(text: str) -> bool:
+    return text.strip().lower() == "help"
+
+
 def degrade_note(result: FusionMemberResult) -> str:
     reason = (result.fail_reason or "no usable answer").strip()
     return f"*(panel member failed: {reason})*"

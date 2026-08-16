@@ -114,8 +114,8 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | OpenRouter model ID for image generation. Controls pricing and capabilities. |
-| `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | Content moderation level. `auto` = standard. `low` = reduced filtering. |
+| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model draws the picture. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. |
+| `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | How strictly the company running the model screens what it will draw. |
 
 ---
 
@@ -142,15 +142,27 @@ These appear in the filter's user-facing knobs UI and control per-user, per-chat
 
 ### OpenRouter Image Generation filter user valves
 
-| Valve | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `IMAGE_GENERATION` | `bool` | `False` | Let the model generate images from text prompts. Incurs additional cost per image. |
-| `IMAGE_QUALITY` | `Literal["","low","medium","high"]` | `""` | Quality level for generated images. Empty = model default. |
-| `IMAGE_SIZE` | `Literal["","1024x1024","1536x1024","1024x1536","512x512"]` | `""` | Image dimensions. Empty = model default. |
-| `IMAGE_ASPECT_RATIO` | `Literal["","1:1","16:9","4:3","3:2"]` | `""` | Aspect ratio for generated images. Empty = model default. |
-| `IMAGE_BACKGROUND` | `Literal["","transparent","opaque"]` | `""` | `transparent` removes background (PNG only). Empty = model default. |
-| `IMAGE_OUTPUT_FORMAT` | `Literal["","png","jpeg","webp"]` | `""` | Output format. `png` supports transparency. Empty = model default. |
-| `IMAGE_OUTPUT_COMPRESSION` | `int` | `0` | Compression level for jpeg/webp (0-100). 0 = model default. |
+There is no fixed list. The filter is re-rendered for whichever model
+`IMAGE_GENERATION_MODEL` names, and it offers exactly the settings that model's own
+published contract carries — the same contract, read the same way, as the per-model
+image filters described in
+[OpenRouter Image Generation](openrouter_image_generation.md).
+
+| Valve | Type | Shown when |
+| --- | --- | --- |
+| `IMAGE_GENERATION` | `bool` | Always. Let the model generate images from text prompts. |
+| `IMAGE_ASPECT_RATIO` | `Literal` over the published ratios | The model publishes a ratio list. |
+| `IMAGE_RESOLUTION` | `Literal` over the published tiers | The model publishes a tier list. |
+| `IMAGE_QUALITY` | `Literal` over the published levels | The model publishes a quality list. |
+| `IMAGE_BACKGROUND` | `Literal` over the published treatments | The model publishes a background list. |
+| `IMAGE_OUTPUT_FORMAT` | `Literal` over the published formats | The model publishes a format list. |
+| `IMAGE_N` | `int \| None`, bounded by the published range | The model publishes a range for it. |
+| `IMAGE_OUTPUT_COMPRESSION` | `int \| None`, bounded by the published range | The model publishes a range for it. |
+| `IMAGE_SEED` | `int \| None` | The model declares it supports seeding. |
+| `IMAGE_SIZE` | `str` | Always. No model publishes a value list for it, so it is typed rather than picked and goes out unchecked. |
+
+A model the pipe's catalog does not carry, or whose contract has not been read yet,
+offers none of these; `IMAGE_GENERATION_MODEL`'s own description says which case it is.
 
 ---
 

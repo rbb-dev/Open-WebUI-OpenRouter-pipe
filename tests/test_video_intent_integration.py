@@ -162,12 +162,26 @@ class TestShortCircuit:
             body={"messages": [{}, {}]}, video_meta={},
         )
 
-    def test_help_prompt_returns_false(self):
+    @pytest.mark.parametrize(
+        "system_text",
+        [None, "HOUSE STYLE: always cel-shaded", "STUDIO RULE: hand-held camera"],
+    )
+    def test_help_prompt_returns_false(self, system_text):
+        """The user typed `help`, whatever the Workspace model prepends to it.
+
+        The prompt that reaches the model is the system text and the user text joined,
+        so comparing THAT to "help" misses on every Workspace model carrying a system
+        prompt -- and the classifier bills an LLM call to interpret a request for the
+        help panel.
+        """
         adapter = self._make_adapter()
+        turns = [] if system_text is None else [{"role": "system", "content": system_text}]
+        turns += [{"role": "user", "content": "help"}]
+        body = {"messages": turns}
         assert not adapter._intent_classifier_should_run(
             valves=_make_valves(),
-            persisted_content="", prompt="help",
-            body={"messages": [{}, {}]}, video_meta={},
+            persisted_content="", prompt=adapter._extract_prompt(body),
+            body=body, video_meta={"frame_images": [{"id": "x"}]},
         )
 
     def test_resume_marker_returns_false(self):

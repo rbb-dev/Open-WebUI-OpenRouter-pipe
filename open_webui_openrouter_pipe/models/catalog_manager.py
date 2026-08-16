@@ -268,13 +268,6 @@ def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -
     A model that answers with an image or a clip cannot use a tool call, so Open WebUI's
     built-in tools are unticked rather than withheld at request time: the operator can see
     the box, and a box they tick themselves is left alone from then on.
-
-    `file_context` is unticked on the same models but on a different condition. Left at its
-    True default it answers every attachment-bearing request with a `generate_queries`
-    round-trip and RAG injection, which on a media model is a second billed call whose text
-    lands in a picture prompt -- so it does not share the built-in-tools valve, whose whole
-    description is about tools and whose operator would not expect unticking it to re-arm
-    that.
     """
     if not getattr(valves, "UPDATE_MODEL_CAPABILITIES", False):
         return {}
@@ -309,7 +302,6 @@ def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
 
 
 def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
-    """Whether the Open WebUI Models-table sync has any work to do."""
     return bool(
         valves.UPDATE_MODEL_CAPABILITIES
         or valves.UPDATE_MODEL_IMAGES
@@ -331,11 +323,6 @@ def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
 
 
 def schedules_owui_model_sync(valves: Any, provider_routing_enabled: bool) -> bool:
-    """The scheduler's gate: everything the sync itself needs, plus one term.
-
-    Built FROM the sync's own predicate rather than beside it, so the sync's gate is this
-    one minus a term by construction and neither can gain a term the other lacks.
-    """
     return syncs_owui_models(valves, provider_routing_enabled) or bool(
         valves.AUTO_ATTACH_IMAGE_GEN_FILTER
     )

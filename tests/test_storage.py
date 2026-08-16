@@ -2770,7 +2770,13 @@ async def test_redis_periodic_flusher_recovers_after_success(monkeypatch, pipe_i
 @pytest.mark.asyncio
 async def test_redis_periodic_flusher_critical_fires_once(monkeypatch, pipe_instance, caplog) -> None:
     """The critical alert fires exactly once, at the failure-limit threshold, not on
-    every subsequent failure (the ``==`` guard)."""
+    every subsequent failure (the ``==`` guard).
+
+    Paired with the per-failure ERROR count, because "exactly one CRITICAL" is also what
+    a flusher that stopped reporting failures altogether produces.
+    """
+    from tests.log_capture import emitted
+
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
     store._redis_enabled = True
@@ -2792,11 +2798,19 @@ async def test_redis_periodic_flusher_critical_fires_once(monkeypatch, pipe_inst
 
     monkeypatch.setattr("asyncio.sleep", _fake_sleep)
 
-    with caplog.at_level(logging.CRITICAL):
+    with caplog.at_level(logging.DEBUG):
         await store._redis_periodic_flusher()
 
-    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
-    assert len(critical) == 1
+    critical = emitted(caplog, level=logging.CRITICAL)
+    errors = [
+        r for r in emitted(caplog, level=logging.ERROR)
+        if "Periodic flush failed" in r.getMessage()
+    ]
+    assert len(critical) == 1, [r.getMessage() for r in critical]
+    assert len(errors) == store._redis_client.calls, (
+        "the alert fires once at the threshold, but every failure still has to be "
+        f"reported; {len(errors)} of {store._redis_client.calls} were"
+    )
 
 
 @pytest.mark.asyncio

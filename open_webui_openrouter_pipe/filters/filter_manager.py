@@ -28,6 +28,7 @@ from ..core.config import (
     _OPENROUTER_FUSION_FILTER_MARKER,
     _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_IMAGE_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
@@ -66,13 +67,6 @@ _ROUTING_CONTROL_KEYS: dict[str, str] = {
     "MAX_PRICE_AUDIO": "max_price",
     "MAX_PRICE_REQUEST": "max_price",
 }
-"""Which request field each routing control feeds.
-
-One table decides both halves: the controls a model's picker draws and the fields its
-inlet writes. Kept apart, the picker drew a retention toggle and a price cap for a
-transport whose request format has no field for either, so the setting was accepted,
-shown as in force, and dropped on the way out.
-"""
 
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -985,152 +979,39 @@ class FilterManager:
     # OPENROUTER IMAGE GENERATION FILTER
 
     @staticmethod
-    def render_openrouter_image_gen_filter_source() -> str:
+    def render_openrouter_image_gen_filter_source(
+        *,
+        model_id: str = "",
+        image_model: dict[str, Any] | None = None,
+        endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
+    ) -> str:
         """Return the canonical OWUI filter source for the OpenRouter Image Generation filter."""
-        template = '''"""
-title: OR Image Gen
-author: Open-WebUI-OpenRouter-pipe
-author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
-id: __FILTER_ID__
-description: Configures OpenRouter image generation for the OpenRouter pipe.
-version: 0.1.0
-license: MIT
-"""
-
-from __future__ import annotations
-
-import logging
-from typing import Any, Literal
-
-from pydantic import BaseModel, Field
-
-try:
-    from open_webui.env import SRC_LOG_LEVELS
-except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
-    SRC_LOG_LEVELS = {}
-
-OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
-
-
-class Filter:
-    toggle = True
-
-    class Valves(BaseModel):
-        priority: int = Field(
-            default=0,
-            description="Priority level for the filter operations.",
-        )
-        IMAGE_GENERATION_MODEL: str = Field(
-            default="openai/gpt-5-image-mini",
-            title="Image generation model",
-            description="OpenRouter model ID for image generation. Controls pricing and capabilities.",
-        )
-        IMAGE_GENERATION_MODERATION: Literal["auto", "low"] = Field(
-            default="auto",
-            title="Image moderation",
-            description="Content moderation level. \'auto\' = standard. \'low\' = reduced filtering.",
+        from .image_filter_renderer import (
+            build_image_model_filter_spec,
+            render_image_gen_filter_source,
         )
 
-    class UserValves(BaseModel):
-        IMAGE_QUALITY: Literal["", "low", "medium", "high"] = Field(
-            default="",
-            title="Image quality",
-            description="Quality level for generated images. Empty = model default.",
-        )
-        IMAGE_SIZE: Literal["", "1024x1024", "1536x1024", "1024x1536", "1344x768", "768x1344", "1248x832", "832x1248", "1184x864", "864x1184", "1152x896", "896x1152", "1536x672", "512x512"] = Field(
-            default="",
-            title="Image size",
-            description="Image dimensions in pixels. Empty = model default.",
-        )
-        IMAGE_ASPECT_RATIO: Literal["", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "4:1", "1:4", "8:1", "1:8"] = Field(
-            default="",
-            title="Image aspect ratio",
-            description="Aspect ratio for generated images. Extended ratios (4:1, 1:4, 8:1, 1:8) supported by Gemini only. Empty = model default.",
-        )
-        IMAGE_BACKGROUND: Literal["", "transparent", "opaque"] = Field(
-            default="",
-            title="Image background",
-            description="\'transparent\' removes background (PNG only). Empty = model default.",
-        )
-        IMAGE_OUTPUT_FORMAT: Literal["", "png", "jpeg", "webp"] = Field(
-            default="",
-            title="Image format",
-            description="Output format. \'png\' supports transparency. Empty = model default.",
-        )
-        IMAGE_RESOLUTION_TIER: Literal["", "0.5K", "1K", "2K", "4K"] = Field(
-            default="",
-            title="Resolution tier",
-            description="Resolution multiplier for Gemini image models (0.5K is Gemini Flash only). Empty = model default (1K).",
-        )
-        IMAGE_OUTPUT_COMPRESSION: int = Field(
-            default=0,
-            ge=0,
-            le=100,
-            title="Image compression",
-            description="Compression level for jpeg/webp (0-100). 0 = model default.",
+        resolved = (model_id or "").strip() or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
+        return render_image_gen_filter_source(
+            build_image_model_filter_spec(resolved, image_model, endpoint_record),
+            catalog_match=isinstance(image_model, dict),
+            selected_model=resolved,
         )
 
-    def __init__(self) -> None:
-        self.log = logging.getLogger("openrouter.image.gen")
-        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
-        self.toggle = True
-        self.valves = self.Valves()
-
-    def inlet(
+    async def image_gen_filter_inputs(
         self,
-        body: dict[str, Any],
-        __metadata__: dict[str, Any] | None = None,
-        __user__: dict[str, Any] | None = None,
-        __model__: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if not isinstance(body, dict):
-            return body
+    ) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]] | None]:
+        from ..models.registry import OpenRouterModelRegistry
 
-        user_valves = None
-        if isinstance(__user__, dict):
-            user_valves = __user__.get("valves")
-        if not isinstance(user_valves, BaseModel):
-            user_valves = self.UserValves()
-
-        # Build image generation parameters
-        params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
-        if self.valves.IMAGE_GENERATION_MODERATION != "auto":
-            params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
-        for attr, key in [
-            ("IMAGE_QUALITY", "quality"),
-            ("IMAGE_SIZE", "size"),
-            ("IMAGE_ASPECT_RATIO", "aspect_ratio"),
-            ("IMAGE_BACKGROUND", "background"),
-            ("IMAGE_OUTPUT_FORMAT", "output_format"),
-            ("IMAGE_RESOLUTION_TIER", "image_size"),
-        ]:
-            val = getattr(user_valves, attr, "")
-            if isinstance(val, str) and val.strip():
-                params[key] = val.strip()
-        compression = getattr(user_valves, "IMAGE_OUTPUT_COMPRESSION", 0)
-        if isinstance(compression, int) and compression > 0:
-            params["output_compression"] = compression
-
-        # Write to metadata
-        if isinstance(__metadata__, dict):
-            prev_pipe_meta = __metadata__.get("__PIPE_META_KEY__")
-            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
-            __metadata__["__PIPE_META_KEY__"] = pipe_meta
-
-            prev_tools = pipe_meta.get("server_tools")
-            server_tools = dict(prev_tools) if isinstance(prev_tools, dict) else {}
-            pipe_meta["server_tools"] = server_tools
-            server_tools["image_generation"] = params
-
-        return body
-'''
-
-        return (
-            template
-            .replace("__FILTER_ID__", _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID)
-            .replace("__MARKER__", _OPENROUTER_IMAGE_GEN_FILTER_MARKER)
-            .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
-        )
+        selected = (await self.image_gen_filter_selected_model()).strip()
+        model_id = selected or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
+        spec = OpenRouterModelRegistry.spec(model_id)
+        if not isinstance(spec, dict) or not spec:
+            return model_id, None, None
+        image_model = spec.get("image_model")
+        if not isinstance(image_model, dict):
+            image_model = {"id": model_id, "name": spec.get("name") or model_id}
+        return model_id, image_model, OpenRouterModelRegistry.image_endpoint(model_id)
 
     @timed
     async def ensure_openrouter_image_gen_filter_function_id(self) -> str | None:
@@ -1141,12 +1022,30 @@ class Filter:
                 return False
             return _OPENROUTER_IMAGE_GEN_FILTER_MARKER in content and "class Filter" in content
 
+        from .image_filter_renderer import (
+            build_image_model_filter_spec,
+            image_gen_model_note,
+            render_image_gen_filter_source,
+        )
+
+        model_id, image_model, endpoint_record = await self.image_gen_filter_inputs()
+        spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
+        catalog_match = isinstance(image_model, dict)
+        desired_source = render_image_gen_filter_source(
+            spec, catalog_match=catalog_match, selected_model=model_id
+        ).strip() + "\n"
+        valid, error = self.validate_filter_source(desired_source)
+        if not valid:
+            raise ValueError(f"Generated OpenRouter Image Generation filter is invalid: {error}")
+
         return await self._ensure_filter_installed(
-            desired_source=self.render_openrouter_image_gen_filter_source().strip() + "\n",
+            desired_source=desired_source,
             desired_name="OR Image Gen",
             desired_meta={
                 "description": (
-                    "Let the model generate images from text prompts via OpenRouter's image generation server tool."
+                    "Let the model generate images from text prompts via OpenRouter's image "
+                    "generation server tool. "
+                    + image_gen_model_note(spec, catalog_match=catalog_match)
                 ),
                 "toggle": True,
                 "manifest": {
@@ -1164,12 +1063,6 @@ class Filter:
         )
 
     async def image_gen_filter_selected_model(self) -> str:
-        """The model the installed server-tool image filter is set to generate with.
-
-        Read from the installed function's stored valves rather than from the rendered
-        default, because an admin who changes it there is exactly what the next render
-        has to react to and the sync key is the only thing that decides whether one runs.
-        """
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1990,12 +1883,6 @@ class Filter:
 
     @staticmethod
     def model_transport(model_slug: str) -> str:
-        """Which request format this model answers on.
-
-        Read from the catalogue rather than the slug, because the split is not one a name
-        shows: a model that returns pictures and no words goes to the dedicated image
-        request format, while one that returns both stays on the chat format.
-        """
         from ..models.registry import OpenRouterModelRegistry, uses_dedicated_image_api
 
         spec = OpenRouterModelRegistry.spec(model_slug)
@@ -2007,7 +1894,6 @@ class Filter:
 
     @staticmethod
     def _routing_controls(transport: str) -> frozenset[str]:
-        """The controls worth drawing for one transport: those whose field it accepts."""
         accepted = TRANSPORT_PROVIDER_KEYS.get(transport, CHAT_PROVIDER_KEYS)
         return frozenset(
             control
@@ -2253,10 +2139,6 @@ class Filter:
             visibility: Who can configure - 'admin' (enforced), 'user' (optional), or 'both'
             short_name: Human-readable model name for filter title (e.g., 'GPT-4o')
             provider_names: Mapping of provider slug to display name (e.g., {'openai': 'OpenAI'})
-            transport: Which request format this model answers on, deciding which
-                controls are worth drawing. A model reached through the dedicated image
-                request format has no field for most of them, so drawing them would
-                promise a setting nothing carries.
         """
         safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
         filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"

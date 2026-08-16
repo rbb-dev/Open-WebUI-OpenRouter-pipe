@@ -39,7 +39,12 @@ from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
 from ..storage.users import get_user_by_id
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
-from .fusion_engine import FusionInnerInvocation, latest_user_text, run_internal_fusion
+from .fusion_engine import (
+    FusionInnerInvocation,
+    asks_for_help,
+    latest_user_text,
+    run_internal_fusion,
+)
 from .sanitizer import _sanitize_request_input
 from .task_model_adapter import TaskModelAdapter
 
@@ -889,7 +894,7 @@ class RequestOrchestrator:
         )
         if "image" in model_output_modalities and not use_task_model_adapter:
             prompt_text = latest_user_text(body.get("messages") if isinstance(body, dict) else None)
-            if prompt_text.strip().lower() == "help":
+            if asks_for_help(prompt_text):
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
                 image_model = video_spec.get("image_model") if isinstance(video_spec, dict) else None
                 # Prefer the contract the model's filter was built from, so the controls

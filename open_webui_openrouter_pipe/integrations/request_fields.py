@@ -1,18 +1,3 @@
-"""Every field the image and video request formats define, and how a user reaches it.
-
-Two fields went unreached for months with nothing recording it: the video reference list
-accepts audio and video assets and nobody knew, and ``callback_url`` cannot be used from
-an Open WebUI function for a reason that was never written down. Both look identical from
-inside the code -- a schema name that appears nowhere -- so neither could be told from an
-oversight.
-
-So each request format is partitioned here, exhaustively: a field is either routed, with
-the control or mechanism that sets it named, or it is a gap, with the reason. Nothing may
-be in both and nothing may be in neither, which the assertions below enforce at import.
-``tests/test_request_field_coverage.py`` then compares the partition against the field
-list recorded from OpenRouter's own published request schemas, so a field they add later
-fails the comparison instead of joining the gaps unremarked.
-"""
 
 from __future__ import annotations
 

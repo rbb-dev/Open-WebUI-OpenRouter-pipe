@@ -9,7 +9,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +32,7 @@ from ..media import (
     make_thumbnail,
 )
 from ..models.registry import OpenRouterModelRegistry
+from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..storage.owui_files import (
     get_file_by_id,
     infer_file_mime_type,
@@ -118,10 +119,6 @@ _warned_dropped_video_param: set[str] = set()
 _warned_pinned_attachment: set[str] = set()
 
 _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = VIDEO_REQUEST_FIELDS
-"""Read from the one partition of this request format rather than copied beside it.
-
-The copy this replaces was a second list of the same twelve names with nothing comparing
-them, so a field added to one could sit unnoticed against the other."""
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -162,7 +159,7 @@ class VideoGenerationAdapter:
         prompt = self._extract_prompt(body)
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_model = video_spec.get("video_model") if isinstance(video_spec, dict) else {}
-        if prompt.strip().lower() == "help":
+        if asks_for_help(self._extract_user_prompt(body)):
             content = render_video_help(api_model_id, video_model if isinstance(video_model, dict) else None)
             await self._emit_completion(event_emitter, content)
             return content
@@ -1292,16 +1289,6 @@ class VideoGenerationAdapter:
 
     @staticmethod
     def _tier_is_the_only_one_published(video_model: Any, resolution: str) -> bool:
-        """Whether the published contract proves this tier cannot contradict any size.
-
-        A model publishing a single resolution puts every size it publishes in that one
-        tier, so an exact size and that tier are the same statement and dropping the tier
-        would attach a note about a rejection that cannot happen. With two or more tiers
-        the size does fix one of them and the contract does not say which, because the
-        tier tracks pixel count rather than a dimension: `bytedance/seedance-2.5` publishes
-        `992x432` and `1470x630` under `480p` and `720p`, so any short-side arithmetic
-        would drop a resolution the model accepts.
-        """
         published = video_model.get("supported_resolutions") if isinstance(video_model, dict) else None
         if not isinstance(published, list) or len(published) != 1:
             return False
@@ -1313,15 +1300,6 @@ class VideoGenerationAdapter:
         video_model: Any,
         withheld: list[tuple[str, str]] | None,
     ) -> None:
-        """Reconcile `size` against `resolution` and `aspect_ratio` before the request leaves.
-
-        The video contract calls `size` interchangeable with `resolution` plus
-        `aspect_ratio` and rejects a mismatched pair with a 400, so an exact size wins and a
-        sibling that cannot be true alongside it is dropped with a note rather than sent to
-        be refused. The aspect ratio is compared numerically, which is sound -- the widest
-        legitimate divergence across every published size is 1.6% and the two closest
-        distinct published ratios are 12.5% apart.
-        """
         size = payload.get("size")
         if not size:
             return
@@ -1435,17 +1413,16 @@ class VideoGenerationAdapter:
         withheld: list[tuple[str, str]] | None = None,
         user_obj: Any = None,
     ) -> list[dict[str, Any]]:
-        """Encode the reference assets that guide, rather than anchor, a generation.
+        """Encode prior-video frames intended as style/content reference images.
 
-        `InputReference` is a three-way discriminated union -- `image_url`, `audio_url`,
-        `video_url` -- so the kind follows the file's own media family. Image references
-        are honoured by every provider; a provider that does not honour audio or video
-        references ignores them, which is why a family the model may not use is still sent
-        rather than dropped where the user cannot see it.
+        OpenRouter's /videos request accepts a top-level `input_references`
+        array of `ContentPartImage` objects (type=image_url, image_url={url}).
+        Unlike `frame_images`, these are not hard anchors — they guide the
+        model's generation without locking specific frames. The model decides
+        how to use them.
 
-        Returns the encoded list, possibly empty. An asset that cannot be encoded or that
-        would cross the request's combined budget is recorded in ``withheld`` and skipped;
-        the generation proceeds without it.
+        Returns the encoded list (possibly empty). Never raises on empty
+        input; raises VideoGenerationError on encoding/size failure.
         """
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
@@ -1613,7 +1590,7 @@ class VideoGenerationAdapter:
             return False
         if not (prompt or "").strip():
             return False
-        if prompt.strip().lower() == "help":
+        if asks_for_help(self._extract_user_prompt(body)):
             return False
         if persisted_content and self._extract_video_job_marker(persisted_content):
             return False
@@ -2053,12 +2030,19 @@ class VideoGenerationAdapter:
                 return candidate
         return ""
 
-    def _extract_prompt(self, body: dict[str, Any]) -> str:
-        composed = prompt_with_system(body.get("messages") if isinstance(body, dict) else None)
-        if composed:
-            return composed
+    @staticmethod
+    def _read_prompt(body: dict[str, Any], read: Callable[[Any], str]) -> str:
+        text = read(body.get("messages") if isinstance(body, dict) else None)
+        if text:
+            return text
         prompt = body.get("prompt") if isinstance(body, dict) else ""
         return prompt if isinstance(prompt, str) else ""
+
+    def _extract_prompt(self, body: dict[str, Any]) -> str:
+        return self._read_prompt(body, prompt_with_system)
+
+    def _extract_user_prompt(self, body: dict[str, Any]) -> str:
+        return self._read_prompt(body, latest_user_text)
 
     def _extract_job_id(self, payload: dict[str, Any]) -> str:
         for key in ("id", "job_id", "jobId"):

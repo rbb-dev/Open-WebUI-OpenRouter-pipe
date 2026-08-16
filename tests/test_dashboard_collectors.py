@@ -913,10 +913,18 @@ def test_unreadable_semaphore_does_not_blank_the_whole_fast_tier(pipe_instance, 
 
 
 def test_collector_failures_warn_only_once(pipe_instance, caplog):
-    """The collectors run every couple of seconds; the warning must not flood."""
+    """The collectors run every couple of seconds; the warning must not flood.
+
+    Both halves of the latch, because only the pair pins the behaviour: one WARNING says
+    the fault was reported, four DEBUGs say the repeats stayed visible to the operator who
+    raises the log level to diagnose them. Counting warnings alone passes just as well
+    when the repeat path goes silent, which is the defect `warn_level` exists to end.
+    """
     import logging as _logging
 
     from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+
+    from tests.log_capture import emitted
 
     _collectors._warned_collectors.clear()
 
@@ -925,12 +933,15 @@ def test_collector_failures_warn_only_once(pipe_instance, caplog):
         def _value(self):
             raise AttributeError("semaphore internals moved")
 
-    with caplog.at_level(_logging.WARNING):
+    with caplog.at_level(_logging.DEBUG):
         for _ in range(5):
             _collectors._semaphore_active(_Hostile(), 4)
 
-    hits = [m for m in caplog.messages if "cannot read semaphore usage" in m]
-    assert len(hits) == 1, hits
+    reported = "cannot read semaphore usage"
+    warnings = emitted(caplog, min_level=_logging.WARNING, containing=reported)
+    repeats = emitted(caplog, level=_logging.DEBUG, containing=reported)
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert len(repeats) == 4, [r.getMessage() for r in repeats]
 
 
 class _HostileWaiters:

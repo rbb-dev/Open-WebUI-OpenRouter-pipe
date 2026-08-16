@@ -52,14 +52,6 @@ class OpenRouterVideoClient:
         return url if index <= 0 else f"{url}?index={index}"
 
     def poll_url(self, job_id: str, polling_url: Any = None) -> str:
-        """The URL the API told us to poll, when it points at our own base.
-
-        `polling_url` is required on every video response and is the only field that
-        survives a change to the job route, so it is preferred over a rebuilt path. It
-        arrives as a path (`/api/v1/videos/{id}`) and is joined to the configured origin;
-        anything naming another host is ignored rather than followed with the bearer token
-        attached.
-        """
         fallback = f"{self._base_url}/videos/{job_id}"
         candidate = polling_url.strip() if isinstance(polling_url, str) else ""
         if not candidate:
@@ -73,12 +65,6 @@ class OpenRouterVideoClient:
 
     @staticmethod
     def output_count(payload: Any) -> int:
-        """How many clips the job produced.
-
-        `unsigned_urls` is the only field that says a job has more than one output, and the
-        content route addresses each by `index`, so its length drives the download loop. A
-        job that reports none still has one output to fetch at index 0.
-        """
         urls = payload.get("unsigned_urls") if isinstance(payload, dict) else None
         if not isinstance(urls, list):
             return 1

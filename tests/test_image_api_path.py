@@ -21,6 +21,7 @@ from open_webui_openrouter_pipe.storage.multimodal import _guess_image_mime_type
 from open_webui_openrouter_pipe.integrations.image_types import (
     GeneratedImage,
     ImageGenerationError,
+    ImageGenerationResult,
 )
 from open_webui_openrouter_pipe.models.registry import uses_dedicated_image_api
 
@@ -542,14 +543,30 @@ def test_only_image_only_models_take_the_dedicated_api():
     )
 
 
-def test_the_auto_routers_are_excluded_by_their_text_modality():
+def test_a_model_that_also_answers_in_text_is_excluded_by_that_text_modality():
+    """The catalogue names the subject, so the subject cannot quietly disappear.
+
+    This was pinned to `openrouter/auto` and `openrouter/auto-beta` and skipped whichever
+    of the two the catalogue did not carry. Both had left the listing, so both iterations
+    skipped, the body never ran once, and the reported pass asserted nothing whatsoever.
+    Reading the subject out of the catalogue means the day it empties is the day this
+    fails, rather than the day it starts certifying an empty loop.
+    """
     catalog = _register_live_image_catalog()
-    for router in ("openrouter/auto", "openrouter/auto-beta"):
-        entry = catalog.get(router)
-        if entry is None:
-            continue
-        assert "text" in (entry.get("architecture") or {}).get("output_modalities", [])
-        assert uses_dedicated_image_api({"architecture": entry["architecture"]}) is False
+    also_text = {
+        model_id: entry
+        for model_id, entry in catalog.items()
+        if "text" in ((entry.get("architecture") or {}).get("output_modalities") or [])
+    }
+    assert also_text, (
+        "no catalogued model emits text as well as images, so this test has no subject "
+        "and would otherwise pass without checking anything"
+    )
+    for model_id, entry in sorted(also_text.items()):
+        assert uses_dedicated_image_api({"architecture": entry["architecture"]}) is False, (
+            f"{model_id} can answer in text, so it must stay on chat-completions rather "
+            "than open the image-only transport"
+        )
 
 
 @pytest.mark.parametrize(
@@ -1690,6 +1707,189 @@ async def test_cancellation_is_never_swallowed_by_any_handler(seam, monkeypatch)
             normalized_model_id="m.x",
             api_model_id="m/x",
         )
+
+
+def _cancel_until_done(task: asyncio.Task[Any]) -> None:
+    """Re-deliver cancellation on every loop iteration until the task is gone.
+
+    A lone ``task.cancel()`` that lands on a suspended future is delivered exactly once,
+    so cleanup running afterwards is never interrupted and an unshielded settle would
+    survive it by accident. Production cancellation arrives from a scope that keeps
+    re-cancelling until the task leaves it -- anyio's ``CancelScope`` reschedules its own
+    delivery every tick, and Stop can be pressed twice -- and that is the delivery the
+    settle path has to survive.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _tick() -> None:
+        if task.done():
+            return
+        task.cancel()
+        loop.call_soon(_tick)
+
+    loop.call_soon(_tick)
+
+
+class _SettleRecordingPipe(_KeyPipe):
+    """A pipe whose generation-complete dispatch suspends before it records.
+
+    The real dispatch awaits each subscribed plugin's ``on_generation_complete``; a sink
+    that never yields would let an unshielded settle run start to finish inside a
+    cancelled scope, hiding whether the shield does any work.
+    """
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.settled = asyncio.Event()
+
+    async def _dispatch_plugin_event(self, method, *args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+        await super()._dispatch_plugin_event(method, *args, **kwargs)
+        if method == "dispatch_on_generation_complete":
+            self.settled.set()
+
+
+class _ParkingGateway(_StubGateway):
+    """Storage that never returns, so a cancel lands after the POST was billed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached = asyncio.Event()
+
+    async def upload_to_owui_storage(self, **kwargs: Any):
+        self.reached.set()
+        await asyncio.Event().wait()
+        raise AssertionError("the storage seam must not resume after cancellation")
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"total_cost": 0.021, "prompt_tokens": 11},
+        {"total_cost": 0.049, "prompt_tokens": 37},
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_cancel_after_the_billed_post_still_settles_and_propagates(usage, monkeypatch):
+    """Stop pressed once OpenRouter has answered 200 still reports what it cost."""
+    from open_webui_openrouter_pipe.integrations import image as image_module
+
+    dumped: list[dict[str, Any]] = []
+
+    async def _dump(_pipe, _valves, **kwargs: Any) -> None:
+        dumped.append(kwargs)
+
+    monkeypatch.setattr(image_module, "maybe_dump_costs_snapshot", _dump)
+
+    pipe = _SettleRecordingPipe("sk-x")
+    gateway = _ParkingGateway()
+    pipe._file_gateway = gateway
+    adapter = _adapter(pipe)
+    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+
+    class _Billed:
+        async def generate(self, _payload, **_k):
+            return ImageGenerationResult(
+                images=[GeneratedImage(data=_png(8, 8), mime_type="image/png")],
+                usage=dict(usage),
+            )
+
+    monkeypatch_client(adapter, _Billed())
+
+    task = asyncio.ensure_future(
+        adapter.generate(
+            body={},
+            responses_body=_StubResponsesBody(
+                [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+            ),
+            valves=_StubValves("sk-x"),
+            session=object(),
+            event_emitter=_Emitter(),
+            metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+            user={"id": "u1"},
+            request=object(),
+            user_obj=object(),
+            normalized_model_id="m.x",
+            api_model_id="m/x",
+        )
+    )
+    await asyncio.wait_for(gateway.reached.wait(), 5)
+    assert dumped, "the 200 was already billed and snapshotted before storage was reached"
+
+    _cancel_until_done(task)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    try:
+        await asyncio.wait_for(pipe.settled.wait(), 5)
+    except asyncio.TimeoutError:
+        pass
+    assert [(item["usage"], item["status"]) for item in pipe.generations] == [(usage, "failed")], (
+        "a cancel after the billed POST must still dispatch the generation-complete event "
+        "carrying the usage OpenRouter charged for"
+    )
+    assert dumped[0]["usage"] == usage
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_request_settles_without_reporting_a_cost(monkeypatch):
+    """Stop pressed while the contract is still being read owes OpenRouter nothing."""
+    from open_webui_openrouter_pipe.integrations import image as image_module
+
+    dumped: list[dict[str, Any]] = []
+
+    async def _dump(_pipe, _valves, **kwargs: Any) -> None:
+        dumped.append(kwargs)
+
+    monkeypatch.setattr(image_module, "maybe_dump_costs_snapshot", _dump)
+
+    pipe = _SettleRecordingPipe("sk-x")
+    adapter = _adapter(pipe)
+    reached = asyncio.Event()
+
+    class _ParksOnEndpoints:
+        async def endpoints(self, _model_id):
+            reached.set()
+            await asyncio.Event().wait()
+            raise AssertionError("the endpoint lookup must not resume after cancellation")
+
+        async def generate(self, _payload, **_k):
+            raise AssertionError("nothing may be POSTed once the lookup was cancelled")
+
+    monkeypatch_client(adapter, _ParksOnEndpoints())
+
+    task = asyncio.ensure_future(
+        adapter.generate(
+            body={},
+            responses_body=_StubResponsesBody(
+                [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+            ),
+            valves=_StubValves("sk-x"),
+            session=object(),
+            event_emitter=_Emitter(),
+            metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+            user={"id": "u1"},
+            request=object(),
+            user_obj=object(),
+            normalized_model_id="m.x",
+            api_model_id="m/x",
+        )
+    )
+    await asyncio.wait_for(reached.wait(), 5)
+    _cancel_until_done(task)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    try:
+        await asyncio.wait_for(pipe.settled.wait(), 5)
+    except asyncio.TimeoutError:
+        pass
+    assert [(item["usage"], item["status"]) for item in pipe.generations] == [(None, "failed")], (
+        "a request cancelled before it was sent must settle with no usage at all"
+    )
+    assert dumped == [], (
+        "a request OpenRouter never answered must not appear in the cost export"
+    )
 
 
 @pytest.mark.parametrize(

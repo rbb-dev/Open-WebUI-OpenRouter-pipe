@@ -1,9 +1,184 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+if TYPE_CHECKING:
+    from ..filters.video_filter_renderer import VideoFilterSpec
 
 _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
+    "black-forest-labs/flux-3-video": {
+        "display_name": "Black Forest Labs: FLUX.3 Video",
+        "best_known_for": (
+            "Black Forest Labs' FLUX.3 Video, a text- and image-to-video model built around "
+            "controlled, keyframe-driven shots. You can hand it an opening still, a closing still, "
+            "or both, and it fills in the motion between them — and it will continue an existing "
+            "clip rather than only starting a new one, so a long sequence can be built a segment at "
+            "a time instead of being asked for in one go. Clips run 5 to 20 seconds at 720p or "
+            "1080p, across six framings from ultrawide 21:9 through to vertical 9:16, and it "
+            "generates audio with the picture. There is no seed, so two runs of the same prompt "
+            "will differ."
+        ),
+        "tips_and_pitfalls": [
+            "Anchor both ends when you know where the shot should finish — a closing frame is what separates this from a model you can only point at a starting still.",
+            "Build long sequences as a chain of continuations rather than one very long request; each segment stays sharper and you can stop and redirect between them.",
+            "There is no seed here, so an idea you like cannot be re-rolled exactly — save the clip you want before iterating on the prompt.",
+            "Continuing an existing clip is charged at its own rate, higher than generating fresh footage; check the cost list below before planning a long chain.",
+            "Audio is generated alongside the picture, so it is worth describing the sound you want rather than leaving it to chance.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, 5 to 20.",
+            "Aspect ratio": "Framing, from ultrawide 21:9 through 16:9, 4:3, 1:1 and 3:4 to vertical 9:16.",
+            "Resolution": "720p or 1080p — the choice that drives what a second costs.",
+            "Frames": "Which supplied stills anchor the shot: none for pure text-to-video, first_only to animate from an opening still, or first_last to fix both ends and let the model fill the middle.",
+            "Audio": "Whether a soundtrack is generated with the picture.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
+    "bytedance/seedance-2.5": {
+        "display_name": "ByteDance: Seedance 2.5",
+        "best_known_for": (
+            "ByteDance's Seedance 2.5, the long-form member of the Seedance family. It runs to 30 "
+            "seconds in a single clip — twice the length most video models will give you — and is "
+            "aimed at storytelling that has to hold together across that span: reference-driven "
+            "generation, editing an existing clip, and extending one that already exists. It takes "
+            "an opening still, a closing still, or both, offers six framings including ultrawide "
+            "21:9, generates audio, and honours a seed, so a take you like can be reproduced and "
+            "then adjusted a line at a time. Output is 480p or 720p, with twelve exact canvas sizes "
+            "if you need to pin dimensions rather than pick a ratio."
+        ),
+        "tips_and_pitfalls": [
+            "The 30-second ceiling is the reason to pick this model; if your shot is under 10 seconds another model will usually cost less for the same result.",
+            "Lock a seed before you start refining — over a half-minute clip, an unseeded re-roll changes far more than the line you edited.",
+            "Long clips reward one continuous action described plainly over a list of cuts; ask for a scene, not a sequence of shots.",
+            "Use a closing still when the clip has to land somewhere specific, such as a product in frame or a logo settled in place.",
+            "This model bills by video token rather than by the second, and how many tokens a clip uses is not published, so a longer or larger clip can cost much more than its duration suggests.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, 4 to 30 — the longest single take in the catalogue.",
+            "Aspect ratio": "16:9, 4:3, 1:1, 3:4, 9:16, or ultrawide 21:9.",
+            "Resolution": "480p or 720p.",
+            "Size": "Pins exact pixel dimensions from the twelve this model publishes, instead of letting ratio and resolution decide.",
+            "Frames": "Which supplied stills anchor the clip: none, first_only, or first_last to fix both ends.",
+            "Audio": "Whether a soundtrack is generated with the picture.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip — worth setting before you iterate.",
+            "Watermark": "Whether the provider's visible branding overlay is burned into the output.",
+            "Req key": "Provider-side request identifier, for callers that need their own job reference carried through.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
+    "minimax/hailuo-3": {
+        "display_name": "MiniMax: H3",
+        "best_known_for": (
+            "MiniMax's H3, a lightweight open-weights model aimed at precise, instruction-guided "
+            "work rather than free-running scenes. It is the one to reach for when the clip has to "
+            "carry legible text or a brand mark correctly, or when you want an edit applied to "
+            "supplied footage instead of a scene invented from scratch. Everything it makes is 2K — "
+            "there is no lower tier to trade down to — across six framings from ultrawide 21:9 to "
+            "vertical 9:16, in clips of 5 to 15 seconds, with audio. There is no seed, so runs vary."
+        ),
+        "tips_and_pitfalls": [
+            "Write the instruction, not the scene: this model responds to being told what to change or render, and rewards precise wording over atmosphere.",
+            "Put any text you need rendered in quotes exactly as it should appear, including capitalisation — this is one of the few models that will hold it.",
+            "Every clip is 2K, so there is no cheaper resolution to draft at; keep drafts short instead and lengthen only once the prompt is right.",
+            "Supplying reference images is charged per image on top of the per-second rate, so trim the set to the ones that are doing work.",
+            "There is no seed, so an exact re-run is not available — keep the take you like rather than expecting to reproduce it.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, 5 to 15.",
+            "Aspect ratio": "21:9, 16:9, 4:3, 1:1, 3:4, or 9:16.",
+            "Resolution": "2K, the only tier this model publishes.",
+            "Frames": "Which supplied stills anchor the clip: none, first_only, or first_last to fix both ends.",
+            "Audio": "Whether a soundtrack is generated with the picture.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
+    "runway/aleph-2": {
+        "display_name": "Runway: Aleph 2.0",
+        "best_known_for": (
+            "Runway's Aleph 2.0, which edits video you already have rather than generating a scene "
+            "from a description. You give it footage and an instruction — change the weather, "
+            "replace what is on the wall, take the parked cars out of the street — and it applies "
+            "that across the clip while leaving everything you did not ask about alone. Keyframes "
+            "let you show it what a moment should look like instead of describing it. Because the "
+            "work is done on your footage, the length and the dimensions of the result come from "
+            "the clip you supply, not from a setting here; the eight framings it publishes cover "
+            "everything from 21:9 down to 9:16. It honours a seed, and it does not add audio."
+        ),
+        "tips_and_pitfalls": [
+            "Attach the clip you want edited to your message — there is nothing to generate from if no footage arrives with the instruction.",
+            "Name the change and nothing else. \"Make it raining\" preserves the shot; re-describing the whole scene invites the model to redo parts you wanted kept.",
+            "The clip you attach sets the length and the size of the result — there is no duration or resolution control here, so trim the footage to what you actually want before sending it.",
+            "One instruction per pass holds up far better than a list; run a second pass for the second change and you keep the ability to reject either one.",
+            "Use keyframes when a change is easier to show than to write — a frame of the intended look steers it harder than another sentence will.",
+            "Fix a seed before iterating so the untouched parts of the shot stay untouched between runs.",
+            "There is no generated audio — the soundtrack is whatever your source clip carried.",
+            "Short jobs are billed at a published minimum, so a one-second fix costs the same as a somewhat longer one; batch small corrections into a single pass where you can.",
+        ],
+        "knob_descriptions": {
+            "Aspect ratio": "The framing to work in — 16:9, 4:3, 3:2, 1:1, 2:3, 3:4, 9:16, or 21:9.",
+            "Seed": "Fixes the random draw so the same footage and instruction reproduce the same edit — set it before iterating.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
+    "runway/gen-4.5": {
+        "display_name": "Runway: Gen-4.5",
+        "best_known_for": (
+            "Runway's Gen-4.5, a text- and image-to-video model tuned for cinematic shots: strong "
+            "motion, high visual fidelity, and close adherence to what the prompt actually asked "
+            "for. It is deliberately narrow — 720p, landscape 16:9 or portrait 9:16 only, clips of "
+            "2 to 10 seconds, animated from a single opening still when you supply one — and that "
+            "narrowness is the point, because it means the one thing it does it does very well. It "
+            "honours a seed, and it does not generate audio. Where Aleph 2.0 edits footage you "
+            "already have, this is the Runway model that creates the shot in the first place."
+        ),
+        "tips_and_pitfalls": [
+            "Write it like a shot list: subject, action, camera move, lens feel, lighting. Prompt adherence is this model's strength and it rewards being specific.",
+            "Two seconds is a real option — short beats are cheap here, and stringing several together often beats asking for one ten-second take.",
+            "Only a first frame is accepted; there is no closing still, so describe where the shot should end up rather than expecting to pin it.",
+            "Landscape and portrait are the only framings — if you need square or ultrawide, this is not the model.",
+            "No audio is generated, so spend the prompt on what is seen and add sound afterwards.",
+            "Fix a seed to keep identity and staging stable while you refine the wording.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, 2 to 10.",
+            "Aspect ratio": "Landscape 16:9 or portrait 9:16.",
+            "Resolution": "720p, the only tier this model publishes.",
+            "Size": "Pins exact pixel dimensions — 1280x720 or 720x1280 — instead of letting the ratio decide.",
+            "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
+    "x-ai/grok-imagine-video-1.5": {
+        "display_name": "SpaceXAI: Grok Imagine Video 1.5",
+        "best_known_for": (
+            "Grok Imagine Video 1.5, built for fast iteration. Duration is any whole number of "
+            "seconds from 1 to 15, so you can draft an idea as a two-second clip and only pay for a "
+            "full-length take once the prompt is right. It offers seven framings — more than most "
+            "models — including the 3:2 and 2:3 photographic shapes its neighbours skip, and three "
+            "resolutions from 480p up to 1080p, so drafting cheap and finishing sharp is a single "
+            "change of one control. It works from a text prompt alone or from a supplied opening "
+            "still, and it accepts no other provider parameters, which makes it one of the simplest "
+            "models here to drive."
+        ),
+        "tips_and_pitfalls": [
+            "Draft at 480p and one or two seconds; the per-second rate at 1080p is several times the 480p one, and the composition reads clearly enough at the low tier to judge.",
+            "Whole-second durations mean you can ask for exactly the beat you need rather than rounding up to the next preset.",
+            "3:2 and 2:3 are worth remembering when a clip has to sit alongside photography — few other models offer them.",
+            "Supplying a starting image is charged as an extra on top of the clip, so reuse one deliberately rather than attaching a set.",
+            "There are no provider parameters to fall back on, so everything you want has to be in the prompt and the controls.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, any whole number from 1 to 15.",
+            "Aspect ratio": "Seven framings: 16:9, 9:16, 1:1, 4:3, 3:4, and the photographic 3:2 and 2:3.",
+            "Resolution": "480p, 720p, or 1080p — the control that most changes what a second costs.",
+            "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
+            "Audio": "Whether a soundtrack is generated with the picture.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+        },
+    },
     "alibaba/happyhorse-1.1": {
         "display_name": "Alibaba: HappyHorse 1.1",
         "best_known_for": (
@@ -12,14 +187,15 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "16:9 / 9:16 / 1:1 / 4:3 / 3:4 plus ultrawide 21:9 and tall 9:21 — which makes it a fit for "
             "cinematic letterbox shots and full-bleed vertical formats that the 8-second-capped models "
             "can't cover in one clip. It supports first-frame image conditioning and a seed for "
-            "reproducible runs, and does not generate audio. 1.1 refines 1.0 with the same controls at a "
-            "lower 1080p price."
+            "reproducible runs. OpenRouter publishes nothing either way about audio for this model, "
+            "so the audio control is offered and whatever the model does by default is what you get. "
+            "1.1 refines 1.0 with the same controls at a lower 1080p price."
         ),
         "tips_and_pitfalls": [
             "Front-load one clear shot — subject, action, setting, camera move, and style in plain prose; one idea per clip holds together far better than crowded multi-subject scenes.",
             "Use a first-frame image to lock the opening composition and identity, then describe only the motion that follows, not the still itself.",
             "Longer durations (10-15s) tax motion and identity consistency harder — reuse a seed when iterating prompt tweaks so the clip doesn't drift between runs.",
-            "No audio is generated — don't spend prompt tokens describing sound; add music and SFX in post.",
+            "Whether audio comes back is not something OpenRouter states for this model — try one short clip with the audio control on before planning a soundtrack around it.",
         ],
         "knob_descriptions": {
             "Duration": "Clip length in seconds (3-15); longer clips cost proportionally more and are harder to keep consistent.",
@@ -27,6 +203,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "720p (cheapest) or 1080p output tier, which drives the price SKU.",
             "Size": "Pins exact pixel dimensions (e.g. 1920x1080, 1080x1920, 2520x1080) instead of letting aspect ratio + resolution decide.",
             "Frames": "First-frame image conditioning — auto/none for pure text-to-video, or first_only to animate from a supplied starting still.",
+            "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Integer for reproducible regeneration — same prompt + seed yields a near-identical clip when iterating.",
             "Provider options JSON": "Escape hatch for raw provider parameters not exposed by the typed valves above.",
         },
@@ -36,15 +213,16 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Alibaba's first HappyHorse video model — text- and image-to-video with the same wide "
             "aspect-ratio range (including ultrawide 21:9 and tall 9:21), 3-to-15-second clips at 720p or "
-            "1080p, first-frame conditioning, and seed control, with no audio. Largely superseded by "
-            "HappyHorse 1.1, which prices 1080p lower for the same controls; reach for 1.0 only when you "
-            "need to pin the exact 1.0 generation behaviour."
+            "1080p, first-frame conditioning, and seed control. Nothing is published either way about "
+            "audio, so that control is offered and the model's own behaviour decides. Largely "
+            "superseded by HappyHorse 1.1, which prices 1080p lower for the same controls; reach for "
+            "1.0 only when you need to pin the exact 1.0 generation behaviour."
         ),
         "tips_and_pitfalls": [
             "Prefer HappyHorse 1.1 for new work — it matches 1.0's controls and resolutions at a lower 1080p price.",
             "Front-load a single clear shot in plain prose and keep to one idea per clip; multi-subject action remains a weak spot.",
             "Anchor the opening with a first-frame image and reuse a seed across iterations to keep identity stable.",
-            "No audio is generated — describe only the visuals and add sound in post.",
+            "Whether audio comes back is not stated for this model — test one short clip with the audio control on rather than assuming either way.",
         ],
         "knob_descriptions": {
             "Duration": "Clip length in seconds (3-15); longer clips cost more and strain consistency.",
@@ -52,6 +230,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "720p or 1080p output tier (drives the price SKU).",
             "Size": "Exact pixel dimensions when you need a specific canvas rather than a ratio+resolution pair.",
             "Frames": "First-frame conditioning — none for text-to-video or first_only to animate from a starting still.",
+            "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Integer seed for reproducible regeneration across prompt iterations.",
             "Provider options JSON": "Raw escape hatch for provider parameters the typed valves don't expose.",
         },
@@ -265,6 +444,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "Vertical pixel count of the render; this model only outputs 1080p (full HD).",
             "Size": "Exact pixel dimensions of the output frame; fixed at 1920×1080.",
             "Frames": "Optional reference images; Hailuo 2.3 accepts only a first_frame image to anchor the opening shot and does not support a last frame.",
+            "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
             "Provider options JSON": "Free-form passthrough for OpenRouter provider routing (not for video parameters themselves).",
             "Prompt optimizer": "Enables MiniMax's server-side prompt rewriter that expands and refines your prompt for better motion and adherence; leave on for short or casual prompts, set off for verbatim.",
             "Fast pretreatment": "Only meaningful when the prompt optimiser is active — runs a quicker, lighter optimisation pass to cut latency (handy for batch generation) at a small loss of fine-tuning quality.",
@@ -493,6 +673,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "Picks 480p (cheaper iteration) or 720p (finishing); resolution drives the per-second SKU.",
             "Size": "Pin exact pixel dimensions when you need a specific canvas (e.g. 854×480 for legacy SD, 1280×720 for HD).",
             "Frames": "Image conditioning — `first_frame` for image-to-video continuity, none for pure text-to-video. `last_frame` is not supported on this model.",
+            "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
+            "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
             "Provider options JSON": "Free-form JSON passthrough for OpenRouter/xAI fields not covered by the dedicated valves.",
         },
     },
@@ -534,18 +716,17 @@ _KNOB_GATE: dict[str, str | None] = {
 }
 
 
-def _knob_is_active(knob: str, model: dict[str, Any]) -> bool:
+def _knob_is_active(knob: str, spec: VideoFilterSpec) -> bool:
     gate = _KNOB_GATE.get(knob)
-    allowed = model.get("allowed_passthrough_parameters") or []
     if gate is None:
         return True
     if gate == "negative_prompt_or_camelcase":
-        return any(p in allowed for p in ("negative_prompt", "negativePrompt"))
+        return spec.supports_negative_prompt
     if gate == "generate_audio_top_level":
-        return bool(model.get("generate_audio"))
+        return spec.supports_generate_audio_toggle
     if gate == "seed_top_level":
-        return model.get("seed") is True
-    return gate in allowed
+        return spec.supports_seed
+    return gate in spec.allowed_params
 
 
 _SKU_MODIFIERS: tuple[tuple[str, str], ...] = (
@@ -631,8 +812,8 @@ def _format_cents_as_dollars(cents_value: str) -> str:
     Examples: "0.2" -> "0.002", "5" -> "0.05", "7" -> "0.07". Preserves
     significant digits without trailing zeros while guaranteeing at least 2
     decimal places. Returns the input verbatim if it can't be parsed as a
-    finite number (defensive — OpenRouter values are always numeric strings,
-    but keep the formatter total).
+    float (defensive — OpenRouter values are always numeric strings, but
+    keep the formatter total).
     """
     dollars = _published_amount(cents_value)
     if dollars is None:
@@ -783,24 +964,36 @@ def _format_frames_capability(supported_frames: Any) -> str:
     return csv
 
 
-def _yes_no(value: Any) -> str:
-    if value is True:
+_UNDECLARED_CAPABILITY = "not published; the control is offered and the model's own default applies"
+
+
+def _declared_capability(declared: Any, offered: bool) -> str:
+    if declared is True:
         return "yes"
+    if offered:
+        return _UNDECLARED_CAPABILITY
     return "no"
 
 
 def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any]) -> str:
+    from ..filters.video_filter_renderer import (
+        _unhandled_params,
+        build_video_filter_spec,
+    )
+    from .image_types import PASSTHROUGH_DESCRIPTION
+
+    spec = build_video_filter_spec(model_id, model)
     display_name = str(model.get("name") or "").strip() or data.get("display_name") or model_id
     durations = _format_csv(model.get("supported_durations")) or "model default"
     aspects = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
     frames = _format_frames_capability(model.get("supported_frame_images"))
-    audio = _yes_no(model.get("generate_audio"))
-    seed = _yes_no(model.get("seed") is True)
+    audio = _declared_capability(model.get("generate_audio"), spec.supports_generate_audio_toggle)
+    seed = _declared_capability(model.get("seed"), spec.supports_seed)
 
     knob_lines: list[str] = []
     for knob, description in data.get("knob_descriptions", {}).items():
-        if not _knob_is_active(knob, model):
+        if not _knob_is_active(knob, spec):
             continue
         knob_lines.append(f"- `{knob}`: {description}")
 
@@ -808,13 +1001,7 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
     # as free text. Reading them from the same place the renderer does means help cannot
     # omit a control the chat UI shows -- which is the failure the curated table above
     # can produce on its own.
-    from ..filters.video_filter_renderer import (
-        _unhandled_params,
-        build_video_filter_spec,
-    )
-    from .image_types import PASSTHROUGH_DESCRIPTION
-
-    for name in _unhandled_params(build_video_filter_spec(model_id, model)):
+    for name in _unhandled_params(spec):
         knob_lines.append(f"- `{name}`: {PASSTHROUGH_DESCRIPTION}")
 
     pricing_block = _format_pricing_skus(

@@ -1,10 +1,12 @@
 
 import asyncio
+import logging
 from typing import Any, cast
 
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from tests.log_capture import emitted
 
 
 def _fake_stream(events):
@@ -157,8 +159,8 @@ PLAIN_EVENTS = [
 ]
 
 
-def _tripwire_records(caplog):
-    return [r for r in caplog.records if "structured fusion events" in r.getMessage()]
+def _tripwire_records(caplog, *, min_level=logging.WARNING):
+    return emitted(caplog, min_level=min_level, containing="structured fusion events")
 
 
 class TestFusionActivationTripwire:
@@ -167,11 +169,19 @@ class TestFusionActivationTripwire:
     async def test_warns_when_fusion_never_opens_despite_enabled_plugin(
         self, monkeypatch, pipe_instance_async, caplog
     ):
-        import logging
-        with caplog.at_level(logging.WARNING):
+        """Captured at DEBUG so the level is asserted rather than assumed.
+
+        Counting records at WARNING cannot tell one warning from a tripwire demoted to
+        DEBUG -- the count is 1 either way, and a demoted tripwire is invisible on the
+        deployment that needed it. Every record carrying the message is collected, then
+        the single one is required to be a WARNING.
+        """
+        with caplog.at_level(logging.DEBUG):
             await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
                        events=PLAIN_EVENTS, plugins=[{"id": "fusion"}])
-        assert len(_tripwire_records(caplog)) == 1
+        records = _tripwire_records(caplog, min_level=logging.NOTSET)
+        assert len(records) == 1, [(r.levelname, r.getMessage()) for r in records]
+        assert records[0].levelno == logging.WARNING, records[0].levelname
 
     @pytest.mark.asyncio
     async def test_silent_when_no_fusion_plugin_outbound(

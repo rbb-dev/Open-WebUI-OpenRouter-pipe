@@ -1043,7 +1043,11 @@ async def test_redis_pubsub_listener_repeat_errors_log_once(pipe_instance, caplo
     store._redis_client = _AlwaysDownRedis()
     store._redis_enabled = True
 
-    caplog.set_level("WARNING")
+    import logging
+
+    from tests.log_capture import emitted
+
+    caplog.set_level("DEBUG")
     listener = asyncio.create_task(store._redis_pubsub_listener())
     for _ in range(100):
         if len(attempts) >= 4:
@@ -1053,8 +1057,19 @@ async def test_redis_pubsub_listener_repeat_errors_log_once(pipe_instance, caplo
     with contextlib.suppress(asyncio.CancelledError):
         await listener
 
-    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "pub/sub" in r.message.lower()]
+    warnings = [
+        r for r in emitted(caplog, min_level=logging.WARNING)
+        if "pub/sub" in r.getMessage().lower()
+    ]
+    repeats = [
+        r for r in emitted(caplog, level=logging.DEBUG)
+        if "listener error repeated" in r.getMessage().lower()
+    ]
     assert len(warnings) == 1
+    assert len(repeats) >= 1, (
+        "the repeats went silent rather than dropping to DEBUG; an operator who raises "
+        "the log level to watch a flapping connection sees nothing"
+    )
     assert len(attempts) >= 2
 
 
@@ -1942,7 +1957,11 @@ async def test_redis_pubsub_listener_read_flap_warns_once_no_reconnect_spam(pipe
     store._redis_client = _FlappyRedis()
     store._redis_enabled = True
 
-    caplog.set_level("INFO")
+    import logging
+
+    from tests.log_capture import emitted
+
+    caplog.set_level("DEBUG")
     listener = asyncio.create_task(store._redis_pubsub_listener())
     for _ in range(200):
         if len(cycles) >= 5:
@@ -1953,9 +1972,22 @@ async def test_redis_pubsub_listener_read_flap_warns_once_no_reconnect_spam(pipe
         await listener
 
     assert len(cycles) >= 5
-    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "pub/sub" in r.message.lower()]
-    infos = [r for r in caplog.records if r.levelname == "INFO" and "reconnected" in r.message.lower()]
+    warnings = [
+        r for r in emitted(caplog, min_level=logging.WARNING)
+        if "pub/sub" in r.getMessage().lower()
+    ]
+    repeats = [
+        r for r in emitted(caplog, level=logging.DEBUG)
+        if "listener error repeated" in r.getMessage().lower()
+    ]
+    infos = [
+        r for r in emitted(caplog, level=logging.INFO)
+        if "reconnected" in r.getMessage().lower()
+    ]
     assert len(warnings) == 1
+    assert len(repeats) >= 1, (
+        "every flap after the first vanished instead of dropping to DEBUG"
+    )
     assert infos == []
 
 

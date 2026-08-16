@@ -6843,6 +6843,8 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
 
     from open_webui_openrouter_pipe.tools import tool_executor as te
 
+    from tests.log_capture import emitted
+
     async def _boom(**_kwargs):
         raise RuntimeError("owui cannot render this")
 
@@ -6851,11 +6853,13 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
     executor._owui_result_warn_ts.clear()
     context = cast(Any, SimpleNamespace(user={"id": "u1"}, request=None, metadata={}))
 
+    reported = "could not process the result"
+
     def _warnings():
-        return [
-            r for r in caplog.records
-            if r.levelno >= logging.WARNING and "could not process the result" in r.getMessage()
-        ]
+        return emitted(caplog, min_level=logging.WARNING, containing=reported)
+
+    def _repeats():
+        return emitted(caplog, level=logging.DEBUG, containing=reported)
 
     with caplog.at_level(logging.DEBUG, logger=executor.logger.name):
         text = ""
@@ -6864,6 +6868,7 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
                 "lookup", "function", {"raw": "payload"}, context
             )
         after_five = list(_warnings())
+        repeats_after_five = list(_repeats())
         await executor._process_tool_result_safe(
             "other_tool", "function", {"raw": "payload"}, context
         )
@@ -6874,6 +6879,11 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
         f"five unprocessable results for one tool produced {len(after_five)} warnings "
         "with tracebacks. Zero means the operator never learns Open WebUI is silently "
         "degrading every result; more than one floods the log per tool call."
+    )
+    assert len(repeats_after_five) == 4, (
+        "the four calls inside the cooldown produced "
+        f"{len(repeats_after_five)} DEBUG lines, not four. Latching them into silence "
+        "hides an ongoing fault from the operator who raised the log level to find it."
     )
     assert after_five[0].exc_info is not None, (
         "the report carries no traceback, so it says processing failed without saying why"

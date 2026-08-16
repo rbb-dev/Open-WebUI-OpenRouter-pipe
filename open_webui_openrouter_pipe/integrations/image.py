@@ -56,21 +56,10 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
 
 _SCHEMA_ONLY_PARAMS = SCHEMA_ONLY_PARAMS
-"""Sent as given, with no per-model check and no note.
-
-No contract describes these, so there is nothing to fit the value to. The control that
-sets one says as much, and a note here would fire on every request that used it exactly
-as intended -- which is how a warning stops being read.
-"""
 
 _REFERENCE_MODES = frozenset({"auto", "latest-only", "none"})
 
 _SCHEMA_REFERENCE_CAP = 16
-"""The most reference images one request may carry, whatever a model publishes.
-
-The request format caps the list here. Without it a model whose contract could not be
-read carried an uncapped list, which is a rejected request rather than a big one.
-"""
 
 _BILLING_MULTIPLIERS = frozenset({"n"})
 
@@ -111,7 +100,6 @@ class _Note(NamedTuple):
 
 
 def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
-    """One note for a knob another knob already decided."""
     return (
         "superseded",
         name,
@@ -120,20 +108,6 @@ def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
 
 
 def _size_consistency_notes(top_level: dict[str, Any]) -> list[tuple[str, str, str]]:
-    """Drop what an explicit ``size`` supersedes, naming each drop.
-
-    OpenRouter documents the tier form of ``size`` as equivalent to ``resolution`` and as
-    combining with ``aspect_ratio``, and the pixel form as authoritative with a mismatched
-    ``resolution`` or ``aspect_ratio`` alongside it rejected with a 400. So a tier collides
-    only with a *differing* resolution and never with a ratio, and pixels collide with a
-    ratio only when the two provably disagree -- ``1920x1080`` with ``16:9`` is the model
-    being asked for one thing twice.
-
-    Pixels supersede ``resolution`` whichever tier it names, because nothing published
-    pairs a tier with a pixel count: the short-side reading is disproved by a model that
-    publishes ``992x432`` under ``480p``, and 0 of 44 recorded image records publish
-    ``size`` at all. Sending an unverifiable pair instead would trade a note for a 400.
-    """
     size = top_level.get("size")
     if size is None:
         return []
@@ -397,18 +371,6 @@ class ImageGenerationAdapter:
     ) -> tuple[dict[str, Any] | None, str]:
         """Pick the record for the provider that will serve this request.
 
-        Both sides are reduced to the bare provider key before they are compared, because
-        one provider is spelled two ways: the pipe's own routing dropdown emits
-        ``google-ai-studio`` while the record carries ``google-ai-studio/global``. Matching
-        those verbatim dropped the whole contract and told the user the provider does not
-        serve this model, and it silently ignored a bare ``order`` pin -- asking for
-        ``google-ai-studio`` handed the request to ``google-vertex``.
-
-        Several records can reduce to one key, so the tie is broken on the published slug
-        in sorted order rather than on the order the catalog happened to list them in.
-        The no-pin choice is still the first published record, which is what routing itself
-        prefers.
-
         The second element names an operator pin that no record carries. Collapsing that
         onto a bare ``None`` would make a readable contract indistinguishable from an
         unreadable one, and the caller would blame an outage that did not happen.
@@ -434,13 +396,6 @@ class ImageGenerationAdapter:
 
     @staticmethod
     def _option_carriers(records: list[dict[str, Any]]) -> list[str]:
-        """Every provider key this model's published records can be addressed under.
-
-        Selection answers whose contract validates the request; this answers who might
-        receive it, and that is not settled until after the request leaves. Reading every
-        published record rather than the selected one is what stops a multi-provider model
-        keying its options to a guess.
-        """
         keys = {options_key(record.get("provider_slug")) for record in records}
         return sorted(key for key in keys if key)
 
@@ -570,12 +525,6 @@ class ImageGenerationAdapter:
 
     @staticmethod
     def _reference_settings(metadata: dict[str, Any] | None) -> tuple[str, list[str]]:
-        """What the user asked for about references, defaulting to today's behaviour.
-
-        An unrecognised mode falls back to ``auto`` rather than raising: the value comes
-        from a stored per-user setting that a later contract change can orphan, and a
-        request refused over a stale dropdown entry is worse than one that generates.
-        """
         pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
         chosen = pipe_meta.get("image_generation") if isinstance(pipe_meta, dict) else None
         if not isinstance(chosen, dict):
@@ -590,13 +539,6 @@ class ImageGenerationAdapter:
         return (mode if mode in _REFERENCE_MODES else "auto"), urls
 
     async def _vetted_reference_urls(self, urls: list[str]) -> list[str]:
-        """Put a user-supplied link through the gate every other fetched URL passes.
-
-        OpenRouter fetches whatever is listed here, so a link typed into a chat control
-        is a request this deployment makes to an address its user chose. Refusing the
-        whole generation rather than dropping the link keeps a paid render from returning
-        an image that quietly ignored what was asked for.
-        """
         if not urls:
             return []
         handler = self._pipe._multimodal_handler
@@ -621,11 +563,6 @@ class ImageGenerationAdapter:
         record: dict[str, Any] | None,
         notes: list[_Note],
     ) -> list[dict[str, Any]]:
-        """The reference list this request should carry, in the order the user chose.
-
-        Links typed in the chat controls go first, so an explicit choice is the one that
-        survives on the many models that take a single reference.
-        """
         mode, chosen = self._reference_settings(metadata)
         attached = self._input_references(responses_body)
         if mode == "none":
@@ -801,6 +738,9 @@ class ImageGenerationAdapter:
                 outcome=outcome,
             )
         except asyncio.CancelledError:
+            await asyncio.shield(
+                self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
+            )
             raise
         except OpenRouterAPIError as exc:
             await self._close_status(event_emitter)

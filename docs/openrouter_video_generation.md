@@ -1,6 +1,6 @@
 # OpenRouter Video Generation
 
-This pipe exposes OpenRouter's fourteen async video-generation models as
+This pipe exposes OpenRouter's twenty-two async video-generation models as
 selectable chat models in Open WebUI. You pick a video model in the chat
 header (just like any other LLM), type a prompt, and the pipe submits a
 job, polls until completion, downloads the generated video into Open WebUI
@@ -20,6 +20,7 @@ pipe → Valves.
 - [The chat filter UI (UserValves)](#the-chat-filter-ui-uservalves)
 - [The `help` command](#the-help-command)
 - [Frame images and image-to-video](#frame-images-and-image-to-video)
+- [Attachments that are not frames](#attachments-that-are-not-frames)
 - [Multimodal references (Wan 2.7)](#multimodal-references-wan-27)
 - [Provider passthrough](#provider-passthrough)
 - [Pricing and cost display](#pricing-and-cost-display)
@@ -29,7 +30,6 @@ pipe → Valves.
 - [Configuration valves (admin)](#configuration-valves-admin)
 - [Errors and troubleshooting](#errors-and-troubleshooting)
 - [Architecture overview](#architecture-overview)
-- [Limitations and non-goals](#limitations-and-non-goals)
 
 ---
 
@@ -102,12 +102,29 @@ is kept, because the pipe fills this setting in only where a model has none yet.
 The same setting covers image models. It needs `UPDATE_MODEL_CAPABILITIES` on,
 since that is the switch that lets the pipe write to capability boxes at all.
 
+#### File context on video models
+
+`UPDATE_MODEL_CAPABILITIES` also unticks Open WebUI's `File context` box on
+video and image models, whatever `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` is set
+to. Left on — Open WebUI's own default — an attachment makes Open WebUI run an
+extra billed round-trip that turns the conversation into search queries and
+pastes the retrieved text into what was meant to be a video prompt. As with the
+tools box, the pipe fills it in only where a model has no setting yet.
+
+Turning it off has a second, wanted effect: attachments a video model was sent
+then stay in the chat as normal attachments as well, instead of being taken out
+of the request. See
+[Attachments that are not frames](#attachments-that-are-not-frames).
+
 If the per-model filters do not appear in the Integrations menu, check:
 - `AUTO_INSTALL_VIDEO_FILTERS` and `AUTO_ATTACH_VIDEO_FILTERS` are both
-  `True`.
-- The pipe has been called at least once with a logged-in user (the
-  filters install during `pipes()` warmup).
-- OpenRouter Admin → Functions lists 14 entries named ` Veo 3.1 Lite`,
+  `True`. While `AUTO_INSTALL_VIDEO_FILTERS` is off, an already-installed
+  filter is never rewritten, so a fix shipped in a newer release is not
+  delivered; the pipe writes a warning to its log naming any filter whose
+  stored version is out of date.
+- The pipe has been called at least once with a logged-in user.
+- OpenRouter Admin → Functions lists one entry per catalogued video model,
+  named ` Veo 3.1 Lite`,
   ` Seedance 2.0`, etc. (note the leading space — that's intentional, see
   [The chat filter UI](#the-chat-filter-ui-uservalves)).
 
@@ -141,14 +158,27 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | Per second, one flat rate |
 | `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
 | `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
-| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | ❌ | first only | Per second, one flat rate |
+| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | — | first only | Per second, one flat rate |
+| `minimax/hailuo-3` | MiniMax: H3 | Lightweight open-weights model for instruction-guided edits and controlled content; the one that renders legible text and brand marks. 2K only. | ✅ | ❌ | first + last | Per second, plus a charge per reference image |
 | `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | Per second, one flat rate |
 | `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | Per second; varies by mode and resolution |
 | `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, widest size matrix (21 dimensions). | ✅ | ✅ | first + last | Per video token; more with audio |
 | `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Per video token; varies by resolution and video input |
 | `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; cheaper per token; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | Per video token; less with video input |
+| `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last | Per video token; less with video input, and a separate rate without audio |
 | `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. Longest clips (up to 20s). **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
-| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. **Silent — no audio.** | ❌ | ❌ | first only | Per second by resolution, plus a flat charge per supplied image |
+| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
+| `x-ai/grok-imagine-video-1.5` | SpaceXAI: Grok Imagine Video 1.5 | Same per-second granularity and seven framings, now up to 1080p, so drafting cheap and finishing sharp is one control change. No provider parameters at all. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
+| `black-forest-labs/flux-3-video` | Black Forest Labs: FLUX.3 Video | Keyframe-driven shots with opening and closing stills, and continuation of an existing clip so long sequences can be built a segment at a time. Up to 20s at 1080p. | ✅ | ❌ | first + last | Per second by resolution; a higher rate again for continuing an existing clip |
+| `runway/gen-4.5` | Runway: Gen-4.5 | Cinematic text- and image-to-video with strong motion and close prompt adherence; deliberately narrow — 720p, 16:9 or 9:16, 2–10s. | ❌ | ✅ | first only | Per second, one flat rate |
+| `runway/aleph-2` | Runway: Aleph 2.0 | In-context **video editor**: applies an instruction across footage you attach while leaving the rest untouched. Length and size come from your clip, not from a control. | ❌ | ✅ | none | Per second, with a published minimum per job |
+| `alibaba/happyhorse-1.1` | Alibaba: HappyHorse 1.1 | Unusually wide framing range — the usual five plus ultrawide 21:9 and tall 9:21 — in 3–15s clips at 720p or 1080p. Cheaper 1080p than 1.0. | — | ✅ | first only | Per second by resolution |
+| `alibaba/happyhorse-1.0` | Alibaba: HappyHorse 1.0 | The first HappyHorse tier, same controls and framings as 1.1; reach for it only to pin 1.0's exact generation behaviour. | — | ✅ | first only | Per second by resolution |
+
+A `—` in the Audio or Seed column means OpenRouter publishes nothing
+either way for that model. The control is still offered, and whatever the
+model does by default is what you get — so test one short clip rather than
+assuming.
 
 This table says what a model's price *depends on*, not what it charges.
 The charges themselves change whenever OpenRouter changes them, so they
@@ -162,9 +192,13 @@ Pick model selection rules of thumb:
 - **Multi-shot story with consistent characters** → Wan 2.7 or Seedance 2.0.
 - **Dialogue / lip-sync from a reference voice** → Wan 2.7 (audio passthrough), Seedance 1.5 Pro.
 - **Physics realism / human motion** → Sora 2 Pro, Hailuo 2.3.
-- **Longest clip** → Sora 2 Pro (20s).
-- **Exact clip length (e.g. precisely 7s)** → Grok Imagine Video (only model with 1-second duration granularity; others use fixed tiers).
-- **No audio needed (cheapest path)** → Hailuo 2.3, Grok Imagine Video, or set `Audio = off` on Veo Lite.
+- **Longest clip** → Seedance 2.5 (30s), then FLUX.3 Video and Sora 2 Pro (20s each).
+- **Long sequence in pieces** → FLUX.3 Video, which continues an existing clip so you can build and redirect a segment at a time.
+- **Exact clip length (e.g. precisely 7s)** → either Grok Imagine Video tier (1-second granularity; most others use fixed tiers).
+- **Editing footage you already have** → Aleph 2.0, the only in-context video editor here; attach the clip and describe the change.
+- **Legible text or a brand mark in shot** → H3, which is built for controlled rendering rather than free-running scenes.
+- **Ultrawide or very tall framing** → HappyHorse 1.1 (21:9 and 9:21), or Seedance 2.5 / FLUX.3 Video / H3 for 21:9.
+- **No audio needed (cheapest path)** → Hailuo 2.3, Gen-4.5 and Aleph 2.0 are silent, or set `Audio = off` on Veo Lite.
 
 ---
 
@@ -293,6 +327,59 @@ aerial) matters.
 - No seed control is exposed, so don't expect bit-exact repeats; lock
   look via reference frames (first/last) and tight prompt language
   instead, and avoid on-screen text (Kling renders text poorly).
+
+---
+
+### Kling: Video v3.0 Pro
+
+> **id**: `kwaivgi/kling-v3.0-pro`
+
+Kuaishou's premium tier of Kling v3.0 and the highest-quality Kling SKU
+here — sharper detail, stronger character consistency and richer motion
+than Standard. Clips run 3 to 15 seconds at 720p in 16:9, 9:16 or 1:1,
+with both endpoints anchorable and native audio. Best for hero shots,
+marketing deliverables and pre-vis where quality matters more than cost.
+Pro and Standard publish an identical knob set; the difference is output
+quality and the per-second rate, so iterate on Standard and finish here.
+
+**Tips & pitfalls**
+
+- Kling responds to cinematic intent: describe the camera move (slow
+  dolly-in, tracking), the motion physics and the end state, rather than
+  listing what is in the frame.
+- No seed is exposed (`seed: false`), so re-running the same prompt does
+  not reproduce the same clip. Lock the look with `first_frame` /
+  `last_frame` and the negative prompt instead.
+- `cfg_scale` is new in v3.0 and absent from the older O1 SKU. Leave it at
+  0 for the provider default, or raise it when the prompt must be followed
+  strictly at the cost of creative variation.
+- Audio carries its own higher per-second rate. Send `help` for the
+  current figures.
+
+---
+
+### Kling: Video v3.0 Standard
+
+> **id**: `kwaivgi/kling-v3.0-std`
+
+The cost-efficient tier of Kling v3.0, with exactly the same capability
+surface as Pro — 3-to-15-second clips at 720p in 16:9, 9:16 or 1:1, both
+endpoints anchorable, native audio — at a lower per-second rate. Best for
+prompt iteration, drafts and bulk runs where throughput and cost matter
+more than the last few percent of polish.
+
+**Tips & pitfalls**
+
+- Draft here and switch to Pro for finals. Because the knob set is
+  identical, a prompt that works on Standard works unchanged on Pro.
+- Same cinematic-intent prompting as Pro: camera move, motion physics,
+  end state.
+- No seed is exposed (`seed: false`) — lock the look with `first_frame` /
+  `last_frame` and the negative prompt.
+- `cfg_scale` behaves as it does on Pro: 0 for the provider default,
+  higher for stricter prompt adherence.
+
+---
 
 ### MiniMax: Hailuo 2.3
 
@@ -541,8 +628,226 @@ iteration and high-volume production.
   locked.
 - Image conditioning adds a small flat charge per input image on top of
   the per-second cost.
-- No deterministic seed and no negative prompt
-  (`allowed_passthrough_parameters` is empty).
+- No negative prompt — this model accepts no provider parameters at all.
+- OpenRouter publishes nothing either way about audio or a seed here. Both
+  controls are offered and the model's own behaviour decides, so try one
+  short clip before planning around either.
+
+---
+
+### SpaceXAI: Grok Imagine Video 1.5
+
+> **id**: `x-ai/grok-imagine-video-1.5`
+
+The successor tier, built for the same fast iteration and adding a 1080p
+finishing resolution the original stops short of. Duration is any whole
+number of seconds from 1 to 15, so a two-second draft costs what two
+seconds cost rather than rounding up to a preset. Seven framings — more
+than most models — including the 3:2 and 2:3 photographic shapes its
+neighbours skip. Works from a text prompt alone or from a supplied
+opening still, and accepts no provider parameters at all, which makes it
+one of the simplest models here to drive.
+
+**Tips & pitfalls**
+
+- Draft at 480p and one or two seconds; the per-second rate at 1080p is
+  several times the 480p one and the composition reads clearly enough at
+  the low tier to judge.
+- 3:2 and 2:3 are worth remembering when a clip has to sit alongside
+  photography.
+- Supplying a starting image is charged as an extra on top of the clip,
+  so reuse one deliberately rather than attaching a set.
+- No provider parameters exist to fall back on — everything has to come
+  from the prompt and the controls.
+- Nothing is published either way about audio or a seed. Both controls
+  are offered and the model's default applies.
+
+---
+
+### Black Forest Labs: FLUX.3 Video
+
+> **id**: `black-forest-labs/flux-3-video`
+
+Text- and image-to-video built around controlled, keyframe-driven shots.
+You can hand it an opening still, a closing still, or both, and it fills
+in the motion between them — and it will continue an existing clip rather
+than only starting a new one, so a long sequence can be built a segment at
+a time instead of being asked for in one go. Clips run 5 to 20 seconds at
+720p or 1080p, across six framings from ultrawide 21:9 through to vertical
+9:16, with audio generated alongside the picture.
+
+**Tips & pitfalls**
+
+- Anchor both ends when you know where the shot should finish; a closing
+  frame is what separates this from a model you can only point at a
+  starting still.
+- Build long sequences as a chain of continuations rather than one very
+  long request — each segment stays sharper and you can redirect between
+  them.
+- Continuation is charged at its own, higher rate than fresh footage.
+  Check `help` before planning a long chain.
+- No deterministic seed, so an idea you like cannot be re-rolled exactly.
+  Save the clip you want before iterating on the prompt.
+- `safety_tolerance` and `version` are the two provider parameters, both
+  free text.
+
+---
+
+### ByteDance: Seedance 2.5
+
+> **id**: `bytedance/seedance-2.5`
+
+The long-form member of the Seedance family: 30 seconds in a single clip,
+twice what most video models will give you, aimed at storytelling that has
+to hold together across that span. Reference-driven generation, editing an
+existing clip, and extending one that already exists. Takes an opening
+still, a closing still, or both, offers six framings including ultrawide
+21:9, generates audio, and honours a seed. Output is 480p or 720p, with
+twelve exact canvas sizes if you need to pin dimensions.
+
+**Tips & pitfalls**
+
+- The 30-second ceiling is the reason to pick this model; under 10 seconds
+  another model will usually cost less for the same result.
+- Lock a seed before refining — over a half-minute clip an unseeded re-roll
+  changes far more than the line you edited.
+- Long clips reward one continuous action described plainly over a list of
+  cuts. Ask for a scene, not a sequence of shots.
+- Billed by video token, not by the second, and how many tokens a clip uses
+  is not published — a longer or larger clip can cost much more than its
+  duration suggests.
+- `watermark`, `req_key` and `output_format` are the provider parameters.
+
+---
+
+### MiniMax: H3
+
+> **id**: `minimax/hailuo-3`
+
+A lightweight open-weights model aimed at precise, instruction-guided work
+rather than free-running scenes. The one to reach for when the clip has to
+carry legible text or a brand mark correctly, or when you want an edit
+applied to supplied footage instead of a scene invented from scratch.
+Everything it makes is 2K — there is no lower tier to trade down to —
+across six framings from ultrawide 21:9 to vertical 9:16, in clips of 5 to
+15 seconds, with audio.
+
+**Tips & pitfalls**
+
+- Write the instruction, not the scene. This model rewards precise wording
+  over atmosphere.
+- Put any text you need rendered in quotes exactly as it should appear,
+  capitalisation included.
+- Every clip is 2K, so there is no cheaper resolution to draft at. Keep
+  drafts short instead and lengthen once the prompt is right.
+- Reference images are charged per image on top of the per-second rate.
+- No deterministic seed, so an exact re-run is not available.
+- `aigc_watermark` is the single provider parameter.
+
+---
+
+### Runway: Aleph 2.0
+
+> **id**: `runway/aleph-2`
+
+An in-context **video editor**, not a text-to-video model. You attach
+footage and give an instruction — change the weather, replace what is on
+the wall, take the parked cars out of the street — and it applies that
+across the clip while leaving everything you did not ask about alone.
+Keyframes let you show it what a moment should look like instead of
+describing it. Because the work is done on your footage, the length and
+the dimensions of the result come from the clip you supply rather than
+from a control here; the eight framings it publishes run from 21:9 down to
+9:16. It honours a seed and adds no audio.
+
+**Tips & pitfalls**
+
+- Attach the clip you want edited. There is nothing to work from if no
+  footage arrives with the instruction.
+- Name the change and nothing else. Re-describing the whole scene invites
+  the model to redo parts you wanted kept.
+- One instruction per pass holds up far better than a list; run a second
+  pass for the second change and you keep the ability to reject either.
+- There is no duration, resolution or size control — trim the footage to
+  what you want before sending it.
+- Short jobs are billed at a published minimum, so batch small corrections
+  into one pass where you can.
+- `contentModeration` and `keyframes` are the provider parameters.
+
+---
+
+### Runway: Gen-4.5
+
+> **id**: `runway/gen-4.5`
+
+The Runway model that creates the shot in the first place, where Aleph 2.0
+edits one you already have. Text- and image-to-video tuned for cinematic
+work: strong motion, high visual fidelity, close adherence to what the
+prompt asked for. Deliberately narrow — 720p, landscape 16:9 or portrait
+9:16 only, clips of 2 to 10 seconds, animated from a single opening still
+when you supply one — and that narrowness is the point. It honours a seed
+and does not generate audio.
+
+**Tips & pitfalls**
+
+- Write it like a shot list: subject, action, camera move, lens feel,
+  lighting. Prompt adherence is this model's strength.
+- Two seconds is a real option; stringing several short beats together
+  often beats asking for one ten-second take.
+- Only a first frame is accepted. Describe where the shot should end up
+  rather than expecting to pin it.
+- Landscape and portrait are the only framings — no square, no ultrawide.
+- `contentModeration` is the single provider parameter.
+
+---
+
+### Alibaba: HappyHorse 1.1
+
+> **id**: `alibaba/happyhorse-1.1`
+
+Text- and image-to-video in 3-to-15-second clips at 720p or 1080p, with an
+unusually wide aspect-ratio range: the usual 16:9 / 9:16 / 1:1 / 4:3 / 3:4
+plus ultrawide 21:9 and tall 9:21. That makes it a fit for cinematic
+letterbox shots and full-bleed vertical formats the 8-second-capped models
+cannot cover in one clip. First-frame conditioning and a seed for
+reproducible runs. 1.1 refines 1.0 with the same controls at a lower 1080p
+price.
+
+**Tips & pitfalls**
+
+- Front-load one clear shot in plain prose; one idea per clip holds
+  together far better than crowded multi-subject scenes.
+- Use a first-frame image to lock the opening composition and identity,
+  then describe only the motion that follows.
+- Longer durations (10–15s) tax motion and identity consistency harder —
+  reuse a seed when iterating so the clip does not drift between runs.
+- Nothing is published either way about audio. The control is offered and
+  the model's default applies, so test one short clip before planning a
+  soundtrack around it.
+- No provider parameters at all.
+
+---
+
+### Alibaba: HappyHorse 1.0
+
+> **id**: `alibaba/happyhorse-1.0`
+
+The first HappyHorse tier: the same wide aspect-ratio range including
+ultrawide 21:9 and tall 9:21, 3-to-15-second clips at 720p or 1080p,
+first-frame conditioning and seed control. Largely superseded by 1.1,
+which prices 1080p lower for the same controls — reach for 1.0 only when
+you need to pin the exact 1.0 generation behaviour.
+
+**Tips & pitfalls**
+
+- Prefer 1.1 for new work; it matches 1.0's controls and resolutions at a
+  lower 1080p price.
+- Front-load a single clear shot and keep to one idea per clip;
+  multi-subject action remains a weak spot.
+- Anchor the opening with a first-frame image and reuse a seed across
+  iterations to keep identity stable.
+- Nothing is published either way about audio — test rather than assume.
+- No provider parameters at all.
 
 ---
 
@@ -585,6 +890,22 @@ is also the spec for what you can change per-message.
 
 **No seed knob** — Kling's catalog says `seed: false`. Lock visual identity via reference frames + prompt language, not bit-exact replay.
 
+### Kling: Video v3.0 Pro / v3.0 Standard
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 3–15 (any integer) | Cost scales per second. |
+| Aspect ratio | Literal | 16:9, 9:16, 1:1 | |
+| Resolution | Literal | 720p | The only tier published. |
+| Size | Literal | 1280×720, 720×1280, 720×720 | |
+| Frames | Literal | auto / none / first_only / first_last | Both endpoints can be locked. |
+| Negative prompt | str | free text | Kling honours these strongly. |
+| CFG scale | float | 0 = provider default | New in v3.0; higher follows the prompt more strictly. |
+| Audio (`generate_audio`) | Literal | model_default / on / off | Carries its own higher per-second rate. |
+| Provider options JSON | str | raw JSON | |
+
+**No seed knob** (`seed: false`). Both tiers publish an identical knob set; only the per-second rate differs.
+
 ### MiniMax: Hailuo 2.3
 
 | Knob | Type | Values | Notes |
@@ -597,8 +918,9 @@ is also the spec for what you can change per-message.
 | Provider options JSON | str | raw JSON | |
 | Prompt optimizer | Literal | model_default / on / off | MiniMax server-side prompt rewriter. |
 | Fast pretreatment | Literal | model_default / on / off | Quicker optimiser pass; small quality cost. |
+| Seed | int | ≥ 0 | The catalog says nothing either way (`seed: null`), so the control is offered; left at `0` nothing is sent and MiniMax's own behaviour applies. |
 
-**No audio knob** (`generate_audio: false`). **No seed knob** (`seed: null`). **No negative prompt.**
+**No audio knob** (`generate_audio: false`). **No negative prompt.**
 
 ### Alibaba: Wan 2.7
 
@@ -674,14 +996,131 @@ is also the spec for what you can change per-message.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 1–15 (any integer) | **Only model with 1-second granularity.** Cost scales per second. |
+| Duration | Literal | 1–15 (any integer) | 1-second granularity, shared with the 1.5 tier. Cost scales per second. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Widest landscape/portrait/square/photo coverage in catalog. |
 | Resolution | Literal | 480p, 720p | Resolution drives the per-second SKU; 480p is the cheaper of the two. |
 | Size | Literal | 14 dimensions | e.g. 854×480, 1280×720, 720×1280, 480×480. |
 | Frames | Literal | first only | Image-to-video via first frame; no last frame. |
+| Audio | Literal | model default / on / off | Offered because nothing is published either way; the model's own behaviour decides. |
+| Seed | int | 0 = model default | Offered because nothing is published either way; a repeat is likely rather than guaranteed. |
 | Provider options JSON | str | raw JSON | |
 
-**No audio knob** (`generate_audio: null` — silent output). **No seed knob** (`seed: null`). **No negative prompt** (`allowed_passthrough_parameters` is empty).
+**No negative prompt** (`allowed_passthrough_parameters` is empty).
+
+---
+
+### SpaceXAI: Grok Imagine Video 1.5
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 1–15 (any integer) | 1-second granularity. Cost scales per second. |
+| Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Same seven framings as the original tier. |
+| Resolution | Literal | 480p, 720p, 1080p | Adds the 1080p finishing tier. Resolution drives the per-second SKU. |
+| Frames | Literal | first only | Image-to-video via first frame; no last frame. |
+| Audio | Literal | model default / on / off | Offered because nothing is published either way. |
+| Seed | int | 0 = model default | Offered because nothing is published either way. |
+| Provider options JSON | str | raw JSON | |
+
+**No size knob** (no fixed dimensions published). **No negative prompt** (`allowed_passthrough_parameters` is empty).
+
+---
+
+### Black Forest Labs: FLUX.3 Video
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 5–20 (any integer) | Cost scales per second. |
+| Aspect ratio | Literal | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 | |
+| Resolution | Literal | 720p, 1080p | Resolution drives the per-second SKU. |
+| Frames | Literal | first only, first + last | Both endpoints can be locked. |
+| Audio | Literal | model default / on / off | |
+| `safety_tolerance` | str | free text | Provider parameter; no values published. |
+| `version` | str | free text | Provider parameter; no values published. |
+| Provider options JSON | str | raw JSON | |
+
+**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published). Continuing an existing clip is billed at its own, higher per-second rate.
+
+---
+
+### ByteDance: Seedance 2.5
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 4–30 (any integer) | Longest single take in the catalog. Billed by token, not by the second. |
+| Aspect ratio | Literal | 16:9, 4:3, 1:1, 3:4, 9:16, 21:9 | |
+| Resolution | Literal | 480p, 720p | |
+| Size | Literal | 12 dimensions | e.g. 1280×720, 960×960, 720×1280, 1470×630. |
+| Frames | Literal | first only, first + last | |
+| Audio | Literal | model default / on / off | A separate per-token rate is published for output without audio. |
+| Seed | int | 0 = model default | |
+| Watermark | Literal | model default / on / off | Provider branding overlay. |
+| `req_key` | str | free text | Provider-side request identifier. |
+| `output_format` | str | free text | Provider parameter; no values published. |
+| Provider options JSON | str | raw JSON | |
+
+---
+
+### MiniMax: H3
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 5–15 (any integer) | Cost scales per second. |
+| Aspect ratio | Literal | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 | |
+| Resolution | Literal | 2K | The only tier published; there is no cheaper one to draft at. |
+| Frames | Literal | first only, first + last | |
+| Audio | Literal | model default / on / off | |
+| `aigc_watermark` | str | free text | Provider parameter; no values published. |
+| Provider options JSON | str | raw JSON | |
+
+**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published). Reference images are charged per image on top of the per-second rate.
+
+---
+
+### Runway: Gen-4.5
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 2–10 (any integer) | Cost scales per second, one flat rate. |
+| Aspect ratio | Literal | 16:9, 9:16 | Landscape or portrait only. |
+| Resolution | Literal | 720p | The only tier published. |
+| Size | Literal | 1280×720, 720×1280 | |
+| Frames | Literal | first only | No last frame. |
+| Seed | int | 0 = model default | |
+| `contentModeration` | str | free text | Provider parameter; no values published. |
+| Provider options JSON | str | raw JSON | |
+
+**No audio knob** (`generate_audio: false` — silent output).
+
+---
+
+### Runway: Aleph 2.0
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Aspect ratio | Literal | 16:9, 4:3, 3:2, 1:1, 2:3, 3:4, 9:16, 21:9 | |
+| Seed | int | 0 = model default | |
+| `contentModeration` | str | free text | Provider parameter; no values published. |
+| `keyframes` | str | free text | Provider parameter; show a moment rather than describing it. |
+| Provider options JSON | str | raw JSON | |
+
+**No duration, resolution, size or frames knob.** This is an in-context editor: the clip you attach sets the length and the dimensions of the result, so none of those are published and none are drawn. **No audio knob** (`generate_audio: false`). A published minimum per generation means a very short job costs the same as a somewhat longer one.
+
+---
+
+### Alibaba: HappyHorse 1.1 / HappyHorse 1.0
+
+| Knob | Type | Values | Notes |
+|------|------|--------|-------|
+| Duration | Literal | 3–15 (any integer) | Cost scales per second. |
+| Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 21:9, 9:21 | The only models offering tall 9:21. |
+| Resolution | Literal | 720p, 1080p | Resolution drives the per-second SKU; 1.1 prices 1080p lower than 1.0. |
+| Size | Literal | 14 dimensions | e.g. 1920×1080, 1080×1920, 2520×1080, 1080×2520. |
+| Frames | Literal | first only | No last frame. |
+| Audio | Literal | model default / on / off | Offered because nothing is published either way. |
+| Seed | int | 0 = model default | |
+| Provider options JSON | str | raw JSON | |
+
+**No negative prompt** (`allowed_passthrough_parameters` is empty on both tiers).
 
 ---
 
@@ -697,19 +1136,25 @@ constructing filter inputs.
 treated as "leave model default" (skipped from the request). `Gate` is
 the catalog condition under which the valve renders.
 
+A gate written as "publishes X and it is not `false`" is deliberate: a
+model that publishes nothing at all about a capability is a different
+case from one that publishes it does not have it. The first gets the
+control, and leaving the control alone sends nothing so the model's own
+default applies; the second gets no control.
+
 ### Core UserValves (pre-existing — every variant reuses these)
 
 | Identifier | Type | Default | Maps to API field | Gate (catalog condition) | Exposed on |
 |------------|------|---------|-------------------|---------------------------|------------|
-| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 14 |
-| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | all 14 |
-| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 14 |
-| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | all 14 |
-| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | all 14 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 13 (all except Sora 2 Pro) |
-| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | Veo trio, Kling, Wan 2.6, Wan 2.7 |
-| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | top-level `generate_audio: true` in catalog | 12 (all except Hailuo and Grok Imagine Video) |
-| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | top-level `seed: true` in catalog | 8 (Veo trio, Wan 2.6, Wan 2.7, Seedance trio) |
+| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 22 |
+| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | 21 (all except Aleph 2.0) |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 22 |
+| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 21 (all except Aleph 2.0) |
+| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 18 (all except FLUX.3 Video, H3, Aleph 2.0, Grok Imagine Video 1.5) |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 20 (all except Sora 2 Pro and Aleph 2.0) |
+| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 (Veo trio, Kling trio, Wan 2.6, Wan 2.7) |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 19 (all except Hailuo 2.3, Gen-4.5, Aleph 2.0) |
+| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 16 (all except FLUX.3 Video, H3, the Kling trio, Sora 2 Pro) |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` in `allowed_passthrough_parameters` | Wan 2.6, Wan 2.7 |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` in `allowed_passthrough_parameters` | Wan 2.7 |
@@ -803,11 +1248,23 @@ above. Behaviour rules:
   - `auto`: if you attach images, the first becomes `first_frame` (and if
     the model supports `last_frame` AND you attached more, the last
     becomes `last_frame`).
-  - `none`: ignore attached images for frame conditioning. They stay in
-    chat as normal attachments.
+  - `none`: no attached image anchors the clip. They are still sent, as
+    references the model may draw on — see
+    [Attachments that are not frames](#attachments-that-are-not-frames).
   - `first_only`: even if multiple images are attached, only the first is
     used as `first_frame`.
   - `first_last`: explicitly attach two images as start and end keyframes.
+- Setting `Size` to exact pixel dimensions settles any argument with the
+  other two shape knobs: a `Resolution` tier that disagrees with those
+  pixels, or an `Aspect ratio` that is not the shape of those pixels, is
+  left out and named in a warning notice in the chat, rather than sent
+  and refused by OpenRouter. Where the `Size` value is itself a tier,
+  only one of the two can be sent, and `Size` is the one that is kept.
+- A free-text knob's value is sent as the text you typed. A value that
+  starts with `[` or `{` is read as JSON and must be valid JSON, and the
+  error names the knob. A bare number is sent as a number, since several
+  provider options take one; `NaN`, `Infinity` and numbers too large to
+  write down are refused rather than sent.
 
 The filter is **always-on by default** for its model
 (`AUTO_DEFAULT_VIDEO_FILTERS`). Disabling it for a single chat usually
@@ -842,11 +1299,10 @@ generation job and returns the model's help blurb directly:
   reference, per job or per token get no such total, because seconds
   times a rate would price only part of the bill.
 
-Help blurbs are stored statically in
-[`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
-and rendered through a template that pulls live data from the catalog at
-every call. So if OpenRouter changes a SKU rate, the help text reflects
-it the next time you type `help` — no code change needed.
+The written-up part of each blurb ships with the pipe; everything about
+capabilities and money is read from the catalog at the moment you ask. So
+if OpenRouter changes a rate, the next `help` shows the new one — nothing
+has to be updated or redeployed for that.
 
 ---
 
@@ -871,6 +1327,14 @@ Constraints (admin-tunable):
   `image/jpeg,image/png,image/webp`): wrong-MIME images fail before
   submission.
 
+These three are strict for **frames**, because the clip was meant to be
+anchored on them: one that breaks a limit fails the whole request. The
+same three limits are applied again to anything sent only as a reference
+(below), and there a file that breaks one is left out with a warning
+notice in the chat naming it and the reason, while the video still
+renders. References count against their own combined budget, separate
+from the frames'.
+
 Per-model frame support:
 
 | Model | first_frame | last_frame |
@@ -885,8 +1349,41 @@ Per-model frame support:
 | Sora 2 Pro | ❌ | ❌ |
 
 If you attach an image to a Sora chat, it's not used as a frame — Sora's
-catalog has no `supported_frame_images`. The image stays in chat as a
-regular attachment.
+catalog has no `supported_frame_images`. It is sent as a reference
+instead, as described next.
+
+---
+
+## Attachments that are not frames
+
+Anything you attach that the Frames control does not claim — extra
+images, a second image on a first-frame-only model, a clip, a sound file,
+or any image at all when Frames is set to `none` or the model has no
+frame support — is sent to the model as a **reference**: material for it
+to draw on rather than a fixed start or end point. Nothing you attach is
+silently discarded any more.
+
+A left-over image goes as an image reference. Clips and sound files go
+as video and audio references; a model that does not use them
+ignores them, which is why they are sent rather than dropped where you
+could not see it. Each reference is checked against the frame limits
+above (with clips and sound files capped by `REMOTE_VIDEO_MAX_SIZE_MB`
+instead), and one that fails is left out with a warning notice naming it
+and why — the render still goes ahead.
+
+Because a reference is enough to generate from, a turn with attachments
+and **no typed words** is now submitted rather than refused.
+
+Whether an attachment also stays visible in the chat as a normal
+attachment depends on Open WebUI's **File context** capability for that
+model. While it is on — Open WebUI's own default — Open WebUI answers an
+attachment-bearing turn with an extra retrieval round-trip whose text
+would be pasted into the video prompt, so the pipe hands the files to the
+model and takes them out of the request. Where an admin has
+`UPDATE_MODEL_CAPABILITIES` on, the pipe unticks File context on video
+and image models, and from then on the attachments stay in the chat as
+well as being sent. Files that are not images, clips or sound — a PDF,
+say — are left alone either way.
 
 ---
 
@@ -1037,6 +1534,12 @@ When generation succeeds, the assistant message contains:
 
 *Generated in <elapsed>s · $<cost>*
 ```
+
+A model that returns more than one clip for a single job gets one
+`<video>` block per clip, in the order OpenRouter returned them, each
+stored as its own file. If some clips download and others do not, the
+ones that arrived are still delivered rather than the whole job being
+thrown away.
 
 The two `[label]: #` lines are CommonMark **reference-link definitions**.
 They render as nothing — they are invisible markers used internally for

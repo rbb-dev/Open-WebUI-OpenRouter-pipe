@@ -1554,6 +1554,97 @@ def test_video_help_is_model_specific_for_all_catalog_models():
 
 
 @pytest.mark.parametrize(
+    ("knob", "field", "published"),
+    [("Seed", "VIDEO_SEED", "seed"), ("Audio", "VIDEO_GENERATE_AUDIO", "generate_audio")],
+)
+def test_help_offers_a_capability_knob_exactly_when_the_filter_draws_one(knob, field, published):
+    """Two readings of the same published flag, and they disagreed on five models.
+
+    The flag has three states. The renderer reads it that way -- `None` declares nothing,
+    so the control is drawn and the model's own default applies -- while help read it as a
+    boolean and treated `None` as a refusal. The result was a panel that omitted a Seed or
+    an Audio control the chat UI was showing, on `grok-imagine-video`, `hailuo-2.3` and
+    both HappyHorse tiers. Neither reading is asserted here; they are asserted to be the
+    same reading, over every model the catalogue carries.
+    """
+    import re
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        build_video_filter_spec,
+        render_video_filter_source,
+    )
+    from open_webui_openrouter_pipe.integrations.video_help import _knob_is_active
+
+    tri_state = {model_id for model_id, m in VIDEO_BY_ID.items() if m.get(published) is None}
+    assert tri_state, (
+        f"no catalogued model publishes {published} as undeclared, so this cannot tell a "
+        "three-state reading from a boolean one"
+    )
+
+    for model_id, model in VIDEO_BY_ID.items():
+        source = render_video_filter_source(model_id=model_id, video_model=model)
+        drawn = bool(re.search(rf"^\s+{field}\s*:", source, re.M))
+        assert _knob_is_active(knob, build_video_filter_spec(model_id, model)) is drawn, (
+            f"{model_id} publishes {published}={model.get(published)!r}: the filter "
+            f"{'draws' if drawn else 'does not draw'} {field}, and help says the opposite"
+        )
+
+
+def test_the_documented_video_model_table_lists_exactly_the_catalogued_models():
+    """A model table is an inventory, and an inventory that drifts misleads.
+
+    It listed fourteen against a catalogue of twenty-two, so eight models a user can pick
+    in the chat header were absent from the only written inventory of them -- and nothing
+    said so, because the image table has a check tying it to its fixture and this one had
+    none. The expected set is read out of the fixture rather than typed here, so the next
+    model to arrive reddens this instead of quietly going undocumented.
+    """
+    import re
+
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_video_generation.md").read_text()
+    listed = {m for m in re.findall(r"^\| `([^`]+)` \|", doc, re.M) if "/" in m}
+    catalogued = set(VIDEO_BY_ID)
+
+    assert listed == catalogued, (
+        f"documented but not catalogued: {sorted(listed - catalogued)}\n"
+        f"catalogued but not documented: {sorted(catalogued - listed)}"
+    )
+
+    spelled = {
+        12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen", 16: "sixteen",
+        17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+        21: "twenty-one", 22: "twenty-two", 23: "twenty-three", 24: "twenty-four",
+        25: "twenty-five", 26: "twenty-six",
+    }
+    opening = doc.split("\n\n", 2)[1]
+    total = len(catalogued)
+    assert str(total) in opening or spelled.get(total, "\0") in opening, (
+        f"the opening paragraph must say how many models there are; it reads {opening!r}"
+    )
+
+
+def test_the_documented_deep_dives_cover_exactly_the_catalogued_models():
+    """The deep dives say in writing that they are what `help` renders, so they owe the
+    same list. Every catalogued model has curated help, so anything short of all of them
+    makes that sentence false.
+
+    Both directions matter and they fail differently. A section for a model OpenRouter
+    withdrew reads as a model you can still pick; a model with no section is one the only
+    written reference simply does not mention. It sat at twelve of twenty-two, and two of
+    the eight it was missing had been missing since before the catalogue grew.
+    """
+    import re
+
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_video_generation.md").read_text()
+    dived = set(re.findall(r"^> \*\*id\*\*: `([^`]+)`", doc, re.M))
+    assert dived, "the deep-dive sections must still declare the model they describe"
+    assert dived == set(VIDEO_BY_ID), (
+        f"deep dive for a model not in the catalogue: {sorted(dived - set(VIDEO_BY_ID))}\n"
+        f"catalogued with no deep dive: {sorted(set(VIDEO_BY_ID) - dived)}"
+    )
+
+
+@pytest.mark.parametrize(
     ("published_name", "expected"),
     [("SpaceXAI: Grok Imagine Video", "SpaceXAI: Grok Imagine Video"), ("Vendor: Renamed", "Vendor: Renamed")],
 )
@@ -1686,14 +1777,21 @@ def test_video_help_pricing_section_omitted_when_no_skus():
 
 
 def test_video_help_includes_typed_valve_descriptions_per_model():
+    """Hailuo's `Seed` moved sides, because the product had it on the other side all along.
+
+    `hailuo-2.3` publishes `seed: null`, which declares nothing rather than declaring the
+    absence, and the filter has always drawn the control on that reading. Help read the
+    same flag as a boolean and omitted it, and this assertion pinned the omission. `Audio`
+    stays on the must-not side: that one is published as an outright `false`.
+    """
     veo_help = render_video_help("google/veo-3.1", VIDEO_BY_ID["google/veo-3.1"])
     for label in ("`Person generation`", "`Conditioning scale`", "`Enhance prompt`", "`Seed`", "`Audio`"):
         assert label in veo_help, f"Veo 3.1 help missing {label}"
 
     hailuo_help = render_video_help("minimax/hailuo-2.3", VIDEO_BY_ID["minimax/hailuo-2.3"])
-    for label in ("`Prompt optimizer`", "`Fast pretreatment`"):
+    for label in ("`Prompt optimizer`", "`Fast pretreatment`", "`Seed`"):
         assert label in hailuo_help, f"Hailuo help missing {label}"
-    for label in ("`Seed`", "`Audio`", "`Negative prompt`"):
+    for label in ("`Audio`", "`Negative prompt`"):
         assert label not in hailuo_help, f"Hailuo help should not list {label}"
 
     sora_help = render_video_help("openai/sora-2-pro", VIDEO_BY_ID["openai/sora-2-pro"])

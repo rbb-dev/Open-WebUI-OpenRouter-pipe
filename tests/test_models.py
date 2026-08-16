@@ -4216,6 +4216,8 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     """
     import logging as _logging
 
+    from tests.log_capture import emitted
+
     pipe = pipe_instance_async
     manager = pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
@@ -4235,7 +4237,7 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
         if escapes_apply
         else {"id": "vendor/bad", "name": "Bad"}
     )
-    with caplog.at_level(_logging.WARNING, logger=manager.logger.name):
+    with caplog.at_level(_logging.DEBUG, logger=manager.logger.name):
         await manager._sync_model_metadata_to_owui(
             [{"id": "vendor/good", "name": "Good"}, bad],
             pipe_identifier="openrouter",
@@ -4243,9 +4245,8 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
 
     aggregates = [
         r
-        for r in caplog.records
-        if r.levelno >= _logging.WARNING
-        and r.args
+        for r in emitted(caplog, min_level=_logging.WARNING)
+        if r.args
         and isinstance(r.args, tuple)
         and len(r.args) >= 2
         and isinstance(r.args[0], int)
@@ -4253,7 +4254,19 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     ]
     assert len(aggregates) == 1, (
         f"expected exactly one aggregate sync-failure warning, got {len(aggregates)}: "
-        f"{[r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]}"
+        f"{[r.getMessage() for r in emitted(caplog, min_level=_logging.WARNING)]}"
+    )
+    per_model = [
+        r
+        for r in emitted(caplog, level=_logging.DEBUG)
+        if "metadata" in r.getMessage() and "failed" in r.getMessage()
+    ]
+    assert len(per_model) == 1, (
+        "the aggregate names how many failed; the per-model DEBUG line is the only place "
+        f"the operator learns WHY. Got {[r.getMessage() for r in per_model]}"
+    )
+    assert per_model[0].exc_info is not None, (
+        "the per-model line carries no traceback, so raising the log level buys nothing"
     )
     failed, total = aggregates[0].args[0], aggregates[0].args[1]
     assert (failed, total) == (1, 2), (

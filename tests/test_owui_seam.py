@@ -222,19 +222,87 @@ def test_owui_import_seam_resolves(module: str, symbol: str | None, is_optional:
     )
 
 
+def _version_parts(text: str) -> tuple[int, ...]:
+    parts = []
+    for chunk in str(text).split(".")[:3]:
+        digits = "".join(c for c in chunk if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def _installed_owui_version() -> str | None:
+    try:
+        return importlib.metadata.version("open-webui")
+    except Exception:
+        return None
+
+
+_MANIFEST = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe.py"
+
+
+def _manifest_floor() -> str | None:
+    for line in _MANIFEST.read_text(encoding="utf-8").splitlines():
+        if line.startswith("required_open_webui_version:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 @pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")
 @pytest.mark.parametrize(("module", "symbol"), sorted(_NEWER_THAN_OUR_FLOOR))
-def test_a_declared_absence_is_still_absent(module: str, symbol: str) -> None:
-    """A stale declaration is a hole, so the list is checked in both directions.
+def test_a_declared_absence_matches_the_installed_version(module: str, symbol: str) -> None:
+    """The entry records WHICH version introduces the symbol, so check against that.
 
-    Once the installed Open WebUI catches up, the entry stops describing anything and
-    starts exempting a real symbol from drift detection.
+    Presence alone cannot decide. This entry is correct on 0.10.x, where the symbol is
+    absent, AND on 0.11.x, where it is present -- the guard exists precisely because the
+    manifest floor spans both. Asserting bare absence turned the supported upgrade into a
+    red build the day Open WebUI shipped the symbol, and deleting the entry to make that
+    green breaks the other direction: `test_owui_import_seam_resolves` then fails on every
+    install below the introducing version, which is most of the supported range.
+
+    Both directions are still checked, against the recorded version rather than against
+    nothing: below it the symbol must be absent, from it the symbol must be present.
     """
     assert _BASE is not None
-    assert not _resolves(_BASE, module, symbol), (
-        f"`{module}.{symbol}` now resolves in the installed open_webui at {_BASE}, so "
-        "its _NEWER_THAN_OUR_FLOOR entry is stale and is exempting a symbol that is "
-        "present. Remove the entry."
+    introduced = _NEWER_THAN_OUR_FLOOR[(module, symbol)]
+    installed = _installed_owui_version()
+    assert installed is not None, (
+        "open_webui resolved on disk but its distribution reports no version, so the "
+        "declaration cannot be checked against anything"
+    )
+    resolves = _resolves(_BASE, module, symbol)
+    if _version_parts(installed) >= _version_parts(introduced):
+        assert resolves, (
+            f"`{module}.{symbol}` is recorded as arriving in Open WebUI {introduced} and "
+            f"{installed} is installed, but it does not resolve at {_BASE}. Either the "
+            "recorded version is wrong, or Open WebUI removed it again and our guard now "
+            "runs its fallback permanently."
+        )
+    else:
+        assert not resolves, (
+            f"`{module}.{symbol}` resolves in the installed open_webui {installed} at "
+            f"{_BASE}, but the entry records it as arriving in {introduced}. The recorded "
+            "version is wrong, and the entry is exempting a symbol that is present."
+        )
+
+
+def test_no_declared_absence_predates_the_manifest_floor() -> None:
+    """The entry dies when the floor catches up, not when the developer's install does.
+
+    An entry whose version is at or below `required_open_webui_version` describes nothing:
+    every supported host has the symbol, so the guard's fallback is unreachable and both
+    the guard and the entry should go. That is the only condition under which the entry is
+    stale -- an installed Open WebUI being newer than the entry is the normal case.
+    """
+    floor = _manifest_floor()
+    assert floor, f"no `required_open_webui_version:` in {_MANIFEST}"
+    stale = sorted(
+        (m, s)
+        for (m, s), introduced in _NEWER_THAN_OUR_FLOOR.items()
+        if _version_parts(introduced) <= _version_parts(floor)
+    )
+    assert not stale, (
+        f"{stale} are recorded as arriving at or below the manifest floor {floor}, so "
+        "every supported Open WebUI has them. Drop the guard and the entry."
     )
 
 

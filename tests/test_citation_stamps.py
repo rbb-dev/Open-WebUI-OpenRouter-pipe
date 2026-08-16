@@ -462,7 +462,7 @@ async def test_the_emitted_citation_stamp_is_the_local_calendar_day():
         time.tzset()
 
 
-_EXPECTED_RENDERERS = 9
+_EXPECTED_RENDERERS = 10
 """How many filter renderers the package defines. A count, not a floor."""
 
 
@@ -532,6 +532,10 @@ def test_the_installed_filters_guard_their_open_webui_import():
         "render_openrouter_fusion_filter_source": {"marker": "fusion"},
         "render_image_model_filter_source": {
             "spec": _image_model_filter_spec_for_stamp_check(),
+        },
+        "render_image_gen_filter_source": {
+            "spec": _image_model_filter_spec_for_stamp_check(),
+            "catalog_match": True,
         },
         "render_video_filter_source": {
             "model_id": "google/veo-3",

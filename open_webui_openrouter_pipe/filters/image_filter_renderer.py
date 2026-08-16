@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from ..core.config import _OPENROUTER_IMAGE_FILTER_MARKER, _PIPE_METADATA_KEY
+from ..core.config import (
+    _OPENROUTER_IMAGE_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL,
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
+    _PIPE_METADATA_KEY,
+)
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
@@ -78,11 +84,6 @@ class ImageModelFilterSpec:
     marker: str
     dotted_id: str = ""
     contract_read: bool = False
-    """Whether a published contract was available at all, however empty it turned out.
-
-    A failed read and a contract that shrank to nothing are both knobless and must be
-    treated in opposite ways, so the read outcome cannot be inferred from the knobs.
-    """
     published_anything: bool = False
     """Whether any record published a renderable setting, before agreement was applied.
 
@@ -91,20 +92,7 @@ class ImageModelFilterSpec:
     """
     enums: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     narrowed: tuple[tuple[str, tuple[Any, ...]], ...] = ()
-    """Enum values one of this model's providers accepts and the others do not.
-
-    A model served by several companies gets the values they all accept, because which
-    one takes the request is decided after the controls are drawn. Offering nothing else
-    hid a size that one of them does accept, with no way to ask for it. These are offered
-    too, marked in the control, and reported back if the company that takes the request
-    turns out not to accept the one chosen.
-    """
     schema_only: tuple[str, ...] = ()
-    """Documented request fields this model publishes no description of.
-
-    Rendered whatever the contract says, because a field that is in the request format
-    and in no contract is otherwise unreachable on every model at once.
-    """
     ranges: tuple[tuple[str, int, int], ...] = ()
     supported: tuple[str, ...] = ()
     """Parameters the model declares it supports without publishing a domain.
@@ -407,53 +395,53 @@ _SCHEMA_ONLY_CAVEAT = (
     "This model publishes no list of what it accepts here, so the value goes out as "
     "typed and the company running it decides. Empty leaves it unset."
 )
-"""Said on the control itself, because it is the only place the reader is looking.
 
-A field the request format defines and no model describes cannot be checked before it is
-sent. Rendering it silently would promise a validation that does not happen.
-"""
-
-_ALWAYS_ON_VALVES = (
+ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
     (
-        'IMAGE_PROVIDER_OPTIONS_JSON: str = Field(\n'
-        '            default="",\n'
-        '            title="Provider options",\n'
-        '            description="Extra settings for the company that runs this model, as '
-        'a JSON object keyed by its OpenRouter name. Use it for anything this panel does '
-        'not already offer. Empty sends nothing.",\n'
-        "        )"
+        "IMAGE_PROVIDER_OPTIONS_JSON",
+        "str",
+        '""',
+        "Provider options",
+        (
+            "Extra settings for the company that runs this model, as "
+            "a JSON object keyed by its OpenRouter name. Use it for anything this panel does "
+            "not already offer. Empty sends nothing."
+        ),
     ),
     (
-        'IMAGE_REFERENCE_MODE: Literal["auto", "latest-only", "none"] = Field(\n'
-        '            default="auto",\n'
-        '            title="Reference images",\n'
-        '            description="Which attached images go to the model as references. '
-        'auto sends every one on this turn, oldest first; latest-only sends just the most '
-        'recent; none sends none of them.",\n'
-        "        )"
+        "IMAGE_REFERENCE_MODE",
+        'Literal["auto", "latest-only", "none"]',
+        '"auto"',
+        "Reference images",
+        (
+            "Which attached images go to the model as references. "
+            "auto sends every one on this turn, oldest first; latest-only sends just the most "
+            "recent; none sends none of them."
+        ),
     ),
     (
-        'IMAGE_REFERENCE_URLS: str = Field(\n'
-        '            default="",\n'
-        '            title="Reference image links",\n'
-        '            description="Reference images to use as well as, or instead of, the '
-        'attached ones: a JSON list of https links or data URLs. These are placed first, '
-        'so they survive when the model takes fewer references than are on offer.",\n'
-        "        )"
+        "IMAGE_REFERENCE_URLS",
+        "str",
+        '""',
+        "Reference image links",
+        (
+            "Reference images to use as well as, or instead of, the "
+            "attached ones: a JSON list of https links or data URLs. These are placed first, "
+            "so they survive when the model takes fewer references than are on offer."
+        ),
     ),
 )
-"""Controls every image model gets, whatever its contract publishes.
 
-Two capabilities that are in the request format for every model and in no model's list of
-settings: options addressed to the company serving the request, and which images are sent
-as references. Gating them on a contract that never mentions them would hide them
-everywhere at once.
-"""
-
-ALWAYS_ON_VALVE_NAMES = frozenset(
-    {"IMAGE_PROVIDER_OPTIONS_JSON", "IMAGE_REFERENCE_MODE", "IMAGE_REFERENCE_URLS"}
+_ALWAYS_ON_VALVES = tuple(
+    f"{name}: {annotation} = Field(\n"
+    f"            default={default},\n"
+    f'            title="{title}",\n'
+    f'            description="{description}",\n'
+    "        )"
+    for name, annotation, default, title, description in ALWAYS_ON_CONTROLS
 )
-"""Reserved field names, so a published setting cannot quietly take one of them over."""
+
+ALWAYS_ON_VALVE_NAMES = frozenset(name for name, *_rest in ALWAYS_ON_CONTROLS)
 
 
 def _image_shared_by_some(values: tuple[Any, ...]) -> str:
@@ -509,7 +497,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
         fields.append(
             _image_field(
-                f"{_valve_name(name)}: Optional[int] = Field(\n"
+                f"{_valve_name(name)}: int | None = Field(\n"
                 "            default=None,\n"
                 f"            ge={low},\n"
                 f"            le={high},\n"
@@ -523,7 +511,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
         fields.append(
             _image_field(
-                f"{_valve_name(name)}: Optional[int] = Field(\n"
+                f"{_valve_name(name)}: int | None = Field(\n"
                 "            default=None,\n"
                 f'            title="{title}",\n'
                 f'            description="{description} Leave it empty to use the model '
@@ -558,30 +546,70 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
     return "\n".join(fields) if fields else "        pass"
 
 
-def _render_image_overrides(spec: ImageModelFilterSpec) -> str:
+def _render_image_overrides(
+    spec: ImageModelFilterSpec,
+    *,
+    target: str = "overrides",
+    wire_keys: dict[str, str] | None = None,
+) -> str:
     """Read each rendered valve back out into the request, under its published name."""
+    renamed = wire_keys or {}
+
+    def _key(name: str) -> str:
+        return renamed.get(name, name)
+
     lines: list[str] = []
     for name, _values in spec.enums:
         lines.append(f"        value = user_valves.{_valve_name(name)}")
         lines.append('        if value != "":')
-        lines.append(f"            overrides[{name!r}] = value")
+        lines.append(f"            {target}[{_key(name)!r}] = value")
     for name, _low, _high in spec.ranges:
         lines.append(f"        count = user_valves.{_valve_name(name)}")
         lines.append("        if count is not None:")
-        lines.append(f"            overrides[{name!r}] = int(count)")
+        lines.append(f"            {target}[{_key(name)!r}] = int(count)")
     for name in spec.schema_only:
         lines.append(f'        wanted = (user_valves.{_valve_name(name)} or "").strip()')
         lines.append("        if wanted:")
-        lines.append(f"            overrides[{name!r}] = wanted")
+        lines.append(f"            {target}[{_key(name)!r}] = wanted")
     for name in spec.supported:
         lines.append(f"        chosen = user_valves.{_valve_name(name)}")
         lines.append("        if chosen is not None:")
-        lines.append(f"            overrides[{name!r}] = int(chosen)")
+        lines.append(f"            {target}[{_key(name)!r}] = int(chosen)")
     for name in spec.passthrough:
         lines.append(f'        raw = (user_valves.{_valve_name(name)} or "").strip()')
         lines.append("        if raw:")
-        lines.append(f"            overrides[{name!r}] = self._decode(raw, {name!r})")
+        lines.append(f"            {target}[{_key(name)!r}] = self._decode(raw, {name!r})")
     return "\n".join(lines) if lines else "        pass"
+
+
+_KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
+
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {}
+            for name, field in cls.model_fields.items():
+                if name not in data:
+                    continue
+                annotated = (
+                    Annotated[(field.annotation, *field.metadata)]
+                    if field.metadata
+                    else field.annotation
+                )
+                try:
+                    TypeAdapter(annotated).validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept'''
 
 
 def render_image_model_filter_source(spec: ImageModelFilterSpec) -> str:
@@ -651,34 +679,7 @@ class Filter:
         )
 
     class UserValves(BaseModel):
-        @model_validator(mode="before")
-        @classmethod
-        def _keep_what_still_fits(cls, data: Any) -> Any:
-            """Drop stored values the model no longer publishes, keep the rest.
-
-            These fields track a live contract, so a provider joining the model can
-            narrow a range or remove a ratio while a value the user chose earlier is
-            still stored. Open WebUI builds this class from that stored dict and passes
-            no valves at all if construction raises -- so one stale entry silently threw
-            away every other choice the user had made.
-            """
-            if not isinstance(data, dict):
-                return data
-            kept = {{}}
-            for name, field in cls.model_fields.items():
-                if name not in data:
-                    continue
-                annotated = (
-                    Annotated[tuple([field.annotation, *field.metadata])]
-                    if field.metadata
-                    else field.annotation
-                )
-                try:
-                    TypeAdapter(annotated).validate_python(data[name])
-                except ValidationError:
-                    continue
-                kept[name] = data[name]
-            return kept
+{_KEEP_WHAT_STILL_FITS}
 
 {_render_image_always_on_valves()}
 {_render_image_model_user_valves(spec)}
@@ -837,5 +838,154 @@ class Filter:
                 if reference_links:
                     image_meta["reference_urls"] = reference_links
                 pipe_meta["image_generation"] = image_meta
+        return body
+'''
+
+
+IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES: tuple[str, ...] = ("resolution", "size", "image_size")
+
+IMAGE_GEN_TOOL_TIER_KEY: str = IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES[0]
+
+
+def image_gen_tool_wire_keys() -> dict[str, str]:
+    return {"resolution": IMAGE_GEN_TOOL_TIER_KEY}
+
+
+def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> str:
+    named = spec.model_id or "no model"
+    opening = "Which OpenRouter model draws the picture."
+    if not catalog_match:
+        return (
+            f"{opening} No settings are offered for {named}: it is not in the image "
+            "model list this pipe has loaded. Check the id if that is unexpected."
+        )
+    if not spec.contract_read:
+        return (
+            f"{opening} What {named} accepts could not be read this time, so no settings "
+            "are offered; they appear once it can be read again."
+        )
+    if not spec.has_knobs:
+        if spec.published_anything:
+            return (
+                f"{opening} The companies serving {named} accept different settings, so "
+                "none can be offered without knowing which one will take the request. It "
+                "draws with its own defaults."
+            )
+        return (
+            f"{opening} {named} publishes no adjustable settings, so it draws with its "
+            "own defaults."
+        )
+    return (
+        f"{opening} The settings offered to users are the ones {named} publishes; "
+        "choosing another model changes them."
+    )
+
+
+def render_image_gen_filter_source(
+    spec: ImageModelFilterSpec,
+    *,
+    catalog_match: bool,
+    selected_model: str = "",
+) -> str:
+    tool_spec = replace(spec, passthrough=())
+    moderation_values, moderation_meaning = PASSTHROUGH_ENUMS["moderation"]
+    model_id = scrub_surrogates(
+        selected_model.strip() or spec.model_id or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
+    )
+    return f'''"""
+title: OR Image Gen
+author: Open-WebUI-OpenRouter-pipe
+author_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
+id: {_OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID}
+description: Configures OpenRouter image generation for the OpenRouter pipe.
+version: 0.1.0
+license: MIT
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+try:
+    from open_webui.env import SRC_LOG_LEVELS
+except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
+    SRC_LOG_LEVELS = {{}}
+
+OWUI_OPENROUTER_PIPE_MARKER = {_OPENROUTER_IMAGE_GEN_FILTER_MARKER!r}
+
+
+class Filter:
+    toggle = True
+
+    class Valves(BaseModel):
+        priority: int = Field(
+            default=0,
+            description="Priority level for the filter operations.",
+        )
+        IMAGE_GENERATION_MODEL: str = Field(
+            default={model_id!r},
+            title="Image generation model",
+            description={image_gen_model_note(spec, catalog_match=catalog_match)!r},
+        )
+        IMAGE_GENERATION_MODERATION: Literal[{_image_literal_union(moderation_values)}] = Field(
+            default={moderation_values[0]!r},
+            title="Image moderation",
+            description={moderation_meaning!r},
+        )
+
+    class UserValves(BaseModel):
+{_KEEP_WHAT_STILL_FITS}
+
+{_render_image_model_user_valves(tool_spec)}
+
+    def __init__(self) -> None:
+        self.log = logging.getLogger("openrouter.image.gen")
+        self.log.setLevel(SRC_LOG_LEVELS.get("OPENAI", logging.INFO))
+        self.toggle = True
+        self.valves = self.Valves()
+
+    def inlet(
+        self,
+        body: dict[str, Any],
+        __metadata__: dict[str, Any] | None = None,
+        __user__: dict[str, Any] | None = None,
+        __model__: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            return body
+
+        user_valves = None
+        if isinstance(__user__, dict):
+            stored = __user__.get("valves")
+            if isinstance(stored, self.UserValves):
+                user_valves = stored
+            elif stored is not None:
+                try:
+                    user_valves = self.UserValves.model_validate(
+                        stored if isinstance(stored, dict) else stored.model_dump()
+                    )
+                except Exception:  # noqa: BLE001 - a stored valve must not block the turn
+                    user_valves = self.UserValves()
+        if user_valves is None:
+            user_valves = self.UserValves()
+
+        params: dict[str, Any] = {{"model": self.valves.IMAGE_GENERATION_MODEL}}
+        if self.valves.IMAGE_GENERATION_MODERATION != {moderation_values[0]!r}:
+            params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
+{_render_image_overrides(tool_spec, target="params", wire_keys=image_gen_tool_wire_keys())}
+
+        if isinstance(__metadata__, dict):
+            prev_pipe_meta = __metadata__.get({_PIPE_METADATA_KEY!r})
+            pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {{}}
+            __metadata__[{_PIPE_METADATA_KEY!r}] = pipe_meta
+
+            prev_tools = pipe_meta.get("server_tools")
+            server_tools = dict(prev_tools) if isinstance(prev_tools, dict) else {{}}
+            pipe_meta["server_tools"] = server_tools
+            server_tools["image_generation"] = params
+
         return body
 '''

@@ -11,16 +11,16 @@ license: MIT
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
 except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
     SRC_LOG_LEVELS = {}
 
-OWUI_OPENROUTER_PIPE_MARKER = "openrouter_pipe:image_gen_filter:v1"
+OWUI_OPENROUTER_PIPE_MARKER = 'openrouter_pipe:image_gen_filter:v1'
 
 
 class Filter:
@@ -32,54 +32,51 @@ class Filter:
             description="Priority level for the filter operations.",
         )
         IMAGE_GENERATION_MODEL: str = Field(
-            default="openai/gpt-5-image-mini",
+            default='openai/gpt-5-image-mini',
             title="Image generation model",
-            description="OpenRouter model ID for image generation. Controls pricing and capabilities.",
+            description='Which OpenRouter model draws the picture. No settings are offered for openai/gpt-5-image-mini: it is not in the image model list this pipe has loaded. Check the id if that is unexpected.',
         )
-        IMAGE_GENERATION_MODERATION: Literal["auto", "low"] = Field(
-            default="auto",
+        IMAGE_GENERATION_MODERATION: Literal['auto', 'low'] = Field(
+            default='auto',
             title="Image moderation",
-            description="Content moderation level. 'auto' = standard. 'low' = reduced filtering.",
+            description='How strictly the company running this model screens what it will draw.',
         )
 
     class UserValves(BaseModel):
-        IMAGE_QUALITY: Literal["", "low", "medium", "high"] = Field(
-            default="",
-            title="Image quality",
-            description="Quality level for generated images. Empty = model default.",
-        )
-        IMAGE_SIZE: Literal["", "1024x1024", "1536x1024", "1024x1536", "1344x768", "768x1344", "1248x832", "832x1248", "1184x864", "864x1184", "1152x896", "896x1152", "1536x672", "512x512"] = Field(
-            default="",
-            title="Image size",
-            description="Image dimensions in pixels. Empty = model default.",
-        )
-        IMAGE_ASPECT_RATIO: Literal["", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9", "4:1", "1:4", "8:1", "1:8"] = Field(
-            default="",
-            title="Image aspect ratio",
-            description="Aspect ratio for generated images. Extended ratios (4:1, 1:4, 8:1, 1:8) supported by Gemini only. Empty = model default.",
-        )
-        IMAGE_BACKGROUND: Literal["", "transparent", "opaque"] = Field(
-            default="",
-            title="Image background",
-            description="'transparent' removes background (PNG only). Empty = model default.",
-        )
-        IMAGE_OUTPUT_FORMAT: Literal["", "png", "jpeg", "webp"] = Field(
-            default="",
-            title="Image format",
-            description="Output format. 'png' supports transparency. Empty = model default.",
-        )
-        IMAGE_RESOLUTION_TIER: Literal["", "0.5K", "1K", "2K", "4K"] = Field(
-            default="",
-            title="Resolution tier",
-            description="Resolution multiplier for Gemini image models (0.5K is Gemini Flash only). Empty = model default (1K).",
-        )
-        IMAGE_OUTPUT_COMPRESSION: int = Field(
-            default=0,
-            ge=0,
-            le=100,
-            title="Image compression",
-            description="Compression level for jpeg/webp (0-100). 0 = model default.",
-        )
+        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
+
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {}
+            for name, field in cls.model_fields.items():
+                if name not in data:
+                    continue
+                annotated = (
+                    Annotated[(field.annotation, *field.metadata)]
+                    if field.metadata
+                    else field.annotation
+                )
+                try:
+                    TypeAdapter(annotated).validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept
+
+        IMAGE_SIZE: str = Field(
+                    default="",
+                    title="Output size",
+                    description="Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.",
+                )
 
     def __init__(self) -> None:
         self.log = logging.getLogger("openrouter.image.gen")
@@ -99,34 +96,30 @@ class Filter:
 
         user_valves = None
         if isinstance(__user__, dict):
-            user_valves = __user__.get("valves")
-        if not isinstance(user_valves, BaseModel):
+            stored = __user__.get("valves")
+            if isinstance(stored, self.UserValves):
+                user_valves = stored
+            elif stored is not None:
+                try:
+                    user_valves = self.UserValves.model_validate(
+                        stored if isinstance(stored, dict) else stored.model_dump()
+                    )
+                except Exception:  # noqa: BLE001 - a stored valve must not block the turn
+                    user_valves = self.UserValves()
+        if user_valves is None:
             user_valves = self.UserValves()
 
-        # Build image generation parameters
         params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
-        if self.valves.IMAGE_GENERATION_MODERATION != "auto":
+        if self.valves.IMAGE_GENERATION_MODERATION != 'auto':
             params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
-        for attr, key in [
-            ("IMAGE_QUALITY", "quality"),
-            ("IMAGE_SIZE", "size"),
-            ("IMAGE_ASPECT_RATIO", "aspect_ratio"),
-            ("IMAGE_BACKGROUND", "background"),
-            ("IMAGE_OUTPUT_FORMAT", "output_format"),
-            ("IMAGE_RESOLUTION_TIER", "image_size"),
-        ]:
-            val = getattr(user_valves, attr, "")
-            if isinstance(val, str) and val.strip():
-                params[key] = val.strip()
-        compression = getattr(user_valves, "IMAGE_OUTPUT_COMPRESSION", 0)
-        if isinstance(compression, int) and compression > 0:
-            params["output_compression"] = compression
+        wanted = (user_valves.IMAGE_SIZE or "").strip()
+        if wanted:
+            params['size'] = wanted
 
-        # Write to metadata
         if isinstance(__metadata__, dict):
-            prev_pipe_meta = __metadata__.get("openrouter_pipe")
+            prev_pipe_meta = __metadata__.get('openrouter_pipe')
             pipe_meta = dict(prev_pipe_meta) if isinstance(prev_pipe_meta, dict) else {}
-            __metadata__["openrouter_pipe"] = pipe_meta
+            __metadata__['openrouter_pipe'] = pipe_meta
 
             prev_tools = pipe_meta.get("server_tools")
             server_tools = dict(prev_tools) if isinstance(prev_tools, dict) else {}

@@ -11657,19 +11657,27 @@ class TestOpenRouterServerToolCards:
         closure-local sets in `_run_streaming_loop` are private, but the audit logic itself is now
         a callable method that takes the sets as arguments, so we can verify the defensive log
         without source-patching the streaming loop.
+
+        Captured at DEBUG and the level asserted, because a count taken at WARNING is 1
+        whether the audit warns or has been quietly demoted to a level nobody reads.
         """
         import logging
+
+        from tests.log_capture import emitted
+
         handler = pipe_instance_async._streaming_handler
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             handler._audit_orphan_tool_cards(
                 emitted_tool_call_items={"call-1", "call-2", "call-3"},
                 emitted_tool_output_items={"call-1"},
             )
 
-        unmatched = [r for r in caplog.records
-                     if "Tool card(s) emitted without matching" in r.getMessage()]
-        assert len(unmatched) == 1
+        unmatched = emitted(
+            caplog, containing="Tool card(s) emitted without matching"
+        )
+        assert len(unmatched) == 1, [(r.levelname, r.getMessage()) for r in unmatched]
+        assert unmatched[0].levelno == logging.WARNING, unmatched[0].levelname
         message = unmatched[0].getMessage()
         assert "call-2" in message
         assert "call-3" in message
