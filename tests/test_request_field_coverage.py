@@ -67,7 +67,7 @@ def test_no_field_is_both_reached_and_unreachable(kind, routes, gaps):
     assert all(text.strip() for text in (*routes.values(), *gaps.values())), kind
 
 
-@pytest.mark.parametrize(("kind", "gaps"), [("image", IMAGE_FIELD_GAPS), ("video", VIDEO_FIELD_GAPS)])
+@pytest.mark.parametrize(("kind", "gaps"), [("video", VIDEO_FIELD_GAPS)])
 def test_every_gap_carries_a_reason_long_enough_to_be_one(kind, gaps):
     """A one-word reason is a label, not an explanation, and the point of the list is
     that a reader can tell a decision from an oversight without reading the code."""
@@ -94,9 +94,7 @@ def test_the_video_adapter_reads_the_partition_rather_than_a_copy_of_it():
     assert _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS == VIDEO_REQUEST_FIELDS
 
 
-@pytest.mark.parametrize(
-    ("kind", "field"), [("image", "stream"), ("video", "callback_url")]
-)
+@pytest.mark.parametrize(("kind", "field"), [("video", "callback_url")])
 def test_a_named_gap_really_is_absent_from_what_the_pipe_sends(kind, field):
     """The reason has to describe the code. A field listed as unreachable that the
     adapter does send would be a false record, which is worse than none."""

@@ -936,6 +936,15 @@ class RequestOrchestrator:
                     api_model_id=api_model_id,
                 )
 
+            api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id
+            await self._pipe._ensure_image_generation_adapter().fit_chat_image_config(
+                responses_body=responses_body,
+                published=OpenRouterModelRegistry.image_endpoint(api_model_id),
+                metadata=__metadata__,
+                event_emitter=__event_emitter__,
+                api_model_id=api_model_id,
+            )
+
         tools_registry = __tools__
         if inspect.isawaitable(tools_registry):
             try:

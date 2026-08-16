@@ -445,6 +445,97 @@ class ImageGenerationAdapter:
         return sorted(key for key in keys if key)
 
     @staticmethod
+    def _every_endpoint_publishes_streaming(records: list[dict[str, Any]]) -> bool:
+        return bool(records) and all(
+            record.get("supports_streaming") is True for record in records
+        )
+
+    def _unserved_pin_note(self, unserved_pin: str, api_model_id: str) -> _Note:
+        self._logger.log(
+            warn_level(_warned_image_endpoints, f"{api_model_id}:pin"),
+            "Provider %r was pinned for %r but carries no endpoint record; the contract "
+            "was read, so this is a pin that does not match rather than a lookup failure.",
+            _clamp(unserved_pin),
+            api_model_id,
+        )
+        return _Note(
+            "unserved-pin",
+            "*",
+            f"{_clamp(unserved_pin)} does not serve this model; its published limits "
+            "were not applied",
+        )
+
+    def _status_reporter(self, event_emitter: Any) -> Any:
+        if not event_emitter:
+            return None
+
+        async def report(message: str) -> None:
+            await self._pipe._event_emitter_handler._emit_status(
+                event_emitter, message, done=False
+            )
+
+        return report
+
+    async def _report_notes(
+        self, notes: list[_Note], *, api_model_id: str, event_emitter: Any
+    ) -> None:
+        for note in notes:
+            self._logger.log(
+                warn_level(
+                    _warned_dropped_image_param, f"{api_model_id}:{note.kind}:{note.name}"
+                ),
+                "Image parameter not sent for %r: %s",
+                api_model_id,
+                note.text,
+            )
+        if notes and event_emitter:
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter,
+                summarise_names(
+                    [note.text for note in notes], _PROVIDER_KEY_REPORT_LIMIT, _NOTE_TEXT_LIMIT
+                ),
+                level="warning",
+            )
+
+    async def fit_chat_image_config(
+        self,
+        *,
+        responses_body: Any,
+        published: list[dict[str, Any]] | None,
+        metadata: dict[str, Any] | None,
+        event_emitter: Any,
+        api_model_id: str,
+    ) -> None:
+        raw = getattr(responses_body, "image_config", None)
+        records = [record for record in (published or []) if isinstance(record, dict)]
+        if not isinstance(raw, dict) or not raw or not records:
+            return
+        record, unserved_pin = self._select_endpoint(
+            records, requested_provider_block(responses_body, metadata)
+        )
+        if record is None:
+            if unserved_pin:
+                await self._report_notes(
+                    [self._unserved_pin_note(unserved_pin, api_model_id)],
+                    api_model_id=api_model_id,
+                    event_emitter=event_emitter,
+                )
+            return
+        allowed = frozenset(
+            item
+            for item in (record.get("allowed_passthrough_parameters") or [])
+            if isinstance(item, str)
+        )
+        fitted, passthrough, notes = self._split_image_config(
+            {"image_config": raw}, allowed_passthrough=allowed, record=record
+        )
+        merged = {**passthrough, **fitted}
+        responses_body.image_config = merged or None
+        await self._report_notes(
+            notes, api_model_id=api_model_id, event_emitter=event_emitter
+        )
+
+    @staticmethod
     def _reference_limit(record: dict[str, Any] | None) -> int | None:
         supported = (record or {}).get("supported_parameters")
         if not isinstance(supported, dict):
@@ -818,7 +909,8 @@ class ImageGenerationAdapter:
             payload["input_references"] = refs
 
         cached = self._endpoint_cache.get(api_model_id)
-        carriers = self._option_carriers(list(cached[1]) if cached else [])
+        records = list(cached[1]) if cached else []
+        carriers = self._option_carriers(records)
         if provider_params and not carriers:
             names = summarise_names(sorted(provider_params), _PROVIDER_KEY_REPORT_LIMIT)
             notes.append(
@@ -840,21 +932,7 @@ class ImageGenerationAdapter:
             IMAGE_PROVIDER_KEYS,
         )
         if unserved_pin:
-            notes.append(
-                _Note(
-                    "unserved-pin",
-                    "*",
-                    f"{_clamp(unserved_pin)} does not serve this model; its published limits "
-                    "were not applied",
-                )
-            )
-            self._logger.log(
-                warn_level(_warned_image_endpoints, f"{api_model_id}:pin"),
-                "Provider %r was pinned for %r but carries no endpoint record; the contract "
-                "was read, so this is a pin that does not match rather than a lookup failure.",
-                _clamp(unserved_pin),
-                api_model_id,
-            )
+            notes.append(self._unserved_pin_note(unserved_pin, api_model_id))
         if unsupported:
             names = summarise_names(unsupported, _PROVIDER_KEY_REPORT_LIMIT)
             notes.append(
@@ -875,23 +953,12 @@ class ImageGenerationAdapter:
         if provider:
             payload["provider"] = provider
 
-        for note in notes:
-            self._logger.log(
-                warn_level(
-                    _warned_dropped_image_param, f"{api_model_id}:{note.kind}:{note.name}"
-                ),
-                "Image parameter not sent for %r: %s",
-                api_model_id,
-                note.text,
-            )
-        if notes and event_emitter:
-            await self._pipe._event_emitter_handler._emit_notification(
-                event_emitter,
-                summarise_names(
-                    [note.text for note in notes], _PROVIDER_KEY_REPORT_LIMIT, _NOTE_TEXT_LIMIT
-                ),
-                level="warning",
-            )
+        await self._report_notes(
+            notes, api_model_id=api_model_id, event_emitter=event_emitter
+        )
+
+        if self._every_endpoint_publishes_streaming(records):
+            payload["stream"] = True
 
         if event_emitter:
             await self._pipe._event_emitter_handler._emit_status(
@@ -904,6 +971,7 @@ class ImageGenerationAdapter:
         ).generate(
             payload,
             max_decoded_bytes=int(getattr(valves, "BASE64_MAX_SIZE_MB", 0) or 0) * 1024 * 1024,
+            on_progress=self._status_reporter(event_emitter),
         )
 
         outcome["usage"] = result.usage

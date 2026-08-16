@@ -36,15 +36,13 @@ IMAGE_FIELD_ROUTES: dict[str, str] = {
     "resolution": "per-model control, drawn when the model publishes its tiers",
     "seed": "per-model control, drawn when the model declares it supports one",
     "size": "control drawn on every model, since no model's contract describes this field",
-}
-
-IMAGE_FIELD_GAPS: dict[str, str] = {
     "stream": (
-        "the pipe sends one request and waits for the finished picture. Asking for the "
-        "streamed form would mean reading progress events nothing here handles yet, so "
-        "the request would hang rather than arrive early."
+        "set for you, whenever every endpoint that could serve the request publishes "
+        "native streaming, so the chat shows progress while the picture is drawn"
     ),
 }
+
+IMAGE_FIELD_GAPS: dict[str, str] = {}
 
 VIDEO_FIELD_ROUTES: dict[str, str] = {
     "aspect_ratio": "per-model control, drawn from the shapes the catalogue lists",

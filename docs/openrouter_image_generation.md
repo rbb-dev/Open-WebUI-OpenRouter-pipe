@@ -1135,6 +1135,8 @@ pipe(body, ...)
         └─ JSON-typed values parsed only when they open a container
 
   └─ multimodal model (emits image and text)
+  │     └─ image_config validated against the same endpoint record its
+  │        filter was built from, then sent as one block
   │     └─ chat-completions request → response with message.images[0]
   │     └─ chat_completions_adapter parses message.images
   │     └─ streaming_core materialises the entry → persists → file URL
@@ -1153,6 +1155,18 @@ an input image.
 
 Key invariant: **both branches render the same markdown**. Multimodal
 models keep the streaming path that has always handled them.
+
+Both branches also read the same contract. A multimodal model never
+reaches the dedicated image request, but it still gets a filter built
+from its published endpoint record, so its `image_config` is put through
+that record on the way out: a value outside the published domain is
+withheld and reported rather than sent, and a key no record names is
+withheld too. Chat completions has one field for image settings and a
+closed provider block — its `ProviderPreferences` defines no `options` —
+so a provider setting the record does name stays inside `image_config`,
+which is where OpenRouter documents the provider-specific block to be.
+A model whose contract is not in hand is left exactly as it arrived; a
+read that failed is not a contract that shrank.
 
 Key files:
 
@@ -1208,8 +1222,19 @@ Key files:
   request — no polling lifecycle, no resume, no disconnect recovery.
   If the request fails or the user disconnects, the generation is lost.
   Re-submit to retry.
-- **No streaming intermediate frames.** OpenRouter doesn't stream
-  partial images; the response includes the full base64 image at once.
+- **Previews, not partial results.** A few providers — currently only
+  OpenAI's — render an image in passes and publish
+  `supports_streaming: true` on their endpoint record. Where every
+  endpoint that could serve the request publishes it, the pipe asks for
+  the streamed form and reports each preview as a status line, so the
+  chat shows movement instead of a spinner. Vector models never emit a
+  preview picture and stream their drawing as text instead; that is
+  reported once as "Drawing the image…". Either way the answer is the
+  same `![alt](file_url)` markdown built from the finished image, so
+  nothing downstream — including iterative editing — sees a difference.
+  A stream that ends before the finished image is a failed generation:
+  OpenRouter bills image generation all-or-nothing, so previews already
+  delivered cost nothing and there is nothing to salvage.
 - **No batch generation.** One request, one image (or set of images
   the model emits per turn). For batch use, send multiple chats.
 - **Multimodal models may emit text without an image.** GPT-5 Image
