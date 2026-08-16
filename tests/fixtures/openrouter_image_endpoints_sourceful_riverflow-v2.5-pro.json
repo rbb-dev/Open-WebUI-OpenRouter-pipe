@@ -1,0 +1,83 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "font_inputs"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.13,
+          "unit": "image"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.15,
+          "unit": "image",
+          "variant": "2k"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.17,
+          "unit": "image",
+          "variant": "4k"
+        }
+      ],
+      "provider_name": "Sourceful",
+      "provider_slug": "sourceful",
+      "provider_tag": "sourceful",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "16:9",
+            "9:16",
+            "21:9",
+            "auto"
+          ]
+        },
+        "background": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "transparent",
+            "opaque"
+          ]
+        },
+        "input_references": {
+          "max": 10,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "output_format": {
+          "type": "enum",
+          "values": [
+            "png",
+            "jpeg",
+            "webp"
+          ]
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K",
+            "2K",
+            "4K"
+          ]
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "sourceful/riverflow-v2.5-pro"
+}

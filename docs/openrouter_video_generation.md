@@ -133,26 +133,31 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 
 ## Video models
 
-| Model id | Display name | Best for | Audio | Seed | Frames | Cost rate |
+| Model id | Display name | Best for | Audio | Seed | Frames | What drives the cost |
 |----------|--------------|----------|:----:|:----:|:------:|-----------|
-| `google/veo-3.1` | Google: Veo 3.1 | Flagship hero shots; best prompt adherence; native synchronised audio with ~120ms lip-sync; up to 4K. | ✅ | ✅ | first + last | ~$0.40/s with audio |
-| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at ~60% lower cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | ~$0.10/s without audio, $0.12/s with |
-| `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Cheapest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast at half the cost. | ✅ | ✅ | first + last | $0.03/s @ 720p without audio |
-| `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | $0.0896/s |
-| `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | $0.112/s ($0.168/s with audio) |
-| `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | $0.084/s ($0.126/s with audio) |
-| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | ❌ | first only | $0.0817/s |
-| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | $0.10/s |
-| `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | $0.04–$0.15/s by mode and resolution |
-| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, widest size matrix (21 dimensions). | ✅ | ✅ | first + last | Token-based, ~$1.20–$2.40 / M tokens |
-| `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Token-based, $0.000007/token |
-| `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; ~30% cheaper; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | $0.0000056/token |
-| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. Longest clips (up to 20s). **Text-only — no frame images.** | ✅ | ❌ | none | $0.30/s @ 720p, $0.50/s @ 1080p |
-| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. **Silent — no audio.** | ❌ | ❌ | first only | $0.05/s @ 480p, $0.07/s @ 720p (+$0.002/input image) |
+| `google/veo-3.1` | Google: Veo 3.1 | Flagship hero shots; best prompt adherence; native synchronised audio with ~120ms lip-sync; up to 4K. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
+| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at ~60% lower cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
+| `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Cheapest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast at a lower rate per second. | ✅ | ✅ | first + last | Per second; more with audio, more at 1080p |
+| `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | Per second, one flat rate |
+| `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
+| `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
+| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | ❌ | first only | Per second, one flat rate |
+| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | Per second, one flat rate |
+| `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | Per second; varies by mode and resolution |
+| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, widest size matrix (21 dimensions). | ✅ | ✅ | first + last | Per video token; more with audio |
+| `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Per video token; varies by resolution and video input |
+| `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; cheaper per token; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | Per video token; less with video input |
+| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. Longest clips (up to 20s). **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
+| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. **Silent — no audio.** | ❌ | ❌ | first only | Per second by resolution, plus a flat charge per supplied image |
+
+This table says what a model's price *depends on*, not what it charges.
+The charges themselves change whenever OpenRouter changes them, so they
+are never written down here: send `help` in a video chat to see the
+model's current rates, or look the model up on OpenRouter's pricing page.
 
 Pick model selection rules of thumb:
 
-- **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk), Grok Imagine Video (from $0.05/s).
+- **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk), Grok Imagine Video (per-second billing with 1-second granularity, so a short draft stays short on the bill).
 - **Hero shot for client work** → Veo 3.1 (full) or Seedance 2.0.
 - **Multi-shot story with consistent characters** → Wan 2.7 or Seedance 2.0.
 - **Dialogue / lip-sync from a reference voice** → Wan 2.7 (audio passthrough), Seedance 1.5 Pro.
@@ -241,8 +246,8 @@ SFX must land in sync.
 Google's most cost-effective Veo 3.1 tier, positioned for high-volume
 video applications and rapid iteration where cost-per-clip is the
 deciding factor. Unlike Veo 3.1 Fast, it does not sacrifice generation
-speed for the lower price — it matches Fast's latency at less than half
-the cost — making it the go-to pick for batch pipelines, social
+speed for the lower price — it matches Fast's latency at a lower rate
+per second — making it the go-to pick for batch pipelines, social
 automation, and consumer-app integrations. Tradeoffs: a hard cap at
 1080p (no 4K), no video extension, and slightly less polished visual
 fidelity, but it retains native synchronised audio.
@@ -452,8 +457,8 @@ the full 2.0 variant is the production-quality choice with native audio
 
 ByteDance's speed-and-cost-optimised variant of the Seedance 2.0 family,
 built on the same unified multimodal architecture but using distillation
-and accelerated sampling to cut generation time at roughly 30–33% lower
-cost than standard Seedance 2.0. Best known for cinematic 480p/720p
+and accelerated sampling to cut generation time at a lower published
+token rate than standard Seedance 2.0. Best known for cinematic 480p/720p
 output with native audio synchronised in a single pass, support for
 text-to-video, image-to-video with first/last frame control, and
 multimodal reference-to-video, plus very wide aspect-ratio coverage
@@ -464,7 +469,7 @@ so cost scales with pixels × seconds.
 
 - Use Fast for drafting, prompt iteration, and bulk pipelines; switch
   to standard Seedance 2.0 for hero shots — Fast trades a small amount
-  of motion refinement and detail for ~33% lower cost.
+  of motion refinement and detail for a lower published token rate.
 - Token math means doubling resolution or duration roughly multiplies
   cost; a 720p 10s clip costs far more than a 480p 5s draft, so iterate
   small first.
@@ -527,15 +532,15 @@ iteration and high-volume production.
 
 - Duration is any integer 1–15 seconds — cost scales linearly per
   second, so a 3s draft costs a fifth of a 15s final.
-- Resolution drives price: 480p ($0.05/s) for iteration, 720p
-  ($0.07/s) for finishing. There is no 1080p/4K tier.
+- Resolution drives price: 480p is the cheaper iteration tier, 720p the
+  finishing tier. There is no 1080p/4K tier.
 - **Silent — no audio generation.** Pair with external audio in post if
   needed.
 - Single-frame conditioning only: `first_frame` is supported,
   `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints
   locked.
-- Image conditioning adds ~$0.002 per input image on top of the
-  per-second cost.
+- Image conditioning adds a small flat charge per input image on top of
+  the per-second cost.
 - No deterministic seed and no negative prompt
   (`allowed_passthrough_parameters` is empty).
 
@@ -554,7 +559,7 @@ is also the spec for what you can change per-message.
 |------|------|--------|-------|
 | Duration | Literal | 4, 6, 8 | Cost scales per second. |
 | Aspect ratio | Literal | 16:9, 9:16 | Native composition (no crop). |
-| Resolution | Literal | 720p, 1080p, 4K (full + Fast); 720p, 1080p (Lite) | 4K SKU is roughly 2× the 1080p rate on the full tier. |
+| Resolution | Literal | 720p, 1080p, 4K (full + Fast); 720p, 1080p (Lite) | 4K carries the highest per-second rate on the full and Fast tiers. |
 | Size | Literal | from `supported_sizes` in catalog | Exact pixel dimensions; used when you need a specific canvas. |
 | Frames | Literal | auto / none / first_only / first_last | first/last requires both images attached. |
 | Negative prompt | str | free text | Routed via `negativePrompt` passthrough. |
@@ -656,7 +661,7 @@ is also the spec for what you can change per-message.
 |------|------|--------|-------|
 | Duration | Literal | 4, 8, 12, 16, 20 | **Up to 20s — longest in catalog.** |
 | Aspect ratio | Literal | 16:9, 9:16 | No square / cinematic widescreen. |
-| Resolution | Literal | 720p, 1080p | $0.30/s vs $0.50/s. |
+| Resolution | Literal | 720p, 1080p | 720p is the cheaper per-second tier. |
 | Size | Literal | 4 dimensions | |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native dialogue, SFX, ambience — Sora's signature. |
 | Provider options JSON | str | raw JSON | |
@@ -671,7 +676,7 @@ is also the spec for what you can change per-message.
 |------|------|--------|-------|
 | Duration | Literal | 1–15 (any integer) | **Only model with 1-second granularity.** Cost scales per second. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Widest landscape/portrait/square/photo coverage in catalog. |
-| Resolution | Literal | 480p, 720p | $0.05/s vs $0.07/s — resolution drives the SKU. |
+| Resolution | Literal | 480p, 720p | Resolution drives the per-second SKU; 480p is the cheaper of the two. |
 | Size | Literal | 14 dimensions | e.g. 854×480, 1280×720, 720×1280, 480×480. |
 | Frames | Literal | first only | Image-to-video via first frame; no last frame. |
 | Provider options JSON | str | raw JSON | |
@@ -827,10 +832,15 @@ generation job and returns the model's help blurb directly:
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 - **Cost** (live): every published rate as a readable bullet (e.g. `per
-  second (with audio, 4K): $0.30`), with any minimum charge on its own
-  line rather than among the rates, a note whenever the model is billed
-  per video token, and a line naming any charge whose unit the panel
-  does not recognise instead of inventing one for it.
+  second (with audio, 4K)` followed by its figure), with any minimum
+  charge on its own line rather than among the rates, a note whenever the
+  model is billed per video token, and a line naming any charge whose
+  unit the panel does not recognise instead of inventing one for it.
+  Where every charge a model publishes is charged by the second, the
+  panel also works out what its longest clip can cost, at the highest
+  rate it publishes. Models that also charge per supplied image, per
+  reference, per job or per token get no such total, because seconds
+  times a rate would price only part of the bill.
 
 Help blurbs are stored statically in
 [`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
@@ -955,7 +965,9 @@ pin. On the image endpoint `only` *is* accepted, so there the pin decides.
 ## Pricing and cost display
 
 OpenRouter publishes per-SKU rates in each model's catalog `pricing_skus`
-dict. Examples:
+dict. A model billed by the second, with audio and 4K tiers, publishes
+something shaped like this — the figures below are made up to show the
+shape, not a quote of any model's price:
 
 ```json
 "pricing_skus": {
@@ -969,10 +981,12 @@ dict. Examples:
 The pipe surfaces these in two places:
 
 1. **In-chat `help` command** — bullets each rate as "per second (with
-   audio, 4K): $0.60". Read live from the catalog every time `help` is
-   invoked. A value whose key carries `cents_per` is published in cents
-   and is converted to dollars before display, wherever in the key that
-   token sits.
+   audio, 4K): $0.60" for the block above. Read live from the catalog
+   every time `help` is invoked. A value whose key carries `cents_per` is
+   published in cents and is converted to dollars before display,
+   wherever in the key that token sits. For a model like this one, where
+   every charge is charged by the second, the panel closes with what the
+   longest clip it makes can cost at the highest of those rates.
 2. **Final status footer** after generation — shows the actual usage
    cost from OpenRouter's poll response (e.g. `Generated in 35.2s ·
    $0.40`). This is the authoritative cost for that specific
@@ -1001,7 +1015,11 @@ than 480p. The panel says so rather than printing a table that reads
 backwards, and points at OpenRouter's pricing page for the real figure.
 
 Prices are read live every call — never baked into static help text — so
-OpenRouter rate updates surface without a new bundle.
+OpenRouter rate updates surface without a new bundle. That is why no
+figure of money appears in a model's written description, and why this
+page describes what a model's price depends on rather than quoting it:
+a number typed into prose cannot be corrected by a catalogue refresh, and
+nothing reports the day it stops being true.
 
 ---
 

@@ -1,0 +1,46 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "style",
+        "controls",
+        "text_layout"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.08,
+          "unit": "image"
+        }
+      ],
+      "provider_name": "Recraft",
+      "provider_slug": "recraft",
+      "provider_tag": "recraft",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "4:3",
+            "3:4",
+            "16:9",
+            "9:16",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 1,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 6,
+          "min": 1,
+          "type": "range"
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "recraft/recraft-v4-vector"
+}

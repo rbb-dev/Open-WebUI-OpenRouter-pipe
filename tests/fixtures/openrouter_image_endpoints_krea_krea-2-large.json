@@ -1,0 +1,50 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "image_style_references",
+        "moodboards",
+        "styles",
+        "creativity",
+        "intensity",
+        "complexity",
+        "movement",
+        "strength"
+      ],
+      "pricing": [],
+      "provider_name": "Krea",
+      "provider_slug": "krea",
+      "provider_tag": "krea",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "4:3",
+            "3:2",
+            "16:9",
+            "4:5",
+            "2:3",
+            "9:16"
+          ]
+        },
+        "input_references": {
+          "max": 1,
+          "min": 0,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K"
+          ]
+        },
+        "seed": {
+          "type": "boolean"
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "krea/krea-2-large"
+}

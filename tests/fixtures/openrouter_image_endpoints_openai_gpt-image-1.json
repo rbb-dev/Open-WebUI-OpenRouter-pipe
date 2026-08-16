@@ -1,0 +1,74 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "moderation"
+      ],
+      "pricing": [
+        {
+          "billable": "input_image",
+          "cost_usd": 1e-05,
+          "unit": "token"
+        },
+        {
+          "billable": "input_text",
+          "cost_usd": 5e-06,
+          "unit": "token"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 4e-05,
+          "unit": "token"
+        }
+      ],
+      "provider_name": "OpenAI",
+      "provider_slug": "openai",
+      "provider_tag": "openai",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "3:2",
+            "2:3",
+            "auto"
+          ]
+        },
+        "background": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "transparent",
+            "opaque"
+          ]
+        },
+        "input_references": {
+          "max": 16,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 10,
+          "min": 1,
+          "type": "range"
+        },
+        "output_compression": {
+          "max": 100,
+          "min": 0,
+          "type": "range"
+        },
+        "quality": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "supports_streaming": true
+    }
+  ],
+  "id": "openai/gpt-image-1"
+}

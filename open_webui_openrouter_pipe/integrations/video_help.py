@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, NamedTuple
 
 _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
@@ -93,7 +94,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Google's most cost-effective Veo 3.1 tier, positioned for high-volume video "
             "applications and rapid iteration where cost-per-clip is the deciding factor. "
             "Unlike Veo 3.1 Fast, it does not sacrifice generation speed for the lower "
-            "price — it matches Fast's latency at less than half the cost — making it the "
+            "price — it matches Fast's latency at a lower rate per second — making it the "
             "go-to pick for batch pipelines, social automation, and consumer-app "
             "integrations. Tradeoffs are a hard cap at 1080p (no 4K), no video extension, "
             "and slightly less polished visual fidelity, but it retains native synchronised "
@@ -108,11 +109,11 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Picks the clip length in seconds from the model's supported set (4, 6, or 8); longer clips cost proportionally more per second.",
             "Aspect ratio": "Selects landscape 16:9 or portrait 9:16 framing — the only two orientations Lite supports.",
-            "Resolution": "Chooses 720p (cheapest, $0.05/s with audio) or 1080p ($0.08/s with audio); 4K is not available on this tier.",
+            "Resolution": "Chooses 720p or 1080p, and drives which per-second rate you are billed at — 720p is the cheaper of the two; 4K is not available on this tier.",
             "Size": "Pins exact pixel dimensions (1280×720, 720×1280, 1920×1080, or 1080×1920) when you need a specific output size rather than just a resolution+ratio pair.",
             "Frames": "Controls image-to-video conditioning — auto/none for pure text-to-video, first_only to anchor the opening frame, or first_last to interpolate between a starting and ending image.",
             "Negative prompt": "Free-text list of things to avoid in the output (e.g. \"blurry, watermark, distorted hands\"), passed through as negativePrompt to Vertex.",
-            "Audio": "Toggles native synchronised audio generation (ambient sound, SFX, dialogue, music); disabling it drops the price to $0.03/s at 720p or $0.05/s at 1080p.",
+            "Audio": "Toggles native synchronised audio generation (ambient sound, SFX, dialogue, music); disabling it bills the clip at the cheaper without-audio rate for whichever resolution you picked.",
             "Seed": "Sets an integer seed for reproducibility — Google notes it improves determinism but does not strictly guarantee identical outputs across runs.",
             "Provider options JSON": "Raw escape hatch for sending arbitrary google-vertex provider fields not covered by the named valves above.",
             "Person generation": "Controls whether humans may appear in output — allow_all, allow_adult, or dont_allow; in EU/UK/CH/MENA only allow_adult is permitted for Veo 3.1.",
@@ -142,11 +143,11 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Length of the generated clip in seconds; Veo 3.1 supports 4, 6, or 8 seconds, with cost scaling per second.",
             "Aspect ratio": "Sets framing as 16:9 (landscape) or 9:16 (vertical); pick 9:16 for mobile/social and 16:9 for cinematic or hero content.",
-            "Resolution": "Chooses the output detail tier — 720p, 1080p, or 4K — where 4K roughly doubles the per-second price and is the premium-only capability for this model.",
+            "Resolution": "Chooses the output detail tier — 720p, 1080p, or 4K — where 4K carries the highest per-second rate this model publishes and is its premium-only capability.",
             "Size": "Locks the exact pixel dimensions (e.g. 1920×1080, 2160×3840) when you need a specific frame size rather than just an aspect/resolution pair.",
             "Frames": "Lets you anchor generation with a first_frame and/or last_frame image, ideal for image-to-video starts and for stitching shots into longer continuous scenes.",
             "Negative prompt": "Free-text list of things to suppress (e.g., \"motion blur, warped hands, on-screen text\") — the primary lever for cleaning up Veo's known artifacts.",
-            "Audio": "Toggles native synchronised audio generation; turning it off cuts cost roughly in half ($0.20 vs $0.40 per second at 1080p) but you lose Veo 3.1's signature joint-diffusion soundtrack.",
+            "Audio": "Toggles native synchronised audio generation; turning it off bills the clip at the cheaper without-audio rate — a proportionally bigger saving below 4K than at 4K — but you lose Veo 3.1's signature joint-diffusion soundtrack.",
             "Seed": "A 32-bit integer that makes generation reproducible — reuse the same seed plus prompt to get consistent results when iterating on small prompt changes.",
             "Provider options JSON": "An escape hatch for passing raw provider-specific fields to the Vertex/Gemini backend that aren't surfaced as dedicated valves.",
             "Person generation": "Safety control for human subjects; \"allow_adult\" (default) permits adult faces and bodies, while \"dont_allow\" refuses any people/faces.",
@@ -195,7 +196,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Use Pro for finals and hero shots; iterate on Standard first to lock prompt and references — the visual delta is meaningful but not always worth the cost on drafts.",
-            "Pricing is per-second of output and ~50% higher with audio on; a 15s clip with audio costs ~$2.52 (0.168 × 15) — plan duration deliberately.",
+            "Pricing is per-second of output and half again as much with audio on, so the bill tracks the duration you pick — plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move (slow dolly-in / tracking), motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
             "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
@@ -224,7 +225,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Use Standard for drafting, prompt and reference iteration, and bulk runs; switch to Pro for finals when the quality delta is worth ~33% more per-second.",
-            "Pricing is per-second of output and ~50% higher with audio on; a 15s clip with audio costs ~$1.89 (0.126 × 15) — plan duration deliberately.",
+            "Pricing is per-second of output and half again as much with audio on, so the bill tracks the duration you pick — plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move, motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
             "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
@@ -289,7 +290,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Wan 2.7's instruction-following changed vs 2.6, so prompts calibrated on 2.6 may drift; lean on prompt_extend = on when prompts are short, but turn it off when you've already written a precise multi-shot storyboard.",
         ],
         "knob_descriptions": {
-            "Duration": "Sets clip length in seconds (2–10 here); longer durations let Wan 2.7's full-attention DiT carry character identity further, but costs scale linearly at $0.10/sec.",
+            "Duration": "Sets clip length in seconds (2–10 here); longer durations let Wan 2.7's full-attention DiT carry character identity further, but cost scales linearly with every second you add.",
             "Aspect ratio": "Picks the canvas shape (16:9, 9:16, 1:1, 4:3, 3:4); 9:16 is the right choice for the talking-head / lip-sync workflows Wan 2.7 is tuned for.",
             "Resolution": "Selects 720p or 1080p output; 1080p is the model's native ceiling — there is no 4K, so upscale in post if you need it.",
             "Size": "Forces an explicit pixel size (e.g. 1920×1080, 1440×1080); use this when you need a specific frame size that the aspect-ratio preset doesn't expose.",
@@ -312,7 +313,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "ByteDance's speed-and-cost-optimised variant of the Seedance 2.0 family, "
             "built on the same unified multimodal architecture but using distillation and "
-            "accelerated sampling to cut generation time at roughly 30–33% lower cost than "
+            "accelerated sampling to cut generation time at a lower published token rate than "
             "standard Seedance 2.0. Best known for cinematic 480p/720p output with native "
             "audio synchronised in a single pass, support for text-to-video, image-to-"
             "video with first/last frame control, and multimodal reference-to-video, plus "
@@ -320,7 +321,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "bills it via video tokens, so cost scales with pixels × seconds."
         ),
         "tips_and_pitfalls": [
-            "Use Fast for drafting, prompt iteration, and bulk pipelines; switch to standard Seedance 2.0 for hero shots — Fast trades a small amount of motion refinement and detail for ~33% lower cost.",
+            "Use Fast for drafting, prompt iteration, and bulk pipelines; switch to standard Seedance 2.0 for hero shots — Fast trades a small amount of motion refinement and detail for a lower published token rate.",
             "Token math means doubling resolution or duration roughly multiplies cost; a 720p 10s clip costs far more than a 480p 5s draft, so iterate small first.",
             "This OpenRouter listing does not expose negative_prompt and caps at 720p — for 1080p or text-prompted negatives you need the standard 2.0 model or another provider.",
             "watermark toggles the visible provider/ByteDance branding overlay on the returned MP4, and req_key is ByteDance/Volcengine ModelArk's internal model-routing identifier — leave both at defaults unless your provider explicitly tells you otherwise.",
@@ -460,7 +461,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Pick clip length in seconds from 4/8/12/16/20 — Sora 2 Pro is the only model in this catalog that reaches 20s, but render time and cost scale roughly linearly with duration.",
             "Aspect ratio": "Choose 16:9 for landscape/cinematic framing or 9:16 for vertical/social; this model does not support 1:1 or other ratios.",
-            "Resolution": "720p is the cheap iteration tier ($0.30/s) while 1080p is the cinematic finishing tier ($0.50/s) with sharper textures and richer color depth at the cost of longer renders.",
+            "Resolution": "720p is the cheap iteration tier while 1080p is the cinematic finishing tier, billed at a higher rate per second, with sharper textures and richer color depth at the cost of longer renders.",
             "Size": "Picks the exact pixel dimensions (1280×720, 1920×1080, 720×1280, 1080×1920) — use this when your downstream pipeline needs a specific frame size rather than just a ratio.",
             "Audio": "Sora 2 Pro generates synchronised audio natively (dialogue, SFX, ambience) from the same scene representation as the video — leave it on for realistic results.",
             "Provider options JSON": "Free-form JSON forwarded to OpenRouter for advanced/experimental fields not covered by the dedicated valves; leave empty unless you're following specific OpenRouter or OpenAI Videos API docs.",
@@ -484,7 +485,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution drives price: 480p is the iteration tier, 720p the finishing tier; there is no 1080p/4K on this model.",
             "Single-frame conditioning only — `first_frame` is supported but `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints locked.",
             "Seven aspect ratios cover landscape, vertical, square, and 4:3 / 3:2 photo formats; pick by destination platform.",
-            "Image conditioning adds a small per-image surcharge (~$0.002/image) on top of the per-second video cost.",
+            "Image conditioning adds a small flat charge for each image you supply, on top of the per-second video cost.",
         ],
         "knob_descriptions": {
             "Duration": "Pick clip length in seconds from 1 through 15 — Grok Imagine Video is unique here in offering per-second granularity rather than fixed tiers; cost scales linearly per second.",
@@ -578,6 +579,15 @@ _SKU_RATE = "rate"
 _SKU_FLOOR = "floor"
 _SKU_UNCLASSIFIED = "unclassified"
 
+_SKU_PER_SECOND_BASES: frozenset[str] = frozenset(
+    {
+        "video_output_second",
+        "second_video_continuation",
+        "second_output",
+        "duration_seconds",
+    }
+)
+
 _VIDEO_COST_HEADING = "**Cost** (as OpenRouter publishes it for this model)"
 
 _VIDEO_TOKEN_RATE_NOTE = (
@@ -593,6 +603,26 @@ class _SkuUnit(NamedTuple):
     kind: str
     label: str
     per_token: bool
+    per_second: bool
+
+
+def _published_amount(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        amount = Decimal(str(value).strip())
+    except (ArithmeticError, ValueError):
+        return None
+    return amount if amount.is_finite() else None
+
+
+def _format_dollars(amount: Decimal) -> str:
+    text = f"{amount:.6f}".rstrip("0")
+    if text.endswith("."):
+        return text + "00"
+    if len(text.split(".", 1)[1]) < 2:
+        return text + "0"
+    return text
 
 
 def _format_cents_as_dollars(cents_value: str) -> str:
@@ -601,31 +631,16 @@ def _format_cents_as_dollars(cents_value: str) -> str:
     Examples: "0.2" -> "0.002", "5" -> "0.05", "7" -> "0.07". Preserves
     significant digits without trailing zeros while guaranteeing at least 2
     decimal places. Returns the input verbatim if it can't be parsed as a
-    float (defensive — OpenRouter values are always numeric strings, but
-    keep the formatter total).
+    finite number (defensive — OpenRouter values are always numeric strings,
+    but keep the formatter total).
     """
-    try:
-        dollars = float(cents_value) / 100.0
-    except (TypeError, ValueError):
+    dollars = _published_amount(cents_value)
+    if dollars is None:
         return cents_value
-    if dollars == 0:
-        return "0.00"
-    formatted = f"{dollars:.6f}".rstrip("0")
-    if formatted.endswith("."):
-        return formatted + "00"
-    decimals = formatted.split(".", 1)[1]
-    if len(decimals) < 2:
-        return formatted + "0"
-    return formatted
+    return _format_dollars(dollars / 100)
 
 
 def _sku_priced_in_cents(raw_key: str) -> bool:
-    """Whether the key says its own value is denominated in cents.
-
-    The token appears at the start of ``cents_per_second_output`` and in the middle of
-    ``minimum_cents_per_generation``; reading only the start billed a floor at a hundred
-    times its real figure.
-    """
     return _SKU_CENTS_MARKER in (raw_key or "").strip().lower()
 
 
@@ -637,12 +652,6 @@ def _sku_modifier_text(remainder: str) -> str:
 
 
 def _sku_unit(raw_key: str) -> _SkuUnit:
-    """Read one published charge key as a label and the kind of charge it is.
-
-    A key whose base unit is not one this reader knows comes back unclassified rather
-    than as an invented "per <the rest of the key>" rate: OpenRouter's vocabulary is not
-    all rates, and guessing turned a per-generation floor into a per-second bullet.
-    """
     key = (raw_key or "").strip().lower()
     kind = _SKU_RATE
     if key.startswith(_SKU_MINIMUM_PREFIX):
@@ -666,19 +675,58 @@ def _sku_unit(raw_key: str) -> _SkuUnit:
             leftover = remainder[len(base_token):].lstrip("_")
             if leftover:
                 modifiers.append(_sku_modifier_text(leftover))
+            per_token = base_token == _SKU_TOKEN_BASE
+            per_second = base_token in _SKU_PER_SECOND_BASES
             if modifiers:
-                return _SkuUnit(kind, f"{label} ({', '.join(modifiers)})", base_token == _SKU_TOKEN_BASE)
-            return _SkuUnit(kind, label, base_token == _SKU_TOKEN_BASE)
-    return _SkuUnit(_SKU_UNCLASSIFIED, "", False)
+                return _SkuUnit(
+                    kind, f"{label} ({', '.join(modifiers)})", per_token, per_second
+                )
+            return _SkuUnit(kind, label, per_token, per_second)
+    return _SkuUnit(_SKU_UNCLASSIFIED, "", False, False)
 
 
-def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
+def _longest_supported_duration(supported_durations: Any) -> Decimal | None:
+    if not isinstance(supported_durations, list):
+        return None
+    longest: Decimal | None = None
+    for entry in supported_durations:
+        seconds = _published_amount(entry)
+        if seconds is None or seconds <= 0:
+            continue
+        if longest is None or seconds > longest:
+            longest = seconds
+    return longest
+
+
+def _format_seconds(seconds: Decimal) -> str:
+    whole = seconds.to_integral_value()
+    if whole == seconds:
+        return str(int(whole))
+    return f"{seconds.normalize():f}"
+
+
+def _longest_clip_line(highest_rate: Decimal, supported_durations: Any) -> str:
+    longest = _longest_supported_duration(supported_durations)
+    if longest is None:
+        return ""
+    return (
+        f"The longest clip this model makes is {_format_seconds(longest)} seconds, and "
+        "every charge it publishes is charged by the second, so at the highest rate "
+        f"above no one clip can cost more than ${_format_dollars(highest_rate * longest)}."
+    )
+
+
+def _format_pricing_skus(
+    pricing_skus: dict[str, str] | None, supported_durations: Any = None
+) -> str:
     if not isinstance(pricing_skus, dict) or not pricing_skus:
         return ""
     rates: list[str] = []
     floors: list[str] = []
     unnamed: list[str] = []
+    by_the_second: list[Decimal] = []
     per_token = False
+    every_charge_by_the_second = True
     for raw_key in sorted(pricing_skus):
         raw_value = pricing_skus.get(raw_key)
         if not isinstance(raw_value, (int, float, str)) or str(raw_value).strip() == "":
@@ -689,12 +737,19 @@ def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
         if unit.kind == _SKU_RATE:
             per_token = per_token or unit.per_token
             rates.append(f"- {unit.label}: ${amount}")
+            rate = _published_amount(amount) if unit.per_second else None
+            if rate is None or rate < 0:
+                every_charge_by_the_second = False
+            else:
+                by_the_second.append(rate)
         elif unit.kind == _SKU_FLOOR:
+            every_charge_by_the_second = False
             floors.append(
                 f"Minimum charge {unit.label}: ${amount} — a job that would come to less "
                 "than this is billed this much anyway."
             )
         else:
+            every_charge_by_the_second = False
             unnamed.append(
                 f'OpenRouter publishes a charge it calls "{raw_key}" at ${amount} here '
                 "without saying what it is charged per. Check this model's rates on "
@@ -702,6 +757,10 @@ def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
             )
     sections = ["\n".join(rates)] if rates else []
     sections.extend(floors)
+    if every_charge_by_the_second and by_the_second:
+        ceiling = _longest_clip_line(max(by_the_second), supported_durations)
+        if ceiling:
+            sections.append(ceiling)
     if per_token:
         sections.append(_VIDEO_TOKEN_RATE_NOTE)
     sections.extend(unnamed)
@@ -731,7 +790,7 @@ def _yes_no(value: Any) -> str:
 
 
 def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any]) -> str:
-    display_name = data.get("display_name") or model_id
+    display_name = str(model.get("name") or "").strip() or data.get("display_name") or model_id
     durations = _format_csv(model.get("supported_durations")) or "model default"
     aspects = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
@@ -758,7 +817,9 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
     for name in _unhandled_params(build_video_filter_spec(model_id, model)):
         knob_lines.append(f"- `{name}`: {PASSTHROUGH_DESCRIPTION}")
 
-    pricing_block = _format_pricing_skus(model.get("pricing_skus") or {})
+    pricing_block = _format_pricing_skus(
+        model.get("pricing_skus") or {}, model.get("supported_durations")
+    )
     pricing_section = ""
     if pricing_block:
         pricing_section = (
@@ -828,7 +889,9 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     durations = _format_csv(model.get("supported_durations")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
-    pricing_block = _format_pricing_skus(model.get("pricing_skus") or {})
+    pricing_block = _format_pricing_skus(
+        model.get("pricing_skus") or {}, model.get("supported_durations")
+    )
     pricing_section = ""
     if pricing_block:
         pricing_section = f"\n\n{_VIDEO_COST_HEADING}\n{pricing_block}"

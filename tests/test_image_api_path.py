@@ -681,13 +681,25 @@ def test_text_only_history_yields_no_input_references():
     assert refs == []
 
 
-def _recorded_endpoint(name: str) -> dict[str, Any]:
+def _one_recorded_provider(name: str) -> dict[str, Any]:
+    """The single provider record the adapter resolves a request against.
+
+    Deliberately one, unlike the sibling helper in `test_image_generation`, which returns
+    every record because the filter it feeds is built before a provider is chosen. Both
+    were spelled `_recorded_endpoint` and returned `[0]`, so the one place the collapse
+    was a defect looked identical to the one place it was the point.
+    """
     path = Path(__file__).resolve().parent / "fixtures" / f"openrouter_image_endpoints_{name}.json"
-    return json.loads(path.read_text())["endpoints"][0]
+    records = json.loads(path.read_text())["endpoints"]
+    assert len(records) == 1, (
+        f"{name} publishes {len(records)} provider records; picking one by index chooses "
+        "which provider this test speaks for, so name it instead"
+    )
+    return records[0]
 
 
-RECRAFT_RECORD = _recorded_endpoint("recraft_recraft-v3")
-QWEN_RECORD = _recorded_endpoint("qwen_qwen-image-3")
+RECRAFT_RECORD = _one_recorded_provider("recraft_recraft-v3")
+QWEN_RECORD = _one_recorded_provider("qwen_qwen-image-3")
 
 
 def test_provider_knobs_go_to_provider_options_not_the_top_level():

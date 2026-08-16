@@ -1296,15 +1296,41 @@ def test_inject_image_modalities_multimodal_via_chat_catalog_path():
 
 
 
-def _recorded_endpoint(name: str) -> dict:
-    """The model's own published contract, as the live probe recorded it."""
+def _recorded_endpoint(name: str) -> list[dict]:
+    """Every record the model published, as the live probe recorded them.
+
+    This returned `records[0]`. A model served by more than one provider publishes one
+    record each and they disagree, so taking the first silently replaced the set the
+    providers agree on with whatever the sweep happened to write down first -- the exact
+    narrowing the checked-in contracts exist to exercise.
+    """
     import json
 
     raw = json.loads(
         (Path(__file__).parent / "fixtures" / f"openrouter_image_endpoints_{name}.json").read_text()
     )
     records = raw.get("endpoints") or [raw]
-    return records[0]
+    assert records, name
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _recorded_contract_slugs() -> dict[str, str]:
+    """Every checked-in contract, mapped fixture slug -> the model id it recorded."""
+    import json
+
+    found: dict[str, str] = {}
+    for path in sorted((Path(__file__).parent / "fixtures").glob("openrouter_image_endpoints_*.json")):
+        slug = path.stem[len("openrouter_image_endpoints_") :]
+        found[slug] = json.loads(path.read_text())["id"]
+    return found
+
+
+def _multi_provider_contracts() -> dict[str, str]:
+    return {
+        slug: model_id
+        for slug, model_id in _recorded_contract_slugs().items()
+        if len(_recorded_endpoint(slug)) > 1
+    }
 
 
 @pytest.mark.parametrize(
@@ -1977,8 +2003,7 @@ def test_a_knob_is_offered_only_if_every_provider_of_the_model_accepts_it():
     """Which provider serves a request is decided per request, after the controls exist.
 
     A model served by several providers publishes one contract each and they disagree,
-    so the only set that is right whichever provider serves is the one they share. The
-    two checked-in fixtures each carry a single endpoint and cannot show this.
+    so the only set that is right whichever provider serves is the one they share.
     """
     wide = {
         "provider_slug": "a",
@@ -2012,6 +2037,84 @@ def test_a_knob_is_offered_only_if_every_provider_of_the_model_accepts_it():
     unaddressable = _spec_from([wide, {"supported_parameters": {}, "allowed_passthrough_parameters": ["style"]}])
     assert unaddressable.passthrough == (), (
         "a record with no provider slug cannot carry a provider option, so none is offered"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "model_id"),
+    sorted(_multi_provider_contracts().items()),
+)
+def test_a_multi_provider_contract_narrows_to_what_its_providers_share(fixture, model_id):
+    """The narrowing, driven by a contract OpenRouter really published.
+
+    `google/gemini-3-pro-image` is served by Vertex and by AI Studio, and only AI Studio
+    publishes 4K; a filter built from either record alone offers a set that is wrong for
+    the other provider, and which provider serves is decided per request. This ran on
+    hand-built records until the recorded sweep was checked in.
+
+    The order the records arrive in is asserted to make no difference, because on this
+    contract the intersection happens to equal the *first* record -- so an implementation
+    that simply took `records[0]` satisfied the intersection assertion on its own, and did
+    when it was run as a mutation.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    records = _recorded_endpoint(fixture)
+    assert len(records) > 1, f"{fixture} is not a multi-provider contract"
+
+    model = {"id": model_id, "name": model_id}
+    agreed = dict(build_image_model_filter_spec(model_id, model, records).enums)
+    per_provider = [
+        dict(build_image_model_filter_spec(model_id, model, record).enums) for record in records
+    ]
+
+    for name, values in agreed.items():
+        published = [set(alone.get(name, ())) for alone in per_provider]
+        assert set(values) == set.intersection(*published), (
+            f"{model_id} offers {name}={values!r}; the providers publish {published!r}"
+        )
+
+    reordered = dict(
+        build_image_model_filter_spec(model_id, model, list(reversed(records))).enums
+    )
+    assert reordered == agreed, (
+        f"{model_id} offers a different set when its providers are listed in the other "
+        f"order: {agreed!r} vs {reordered!r}. Which provider OpenRouter lists first is "
+        "not a decision about what the model supports"
+    )
+
+
+def test_a_recorded_contract_really_does_withhold_something_a_provider_publishes():
+    """The narrowing above is only proven if some recorded contract exercises it.
+
+    Every multi-provider contract could publish identical records, in which case the
+    intersection is the identity and the assertions pass on a model that cannot tell a
+    working narrowing from none at all.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    withheld: dict[str, dict[str, list[str]]] = {}
+    for fixture, model_id in sorted(_multi_provider_contracts().items()):
+        records = _recorded_endpoint(fixture)
+        model = {"id": model_id, "name": model_id}
+        agreed = dict(build_image_model_filter_spec(model_id, model, records).enums)
+        per_provider = [
+            dict(build_image_model_filter_spec(model_id, model, record).enums) for record in records
+        ]
+        dropped = {
+            name: sorted(set().union(*[set(a.get(name, ())) for a in per_provider]) - set(values))
+            for name, values in agreed.items()
+        }
+        if any(dropped.values()):
+            withheld[model_id] = {name: values for name, values in dropped.items() if values}
+
+    assert withheld, (
+        "no checked-in contract has providers that disagree, so nothing here would notice "
+        "a build that offered the union, or the first record, instead of the intersection"
     )
 
 
@@ -2668,13 +2771,15 @@ def test_help_prose_never_names_a_setting_the_model_does_not_publish(fixture, mo
     Hand-written prose describing which knobs exist is a second copy of the contract;
     it drifted before and told users to use filters that no longer existed.
     """
-    record = _recorded_endpoint(fixture)
+    records = _recorded_endpoint(fixture)
     model = {"id": model_id, "name": model_id}
-    rendered = render_image_help(model_id, model, endpoint_record=record)
+    rendered = render_image_help(model_id, model, endpoint_record=records)
     prose = rendered.split("## Controls", 1)[0]
 
-    published = set((record.get("supported_parameters") or {}))
-    published |= set(record.get("allowed_passthrough_parameters") or [])
+    published: set[str] = set()
+    for record in records:
+        published |= set(record.get("supported_parameters") or {})
+        published |= set(record.get("allowed_passthrough_parameters") or [])
 
     import re
 
@@ -2784,6 +2889,31 @@ def test_every_catalogued_image_model_has_curated_help():
     assert not missing, (
         f"{len(missing)} catalogued image model(s) have no curated help entry: {missing}"
     )
+
+
+def test_every_catalogued_image_model_has_a_checked_in_contract():
+    """The contracts the fleet-wide claims are measured on must live inside the tree.
+
+    Forty were recorded into `.external/`, which is gitignored, so every sweep that read
+    them measured nothing on CI and read a neighbouring checkout when run from a scratch
+    copy. Both directions are asserted: a contract for a model the catalogue dropped is
+    as wrong as a catalogued model with no contract, and the sweeps are parametrised over
+    this set, so an empty one would quietly collect no nodes at all.
+    """
+    catalogue = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
+    )["data"]
+    ids = {m["id"] for m in catalogue if isinstance(m, dict) and m.get("id")}
+    recorded = _recorded_contract_slugs()
+
+    assert set(recorded.values()) == ids, (
+        f"catalogued with no contract: {sorted(ids - set(recorded.values()))}; "
+        f"contract for an uncatalogued model: {sorted(set(recorded.values()) - ids)}"
+    )
+    for slug, model_id in recorded.items():
+        assert slug == model_id.replace("/", "_"), (
+            f"{slug!r} does not name {model_id!r}; the sweeps derive one from the other"
+        )
 
 
 def test_the_documented_model_table_lists_exactly_the_catalogued_models():

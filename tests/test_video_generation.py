@@ -1527,13 +1527,55 @@ async def test_status_events_are_throttled_to_meaningful_progress(monkeypatch):
 
 
 def test_video_help_is_model_specific_for_all_catalog_models():
-    assert set(VIDEO_BY_ID) <= set(VIDEO_HELP_BY_MODEL)
+    """Every catalogued model gets help about itself, by whichever of the two routes.
+
+    A curated entry and the catalogue fallback are both model-specific; only a shared or
+    anonymous rendering is not. Asserting instead that the curated table covers the
+    catalogue made the catalogue's own growth the thing that reddened, which is one
+    reason the fixture sat seven models behind the live listing.
+    """
+    from open_webui_openrouter_pipe.integrations.video_help import _render_catalog_fallback
+
     rendered = {model_id: render_video_help(model_id, VIDEO_BY_ID[model_id]) for model_id in VIDEO_BY_ID}
 
     for model_id, model in VIDEO_BY_ID.items():
         assert model["name"] in rendered[model_id], f"{model_id} help missing display name"
 
     assert len(set(rendered.values())) == len(rendered)
+
+    for model_id, model in VIDEO_BY_ID.items():
+        fallback = _render_catalog_fallback(model_id, model)
+        assert (rendered[model_id] != fallback) is (model_id in VIDEO_HELP_BY_MODEL), (
+            f"{model_id}: a model in the curated table must render from it, and a model "
+            "outside it must render the catalogue fallback"
+        )
+
+    assert set(VIDEO_BY_ID) & set(VIDEO_HELP_BY_MODEL), "the curated route must still be reachable"
+
+
+@pytest.mark.parametrize(
+    ("published_name", "expected"),
+    [("SpaceXAI: Grok Imagine Video", "SpaceXAI: Grok Imagine Video"), ("Vendor: Renamed", "Vendor: Renamed")],
+)
+def test_a_curated_panel_is_titled_by_the_name_the_catalogue_publishes(published_name, expected):
+    """The curated table held a second copy of the display name and it drifted.
+
+    OpenRouter relabelled `x-ai/grok-imagine-video` from `xAI:` to `SpaceXAI:`; the
+    curated entry kept saying `xAI:`, so the panel's title disagreed with the model
+    picker beside it. Nothing could notice while the fixture omitted that model.
+    """
+    curated = "x-ai/grok-imagine-video"
+    assert curated in VIDEO_HELP_BY_MODEL, "this test is about the curated route"
+
+    rendered = render_video_help(curated, {"id": curated, "name": published_name})
+    assert rendered.startswith(f"### {expected}\n"), rendered[:120]
+
+
+def test_a_curated_panel_falls_back_to_its_own_title_when_no_catalogue_row_is_supplied():
+    """`render_video_help` is also called with no catalogue row at all."""
+    curated = "x-ai/grok-imagine-video"
+    rendered = render_video_help(curated)
+    assert rendered.startswith(f"### {VIDEO_HELP_BY_MODEL[curated]['display_name']}\n"), rendered[:120]
 
 
 def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog():
@@ -1596,12 +1638,34 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
 
 
 def test_video_help_renders_pricing_live_from_pricing_skus():
-    veo_help = render_video_help("google/veo-3.1-fast", VIDEO_BY_ID["google/veo-3.1-fast"])
-    assert "**Cost** (as OpenRouter publishes it for this model)" in veo_help
-    assert "$0.12" in veo_help or "$0.10" in veo_help
+    """Each figure on screen is the figure this model publishes, for every model.
 
-    kling_help = render_video_help("kwaivgi/kling-video-o1", VIDEO_BY_ID["kwaivgi/kling-video-o1"])
-    assert "$0.0896" in kling_help
+    Two rates were typed in here by hand, and one of them -- `kling-video-o1` at
+    $0.0896/s -- was a quarter under what OpenRouter charges by the time it was read.
+    A literal cannot notice that; reading every published rate back out of every model's
+    own help can, and it is what the assertion does now.
+    """
+    published = {
+        model_id: {
+            key: value
+            for key, value in (model.get("pricing_skus") or {}).items()
+            if "cents_per" not in key
+        }
+        for model_id, model in VIDEO_BY_ID.items()
+    }
+    quoted = {rate for rates in published.values() for rate in rates.values()}
+    assert len(quoted) > 1, "one rate across the catalogue cannot tell a constant from a lookup"
+
+    for model_id, model in VIDEO_BY_ID.items():
+        if not model.get("pricing_skus"):
+            continue
+        rendered = render_video_help(model_id, model)
+        assert "**Cost** (as OpenRouter publishes it for this model)" in rendered, model_id
+        for key, rate in published[model_id].items():
+            assert f"${rate}" in rendered, (
+                f"{model_id} publishes {key}={rate!r}; the help must quote that figure, "
+                "not one typed alongside it"
+            )
 
 
 def test_video_help_pricing_section_omitted_when_no_skus():
@@ -1761,6 +1825,190 @@ def test_the_base_unit_table_resolves_the_longest_token_first():
             )
 
 
+def test_no_video_price_reaches_a_user_that_did_not_come_from_a_contract():
+    """Prose prices go stale in silence and cannot be corrected by a catalogue refresh.
+
+    Eight were typed into these descriptions, two of them totals worked out by hand from
+    a rate. Every one of the eight was still right on the day it was measured, which is
+    exactly the trap: the same habit put a figure in the model table that OpenRouter had
+    since raised by a quarter, and nothing anywhere said so. Without a contract the panel
+    now says nothing about money at all.
+    """
+    import re
+
+    for model_id in VIDEO_HELP_BY_MODEL:
+        rendered = render_video_help(model_id, {"id": model_id, "name": model_id})
+        assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price of its own"
+
+    priced = render_video_help(
+        "alibaba/wan-2.7",
+        _video_model(
+            id="alibaba/wan-2.7",
+            supported_durations=[10],
+            pricing_skus={"duration_seconds": "0.10"},
+        ),
+    )
+    assert "- per second: $0.10" in priced, "with a contract, the published rate is shown"
+
+
+@pytest.mark.parametrize(
+    ("rate", "seconds", "ceiling"),
+    [("0.168", 15, "$2.52"), ("0.126", 15, "$1.89"), ("0.50", 20, "$10.00")],
+)
+def test_the_longest_clip_total_is_worked_out_from_the_published_rate(rate, seconds, ceiling):
+    """Two totals used to be typed into the tips: "~$2.52 (0.168 x 15)" and "~$1.89".
+
+    Both were right when written and nothing would have reported it when they stopped
+    being. No token count is involved -- the rate and the duration list are both
+    published -- so this is arithmetic the panel can do itself and can never get wrong.
+    The cheaper rate is published first, so a reader that takes the first rate it meets
+    instead of the dearest produces a number that is too small.
+    """
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(
+            supported_durations=[3, seconds // 2, seconds],
+            pricing_skus={"duration_seconds": "0.05", "duration_seconds_with_audio": rate},
+        ),
+    )
+    assert f"The longest clip this model makes is {seconds} seconds" in rendered, rendered
+    assert f"no one clip can cost more than {ceiling}." in rendered, rendered
+
+
+@pytest.mark.parametrize(
+    ("extra_key", "extra_value"),
+    [
+        ("cents_per_image_input", "0.2"),
+        ("minimum_cents_per_generation", "56"),
+        ("reference_images", "0.04"),
+        ("video_tokens", "0.000007"),
+        ("storage_gigabyte_month", "0.02"),
+    ],
+)
+def test_no_clip_total_is_offered_when_part_of_the_bill_is_not_by_the_second(
+    extra_key, extra_value
+):
+    """Seconds times a rate prices only the part of the bill that is charged by seconds.
+
+    `x-ai/grok-imagine-video` charges for each image you supply, `runway/aleph-2`
+    publishes a floor, `minimax/hailuo-3` charges per reference image, the Seedance
+    family bills by token, and the vocabulary keeps growing. Printing a per-second total
+    beside any of those states a clip's cost as less than it is.
+    """
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(
+            supported_durations=[15],
+            pricing_skus={"duration_seconds": "0.10", extra_key: extra_value},
+        ),
+    )
+    assert "no one clip can cost more than" not in rendered, rendered
+    assert "- per second: $0.10" in rendered, "the per-second rate is still published"
+
+    alone = render_video_help(
+        "test/priced",
+        _video_model(supported_durations=[15], pricing_skus={"duration_seconds": "0.10"}),
+    )
+    assert "no one clip can cost more than $1.50." in alone, alone
+
+
+def test_a_clip_total_for_a_cents_priced_model_is_worked_out_in_dollars():
+    """`black-forest-labs/flux-3-video` publishes its per-second rates in cents.
+
+    The total has to be built from the dollars figure on screen, not from the number in
+    the catalogue: multiplying the published `29` would bill a twenty-second clip at a
+    hundred times its price, and it would disagree with the bullet directly above it.
+    """
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(
+            supported_durations=[20],
+            pricing_skus={
+                "cents_per_second_output": "17",
+                "cents_per_second_output_1080p": "29",
+            },
+        ),
+    )
+    assert "- per output second (1080p): $0.29" in rendered, rendered
+    assert "no one clip can cost more than $5.80." in rendered, rendered
+    assert "$580" not in rendered, "the published figure is in cents"
+
+
+@pytest.mark.parametrize(
+    ("key", "published"),
+    [
+        ("duration_seconds", "nan"),
+        ("duration_seconds", "Infinity"),
+        ("duration_seconds", "priceless"),
+        ("cents_per_second_output", "nan"),
+    ],
+)
+def test_a_rate_that_is_not_a_finite_number_never_becomes_a_total(key, published):
+    """A figure the panel cannot read is not one it can multiply.
+
+    None of these has ever been published, and that is the point of checking them: the
+    total is the first thing here that compares and multiplies money, and a decimal NaN
+    raises on comparison rather than coming out wrong. The panel still shows whatever
+    OpenRouter sent -- withholding a published charge would be worse than an odd one.
+    """
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(supported_durations=[10], pricing_skus={key: published}),
+    )
+    assert "no one clip can cost more than" not in rendered, rendered
+    assert f"${published}" in rendered, "the panel still shows what OpenRouter published"
+
+
+def test_a_model_that_publishes_no_durations_gets_no_clip_total():
+    """Half the arithmetic is missing, so the panel does the honest thing and stops."""
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(supported_durations=[], pricing_skus={"duration_seconds": "0.10"}),
+    )
+    assert "no one clip can cost more than" not in rendered, rendered
+    assert "- per second: $0.10" in rendered
+
+
+def test_the_clip_total_keeps_every_digit_the_rate_carries():
+    """`alibaba/happyhorse-1.1` at 15 seconds comes to $1.917, not $1.92.
+
+    Rounding money to cents is how a published $0.014 per megapixel became $0.01 on the
+    image side -- a 30% understatement that nothing else in the suite would notice.
+    """
+    rendered = render_video_help(
+        "test/priced",
+        _video_model(
+            supported_durations=[15], pricing_skus={"duration_seconds_1080p": "0.1278"}
+        ),
+    )
+    assert "more than $1.917." in rendered, rendered
+
+
+def test_charging_by_the_second_is_read_from_the_base_unit_table():
+    """The flag rides on the resolved base token, not on a second list of key names.
+
+    A hardcoded key list would miss `cents_per_second_output` the day OpenRouter adds a
+    tier suffix to it, and would go on claiming a total for a model that had moved off
+    per-second billing entirely.
+    """
+    from open_webui_openrouter_pipe.integrations.video_help import (
+        _SKU_BASE_LABELS,
+        _SKU_PER_SECOND_BASES,
+        _sku_unit,
+    )
+
+    known = {token for token, _ in _SKU_BASE_LABELS}
+    assert _SKU_PER_SECOND_BASES <= known, (
+        "a per-second base the label table cannot resolve is unreachable"
+    )
+    for token in _SKU_PER_SECOND_BASES:
+        assert _sku_unit(token).per_second is True, token
+    assert _sku_unit("cents_per_second_output_1080p").per_second is True
+    assert _sku_unit("video_tokens").per_second is False
+    assert _sku_unit("reference_images").per_second is False
+    assert _sku_unit("storage_gigabyte_month").per_second is False
+
+
 def test_video_filter_spec_seed_and_audio_gates_use_top_level_fields():
     veo = build_video_filter_spec("google/veo-3.1", VIDEO_BY_ID["google/veo-3.1"])
     assert veo.seed_capable is True
@@ -1797,24 +2045,15 @@ def test_happyhorse_video_filter_spec_covers_wide_ratios_and_undeclared_audio():
         assert spec.allowed_params == ()
 
 
-@pytest.mark.parametrize("model_id", list(_VIDEO_MODEL_IDS_FOR_AUDIT := [
-    "google/veo-3.1-fast",
-    "google/veo-3.1-lite",
-    "google/veo-3.1",
-    "kwaivgi/kling-video-o1",
-    "kwaivgi/kling-v3.0-pro",
-    "kwaivgi/kling-v3.0-std",
-    "minimax/hailuo-2.3",
-    "alibaba/wan-2.7",
-    "bytedance/seedance-2.0-fast",
-    "bytedance/seedance-2.0",
-    "alibaba/wan-2.6",
-    "bytedance/seedance-1-5-pro",
-    "openai/sora-2-pro",
-    "alibaba/happyhorse-1.0",
-    "alibaba/happyhorse-1.1",
-]))
+@pytest.mark.parametrize("model_id", sorted(VIDEO_BY_ID))
 def test_video_filter_renderer_per_model_audit(model_id: str):
+    """One node per catalogued model, taken from the catalogue rather than retyped.
+
+    The list this replaced named fifteen ids by hand while the file already built
+    `VIDEO_BY_ID` from the fixture beside it. Seven models the catalogue publishes were
+    therefore audited by nothing, and five of those seven are the ones that publish a
+    capability as `null` -- the shape this audit exists to pin.
+    """
     model = VIDEO_BY_ID[model_id]
     source = render_video_filter_source(model_id=model_id, video_model=model)
 

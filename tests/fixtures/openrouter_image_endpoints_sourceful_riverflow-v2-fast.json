@@ -1,0 +1,71 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "font_inputs"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.02,
+          "unit": "image"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.04,
+          "unit": "image",
+          "variant": "2k"
+        },
+        {
+          "billable": "input_font",
+          "cost_usd": 0.03,
+          "unit": "image"
+        },
+        {
+          "billable": "input_reference",
+          "cost_usd": 0.2,
+          "unit": "image"
+        }
+      ],
+      "provider_name": "Sourceful",
+      "provider_slug": "sourceful",
+      "provider_tag": "sourceful",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "16:9",
+            "9:16",
+            "21:9",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 4,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K",
+            "2K",
+            "4K"
+          ]
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "sourceful/riverflow-v2-fast"
+}

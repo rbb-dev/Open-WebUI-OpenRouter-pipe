@@ -1,0 +1,59 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "moderation"
+      ],
+      "pricing": [
+        {
+          "billable": "input_image",
+          "cost_usd": 8e-06,
+          "unit": "token"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 3e-05,
+          "unit": "token"
+        }
+      ],
+      "provider_name": "OpenAI",
+      "provider_slug": "openai",
+      "provider_tag": "openai",
+      "supported_parameters": {
+        "background": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "opaque"
+          ]
+        },
+        "input_references": {
+          "max": 16,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 10,
+          "min": 1,
+          "type": "range"
+        },
+        "output_compression": {
+          "max": 100,
+          "min": 0,
+          "type": "range"
+        },
+        "quality": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "supports_streaming": true
+    }
+  ],
+  "id": "openai/gpt-5.4-image-2"
+}

@@ -1,0 +1,59 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "steps",
+        "guidance",
+        "safety_tolerance"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.03,
+          "unit": "megapixel"
+        }
+      ],
+      "provider_name": "Black Forest Labs",
+      "provider_slug": "black-forest-labs",
+      "provider_tag": "black-forest-labs",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "16:9",
+            "9:16",
+            "21:9",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 8,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "output_format": {
+          "type": "enum",
+          "values": [
+            "png",
+            "jpeg"
+          ]
+        },
+        "seed": {
+          "type": "boolean"
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "black-forest-labs/flux.2-pro"
+}

@@ -1,0 +1,111 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "cachedContent"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 3e-05,
+          "unit": "token"
+        }
+      ],
+      "provider_name": "Google Vertex",
+      "provider_slug": "google-vertex/global",
+      "provider_tag": "google-vertex/global",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "1:4",
+            "1:8",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:1",
+            "4:3",
+            "4:5",
+            "5:4",
+            "8:1",
+            "9:16",
+            "16:9",
+            "21:9"
+          ]
+        },
+        "input_references": {
+          "max": 14,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K"
+          ]
+        }
+      },
+      "supports_streaming": false
+    },
+    {
+      "allowed_passthrough_parameters": [
+        "cachedContent"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 3e-05,
+          "unit": "token"
+        }
+      ],
+      "provider_name": "Google AI Studio",
+      "provider_slug": "google-ai-studio",
+      "provider_tag": "google-ai-studio",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "1:4",
+            "1:8",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:1",
+            "4:3",
+            "4:5",
+            "5:4",
+            "8:1",
+            "9:16",
+            "16:9",
+            "21:9"
+          ]
+        },
+        "input_references": {
+          "max": 14,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K"
+          ]
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "google/gemini-3.1-flash-lite-image"
+}

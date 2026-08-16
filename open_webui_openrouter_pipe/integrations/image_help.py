@@ -688,7 +688,6 @@ def _image_unnamed_charge(billable: str, unit: str) -> str:
 
 
 def _image_charges(records: list[dict[str, Any]]) -> tuple[list[_ImageCharge], list[str]]:
-    """Every price the model's own published contract carries, read as it is written."""
     labels = dict(_IMAGE_BILLABLE_LABELS)
     ranked = [name for name, _ in _IMAGE_BILLABLE_LABELS]
     charges: list[_ImageCharge] = []
@@ -728,11 +727,6 @@ def _image_charges(records: list[dict[str, Any]]) -> tuple[list[_ImageCharge], l
 
 
 def _image_price_lines(charges: list[_ImageCharge]) -> list[str]:
-    """One line per charge, naming the providers only where they disagree on it.
-
-    A model served by several companies publishes one contract each. Printing the first
-    one would be a guess about who takes the request, which is decided after it leaves.
-    """
     lines: list[str] = []
     for label in dict.fromkeys(charge.label for charge in sorted(charges, key=lambda c: c.order)):
         offered: dict[str, list[str]] = {}

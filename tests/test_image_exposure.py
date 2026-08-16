@@ -43,6 +43,10 @@ from tests.test_image_generation import _load_filter_from_source
 
 PIPE_META = "openrouter_pipe"
 
+_RECORDED_CONTRACTS = sorted(
+    (Path(__file__).parent / "fixtures").glob("openrouter_image_endpoints_*.json")
+)
+
 _RECRAFT = {
     "provider_slug": "recraft",
     "allowed_passthrough_parameters": ["style", "controls"],
@@ -458,23 +462,20 @@ async def test_a_typed_option_still_lands_under_the_company_serving_the_request(
 # =============================================================================
 
 
-def test_the_controls_that_come_from_no_contract_are_drawn_on_every_model():
-    import glob
+@pytest.mark.parametrize("path", _RECORDED_CONTRACTS, ids=lambda p: p.stem)
+def test_the_controls_that_come_from_no_contract_are_drawn_on_every_model(path):
+    """One node per recorded contract, read from inside the tree under test.
 
-    captures = sorted(
-        glob.glob(
-            "/mnt/c/Work/Dev/Open-WebUI-OpenRouter-pipe/.external/live-api-shapes-2026-08-09/imgep/*.json"
-        )
+    This globbed an absolute path into `.external/`, which is gitignored, so on any
+    checkout without the sweep -- CI on every run -- it skipped, and the fleet-wide claim
+    it makes was measured on nothing. Run from a scratch copy it read the *other* tree.
+    """
+    raw = json.loads(path.read_text())
+    spec = build_image_model_filter_spec(raw["id"], None, raw["endpoints"])
+    module = _load_filter_from_source(
+        render_image_model_filter_source(spec), f"always_on_{spec.dotted_id}"
     )
-    if not captures:
-        pytest.skip("the recorded contracts are not present in this checkout")
-    for path in captures:
-        raw = json.loads(Path(path).read_text())
-        spec = build_image_model_filter_spec(raw["id"], None, raw["endpoints"])
-        module = _load_filter_from_source(
-            render_image_model_filter_source(spec), f"always_on_{spec.dotted_id}"
-        )
-        assert ALWAYS_ON_VALVE_NAMES <= set(module.Filter.UserValves.model_fields), raw["id"]
+    assert ALWAYS_ON_VALVE_NAMES <= set(module.Filter.UserValves.model_fields), raw["id"]
 
 
 @pytest.mark.parametrize("published", ["provider_options_json", "reference_urls"])

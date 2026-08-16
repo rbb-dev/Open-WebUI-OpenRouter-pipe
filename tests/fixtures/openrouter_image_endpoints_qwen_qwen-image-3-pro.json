@@ -1,0 +1,71 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [],
+      "pricing": [
+        {
+          "billable": "input_image",
+          "cost_usd": 0.003,
+          "unit": "image"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.04,
+          "unit": "image",
+          "variant": "1k"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.075,
+          "unit": "image",
+          "variant": "2k"
+        }
+      ],
+      "provider_name": "Alibaba Cloud Int.",
+      "provider_slug": "alibaba",
+      "provider_tag": "alibaba",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "1:2",
+            "1:4",
+            "2:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:1",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9"
+          ]
+        },
+        "input_references": {
+          "max": 4,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 6,
+          "min": 1,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K",
+            "2K"
+          ]
+        },
+        "seed": {
+          "type": "boolean"
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "qwen/qwen-image-3-pro"
+}
