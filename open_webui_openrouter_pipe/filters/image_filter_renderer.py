@@ -21,6 +21,7 @@ from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
     TOP_LEVEL_PARAMS,
+    scrub_surrogates,
 )
 from ..models.registry import sanitize_model_id
 
@@ -38,7 +39,7 @@ def sanitize_image_filter_id(model_id: str) -> str:
     if not cleaned:
         cleaned = "model"
     if len(cleaned) > 54:
-        suffix = hashlib.sha1((model_id or "").encode("utf-8")).hexdigest()[:8]
+        suffix = hashlib.sha1(scrub_surrogates(model_id or "").encode("utf-8")).hexdigest()[:8]
         cleaned = f"{cleaned[:45].rstrip('_')}_{suffix}"
     return f"openrouter_image_filter_{cleaned}"
 
@@ -218,7 +219,7 @@ def _agreed_passthrough(records: list[dict]) -> tuple[str, ...]:
         per_record.append({name for name in names if isinstance(name, str) and name})
     shared = set.intersection(*per_record) if per_record else set()
     first = records[0].get("allowed_passthrough_parameters") or []
-    return tuple(name for name in first if name in shared)
+    return tuple(name for name in first if isinstance(name, str) and name in shared)
 
 
 def build_image_model_filter_spec(

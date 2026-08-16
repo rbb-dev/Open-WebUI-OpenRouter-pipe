@@ -64,13 +64,27 @@ class GeneratedImage:
 _TEXT_LIMIT = 120
 
 
+def scrub_surrogates(text: str) -> str:
+    """A string as it can be encoded, for any string ``json.loads`` can produce.
+
+    A JSON body may carry an unpaired surrogate escape in a key or a value, and
+    `str.encode` refuses it. Reached from a hash of published names and from a filter id,
+    both built out of catalog data, and a raise in either costs the model its whole filter
+    and answers a help request with an error.
+    """
+    return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+
+
 def clamp_text(text: Any, limit: int = _TEXT_LIMIT) -> str:
     """Bound a span of text the pipe did not author before it reaches a log or the browser.
 
     Applies to both sides of the wire: a request key the client chose and a rejection
-    reason built from an upstream reply are equally able to size a log record.
+    reason built from an upstream reply are equally able to size a log record, and either
+    can carry an unpaired surrogate the stream encoder refuses -- which `logging` swallows,
+    losing the record while the latch that guards it still arms. Scrubbed before the
+    length check, so one surrogate becoming three characters cannot cross the bound.
     """
-    rendered = text if isinstance(text, str) else str(text)
+    rendered = scrub_surrogates(text if isinstance(text, str) else str(text))
     return rendered if len(rendered) <= limit else f"{rendered[:limit]}…"
 
 

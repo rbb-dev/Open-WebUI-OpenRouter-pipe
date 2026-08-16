@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -2015,15 +2016,49 @@ def test_a_filter_id_is_derived_from_the_model_id_and_stays_readable():
     assert sanitize_image_filter_id("recraft/recraft-v3") == "openrouter_image_filter_recraft_recraft_v3"
     assert sanitize_image_filter_id("qwen/qwen-image-3") == "openrouter_image_filter_qwen_qwen_image_3"
 
-    long_id = "black-forest-labs/flux.2-klein-4b"
-    assert "flux_2_klein_4b" in sanitize_image_filter_id(long_id), (
+    # Long enough to cross the 54-character gate. The previous id here cleaned to 33, so
+    # the truncation, the digest and the surrogate guard behind that gate were all dead to
+    # the suite -- and the "same terms" assertion below compared two functions that were
+    # both returning the untouched string.
+    long_id = "black-forest-labs/flux.2-klein-4b-preview-2026-08-experimental-build"
+    cleaned = sanitize_image_filter_id(long_id).removeprefix("openrouter_image_filter_")
+    assert len(cleaned) <= 54, f"the gate must actually shorten it. got {len(cleaned)}"
+    assert re.fullmatch(r"[0-9a-f]{8}", cleaned[-8:]), (
+        f"and end in a digest, so two long ids cannot collide. got {cleaned!r}"
+    )
+    assert "flux_2_klein_4b" in cleaned, (
         "the readable part must survive; it is how an operator finds the row"
     )
-    assert sanitize_image_filter_id(long_id).removeprefix(
-        "openrouter_image_filter_"
-    ) == sanitize_video_filter_id(long_id).removeprefix("openrouter_video_"), (
-        "both sanitizers take a model id and must shorten it on the same terms"
+    assert cleaned == sanitize_video_filter_id(long_id).removeprefix("openrouter_video_"), (
+        "both sanitizers take a model id and must shorten it on the same terms -- asserted "
+        "inside the branch that shortens, or it compares two untouched strings"
     )
+
+
+@pytest.mark.parametrize("sanitizer", ["image", "video"])
+def test_a_model_id_carrying_a_surrogate_gets_a_filter_id_rather_than_a_crash(sanitizer):
+    """A catalogue id can carry an unpaired surrogate, and `str.encode` refuses one.
+
+    Reached only past the length gate, where the id is hashed. The image side raises
+    without the guard; the video side raised with it, because the guard was added to one
+    of the two identical call sites. A raise here costs every model of that kind its
+    filter, since the failure escapes the per-model loop.
+    """
+    import json
+
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        sanitize_image_filter_id,
+    )
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        sanitize_video_filter_id,
+    )
+
+    model_id = json.loads(r'"vendorlongname/vendorlongname-vendorlongname-vendorlongname-model-\ud800-x"')
+    assert any(0xD800 <= ord(c) <= 0xDFFF for c in model_id), "the input must be hostile"
+    run = sanitize_image_filter_id if sanitizer == "image" else sanitize_video_filter_id
+
+    result = run(model_id)
+    assert result.isascii() and result, f"a usable id, not a crash. got {result!r}"
 
     assert sanitize_image_filter_id("") == "openrouter_image_filter_model", (
         "an unusable id must not fall back onto a retired filter's id"
@@ -3128,4 +3163,3 @@ def test_the_compatibility_spelling_still_works_on_its_own():
     )
     assert top_level == {"resolution": "1K"}
     assert notes == []
-

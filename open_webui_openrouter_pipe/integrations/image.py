@@ -20,6 +20,7 @@ from .image_types import (
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
+    clamp_text,
     summarise_names,
 )
 from .provider_options import (
@@ -45,8 +46,7 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
     full length would size a WARNING record and a notification event to whatever the
     request carried.
     """
-    rendered = text if isinstance(text, str) else str(text)
-    return rendered if len(rendered) <= limit else f"{rendered[:limit]}…"
+    return clamp_text(text, limit)
 
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
 

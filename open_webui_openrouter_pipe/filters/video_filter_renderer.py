@@ -13,6 +13,7 @@ from ..core.utils import _clean_str
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
+    scrub_surrogates,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def sanitize_video_filter_id(model_id: str) -> str:
     if not cleaned:
         cleaned = "model"
     if len(cleaned) > 54:
-        suffix = hashlib.sha1(model_id.encode("utf-8")).hexdigest()[:8]
+        suffix = hashlib.sha1(scrub_surrogates(model_id).encode("utf-8")).hexdigest()[:8]
         cleaned = f"{cleaned[:45].rstrip('_')}_{suffix}"
     return f"openrouter_video_{cleaned}"
 

@@ -3645,3 +3645,61 @@ async def test_help_is_given_every_published_record_not_the_one_a_request_would_
         "difference between the two shapes observable"
     )
 
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        r'{"image_config":{"\ud800evil":"x"}}',
+        r'{"image_config":{"aspect_ratio":"16:9","\udfff":"x"}}',
+        r'{"image_config":{"model":"\ud800"}}',
+    ],
+)
+def test_a_client_key_the_encoder_refuses_still_reaches_the_log_stream(body):
+    """`image_config` reaches the adapter verbatim, and `json.loads` accepts a lone surrogate.
+
+    Asserted on the bytes a handler wrote, not on the record `caplog` captured: `caplog`
+    never encodes, so every assertion about the message passes while the real handler's
+    encoder refuses it and `logging` swallows the failure. `warn_level` runs before the
+    record reaches the handler, so the silent request still arms the latch and demotes the
+    next legitimate report for that model to DEBUG -- for every user of the worker.
+    """
+    import io
+    import json
+    import logging
+
+    from open_webui_openrouter_pipe.integrations import image as adapter
+
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="utf-8", errors="strict", write_through=True)
+    handler = logging.StreamHandler(stream)
+    log = logging.getLogger("test_client_key_encodes")
+    log.addHandler(handler)
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
+    adapter._warned_dropped_image_param.clear()
+    record = {"supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["16:9"]}}}
+    try:
+        _, _, notes = ImageGenerationAdapter._split_image_config(
+            json.loads(body), allowed_passthrough=frozenset(), record=record
+        )
+        assert notes, f"the refused key has to be reported at all. body was {body!r}"
+        for note in notes:
+            log.log(
+                adapter.warn_level(
+                    adapter._warned_dropped_image_param, f"a/b:{note.kind}:{note.name}"
+                ),
+                "Image parameter not sent for %r: %s",
+                "a/b",
+                note.text,
+            )
+        stream.flush()
+    finally:
+        log.removeHandler(handler)
+
+    assert raw.getvalue(), (
+        "the report was never written: the encoder refused a client-chosen key and "
+        "logging swallowed the failure, while the latch armed and demoted the next "
+        f"legitimate report for this model to DEBUG. body was {body!r}"
+    )
+    for note in notes:
+        note.text.encode("utf-8")
