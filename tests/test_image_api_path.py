@@ -574,10 +574,17 @@ def test_routing_ignores_a_missing_spec():
 
 
 def test_every_top_level_param_is_promoted_out_of_image_config():
+    """The triple is *consistent* on purpose.
+
+    `size:"1024x1024"` with `image_size:"2K"` and `aspect_ratio:"16:9"` is the exact
+    combination OpenRouter documents as a 400, so asserting `notes == []` over it blessed
+    a request the API rejects. A tier `size` is equivalent to `resolution` and combines
+    with a ratio, so this triple is one the model actually accepts.
+    """
     config = {
         "aspect_ratio": "16:9",
         "image_size": "2K",
-        "size": "1024x1024",
+        "size": "2K",
         "n": 3,
         "seed": 7,
         "quality": "high",
@@ -600,7 +607,7 @@ def test_every_top_level_param_is_promoted_out_of_image_config():
     assert params == {
         "aspect_ratio": "16:9",
         "resolution": "2K",
-        "size": "1024x1024",
+        "size": "2K",
         "n": 3,
         "seed": 7,
         "quality": "high",

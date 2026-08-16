@@ -39,6 +39,7 @@ EXPECTED_LATCHES = {
     "_warned_queue_backlog",
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
+    "_warned_stale_filter_rows",
     "_warned_storage_provider",
     "_warned_system_resources",
     "_warned_timing_file",

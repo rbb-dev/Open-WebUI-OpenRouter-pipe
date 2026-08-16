@@ -826,8 +826,11 @@ generation job and returns the model's help blurb directly:
   one-sentence description tailored to this model.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
-- **Cost** (live): every SKU rate from the model's `pricing_skus` dict,
-  formatted as readable bullets (e.g. `per second (with audio, 4K): $0.30`).
+- **Cost** (live): every published rate as a readable bullet (e.g. `per
+  second (with audio, 4K): $0.30`), with any minimum charge on its own
+  line rather than among the rates, a note whenever the model is billed
+  per video token, and a line naming any charge whose unit the panel
+  does not recognise instead of inventing one for it.
 
 Help blurbs are stored statically in
 [`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
@@ -965,9 +968,11 @@ dict. Examples:
 
 The pipe surfaces these in two places:
 
-1. **In-chat `help` command** — bullets each SKU as "per second (with
+1. **In-chat `help` command** — bullets each rate as "per second (with
    audio, 4K): $0.60". Read live from the catalog every time `help` is
-   invoked.
+   invoked. A value whose key carries `cents_per` is published in cents
+   and is converted to dollars before display, wherever in the key that
+   token sits.
 2. **Final status footer** after generation — shows the actual usage
    cost from OpenRouter's poll response (e.g. `Generated in 35.2s ·
    $0.40`). This is the authoritative cost for that specific
@@ -979,9 +984,21 @@ SKU key conventions decoded:
 |------------------|---------|
 | `duration_seconds` | Per second of video |
 | `video_tokens` | Per video token (Seedance pricing model) |
+| `second_output` / `video_output_second` | Per second of output |
+| `second_video_continuation` | Per second of video continued from an earlier clip |
+| `reference_images` | Per reference image supplied |
 | `_with_audio` / `_without_audio` | With or without generated audio |
 | `_4k` / `_1080p` / `_720p` / `_480p` | Resolution-tiered SKU |
 | `text_to_video_` / `image_to_video_` | Generation mode (Wan 2.6) |
+| `cents_per` anywhere in the key | The value is in cents, not dollars |
+| `minimum_` prefix | A floor per job, not a rate — shown on its own line |
+
+A per-video-token model (the Seedance family) publishes a rate but no
+token count, so seconds cannot be converted to a price and the rates do
+not compare with one another: 4K carries the *smallest* per-token number
+on `bytedance/seedance-2.0` while costing far more per second of output
+than 480p. The panel says so rather than printing a table that reads
+backwards, and points at OpenRouter's pricing page for the real figure.
 
 Prices are read live every call — never baked into static help text — so
 OpenRouter rate updates surface without a new bundle.

@@ -6,6 +6,7 @@ to ensure we test the ACTUAL code that gets deployed, not static backup copies.
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import os
 from types import ModuleType
 from typing import Any
 
@@ -2490,3 +2491,390 @@ class TestInstalledRowMatchesTheRenderedModule:
             f"the rendered module declares toggle={module_toggle!r} while the row says "
             f"{row_toggle!r}; the two describe the same filter and must agree"
         )
+
+
+
+# ============================================================================
+# REGFIX: infrastructure fixes 2, 3, 6
+# ============================================================================
+
+
+_INSTALLED_FILTER_RENDERER_ARGS: dict[str, dict[str, Any]] = {
+    "render_openrouter_web_tools_filter_source": {
+        "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
+    },
+    "render_openrouter_image_gen_filter_source": {},
+    "render_direct_uploads_filter_source": {},
+    "render_openrouter_image_filter_source": {
+        "model_id": "recraft/recraft-v3",
+        "image_model": {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+    },
+    "render_openrouter_video_gen_filter_source": {
+        "model_id": "google/veo-3",
+        "video_model": {"id": "google/veo-3", "name": "Veo 3"},
+    },
+    "_render_provider_routing_filter_source": {
+        "model_slug": "openai/gpt-4o", "providers": ["openai"],
+        "quantizations": ["fp16"], "visibility": "both",
+    },
+    "render_openrouter_fusion_filter_source": {"marker": "fusion"},
+    "render_image_model_filter_source": {},
+    "render_video_filter_source": {
+        "model_id": "google/veo-3",
+        "video_model": {"id": "google/veo-3", "name": "Veo 3"},
+    },
+}
+
+
+def _installed_filter_renderers() -> dict[str, Any]:
+    """The renderer callables, resolved by name rather than by scanning a namespace.
+
+    A scan is wrong here: in the flat bundle every module shares one namespace, so a
+    `render_` prefix sweep also collects `render_video_help` and `render_image_help`,
+    which produce chat prose and are never installed as filters. The completeness of this
+    table is enforced separately, in package mode, where the namespaces are still distinct.
+    """
+    import importlib
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    found: dict[str, Any] = {}
+    for module_name in (
+        "filter_manager", "fusion_filter_renderer",
+        "image_filter_renderer", "video_filter_renderer",
+    ):
+        module = importlib.import_module(
+            f"open_webui_openrouter_pipe.filters.{module_name}"
+        )
+        for name in _INSTALLED_FILTER_RENDERER_ARGS:
+            candidate = getattr(module, name, None)
+            if callable(candidate):
+                found.setdefault(name, candidate)
+    for name in _INSTALLED_FILTER_RENDERER_ARGS:
+        candidate = getattr(FilterManager, name, None)
+        if callable(candidate):
+            found.setdefault(name, candidate)
+    return found
+
+
+def _render_installed_filter(name: str) -> str:
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+    from open_webui_openrouter_pipe.pipe import Pipe as _Pipe
+
+    manager = FilterManager.__new__(FilterManager)
+    manager.valves = _Pipe.Valves()
+
+    kwargs = dict(_INSTALLED_FILTER_RENDERER_ARGS[name])
+    if name == "render_image_model_filter_source":
+        kwargs["spec"] = build_image_model_filter_spec(
+            "recraft/recraft-v3",
+            {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+            [{
+                "provider_slug": "recraft",
+                "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
+                "allowed_passthrough_parameters": ["style"],
+            }],
+        )
+
+    fn = _installed_filter_renderers()[name]
+    if name == "render_openrouter_video_gen_filter_source":
+        return fn(manager, **kwargs)
+    return fn(**kwargs)
+
+
+@pytest.mark.parametrize("renderer", sorted(_INSTALLED_FILTER_RENDERER_ARGS))
+def test_every_template_the_pipe_installs_survives_open_webuis_import_rewrite(renderer):
+    """The property that decides whether this guard ships or bricks every install.
+
+    `replace_imports` is unanchored and Open WebUI writes its result back to the DB, so a
+    template whose PROSE happens to contain 'from config' would be refused by the new
+    guard -- and the pipe would then install nothing for that model. Checking the guard
+    only against synthetic strings proves the guard works and says nothing about whether
+    the real templates pass it.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    is_valid, error = FilterManager.validate_filter_source(_render_installed_filter(renderer))
+
+    assert is_valid, (
+        f"{renderer} renders a source Open WebUI would rewrite on load, so the pipe would "
+        f"refuse to install it and that model loses its filter entirely: {error}"
+    )
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
+    reason="the flat bundle shares one namespace, so a per-module scan cannot tell a "
+    "filter renderer from a help renderer; the table's completeness is a source property",
+)
+def test_the_installed_filter_table_still_names_every_filter_renderer():
+    """A renderer added without a table entry stops being checked against the guard."""
+    import importlib
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    discovered: set[str] = set()
+    for module_name in (
+        "filter_manager", "fusion_filter_renderer",
+        "image_filter_renderer", "video_filter_renderer",
+    ):
+        module = importlib.import_module(
+            f"open_webui_openrouter_pipe.filters.{module_name}"
+        )
+        discovered.update(
+            attr for attr, value in vars(module).items()
+            if attr.startswith("render_") and callable(value)
+        )
+    discovered.update(
+        attr for attr in dir(FilterManager)
+        if "render_" in attr and callable(getattr(FilterManager, attr, None))
+    )
+
+    assert discovered == set(_INSTALLED_FILTER_RENDERER_ARGS), (
+        "only in source: "
+        f"{sorted(discovered - set(_INSTALLED_FILTER_RENDERER_ARGS))}; only in the table: "
+        f"{sorted(set(_INSTALLED_FILTER_RENDERER_ARGS) - discovered)}. A renderer missing "
+        "from the table is never checked against Open WebUI's import rewrite."
+    )
+
+
+@pytest.mark.parametrize(
+    ("prose", "accepted"),
+    [
+        ("Pick the ratio from config, or leave this empty.", False),
+        ("Read the value from main before the request goes out.", False),
+        ("Pick the ratio from the model default, or leave this empty.", True),
+        ("Read the value from the request body before it goes out.", True),
+    ],
+)
+def test_generated_prose_open_webui_would_rewrite_is_refused(prose, accepted):
+    """OWUI's replace_imports is unanchored and writes its result back to the DB.
+
+    A generated filter whose text is not a fixed point of that transform enters a
+    permanent two-writer loop: OWUI rewrites it on load, the pipe sees a content
+    mismatch on the next refresh and writes it back.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    source = f'X = 1\nDESCRIPTION = "{prose}"\n'
+    is_valid, error = FilterManager.validate_filter_source(source)
+
+    assert is_valid is accepted, (
+        f"{prose!r} was {'accepted' if is_valid else 'refused'}; prose Open WebUI would "
+        f"rewrite must be refused and prose it leaves alone must be accepted. {error}"
+    )
+    if not accepted:
+        assert error and "rewrite" in error, (
+            "the refusal must say why, or the author cannot tell it from a syntax error"
+        )
+
+
+def test_the_replace_imports_guard_runs_against_open_webui_s_own_rule():
+    """Not a local copy of the four word-pairs: the check goes through OWUI's function."""
+    import open_webui.utils.plugin as owp
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    calls: list[str] = []
+    real = owp.replace_imports
+
+    def _recording(content: str) -> str:
+        calls.append(content)
+        return real(content)
+
+    owp.replace_imports = _recording
+    try:
+        FilterManager.validate_filter_source("X = 1\n")
+    finally:
+        owp.replace_imports = real
+
+    assert calls == ["X = 1\n"], (
+        "validate_filter_source did not call open_webui.utils.plugin.replace_imports, so "
+        "it is checking its own copy of the rule and will not follow OWUI when it changes"
+    )
+
+
+@pytest.mark.parametrize("version", ["9.9.9", "1.2.3"])
+def test_both_generated_filters_stamp_the_renderer_version(monkeypatch, version):
+    """Which renderer generation produced an installed filter must be readable from it.
+
+    Parametrised over two versions so a hardcoded literal in either renderer fails: the
+    value has to come from the package, not from the template.
+    """
+    import open_webui_openrouter_pipe as pkg
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    monkeypatch.setattr(pkg, "__version__", version)
+
+    image = render_image_model_filter_source(
+        build_image_model_filter_spec(
+            "a/b",
+            {"id": "a/b", "name": "B"},
+            [{
+                "provider_slug": "p",
+                "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
+                "allowed_passthrough_parameters": ["style"],
+            }],
+        )
+    )
+    video = render_video_filter_source(
+        model_id="a/b", video_model={"id": "a/b", "name": "B"}, admin_valves=None
+    )
+
+    stamp = f"OPENROUTER_PIPE_VERSION = {version!r}"
+    for label, source in (("image", image), ("video", video)):
+        assert stamp in source, (
+            f"the {label} filter carries no version stamp for {version!r}, so 'did the "
+            "fix reach this deployment?' can only be answered by diffing the source"
+        )
+        compile(source, f"<{label}>", "exec")
+
+    assert "openrouter_pipe:image_filter:v1" in image, (
+        "the image re-identification marker changed; every installed row is orphaned and "
+        "reinstalls under a _N suffix"
+    )
+    assert "openrouter_pipe:video_filter:v1" in video, (
+        "the video re-identification marker changed; every installed row is orphaned and "
+        "reinstalls under a _N suffix"
+    )
+
+
+@pytest.mark.parametrize(
+    ("valve", "label"),
+    [
+        ("AUTO_INSTALL_IMAGE_FILTERS", "OpenRouter image filter for a/b"),
+        ("AUTO_INSTALL_VIDEO_FILTERS", "OpenRouter Video Generation filter for a/b"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_row_that_will_never_be_updated_says_so_once(
+    valve, label, caplog, monkeypatch
+):
+    """INSTALL off + ATTACH on finds the row, attaches it, and never rewrites it.
+
+    Without a signal every fix to that filter stays undelivered forever. Two distinct
+    valve names and two distinct labels, so a constant message cannot satisfy both.
+    """
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.filters import filter_manager as fm_module
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    stale = SimpleNamespace(id="fn_1", content="STALE = 1", updated_at=1)
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return [stale]
+
+        @staticmethod
+        async def get_function_by_id(function_id):
+            return stale if function_id == "fn_1" else None
+
+        @staticmethod
+        async def update_function_by_id(function_id, updates):
+            raise AssertionError(
+                "the row was rewritten with the install valve off; this test would then "
+                "be asserting a warning about a state that does not exist"
+            )
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    fm_module._warned_stale_filter_rows.clear()
+
+    logger = logging.getLogger(f"stale-row-test.{valve}")
+    manager = FilterManager(
+        pipe=MagicMock(), valves=SimpleNamespace(**{valve: False}), logger=logger
+    )
+
+    async def _install():
+        return await manager._ensure_filter_installed(
+            desired_source="FRESH = 1\n",
+            desired_name="N",
+            desired_meta={},
+            preferred_id="fn_1",
+            auto_install_valve=valve,
+            log_label=label,
+            matches_candidate=lambda content: True,
+        )
+
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        first = await _install()
+        second = await _install()
+
+    assert first == "fn_1" and second == "fn_1", (
+        "the row must still be returned and attached; the warning is about content, not "
+        "about reachability"
+    )
+    emitted = [r for r in caplog.records if r.name == logger.name]
+    warnings = [r for r in emitted if r.levelno >= logging.WARNING]
+    repeats = [r for r in emitted if r.levelno == logging.DEBUG]
+
+    assert len(warnings) == 1, (
+        f"the stale row produced {len(warnings)} warnings across two refreshes; one is "
+        "the contract -- none means the operator never learns, two means a line per refresh"
+    )
+    assert len(repeats) == 1, (
+        "the repeat did not land at DEBUG, so an operator who raises the log level to "
+        "diagnose a recurring fault sees strictly less than before"
+    )
+    message = warnings[0].getMessage()
+    assert valve in message and "fn_1" in message and label in message, (
+        f"the warning must name the blocking valve, the function id and the filter: {message}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_is_already_current_says_nothing(caplog, monkeypatch):
+    """No warning when the stored source already matches: that row is not stale."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.filters import filter_manager as fm_module
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    current = SimpleNamespace(id="fn_1", content="FRESH = 1", updated_at=1)
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return [current]
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    fm_module._warned_stale_filter_rows.clear()
+
+    logger = logging.getLogger("stale-row-test.current")
+    manager = FilterManager(
+        pipe=MagicMock(),
+        valves=SimpleNamespace(AUTO_INSTALL_IMAGE_FILTERS=False),
+        logger=logger,
+    )
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        await manager._ensure_filter_installed(
+            desired_source="FRESH = 1\n",
+            desired_name="N",
+            desired_meta={},
+            preferred_id="fn_1",
+            auto_install_valve="AUTO_INSTALL_IMAGE_FILTERS",
+            log_label="OpenRouter image filter for a/b",
+            matches_candidate=lambda content: True,
+        )
+
+    assert not [r for r in caplog.records if r.name == logger.name], (
+        "a current row warned about being stale, so the signal is noise and gets muted"
+    )

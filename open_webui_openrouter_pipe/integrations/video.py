@@ -39,7 +39,7 @@ from ..storage.owui_files import (
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
-from .image_types import summarise_names
+from .image_types import capability_declared_off, prompt_with_system, summarise_names
 from .provider_options import (
     VIDEO_PROVIDER_KEYS,
     carrier_slug,
@@ -48,6 +48,7 @@ from .provider_options import (
     requested_provider_options,
     restrict_provider_block,
 )
+from .request_fields import VIDEO_REQUEST_FIELDS
 from .video_client import OpenRouterVideoClient, extension_for_video_mime
 from .video_help import render_video_help
 from .video_intent import (
@@ -83,24 +84,44 @@ _OVER_URL_BUDGET = (
     f"only the first {_MAX_PASSTHROUGH_URLS} passthrough URLs in a request are forwarded"
 )
 
+_OVER_REFERENCE_BUDGET = (
+    "the request's combined reference budget was already spent"
+)
+
+_UNTYPED_REFERENCE = (
+    "the file carries no media type the video API has a reference kind for"
+)
+
+_REFERENCE_KINDS: dict[str, str] = {
+    "image": "image_url",
+    "audio": "audio_url",
+    "video": "video_url",
+}
+
+_SIZE_FIXES_THE_PIXELS = (
+    "the exact size already fixes the pixels, and a resolution tier that disagreed with "
+    "it is rejected"
+)
+
+_SIZE_IS_A_TIER = (
+    "the size chosen is itself a resolution tier, so only one of the two can be sent"
+)
+
+_SIZE_CONTRADICTS_THE_RATIO = (
+    "it does not match the shape of the exact size chosen, which the video API rejects"
+)
+
+_ASPECT_RATIO_TOLERANCE = 0.025
+
 _warned_dropped_video_param: set[str] = set()
 
 _warned_pinned_attachment: set[str] = set()
 
-_DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = frozenset({
-    "model",
-    "prompt",
-    "duration",
-    "resolution",
-    "aspect_ratio",
-    "size",
-    "frame_images",
-    "input_references",
-    "generate_audio",
-    "seed",
-    "callback_url",
-    "provider",
-})
+_DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = VIDEO_REQUEST_FIELDS
+"""Read from the one partition of this request format rather than copied beside it.
+
+The copy this replaces was a second list of the same twelve names with nothing comparing
+them, so a field added to one could sit unnoticed against the other."""
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -233,16 +254,6 @@ class VideoGenerationAdapter:
                 result = await asyncio.shield(bg_task)
                 await self._emit_completion(event_emitter, result.content, usage=result.usage)
                 return result.content
-
-            if not prompt.strip():
-                content = self._build_failure_content(
-                    job_id="",
-                    model_id=api_model_id,
-                    reason="Video generation requires a prompt.",
-                )
-                await self._emit_status(event_emitter, "Video generation could not start.", done=True)
-                await self._emit_completion(event_emitter, content)
-                return content
 
             video_meta_pre = self._extract_video_metadata(metadata)
             intent_result: VideoIntentResult | None = None
@@ -419,11 +430,12 @@ class VideoGenerationAdapter:
             global_slot_acquired = True
 
             video_meta = self._extract_video_metadata(metadata)
+            withheld: list[tuple[str, str]] = []
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
             )
             input_references = await self._encode_input_references(
-                video_meta, valves, user_obj=user_obj or user,
+                video_meta, valves, withheld=withheld, user_obj=user_obj or user,
             )
             video_attachment_urls = await self._encode_video_attachments(
                 video_meta, valves, user_obj=user_obj or user,
@@ -431,11 +443,24 @@ class VideoGenerationAdapter:
             audio_attachment_url = await self._encode_audio_attachment(
                 video_meta, valves, user_obj=user_obj or user,
             )
+            if not prompt.strip() and not (
+                frame_images or input_references or video_attachment_urls
+            ):
+                content = self._build_failure_content(
+                    job_id="",
+                    model_id=api_model_id,
+                    reason=(
+                        "Video generation needs a prompt, or an image, reference or clip to "
+                        "generate from."
+                    ),
+                )
+                await self._emit_status(event_emitter, "Video generation could not start.", done=True)
+                await self._emit_completion(event_emitter, content)
+                return content
             provider_block = requested_provider_block(
                 SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
             )
             provider_options = self._extract_provider_options(getattr(responses_body, "provider", None), metadata)
-            withheld: list[tuple[str, str]] = []
             payload = await self._build_payload(
                 api_model_id=api_model_id,
                 prompt=prompt,
@@ -651,7 +676,7 @@ class VideoGenerationAdapter:
         file_id: str | None = None
         output_mime = ""
         description = ""
-        downloaded = None
+        downloads: list[DownloadedVideo] = []
         tmp_dir: Path | None = None
         try:
             await self._emit_status(event_emitter, "Video generation job accepted.", done=False, progress=5)
@@ -672,34 +697,51 @@ class VideoGenerationAdapter:
                 if status not in self.TERMINAL_SUCCESS:
                     raise VideoGenerationError(self._status_failure_reason(status_payload, status))
 
+                generation_id = _clean_str(status_payload.get("generation_id"))
+                if generation_id:
+                    self.logger.info(
+                        "Video job %s produced generation %s", job_id, generation_id
+                    )
+                counter: Any = getattr(client, "output_count", None)
+                outputs = 1 if counter is None else int(counter(status_payload))
                 max_bytes = int(valves.REMOTE_VIDEO_MAX_SIZE_MB) * 1024 * 1024
                 allowed_mimes = _csv_set(valves.VIDEO_OUTPUT_MIME_ALLOWLIST)
                 await self._emit_status(event_emitter, "Downloading generated video...", done=False, progress=80)
-                content_url = client.content_url(job_id)
                 bearer = client.bearer_header()
                 tmp_dir = Path(tempfile.mkdtemp(prefix="openrouter-video-"))
-                tmp_path = tmp_dir / f"job-{job_id}.bin"
-                download_result = await self._pipe._multimodal_handler._download_remote_url_streaming(
-                    content_url,
-                    tmp_path,
-                    chunk_size=int(valves.VIDEO_DOWNLOAD_CHUNK_SIZE),
-                    max_size_bytes=max_bytes,
-                    mime_allowlist=allowed_mimes,
-                    extra_headers=bearer,
-                )
-                if not download_result:
-                    with contextlib.suppress(Exception):
-                        if tmp_path.exists():
-                            tmp_path.unlink()
-                    raise VideoGenerationError(
-                        "Generated video could not be downloaded from OpenRouter."
+                for index in range(outputs):
+                    tmp_path = tmp_dir / f"job-{job_id}-{index}.bin"
+                    download_result = await self._pipe._multimodal_handler._download_remote_url_streaming(
+                        client.content_url(job_id, index=index),
+                        tmp_path,
+                        chunk_size=int(valves.VIDEO_DOWNLOAD_CHUNK_SIZE),
+                        max_size_bytes=max_bytes,
+                        mime_allowlist=allowed_mimes,
+                        extra_headers=bearer,
                     )
-                downloaded = DownloadedVideo(
-                    path=download_result["path"],
-                    mime_type=download_result["mime_type"] or "",
-                    size_bytes=int(download_result["size_bytes"] or 0),
-                )
-                output_mime = downloaded.mime_type
+                    if not download_result:
+                        with contextlib.suppress(Exception):
+                            tmp_path.unlink(missing_ok=True)
+                        if downloads:
+                            self.logger.warning(
+                                "Video job %s reported %d outputs but clip %d could not be "
+                                "downloaded; the clips already fetched are kept",
+                                job_id,
+                                outputs,
+                                index,
+                            )
+                            break
+                        raise VideoGenerationError(
+                            "Generated video could not be downloaded from OpenRouter."
+                        )
+                    downloads.append(
+                        DownloadedVideo(
+                            path=download_result["path"],
+                            mime_type=download_result["mime_type"] or "",
+                            size_bytes=int(download_result["size_bytes"] or 0),
+                        )
+                    )
+                output_mime = downloads[0].mime_type if downloads else ""
             finally:
                 # Shielded: `suppress(Exception)` does not catch CancelledError, so a
                 # cancel delivered here abandons the close and strands the connector.
@@ -707,29 +749,37 @@ class VideoGenerationAdapter:
                     await asyncio.shield(session.close())
 
             elapsed = max(0.0, time.monotonic() - started_at)
-            extension = extension_for_video_mime(output_mime)
-            if downloaded is None:
+            if not downloads:
                 raise VideoGenerationError("Generated video download did not complete.")
-            file_id = await self._pipe._file_gateway.upload_to_owui_storage_from_path(
-                request=request,
-                user=user_obj or user,
-                source_path=downloaded.path,
-                filename=f"openrouter-video-{job_id}{extension}",
-                mime_type=output_mime,
-                chat_id=chat_id,
-                message_id=message_id,
-                owui_user_id=user_id,
-            )
-            if not file_id:
+            file_ids: list[str] = []
+            for index, clip in enumerate(downloads):
+                suffix = "" if len(downloads) == 1 else f"-{index}"
+                stored = await self._pipe._file_gateway.upload_to_owui_storage_from_path(
+                    request=request,
+                    user=user_obj or user,
+                    source_path=clip.path,
+                    filename=(
+                        f"openrouter-video-{job_id}{suffix}"
+                        f"{extension_for_video_mime(clip.mime_type)}"
+                    ),
+                    mime_type=clip.mime_type,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    owui_user_id=user_id,
+                )
+                if stored:
+                    file_ids.append(stored)
+                    with contextlib.suppress(Exception):
+                        clip.path.unlink(missing_ok=True)
+            if not file_ids:
                 raise VideoGenerationError(
                     "Generated video could not be stored in Open WebUI; the upload failed."
                 )
-            with contextlib.suppress(Exception):
-                downloaded.path.unlink(missing_ok=True)
+            file_id = file_ids[0]
             content = self._build_success_content(
                 job_id=job_id,
                 model_id=api_model_id,
-                file_id=file_id,
+                file_ids=file_ids,
                 elapsed=elapsed,
                 usage=usage,
             )
@@ -782,13 +832,13 @@ class VideoGenerationAdapter:
                 output_mime=output_mime,
             )
         finally:
-            if downloaded is not None:
+            for clip in downloads:
                 try:
-                    downloaded.path.unlink(missing_ok=True)
+                    clip.path.unlink(missing_ok=True)
                 except Exception:
                     self.logger.warning(
                         "Could not remove the temp video file %s; it will accumulate",
-                        downloaded.path,
+                        clip.path,
                         exc_info=True,
                     )
             if tmp_dir is not None:
@@ -862,12 +912,14 @@ class VideoGenerationAdapter:
             label = status_value.replace("_", " ") if status_value else "in progress"
             await self._emit_status(event_emitter, f"Video generation {label}...", done=False, progress=progress)
 
+        polling_url = ""
         while True:
             if time.monotonic() > deadline:
                 raise VideoGenerationError("Video generation timed out before OpenRouter reported completion.")
             try:
-                payload = await client.status(job_id)
+                payload = await client.status(job_id, polling_url=polling_url)
                 consecutive_errors = 0
+                polling_url = _clean_str(payload.get("polling_url"))
             except Exception:
                 consecutive_errors += 1
                 if consecutive_errors >= int(valves.VIDEO_STATUS_POLL_MAX_ERRORS):
@@ -1036,6 +1088,7 @@ class VideoGenerationAdapter:
                     if documented
                     else "the catalog entry does not list it as an allowed passthrough parameter",
                 )
+        self._apply_size_consistency(payload, video_model, withheld)
         if video_attachment_urls:
             if "videos" in passthrough and len(video_attachment_urls) > 1:
                 provider_params["videos"] = [{"url": u} for u in video_attachment_urls]
@@ -1216,6 +1269,84 @@ class VideoGenerationAdapter:
             payload[field_name] = validated
 
     @staticmethod
+    def _parse_pixel_size(value: Any) -> tuple[int, int] | None:
+        parts = _clean_str(value).lower().replace("\u00d7", "x").split("x")
+        if len(parts) != 2:
+            return None
+        try:
+            width, height = int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        return (width, height) if width > 0 and height > 0 else None
+
+    @staticmethod
+    def _aspect_ratio_value(value: Any) -> float | None:
+        parts = _clean_str(value).split(":")
+        if len(parts) != 2:
+            return None
+        try:
+            width, height = float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+        return width / height if width > 0 and height > 0 else None
+
+    @staticmethod
+    def _tier_is_the_only_one_published(video_model: Any, resolution: str) -> bool:
+        """Whether the published contract proves this tier cannot contradict any size.
+
+        A model publishing a single resolution puts every size it publishes in that one
+        tier, so an exact size and that tier are the same statement and dropping the tier
+        would attach a note about a rejection that cannot happen. With two or more tiers
+        the size does fix one of them and the contract does not say which, because the
+        tier tracks pixel count rather than a dimension: `bytedance/seedance-2.5` publishes
+        `992x432` and `1470x630` under `480p` and `720p`, so any short-side arithmetic
+        would drop a resolution the model accepts.
+        """
+        published = video_model.get("supported_resolutions") if isinstance(video_model, dict) else None
+        if not isinstance(published, list) or len(published) != 1:
+            return False
+        return _clean_str(published[0]) == resolution
+
+    def _apply_size_consistency(
+        self,
+        payload: dict[str, Any],
+        video_model: Any,
+        withheld: list[tuple[str, str]] | None,
+    ) -> None:
+        """Reconcile `size` against `resolution` and `aspect_ratio` before the request leaves.
+
+        The video contract calls `size` interchangeable with `resolution` plus
+        `aspect_ratio` and rejects a mismatched pair with a 400, so an exact size wins and a
+        sibling that cannot be true alongside it is dropped with a note rather than sent to
+        be refused. The aspect ratio is compared numerically, which is sound -- the widest
+        legitimate divergence across every published size is 1.6% and the two closest
+        distinct published ratios are 12.5% apart.
+        """
+        size = payload.get("size")
+        if not size:
+            return
+        pixels = self._parse_pixel_size(size)
+        resolution = _clean_str(payload.get("resolution"))
+        if pixels is None:
+            if resolution and resolution != _clean_str(size):
+                payload.pop("resolution", None)
+                if withheld is not None:
+                    withheld.append(("resolution", _SIZE_IS_A_TIER))
+            return
+        if resolution and not self._tier_is_the_only_one_published(video_model, resolution):
+            payload.pop("resolution", None)
+            if withheld is not None:
+                withheld.append(("resolution", _SIZE_FIXES_THE_PIXELS))
+        declared = self._aspect_ratio_value(payload.get("aspect_ratio"))
+        if declared is None:
+            return
+        width, height = pixels
+        if abs(width / height - declared) / declared > _ASPECT_RATIO_TOLERANCE:
+            payload.pop("aspect_ratio", None)
+            if withheld is not None:
+                withheld.append(("aspect_ratio", _SIZE_CONTRADICTS_THE_RATIO))
+
+    @staticmethod
     def _normalise_provider_options(provider_options: dict[str, Any]) -> dict[str, Any]:
         normalised: dict[str, Any] = {}
         for slug, payload in provider_options.items():
@@ -1301,28 +1432,35 @@ class VideoGenerationAdapter:
         video_meta: dict[str, Any],
         valves: Any,
         *,
+        withheld: list[tuple[str, str]] | None = None,
         user_obj: Any = None,
     ) -> list[dict[str, Any]]:
-        """Encode prior-video frames intended as style/content reference images.
+        """Encode the reference assets that guide, rather than anchor, a generation.
 
-        OpenRouter's /videos request accepts a top-level `input_references`
-        array of `ContentPartImage` objects (type=image_url, image_url={url}).
-        Unlike `frame_images`, these are not hard anchors — they guide the
-        model's generation without locking specific frames. The model decides
-        how to use them.
+        `InputReference` is a three-way discriminated union -- `image_url`, `audio_url`,
+        `video_url` -- so the kind follows the file's own media family. Image references
+        are honoured by every provider; a provider that does not honour audio or video
+        references ignores them, which is why a family the model may not use is still sent
+        rather than dropped where the user cannot see it.
 
-        Returns the encoded list (possibly empty). Never raises on empty
-        input; raises VideoGenerationError on encoding/size failure.
+        Returns the encoded list, possibly empty. An asset that cannot be encoded or that
+        would cross the request's combined budget is recorded in ``withheld`` and skipped;
+        the generation proceeds without it.
         """
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
             return []
-        max_bytes = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
+        image_max = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
+        asset_max = int(getattr(valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500)) * 1024 * 1024
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
-        allowed_mimes = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
+        allowed_images = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
         encoded: list[dict[str, Any]] = []
         total_bytes = 0
+
+        def _skip(name: str, reason: str) -> None:
+            if withheld is not None:
+                withheld.append((name, reason))
 
         for item in raw:
             if not isinstance(item, dict):
@@ -1332,40 +1470,48 @@ class VideoGenerationAdapter:
                 continue
             file_obj = await get_file_by_id(file_id, self._pipe.logger)
             if not file_obj:
-                raise VideoGenerationError(
-                    f"input_references image '{file_id}' could not be loaded from Open WebUI storage."
-                )
-            mime = infer_file_mime_type(file_obj)
-            mime = _clean_str(mime).split(";", 1)[0].lower()
-            if mime not in allowed_mimes:
-                raise VideoGenerationError(
-                    f"input_references image MIME '{mime or 'unknown'}' is not allowed."
-                )
+                _skip(file_id, "it could not be loaded from Open WebUI storage")
+                continue
+            mime = _clean_str(infer_file_mime_type(file_obj)).split(";", 1)[0].lower()
+            if not mime:
+                mime = _clean_str(item.get("content_type")).split(";", 1)[0].lower()
+            family = mime.split("/", 1)[0]
+            kind = _REFERENCE_KINDS.get(family)
+            if not kind:
+                _skip(file_id, _UNTYPED_REFERENCE)
+                continue
+            if family == "image" and mime not in allowed_images:
+                _skip(file_id, f"the type {mime!r} is not on the reference image allowlist")
+                continue
             try:
                 b64 = await self._pipe._file_gateway.read_file_record_base64(
-                    file_obj, chunk_size, max_bytes, user=user_obj,
+                    file_obj,
+                    chunk_size,
+                    image_max if family == "image" else asset_max,
+                    user=user_obj,
                 )
             except RequiredInternalFileError as exc:
-                raise VideoGenerationError(exc.user_message) from exc
+                _skip(file_id, exc.user_message)
+                continue
             if not b64:
-                raise VideoGenerationError(
-                    f"input_references image '{file_id}' could not be encoded."
-                )
+                _skip(file_id, "it could not be encoded")
+                continue
             try:
                 decoded_len = len(base64.b64decode(b64, validate=False))
             except Exception as exc:
-                raise VideoGenerationError(
-                    f"input_references image '{file_id}' contains invalid base64 data."
-                ) from exc
-            total_bytes += decoded_len
-            if total_bytes > total_max:
-                raise VideoGenerationError(
-                    f"input_references images exceed the total request limit "
-                    f"({total_bytes} bytes; max {total_max} bytes)."
+                self.logger.debug(
+                    "input_references asset %s is not valid base64: %s", file_id, exc,
+                    exc_info=True,
                 )
+                _skip(file_id, "it contains invalid base64 data")
+                continue
+            if total_bytes + decoded_len > total_max:
+                _skip(file_id, _OVER_REFERENCE_BUDGET)
+                continue
+            total_bytes += decoded_len
             encoded.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                "type": kind,
+                kind: {"url": f"data:{mime};base64,{b64}"},
             })
         return encoded
 
@@ -1844,9 +1990,11 @@ class VideoGenerationAdapter:
                 video_model.get("supported_size_options"), list
             ):
                 top_level.add("size")
-            if video_model.get("seed") is True:
+            if "seed" in video_model and not capability_declared_off(video_model.get("seed")):
                 top_level.add("seed")
-            if video_model.get("generate_audio") is True:
+            if "generate_audio" in video_model and not capability_declared_off(
+                video_model.get("generate_audio")
+            ):
                 top_level.add("generate_audio")
         passthrough -= _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
         return top_level, passthrough
@@ -1906,22 +2054,9 @@ class VideoGenerationAdapter:
         return ""
 
     def _extract_prompt(self, body: dict[str, Any]) -> str:
-        messages = body.get("messages") if isinstance(body, dict) else None
-        if isinstance(messages, list):
-            for message in reversed(messages):
-                if not isinstance(message, dict) or message.get("role") != "user":
-                    continue
-                content = message.get("content")
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    parts: list[str] = []
-                    for part in content:
-                        if isinstance(part, dict):
-                            text = part.get("text")
-                            if isinstance(text, str) and text:
-                                parts.append(text)
-                    return "\n".join(parts)
+        composed = prompt_with_system(body.get("messages") if isinstance(body, dict) else None)
+        if composed:
+            return composed
         prompt = body.get("prompt") if isinstance(body, dict) else ""
         return prompt if isinstance(prompt, str) else ""
 
@@ -1952,16 +2087,17 @@ class VideoGenerationAdapter:
         *,
         job_id: str,
         model_id: str,
-        file_id: str,
+        file_ids: list[str],
         elapsed: float,
         usage: dict[str, Any],
     ) -> str:
+        clips = "".join(
+            f"<video>\n/api/v1/files/{file_id}/content\n</video>\n" for file_id in file_ids
+        )
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
-            f"<video>\n"
-            f"/api/v1/files/{file_id}/content\n"
-            f"</video>\n"
+            f"{clips}"
         )
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:

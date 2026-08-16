@@ -1438,9 +1438,22 @@ def test_a_generated_filter_loads_and_offers_only_the_published_knobs(
     try:
         module = _load_filter_from_source(source, module_name)
 
-        assert sorted(module.Filter.UserValves.model_fields) == expected_valves, (
+        from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+            ALWAYS_ON_VALVE_NAMES,
+        )
+
+        published = sorted(
+            set(module.Filter.UserValves.model_fields)
+            - ALWAYS_ON_VALVE_NAMES
+            - {f"IMAGE_{name.upper()}" for name in spec.schema_only}
+        )
+        assert published == expected_valves, (
             "each knob comes from this model's own contract; a knob it does not publish "
-            f"must have no field at all. got {sorted(module.Filter.UserValves.model_fields)}"
+            f"must have no field at all. got {published}"
+        )
+        assert ALWAYS_ON_VALVE_NAMES <= set(module.Filter.UserValves.model_fields), (
+            "the controls that do not come from a contract are offered on every model, "
+            "or a model that publishes nothing about them cannot reach them at all"
         )
 
         chosen = spec.enums[0][1][0]
@@ -1659,8 +1672,15 @@ def test_every_control_the_filter_shows_is_a_control_that_writes(fixture, model_
         render_image_model_filter_source(spec), f"every_control_{fixture}"
     )
 
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        ALWAYS_ON_VALVE_NAMES,
+    )
+
     chosen: dict[str, object] = {}
     expected: dict[str, object] = {}
+    for name in spec.schema_only:
+        chosen[f"IMAGE_{name.upper()}"] = "1024x1024"
+        expected[name] = "1024x1024"
     for name, values in spec.enums:
         chosen[f"IMAGE_{name.upper()}"] = values[0]
         expected[name] = values[0]
@@ -1675,7 +1695,7 @@ def test_every_control_the_filter_shows_is_a_control_that_writes(fixture, model_
         chosen[f"IMAGE_{name.upper()}"] = "a_value"
         expected[name] = "a_value"
 
-    assert set(chosen) == set(module.Filter.UserValves.model_fields), (
+    assert set(chosen) == set(module.Filter.UserValves.model_fields) - ALWAYS_ON_VALVE_NAMES, (
         "the spec and the rendered fields must describe the same knob set"
     )
     body = module.Filter().inlet(
@@ -2220,14 +2240,26 @@ async def test_a_contract_that_cannot_be_read_is_always_reported():
         ('["a", "b"]', ["a", "b"]),
         ("realistic_image", "realistic_image"),
         ("null", "null"),
-        ("123", "123"),
+        ("true", "true"),
+        ("2K", "2K"),
+        ("1_000", "1_000"),
+        ("123", 123),
+        ("-7", -7),
+        ("1.5", 1.5),
+        ("NaN", "NaN"),
+        ("Infinity", "Infinity"),
+        ("-Infinity", "-Infinity"),
+        ("1e400", "1e400"),
     ],
 )
 def test_a_passthrough_value_arrives_as_what_the_user_meant(typed, expected):
-    """Only a JSON container is parsed.
+    """A container or a bare number is parsed; nothing else is.
 
-    `style` really does take a bare word, so parsing everything turned `null` into None
-    and `123` into an int -- values the user never asked for.
+    `style` really does take a bare word, so parsing everything turned `null` into None --
+    a value the user never asked for, and one the adapter drops. `123` is the other way
+    round: 8 of the 17 published passthrough names are numeric, and a quoted number is a
+    different request. `NaN`, `Infinity` and `1e400` stay strings because the float they
+    would produce is one no JSON encoder can put on the wire.
     """
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (
         build_image_model_filter_spec,
@@ -2247,6 +2279,37 @@ def test_a_passthrough_value_arrives_as_what_the_user_meant(typed, expected):
     )
     assert body["image_config"]["controls"] == expected
     assert type(body["image_config"]["controls"]) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "typed", ["[NaN]", '{"scale": Infinity}', "[1e400]", "[-Infinity]"]
+)
+def test_a_number_no_encoder_can_serialise_is_refused_inside_a_container(typed):
+    """`json.dumps` emits a bare `NaN`, and `allow_nan=False` raises.
+
+    Parsed into `image_config` it reaches the request builder as a float nothing can
+    encode, and the failure surfaces somewhere that names neither the field nor the value.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+
+    spec = build_image_model_filter_spec(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        _recorded_endpoint("recraft_recraft-v3"),
+    )
+    module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_nan")
+    with pytest.raises(Exception) as caught:
+        module.Filter().inlet(
+            {"model": "recraft/recraft-v3"},
+            None,
+            {"valves": module.Filter.UserValves(IMAGE_CONTROLS=typed)},
+        )
+    assert "controls" in str(caught.value), (
+        f"the message must name the control the user typed into; got {caught.value}"
+    )
 
 
 def test_a_container_that_does_not_parse_names_the_field_it_came_from():
@@ -3122,6 +3185,166 @@ def test_help_says_which_kind_of_nothing_a_model_offers():
     assert "publishes no adjustable settings" in text, text
 
 
+def _priced_record(pricing: Any, **extra: Any) -> dict[str, Any]:
+    """A published contract carrying a price, shaped as the live endpoint listing is."""
+    record: dict[str, Any] = {
+        "provider_name": "Recraft",
+        "provider_slug": "recraft",
+        "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
+        "pricing": pricing,
+    }
+    record.update(extra)
+    return record
+
+
+def _cost_block(rendered: str) -> str:
+    assert "## Cost" in rendered, rendered
+    return rendered.split("## Cost", 1)[1].split("## Controls", 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("pricing", "expected"),
+    [
+        (
+            [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}],
+            "- Each image it makes: $0.25 per image",
+        ),
+        (
+            [{"billable": "output_image", "unit": "megapixel", "cost_usd": 0.014}],
+            "- Each image it makes: $0.014 per megapixel",
+        ),
+    ],
+)
+def test_help_prices_a_generation_from_the_contract_it_already_holds(pricing, expected):
+    """The record that builds the controls also carries the price, and it was dropped.
+
+    A user asking a model what it can do was told everything except what it costs, while
+    the video sibling answered in full -- and the only image prices on screen were typed
+    into prose by hand, one of them quoting the reference-image charge as the generation
+    charge.
+    """
+    rendered = render_image_help(
+        "v/m", {"id": "v/m", "name": "M"}, endpoint_record=_priced_record(pricing)
+    )
+    assert expected in _cost_block(rendered)
+
+
+@pytest.mark.parametrize(
+    ("cost_usd", "expected"),
+    [(0.00012, "$120.00 per million tokens"), (5e-06, "$5.00 per million tokens")],
+)
+def test_a_token_priced_model_is_quoted_per_million_and_says_what_is_unknowable(cost_usd, expected):
+    """Per-token figures are unreadable at their own scale, and do not price a picture.
+
+    Twelve zeroes after the point tells a user nothing; the per-million form is the same
+    published number. What it still cannot say is what one image comes to, because the
+    token count of an image is published nowhere.
+    """
+    block = _cost_block(
+        render_image_help(
+            "v/m",
+            {"id": "v/m", "name": "M"},
+            endpoint_record=_priced_record(
+                [{"billable": "output_image", "unit": "token", "cost_usd": cost_usd}]
+            ),
+        )
+    )
+    assert expected in block
+    assert "how many tokens a picture comes to is not published" in block
+
+    per_image = _cost_block(
+        render_image_help(
+            "v/m",
+            {"id": "v/m", "name": "M"},
+            endpoint_record=_priced_record(
+                [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
+            ),
+        )
+    )
+    assert "not published" not in per_image, "a per-image model has no such caveat"
+
+
+@pytest.mark.parametrize("published", [[], None])
+def test_help_says_a_model_publishes_no_price_rather_than_showing_nothing(published):
+    """Three of the forty publish an empty array, and silence reads as a broken panel."""
+    record = _priced_record(published) if published is not None else {"provider_slug": "krea"}
+    block = _cost_block(
+        render_image_help("krea/krea-2-large", {"id": "krea/krea-2-large", "name": "K"}, endpoint_record=record)
+    )
+    assert "OpenRouter publishes no price for this model" in block
+    assert "$" not in block
+
+
+@pytest.mark.parametrize(
+    ("tier_cost", "expected"),
+    [(0.33, "- Each image it makes (4K): $0.33 per image"), (0.17, "- Each image it makes (4K): $0.17 per image")],
+)
+def test_a_tier_that_changes_the_price_gets_its_own_line(tier_cost, expected):
+    """A variant is a control the user sets, so it is a price the user chooses."""
+    block = _cost_block(
+        render_image_help(
+            "v/m",
+            {"id": "v/m", "name": "M"},
+            endpoint_record=_priced_record(
+                [
+                    {"billable": "output_image", "unit": "image", "cost_usd": 0.15},
+                    {"billable": "output_image", "unit": "image", "cost_usd": tier_cost, "variant": "4k"},
+                ]
+            ),
+        )
+    )
+    assert "- Each image it makes: $0.15 per image" in block
+    assert expected in block
+
+
+def test_the_companies_serving_a_model_are_named_only_where_they_charge_differently():
+    """Which company takes the request is decided after it leaves.
+
+    Printing the first record's figure would be a guess; printing two undifferentiated
+    lines would look like a mistake. So they are named exactly when they disagree.
+    """
+    agreeing = [
+        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
+                       provider_name="Google Vertex", provider_slug="google-vertex/global"),
+        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
+                       provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
+    ]
+    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=agreeing))
+    assert block.count("- Each image it makes") == 1, block
+    assert "Google Vertex" not in block
+
+    differing = [
+        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
+                       provider_name="Google Vertex", provider_slug="google-vertex/global"),
+        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00024}],
+                       provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
+    ]
+    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=differing))
+    assert "$120.00 per million tokens via Google Vertex" in block, block
+    assert "$240.00 per million tokens via Google AI Studio" in block
+
+
+def test_no_price_reaches_a_user_that_did_not_come_from_a_contract():
+    """Prose prices go stale in silence and cannot be corrected by a catalogue refresh.
+
+    Eight were hardcoded into the descriptions; one quoted a model's reference-image
+    charge as its generation charge, and another quoted its cheapest of three rates as
+    the price. Without a contract the panel now says nothing about money at all.
+    """
+    for model_id in IMAGE_HELP_BY_MODEL:
+        rendered = render_image_help(model_id, {"id": model_id, "name": model_id})
+        assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price of its own"
+
+    priced = render_image_help(
+        "recraft/recraft-v4-pro",
+        {"id": "recraft/recraft-v4-pro", "name": "Recraft V4 Pro"},
+        endpoint_record=_priced_record(
+            [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
+        ),
+    )
+    assert "$0.25 per image" in priced, "with a contract, the published price is shown"
+
+
 @pytest.mark.parametrize(
     "config",
     [
@@ -3163,3 +3386,58 @@ def test_the_compatibility_spelling_still_works_on_its_own():
     )
     assert top_level == {"resolution": "1K"}
     assert notes == []
+
+
+
+# ============================================================================
+# REGFIX: infrastructure fix 5 -- a failed contract read is not a shrunk contract
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    ("endpoint_record", "overwrites"),
+    [(None, False), ([], True)],
+    ids=["read-failed", "read-empty"],
+)
+@pytest.mark.asyncio
+async def test_only_a_contract_that_was_read_may_blank_an_installed_filter(
+    endpoint_record, overwrites
+):
+    """A 5xx on a cold worker is not a contract that shrank.
+
+    Both inputs produce a knobless spec, so the two answers cannot come from the knob
+    count; only the read outcome separates them. Overwriting on a failed read rewrites
+    the model's filter to `pass`, and `_keep_what_still_fits` then discards every stored
+    user choice as an unknown field.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    pipe = MagicMock()
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    manager._ensure_filter_installed = AsyncMock(side_effect=lambda **kw: kw["preferred_id"])
+    manager._image_filter_exists = AsyncMock(return_value=True)
+
+    result = await manager._ensure_single_image_filter_function_id(
+        model_id="v/m",
+        image_model={"id": "v/m", "name": "M"},
+        endpoint_record=endpoint_record,
+    )
+
+    assert bool(manager._ensure_filter_installed.await_count) is overwrites, (
+        "a failed contract read must leave the installed filter alone; a contract that "
+        "was read and is genuinely empty must replace it"
+    )
+    assert (result is not None) is overwrites
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_empty_contract_is_not_collapsed_into_a_failed_read():
+    """The registry lookup must not turn an empty list into None on its way down."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, []).contract_read is True
+    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, None).contract_read is False

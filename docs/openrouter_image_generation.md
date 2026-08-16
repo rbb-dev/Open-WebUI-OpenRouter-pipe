@@ -170,12 +170,12 @@ TTL is shared with the video and chat catalogs.
 | `google/gemini-3-pro-image` | Google: Nano Banana Pro (Gemini 3 Pro Image) | text + image | Most capable Gemini image model |
 | `google/gemini-3-pro-image-preview` | Google: Gemini 3 Pro Image (Preview) | text + image | Premium Gemini 3 with image |
 | `google/gemini-3.1-flash-image` | Google: Nano Banana 2 (Gemini 3.1 Flash Image) | text + image | Pro-level quality at Flash speed |
-| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | Cost-optimized; 0.5K is ~50% cheaper than 1K |
+| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | Cost-optimized; 0.5K tier for cheap iteration |
 | `google/gemini-3.1-flash-lite-image` | Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) | text + image | Fastest, cheapest Gemini image model |
 | `krea/krea-2-large` | Krea: Krea 2 Large | image only | Rawer, less house-styled output |
 | `krea/krea-2-medium` | Krea: Krea 2 Medium | image only | Krea's balanced default |
 | `krea/krea-2-medium-turbo` | Krea: Krea 2 Medium Turbo | image only | Distilled Krea 2 Medium for fast iteration |
-| `microsoft/mai-image-2.5` | Microsoft: MAI-Image-2.5 | image only | $5/M tokens via Azure AI Foundry |
+| `microsoft/mai-image-2.5` | Microsoft: MAI-Image-2.5 | image only | Token-priced via Azure AI Foundry |
 | `microsoft/mai-image-2.5-pro` | Microsoft: MAI-Image-2.5 Pro | image only | Larger MAI-Image-2.5; token-priced via Azure |
 | `openai/gpt-5-image` | OpenAI: GPT-5 Image | text + image | GPT-5 chat token economics |
 | `openai/gpt-5-image-mini` | OpenAI: GPT-5 Image Mini | text + image | Cheaper GPT-5 Image tier |
@@ -187,7 +187,7 @@ TTL is shared with the video and chat catalogs.
 | `qwen/qwen-image-3-pro` | Qwen: Qwen Image 3 Pro | image only | Larger Qwen 3 with more world knowledge |
 | `recraft/recraft-v3` | Recraft: Recraft V3 | image only | Typography champion; only model with text-at-position |
 | `recraft/recraft-v4` | Recraft: Recraft V4 | image only | Design-taste rebuild; 1024x1024; ~10s/image |
-| `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | Print-ready 2048x2048 (~30s/image); $0.25/image |
+| `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | Print-ready 2048x2048 (~30s/image); flat per-image fee |
 | `recraft/recraft-v4-pro-vector` | Recraft: Recraft V4 Pro Vector | image only | High-fidelity SVG finals |
 | `recraft/recraft-v4-vector` | Recraft: Recraft V4 Vector | image only | True SVG output; scales without quality loss |
 | `recraft/recraft-v4.1` | Recraft: Recraft V4.1 | image only | Aesthetic refresh of V4; 1024x1024; ~10s/image |
@@ -198,9 +198,9 @@ TTL is shared with the video and chat catalogs.
 | `recraft/recraft-v4.1-vector` | Recraft: Recraft V4.1 Vector | image only | V4.1 aesthetics, SVG output |
 | `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | Faster, cheaper Sourceful |
 | `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | Premium Sourceful tier |
-| `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | From $0.019/image (finalized per job) |
-| `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | From $0.13/image (finalized per job) |
-| `x-ai/grok-imagine-image-quality` | xAI: Grok Imagine Image Quality | image only | $0.01/image |
+| `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | Cheapest Riverflow tier; settled per job |
+| `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | Premium Riverflow tier; settled per job |
+| `x-ai/grok-imagine-image-quality` | xAI: Grok Imagine Image Quality | image only | Per generated image; 2K dearer than 1K |
 
 Pick model selection rules of thumb:
 
@@ -221,9 +221,9 @@ Pick model selection rules of thumb:
   Imagine Image Quality (14-value Grok ratio set).
 - **Multiple variations per request** → Grok Imagine Image Quality
   (`n` up to 10 images per call; cost scales linearly).
-- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (~50%
-  cheaper than 1K), FLUX.2 Klein 4B, Riverflow V2.5 Fast (from
-  $0.019/image), or Recraft V4.1 Utility.
+- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 0.5K (far
+  fewer pixels than 1K on a token-billed model), FLUX.2 Klein 4B,
+  Riverflow V2.5 Fast, or Recraft V4.1 Utility.
 - **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2.5 Pro,
   Gemini 3 Pro Image, Recraft V4.1 Pro, or Microsoft MAI-Image-2.5.
 - **Color-palette-driven design (corporate brand colors)** → any
@@ -418,11 +418,11 @@ OpenRouter to pick rather than committing to a specific provider.
 Microsoft's high-quality image generation model served via Azure AI
 Foundry — photorealistic and artistic output from text prompts with
 optional reference-image input. Best for general-purpose photoreal
-work on Azure-backed infrastructure with token-based pricing ($5/M
-tokens) instead of per-image billing.
+work on Azure-backed infrastructure, billed by token rather than by
+picture.
 
-- Token-priced ($5/M) rather than per-image — long prompts cost
-  proportionally more.
+- Token-priced rather than per-image, so a long prompt costs more than
+  a short one for the same picture.
 - Multimodal input: accepts reference images alongside the text prompt
   for editing/guidance.
 
@@ -460,11 +460,12 @@ The most powerful variant of Sourceful's Riverflow 2.5 lineup — a
 unified text-to-image and image-to-image family. Best for top-tier
 control and quality-sensitive outputs: brand assets, marketing finals,
 and work that benefits from the new 2.5 self-scoring and background
-controls. From $0.13/image (finalized per job at completion).
+controls. Priced per image, rising with the output size you ask for.
 
 - Supports reasoning effort up to xhigh (low/medium/high/xhigh).
-- Pricing is dynamic — the from-$0.13/image floor is finalized per job
-  based on billable processing.
+- Pricing is dynamic: the published per-image rate is a starting point,
+  and the final charge is settled per job from the processing it
+  actually took.
 
 ### Sourceful: Riverflow V2.5 Fast
 
@@ -473,8 +474,8 @@ controls. From $0.13/image (finalized per job at completion).
 The speed-optimized variant of Sourceful's Riverflow 2.5 lineup — best
 for production deployments and latency-critical workflows. Same
 unified text-to-image and image-to-image family and the same 2.5
-extras as Pro at a fraction of the cost. From $0.019/image (finalized
-per job at completion).
+extras as Pro at a fraction of the cost, with the charge settled per
+job at completion.
 
 - PURE-image-only — does NOT output text.
 - Use Fast for iteration and high-volume production; switch to V2.5
@@ -633,7 +634,8 @@ anatomy/realism in complex compositions.
   background_rgb_color); NO style or text_layout (V3 only).
 - ~3x slower than V4 due to higher resolution — reserve for finals,
   not iteration.
-- **$0.25 per image** — flat per-image fee, not per-token.
+- **Flat per-image fee** rather than per-token, so prompt length does
+  not change what a render costs.
 - Image-to-image: only one input image supported.
 - Same human-subject limitations as V4.
 
@@ -763,7 +765,8 @@ frame shape from the prompt.
   Pick n=1 (default) for iteration; bump to 3-5 for exploration.
 - Multimodal input: pair the prompt with reference images for
   editing/style transfer.
-- Charged per image output ($0.01/image at OpenRouter's listed rate).
+- Charged per generated image, at a higher rate for 2K than for 1K,
+  and reference images you supply are charged on top.
 
 ---
 
@@ -865,6 +868,12 @@ Recraft's typography champion — the only AI image model that can render long-f
 - text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).
 - If you need newer composition / cleaner geometry → V4 / V4 Pro (but lose text_layout + style).
 
+## Cost
+
+- Each image it makes: $0.04 per image
+
+The cost of each generation is reported on the status line when it finishes.
+
 ## Controls
 - **Aspect ratio** — Frame shape. Choices: 1:1, 4:3, 3:4, 16:9, 9:16, auto.
 - **Number of images** — How many images this request asks for. Accepts 1 to 6.
@@ -876,6 +885,18 @@ Recraft's typography champion — the only AI image model that can render long-f
 The `## Controls` section is read from the model's own published
 settings, so it lists that model's choices and no others. A model that
 publishes none says so rather than showing an empty section.
+
+The `## Cost` section comes from the same record. Each published charge
+is one line — what is being charged for, at what rate, in the unit
+OpenRouter states (per image, per megapixel, or per million tokens,
+converted from the published per-token figure). A tier such as 1K, 2K
+or 4K gets its own line, because choosing a tier chooses a price. Where
+several companies serve the model and publish different figures, each
+line names the company. A token-billed model carries a note that the
+token count of a picture is not published, so the price of one image
+cannot be derived from the rate. A model that publishes no price says
+so rather than showing an empty section; three of the forty do
+(`krea/krea-2-large`, `krea/krea-2-medium`, `krea/krea-2-medium-turbo`).
 
 If a model isn't in the curated dataset (newly added by OpenRouter
 between catalog refreshes, for example), `help` falls back to the

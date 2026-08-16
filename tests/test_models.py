@@ -470,60 +470,47 @@ def test_maybe_schedule_model_metadata_sync_empty_models(pipe_instance) -> None:
     assert pipe._catalog_manager._model_metadata_sync_task is None
 
 
-def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(pipe_instance) -> None:
-    """Does not reschedule when sync key unchanged."""
+def test_maybe_schedule_model_metadata_sync_same_key_no_reschedule(
+    pipe_instance, monkeypatch
+) -> None:
+    """A second call with nothing changed must not schedule a second sync.
+
+    The key comes from the manager's own first run rather than from a term-by-term copy
+    of the tuple: the copy goes stale the moment a term is added, and it goes stale
+    SILENTLY -- the assertion still passes, because the key now differs for the wrong
+    reason and the test stops testing what it names.
+    """
     pipe = pipe_instance
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
 
-    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
-    last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
-    last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
+    scheduled = []
 
-    last_image_fetch = OpenRouterModelRegistry.last_image_fetch()
+    def _fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        task = Mock()
+        task.done.return_value = True
+        return task
 
-    pipe._catalog_manager._model_metadata_sync_key = (
-        "test_pipe",
-        float(last_fetch or 0.0),
-        float(last_video_fetch or 0.0),
-        float(last_image_fetch or 0.0),
-        pipe.valves.MODEL_ID,
-        pipe.valves.UPDATE_MODEL_IMAGES,
-        pipe.valves.UPDATE_MODEL_CAPABILITIES,
-        pipe.valves.UPDATE_MODEL_DESCRIPTIONS,
-        pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
-        pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
-        pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
-        pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
-        pipe.valves.AUTO_INSTALL_VIDEO_FILTERS,
-        pipe.valves.AUTO_ATTACH_VIDEO_FILTERS,
-        pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS,
-        pipe.valves.ENABLE_VIDEO_GENERATION,
-        pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION,
-        pipe.valves.AUTO_INSTALL_IMAGE_FILTERS,
-        pipe.valves.AUTO_ATTACH_IMAGE_FILTERS,
-        pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS,
-        pipe.valves.ENABLE_OPENROUTER_FUSION,
-        pipe.valves.AUTO_INSTALL_FUSION_FILTER,
-        pipe.valves.AUTO_ATTACH_FUSION_FILTER,
-        pipe.valves.AUTO_DEFAULT_FUSION_FILTER,
-        pipe.valves.ENABLE_WEB_SEARCH,
-        pipe.valves.ENABLE_WEB_FETCH,
-        pipe.valves.ENABLE_DATETIME,
-        pipe.valves.ENABLE_IMAGE_GENERATION,
-        pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
-        pipe.valves.USER_PROVIDER_ROUTING_MODELS,
-        pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS,
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.models.catalog_manager.asyncio.create_task",
+        _fake_create_task,
     )
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
         [{"id": "test"}],
         pipe_identifier="test_pipe",
     )
-    assert pipe._catalog_manager._model_metadata_sync_task is None
+    assert len(scheduled) == 1, "the first call must schedule the sync"
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}],
+        pipe_identifier="test_pipe",
+    )
+    assert len(scheduled) == 1, (
+        "nothing changed between the two calls, so the second must not reschedule"
+    )
 
 
 def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
@@ -4293,13 +4280,13 @@ def test_media_models_arrive_with_builtin_tools_unticked(features, expects_defau
     see the setting instead of wondering why tools went quiet.
     """
     from open_webui_openrouter_pipe.core.config import Valves
-    from open_webui_openrouter_pipe.models.catalog_manager import builtin_tools_default
+    from open_webui_openrouter_pipe.models.catalog_manager import media_capability_defaults
 
     valves = Valves()
     valves.DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS = valve_on
     valves.UPDATE_MODEL_CAPABILITIES = True
 
-    defaults = builtin_tools_default(
+    defaults = media_capability_defaults(
         valves,
         {
             "image_output": "image_output" in features,
@@ -4404,4 +4391,282 @@ async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
     }, "a failed rebuild must not clobber a good map"
     assert any("keeping the previous map" in record.getMessage() for record in caplog.records), (
         "silently keeping a stale map is how an operator loses provider options with no signal"
+    )
+
+
+
+# ============================================================================
+# REGFIX: infrastructure fixes 7 and 8
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("VIDEO_INTENT_ENABLED", False),
+        ("VIDEO_INTENT_CONFIRM_MODE", "never"),
+        ("VIDEO_INTENT_MAX_CLARIFICATIONS", 3),
+        ("VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "first"),
+    ],
+)
+def test_a_valve_baked_into_a_rendered_filter_reschedules_the_sync(
+    pipe_instance, monkeypatch, attribute, value
+) -> None:
+    """Every valve build_video_filter_spec bakes into a default must invalidate the key.
+
+    Four distinct valves with four distinct new values, so a key that happens to differ
+    for an unrelated reason cannot satisfy all four.
+    """
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+
+    scheduled = []
+
+    def _fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        task = Mock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.models.catalog_manager.asyncio.create_task",
+        _fake_create_task,
+    )
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}], pipe_identifier="test_pipe"
+    )
+    assert len(scheduled) == 1
+
+    assert getattr(pipe.valves, attribute) != value, (
+        f"{attribute} already equals {value!r}, so this test would prove nothing"
+    )
+    setattr(pipe.valves, attribute, value)
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}], pipe_identifier="test_pipe"
+    )
+    assert len(scheduled) == 2, (
+        f"changing {attribute} did not reschedule, so the filters keep the defaults they "
+        "were rendered with and the valve silently does nothing"
+    )
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-5-image", "google/gemini-3-pro-image"])
+def test_the_server_tool_filter_s_selected_model_reschedules_the_sync(
+    pipe_instance, monkeypatch, model
+) -> None:
+    """The selected model lives in the installed function's valves, not in ours."""
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+
+    scheduled = []
+
+    def _fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        task = Mock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.models.catalog_manager.asyncio.create_task",
+        _fake_create_task,
+    )
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}], pipe_identifier="test_pipe", image_gen_filter_model=""
+    )
+    assert len(scheduled) == 1
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}], pipe_identifier="test_pipe", image_gen_filter_model=model
+    )
+    assert len(scheduled) == 2, (
+        f"selecting {model} in the installed filter did not reschedule, so the filter is "
+        "never re-rendered for the model it now targets"
+    )
+
+
+@pytest.mark.parametrize("stored", ["openai/gpt-5-image", "google/gemini-3-pro-image"])
+@pytest.mark.asyncio
+async def test_the_selected_model_is_read_from_the_installed_function(
+    monkeypatch, stored
+) -> None:
+    """Read back from Open WebUI, not from the rendered default."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_GEN_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    row = SimpleNamespace(id="or_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return [SimpleNamespace(id="other", content="unrelated"), row]
+
+        @staticmethod
+        async def get_function_valves_by_id(function_id):
+            assert function_id == "or_image_gen"
+            return {"IMAGE_GENERATION_MODEL": stored}
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    manager = FilterManager(pipe=MagicMock(), valves=MagicMock(), logger=MagicMock())
+
+    assert await manager.image_gen_filter_selected_model() == stored
+
+
+def test_the_sync_s_gate_is_a_strict_subset_of_the_scheduler_s():
+    """Discovered over every single-valve-on world, not asserted term by term.
+
+    A scheduler that fires where the sync returns early is a wasted task; a sync that
+    would run where the scheduler never fires is a feature that silently never happens.
+    The relation has to hold in one direction for every valve, so it is checked that way.
+    """
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.models.catalog_manager import (
+        schedules_owui_model_sync,
+        syncs_owui_models,
+    )
+
+    names = [
+        name
+        for name, field in Valves.model_fields.items()
+        if field.annotation is bool and (name.startswith(("UPDATE_MODEL_", "AUTO_")))
+    ]
+    assert len(names) > 15, (
+        f"only {len(names)} candidate valves discovered; the sweep has gone blind"
+    )
+
+    off = dict.fromkeys(names, False)
+    assert not schedules_owui_model_sync(SimpleNamespace(**off), False), (
+        "with every valve off and no routing, nothing should be scheduled"
+    )
+    assert not syncs_owui_models(SimpleNamespace(**off), False)
+
+    for name in names:
+        world = SimpleNamespace(**{**off, name: True})
+        if syncs_owui_models(world, False):
+            assert schedules_owui_model_sync(world, False), (
+                f"{name} makes the sync run but does not make the scheduler start it, so "
+                "the run never happens"
+            )
+
+    routing = SimpleNamespace(**off)
+    assert syncs_owui_models(routing, True) and schedules_owui_model_sync(routing, True), (
+        "provider routing must reach both gates"
+    )
+
+
+def test_the_scheduler_carries_exactly_one_term_the_sync_does_not():
+    """Named, so promoting or dropping that term is a reviewed edit."""
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.models.catalog_manager import (
+        schedules_owui_model_sync,
+        syncs_owui_models,
+    )
+
+    names = [
+        name
+        for name, field in Valves.model_fields.items()
+        if field.annotation is bool and (name.startswith(("UPDATE_MODEL_", "AUTO_")))
+    ]
+    off = dict.fromkeys(names, False)
+    extra = sorted(
+        name
+        for name in names
+        if schedules_owui_model_sync(SimpleNamespace(**{**off, name: True}), False)
+        and not syncs_owui_models(SimpleNamespace(**{**off, name: True}), False)
+    )
+
+    assert extra == ["AUTO_ATTACH_IMAGE_GEN_FILTER"], (
+        f"the scheduler and the sync now differ by {extra}. Adding a term to only one of "
+        "them is the drift these predicates were composed to make impossible; if the "
+        "difference is intended, it belongs in schedules_owui_model_sync and here"
+    )
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_the_scheduler_asks_the_predicate_rather_than_its_own_or_chain(
+    pipe_instance, monkeypatch, answer
+) -> None:
+    """The call site, which two green predicate tests do not reach.
+
+    With the inline `or`-chain left in place beside the new function, every predicate test
+    passes and the extraction changes nothing. Forcing the predicate to answer the
+    OPPOSITE of what the valves say is the only observation that separates the two.
+    """
+    from open_webui_openrouter_pipe.models import catalog_manager as cm
+
+    pipe = pipe_instance
+    pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = answer
+
+    scheduled = []
+
+    def _fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro)
+        coro.close()
+        task = Mock()
+        task.done.return_value = True
+        return task
+
+    monkeypatch.setattr(cm.asyncio, "create_task", _fake_create_task)
+    monkeypatch.setattr(cm, "schedules_owui_model_sync", lambda *_a, **_k: answer)
+
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        [{"id": "test"}], pipe_identifier="test_pipe"
+    )
+
+    assert bool(scheduled) is answer, (
+        "maybe_schedule_model_metadata_sync did not consult schedules_owui_model_sync, so "
+        "the predicate and the gate it was extracted from can drift apart again"
+    )
+
+
+@pytest.mark.parametrize("answer", [False, True])
+@pytest.mark.asyncio
+async def test_the_sync_asks_the_predicate_rather_than_its_own_or_chain(
+    pipe_instance, monkeypatch, answer
+) -> None:
+    """The second call site, for the same reason."""
+    from open_webui_openrouter_pipe.models import catalog_manager as cm
+
+    pipe = pipe_instance
+    manager = pipe._ensure_catalog_manager()
+    pipe.valves.UPDATE_MODEL_CAPABILITIES = not answer
+
+    reached = []
+
+    class _ReachedTheBody(Exception):
+        pass
+
+    def _session(*_a, **_k):
+        reached.append("x")
+        raise _ReachedTheBody
+
+    monkeypatch.setattr(cm, "syncs_owui_models", lambda *_a, **_k: answer)
+    monkeypatch.setattr(pipe, "_create_http_session", _session)
+
+    try:
+        await manager._sync_model_metadata_to_owui(
+            [{"id": "test"}], pipe_identifier="test_pipe"
+        )
+    except _ReachedTheBody:
+        pass
+
+    assert bool(reached) is answer, (
+        "_sync_model_metadata_to_owui did not consult syncs_owui_models, so its gate and "
+        "the predicate it was extracted from can drift apart again"
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, NamedTuple
 
 _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "openai/gpt-5-image": {
@@ -71,7 +72,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "iteration. The Gemini 3.x Flash Image line (GA + preview) has these; Pro and 2.5 do not."
         ),
         "tips_and_pitfalls": [
-            "0.5K is ~50% cheaper than 1K — good for prompt iteration.",
+            "0.5K renders far fewer pixels than 1K, and this model bills by token, so an iteration pass at 0.5K costs materially less.",
         ],
     },
     "openrouter/auto": {
@@ -238,11 +239,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Microsoft's high-quality image generation model served via Azure "
             "AI Foundry — photorealistic and artistic output from text prompts "
             "with optional reference-image input. Best for general-purpose "
-            "photoreal work on Azure-backed infrastructure with token-based "
-            "pricing ($5/M tokens) instead of per-image billing."
+            "photoreal work on Azure-backed infrastructure, billed by token "
+            "rather than by picture."
         ),
         "tips_and_pitfalls": [
-            "Token-priced ($5/M) rather than per-image — long prompts cost proportionally more.",
+            "Token-priced rather than per-image, so a long prompt costs more than a short one for the same picture.",
             "Multimodal input: accepts reference images alongside the text prompt for editing/guidance.",
         ],
     },
@@ -276,12 +277,12 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "a unified text-to-image and image-to-image family. Best for "
             "top-tier control and quality-sensitive outputs: brand assets, "
             "marketing finals, and work that benefits from the new 2.5 "
-            "self-scoring and background controls. From $0.13/image "
-            "(finalized per job at completion)."
+            "self-scoring and background controls. Priced per image, rising "
+            "with the output size you ask for."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Pricing is dynamic — the quoted from-$0.13/image floor is finalized per job based on billable processing.",
+            "Pricing is dynamic: the published per-image rate is a starting point, and the final charge is settled per job from the processing it actually took.",
         ],
     },
     "sourceful/riverflow-v2.5-fast": {
@@ -290,8 +291,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "The speed-optimized variant of Sourceful's Riverflow 2.5 lineup "
             "— best for production deployments and latency-critical "
             "workflows. Same unified text-to-image and image-to-image family "
-            "and the same 2.5 extras as Pro at a fraction of the cost. From "
-            "$0.019/image (finalized per job at completion)."
+            "and the same 2.5 extras as Pro at a fraction of the cost, with "
+            "the charge settled per job at completion."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
@@ -439,13 +440,13 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "detail matters: magazine layouts, posters, billboards, packaging, "
             "editorial illustration. Same prompt accuracy and creative judgment "
             "as V4 but with sharper geometry, finer textures, and better "
-            "anatomy/realism in complex compositions. Flat $0.25 per image on "
-            "OpenRouter."
+            "anatomy/realism in complex compositions. Billed at a flat rate "
+            "per image on OpenRouter."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
             "~3x slower than V4 due to higher resolution — reserve for finals, not iteration.",
-            "$0.25 per image — flat per-image fee, not per-token.",
+            "Flat per-image fee rather than per-token, so prompt length does not change what a render costs.",
             "Image-to-image: only one input image supported.",
             "Same human-subject limitations as V4; not ideal for portraiture.",
         ],
@@ -594,13 +595,166 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Multimodal input: pair the prompt with reference images for editing/style transfer.",
-            "Charged per image output ($0.01/image at OpenRouter's listed rate).",
+            "Charged per generated image, at a higher rate for 2K than for 1K, and reference images you supply are charged on top.",
         ],
     },
 }
 
 # Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).
 IMAGE_HELP_BY_MODEL = _IMAGE_PER_MODEL_HELP_DATA
+
+
+_IMAGE_BILLABLE_LABELS: tuple[tuple[str, str], ...] = (
+    ("output_image", "Each image it makes"),
+    ("input_image", "Each image you supply"),
+    ("input_reference", "Each reference you supply"),
+    ("input_font", "Each font you supply"),
+    ("input_text", "Your prompt text"),
+)
+
+_IMAGE_PRICE_UNITS: tuple[tuple[str, str, int], ...] = (
+    ("image", "per image", 1),
+    ("megapixel", "per megapixel", 1),
+    ("token", "per million tokens", 1000000),
+)
+
+_IMAGE_VARIANT_ORDER: tuple[str, ...] = ("", "1k", "2k", "4k")
+
+_IMAGE_NO_PRICE_LINE = (
+    "OpenRouter publishes no price for this model. Check what it charges on OpenRouter "
+    "before running a batch."
+)
+
+_IMAGE_TOKEN_NOTE = (
+    "This model bills by token rather than by picture, and how many tokens a picture "
+    "comes to is not published, so what one image costs cannot be worked out from these "
+    "rates."
+)
+
+_IMAGE_COST_CLOSING = (
+    "The cost of each generation is reported on the status line when it finishes."
+)
+
+
+class _ImageCharge(NamedTuple):
+    order: tuple[int, int]
+    label: str
+    price: str
+    provider: str
+    per_token: bool
+
+
+def _image_amount_text(amount: float) -> str:
+    text = f"{amount:.10f}".rstrip("0")
+    if text.endswith("."):
+        return text + "00"
+    if len(text.split(".", 1)[1]) < 2:
+        return text + "0"
+    return text
+
+
+def _image_cost_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
+def _image_price_text(unit: str, amount: float) -> str:
+    for name, label, factor in _IMAGE_PRICE_UNITS:
+        if unit == name:
+            return f"${_image_amount_text(amount * factor)} {label}"
+    return ""
+
+
+def _image_provider_name(record: dict[str, Any]) -> str:
+    for key in ("provider_name", "provider_slug"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _image_unnamed_charge(billable: str, unit: str) -> str:
+    named = billable or "an item it does not name"
+    priced = unit or "a unit it does not state"
+    return (
+        f'OpenRouter publishes a charge for "{named}" here, priced in "{priced}". Check '
+        "this model's rates on OpenRouter for what that comes to."
+    )
+
+
+def _image_charges(records: list[dict[str, Any]]) -> tuple[list[_ImageCharge], list[str]]:
+    """Every price the model's own published contract carries, read as it is written."""
+    labels = dict(_IMAGE_BILLABLE_LABELS)
+    ranked = [name for name, _ in _IMAGE_BILLABLE_LABELS]
+    charges: list[_ImageCharge] = []
+    unnamed: list[str] = []
+    for record in records:
+        published = record.get("pricing")
+        if not isinstance(published, list):
+            continue
+        provider = _image_provider_name(record)
+        for item in published:
+            if not isinstance(item, dict):
+                continue
+            billable = str(item.get("billable") or "").strip().lower()
+            unit = str(item.get("unit") or "").strip().lower()
+            variant = str(item.get("variant") or "").strip().lower()
+            amount = _image_cost_number(item.get("cost_usd"))
+            price = _image_price_text(unit, amount) if amount is not None else ""
+            label = labels.get(billable, "")
+            if not label or not price:
+                unnamed.append(_image_unnamed_charge(billable, unit))
+                continue
+            tier = (
+                _IMAGE_VARIANT_ORDER.index(variant)
+                if variant in _IMAGE_VARIANT_ORDER
+                else len(_IMAGE_VARIANT_ORDER)
+            )
+            charges.append(
+                _ImageCharge(
+                    (ranked.index(billable), tier),
+                    f"{label} ({variant.upper()})" if variant else label,
+                    price,
+                    provider,
+                    unit == "token",
+                )
+            )
+    return charges, unnamed
+
+
+def _image_price_lines(charges: list[_ImageCharge]) -> list[str]:
+    """One line per charge, naming the providers only where they disagree on it.
+
+    A model served by several companies publishes one contract each. Printing the first
+    one would be a guess about who takes the request, which is decided after it leaves.
+    """
+    lines: list[str] = []
+    for label in dict.fromkeys(charge.label for charge in sorted(charges, key=lambda c: c.order)):
+        offered: dict[str, list[str]] = {}
+        for charge in charges:
+            if charge.label == label:
+                offered.setdefault(charge.price, []).append(charge.provider)
+        if len(offered) == 1:
+            lines.append(f"- {label}: {next(iter(offered))}")
+            continue
+        for price, providers in offered.items():
+            serving = ", ".join(sorted({name for name in providers if name}))
+            lines.append(f"- {label}: {price} via {serving}" if serving else f"- {label}: {price}")
+    return lines
+
+
+def _image_cost_section(records: list[dict[str, Any]]) -> list[str]:
+    charges, unnamed = _image_charges(records)
+    body = [*_image_price_lines(charges), *unnamed] if (charges or unnamed) else [_IMAGE_NO_PRICE_LINE]
+    if any(charge.per_token for charge in charges):
+        body.extend(["", _IMAGE_TOKEN_NOTE])
+    body.extend(["", _IMAGE_COST_CLOSING])
+    return ["## Cost", "", *body]
 
 
 def _image_render_template(model_id: str, image_model: dict[str, Any] | None) -> str:
@@ -662,11 +816,14 @@ def render_image_help(
 
     from ..filters.image_filter_renderer import (
         IMAGE_KNOB_TITLES,
+        _published_records,
         build_image_model_filter_spec,
     )
 
     spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
-    lines = [f"{rendered.rstrip()}", "", "## Controls"]
+    lines = [f"{rendered.rstrip()}", ""]
+    lines.extend(_image_cost_section(_published_records(endpoint_record)))
+    lines.extend(["", "## Controls"])
     if not spec.knob_count:
         if spec.published_anything:
             lines.append(

@@ -45,6 +45,7 @@ from ..core.config import (
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
 )
+from ..integrations.provider_options import options_key
 from .registry import ModelFamily, OpenRouterModelRegistry
 
 if TYPE_CHECKING:
@@ -261,20 +262,30 @@ def _apply_provider_routing_default_filter_ids(
     return True
 
 
-def builtin_tools_default(valves: Any, pipe_capabilities: dict[str, bool]) -> dict[str, Any]:
+def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -> dict[str, Any]:
     """Capability defaults for a model, applied only where the model has no setting yet.
 
     A model that answers with an image or a clip cannot use a tool call, so Open WebUI's
     built-in tools are unticked rather than withheld at request time: the operator can see
     the box, and a box they tick themselves is left alone from then on.
+
+    `file_context` is unticked on the same models but on a different condition. Left at its
+    True default it answers every attachment-bearing request with a `generate_queries`
+    round-trip and RAG injection, which on a media model is a second billed call whose text
+    lands in a picture prompt -- so it does not share the built-in-tools valve, whose whole
+    description is about tools and whose operator would not expect unticking it to re-arm
+    that.
     """
     if not getattr(valves, "UPDATE_MODEL_CAPABILITIES", False):
         return {}
-    if not getattr(valves, "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS", False):
+    if not (
+        pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output")
+    ):
         return {}
-    if pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output"):
-        return {"builtin_tools": False}
-    return {}
+    defaults: dict[str, Any] = {"file_context": False}
+    if getattr(valves, "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS", False):
+        defaults["builtin_tools"] = False
+    return defaults
 
 
 def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
@@ -294,6 +305,39 @@ def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
         or valves.AUTO_INSTALL_VIDEO_FILTERS
         or valves.AUTO_INSTALL_IMAGE_FILTERS
         or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+    )
+
+
+def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
+    """Whether the Open WebUI Models-table sync has any work to do."""
+    return bool(
+        valves.UPDATE_MODEL_CAPABILITIES
+        or valves.UPDATE_MODEL_IMAGES
+        or valves.UPDATE_MODEL_DESCRIPTIONS
+        or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+        or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+        or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
+        or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+        or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+        or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+        or valves.AUTO_INSTALL_VIDEO_FILTERS
+        or valves.AUTO_ATTACH_VIDEO_FILTERS
+        or valves.AUTO_INSTALL_IMAGE_FILTERS
+        or valves.AUTO_ATTACH_IMAGE_FILTERS
+        or valves.AUTO_INSTALL_FUSION_FILTER
+        or valves.AUTO_ATTACH_FUSION_FILTER
+        or provider_routing_enabled
+    )
+
+
+def schedules_owui_model_sync(valves: Any, provider_routing_enabled: bool) -> bool:
+    """The scheduler's gate: everything the sync itself needs, plus one term.
+
+    Built FROM the sync's own predicate rather than beside it, so the sync's gate is this
+    one minus a term by construction and neither can gain a term the other lacks.
+    """
+    return syncs_owui_models(valves, provider_routing_enabled) or bool(
+        valves.AUTO_ATTACH_IMAGE_GEN_FILTER
     )
 
 
@@ -498,6 +542,7 @@ class ModelCatalogManager:
         selected_models: list[dict[str, Any]],
         *,
         pipe_identifier: str,
+        image_gen_filter_model: str = "",
     ) -> None:
         """Schedule a background task to sync model metadata to OWUI if needed.
 
@@ -517,25 +562,7 @@ class ModelCatalogManager:
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
-        if not (
-            valves.UPDATE_MODEL_CAPABILITIES
-            or valves.UPDATE_MODEL_IMAGES
-            or valves.UPDATE_MODEL_DESCRIPTIONS
-            or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
-            or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
-            or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
-            or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
-            or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
-            or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
-            or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
-            or valves.AUTO_INSTALL_VIDEO_FILTERS
-            or valves.AUTO_ATTACH_VIDEO_FILTERS
-            or valves.AUTO_INSTALL_IMAGE_FILTERS
-            or valves.AUTO_ATTACH_IMAGE_FILTERS
-            or valves.AUTO_INSTALL_FUSION_FILTER
-            or valves.AUTO_ATTACH_FUSION_FILTER
-            or provider_routing_enabled
-        ):
+        if not schedules_owui_model_sync(valves, provider_routing_enabled):
             return
         if not selected_models:
             return
@@ -574,6 +601,11 @@ class ModelCatalogManager:
             valves.ENABLE_WEB_FETCH,
             valves.ENABLE_DATETIME,
             valves.ENABLE_IMAGE_GENERATION,
+            valves.VIDEO_INTENT_ENABLED,
+            valves.VIDEO_INTENT_MAX_CLARIFICATIONS,
+            valves.VIDEO_INTENT_FRAME_EXTRACTION_INDEX,
+            valves.VIDEO_INTENT_CONFIRM_MODE,
+            image_gen_filter_model,
             admin_routing_models,
             user_routing_models,
             valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS,
@@ -877,7 +909,7 @@ class ModelCatalogManager:
                 tag = endpoint.get("tag")
                 if not isinstance(tag, str):
                     continue
-                base_slug = tag.split("/", 1)[0].strip()
+                base_slug = options_key(tag)
                 if not base_slug:
                     continue
                 providers.add(base_slug)
@@ -1030,24 +1062,7 @@ class ModelCatalogManager:
         user_routing_models = valves.USER_PROVIDER_ROUTING_MODELS
         provider_routing_enabled = bool(admin_routing_models or user_routing_models)
 
-        if not (
-            valves.UPDATE_MODEL_CAPABILITIES
-            or valves.UPDATE_MODEL_IMAGES
-            or valves.UPDATE_MODEL_DESCRIPTIONS
-            or valves.AUTO_ATTACH_WEB_TOOLS_FILTER
-            or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
-            or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
-            or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
-            or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
-            or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
-            or valves.AUTO_INSTALL_VIDEO_FILTERS
-            or valves.AUTO_ATTACH_VIDEO_FILTERS
-            or valves.AUTO_INSTALL_IMAGE_FILTERS
-            or valves.AUTO_ATTACH_IMAGE_FILTERS
-            or valves.AUTO_INSTALL_FUSION_FILTER
-            or valves.AUTO_ATTACH_FUSION_FILTER
-            or provider_routing_enabled
-        ):
+        if not syncs_owui_models(valves, provider_routing_enabled):
             return
         if not models:
             return
@@ -1422,7 +1437,7 @@ class ModelCatalogManager:
                 }
 
                 capabilities = None
-                capability_defaults = builtin_tools_default(valves, pipe_capabilities)
+                capability_defaults = media_capability_defaults(valves, pipe_capabilities)
                 if valves.UPDATE_MODEL_CAPABILITIES:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):

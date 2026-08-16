@@ -13,6 +13,7 @@ from ..core.utils import _clean_str
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
+    capability_declared_off,
     scrub_surrogates,
 )
 
@@ -176,8 +177,9 @@ def build_video_filter_spec(
         resolutions=resolutions,
         frame_types=frame_types,
         size_options=size_options,
-        seed_capable=model.get("seed") is True,
-        audio_capable=model.get("generate_audio") is True,
+        seed_capable="seed" in model and not capability_declared_off(model.get("seed")),
+        audio_capable="generate_audio" in model
+        and not capability_declared_off(model.get("generate_audio")),
         intent_classifier_admin_enabled=intent_admin_enabled,
         intent_enabled_default=intent_enabled_default,
         intent_max_clarifications_default=intent_max_clar,
@@ -193,6 +195,8 @@ def render_video_filter_source(
     pipe_metadata_key: str = _PIPE_METADATA_KEY,
     admin_valves: Any = None,
 ) -> str:
+    from open_webui_openrouter_pipe import __version__
+
     spec = build_video_filter_spec(model_id, video_model, admin_valves=admin_valves)
     # Only the names that genuinely cannot be offered: one that is not a legal Python
     # identifier has no field to carry it. Everything else the model publishes is
@@ -224,6 +228,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -235,8 +240,24 @@ except Exception:
 
 
 OPENROUTER_PIPE_MARKER = {spec.marker!r}
+OPENROUTER_PIPE_VERSION = {__version__!r}
 VIDEO_MODEL_ID = {spec.model_id!r}
 PIPE_METADATA_KEY = {pipe_metadata_key!r}
+
+
+class VideoFilterInputError(ValueError):
+    """A value the user typed that this filter will not put on the wire."""
+
+
+def _json_number(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{{text}} is out of range for JSON")
+    return value
+
+
+def _json_constant(literal: str) -> float:
+    raise ValueError(f"{{literal}} is not valid JSON")
 
 
 class Filter:
@@ -308,6 +329,23 @@ class Filter:
                     return value.strip().lower()
         return ""
 
+    @staticmethod
+    def _owui_skips_file_context(__model__: Any) -> bool:
+        """Whether Open WebUI will leave a returned file list alone.
+
+        `file_context` defaults to True, and on True Open WebUI answers an
+        attachment-bearing request with a `generate_queries` round-trip and RAG injection
+        -- into a video prompt. Handing the files back is only safe once the model's own
+        capability says otherwise, so an installation whose capability write never ran
+        keeps today's behaviour instead.
+        """
+        if not isinstance(__model__, dict):
+            return False
+        info = __model__.get("info")
+        meta = info.get("meta") if isinstance(info, dict) else None
+        caps = meta.get("capabilities") if isinstance(meta, dict) else None
+        return isinstance(caps, dict) and caps.get("file_context") is False
+
     def _build_attachment(self, item: dict[str, Any]) -> dict[str, Any]:
         return {{
             "id": self._file_id(item),
@@ -315,6 +353,28 @@ class Filter:
             "size": self._to_int(item.get("size")) or 0,
             "content_type": self._content_type(item),
         }}
+
+    @staticmethod
+    def _decode(raw: str, field: str) -> Any:
+        """Parse a passthrough value without inventing a type the user did not write.
+
+        The same rule the image filter applies, for the same reason: a JSON container and
+        a bare number are parsed, everything else stays the string it is, and ``NaN``,
+        ``Infinity`` and ``1e400`` are refused because no JSON encoder can put the float
+        they produce on the wire.
+        """
+        container = raw[:1] in ("[", "{{")
+        try:
+            parsed = json.loads(raw, parse_float=_json_number, parse_constant=_json_constant)
+        except ValueError as exc:
+            if container:
+                raise VideoFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
+            return raw
+        if container:
+            return parsed
+        if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
+            return raw
+        return parsed
 
     @staticmethod
     def _json_object(value: Any) -> dict[str, Any]:
@@ -387,6 +447,10 @@ class Filter:
                 video_meta["audio_attachments"] = audio_attachments
             else:
                 video_meta.pop("audio_attachments", None)
+            if input_references:
+                video_meta["input_references"] = input_references
+            else:
+                video_meta.pop("input_references", None)
             pipe_meta["video_generation"] = video_meta
 
 {intent_inlet_block}
@@ -1090,14 +1154,7 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
         lines.extend([
             f'        raw_value = getattr(user_valves, "VIDEO_{name.upper()}", "")',
             "        if isinstance(raw_value, str) and raw_value.strip():",
-            "            trimmed = raw_value.strip()",
-            '            if trimmed[:1] in ("[", "{"):',
-            "                try:",
-            f"                    params[{name!r}] = json.loads(trimmed)",
-            "                except ValueError as exc:",
-            f"                    raise Exception(f\"{name} is not valid JSON: {{exc}}\") from exc",
-            "            else:",
-            f"                params[{name!r}] = trimmed",
+            f"            params[{name!r}] = self._decode(raw_value.strip(), {name!r})",
         ])
     return "\n".join(lines) if lines else "        pass"
 
@@ -1127,6 +1184,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                     if len(image_items) > 1 and "last_frame" in supported_frames:
                         selected.append((image_items[-1], "last_frame"))
             for item, frame_type in selected:
+                claimed_ids.add(self._file_id(item))
                 frame_images.append(
                     {{
                         "id": self._file_id(item),
@@ -1139,6 +1197,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
         else:
             image_select_block = '''            if frame_mode != "none" and image_items:
                 item = image_items[0]
+                claimed_ids.add(self._file_id(item))
                 frame_images.append(
                     {
                         "id": self._file_id(item),
@@ -1157,19 +1216,37 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                 accepts_single = {emit_video_single}
                 accepts_array = {emit_videos_array}
                 if accepts_array and len(video_items) > 1:
-                    for item in video_items:
-                        video_attachments.append(self._build_attachment(item))
-                elif accepts_single:
-                    video_attachments.append(self._build_attachment(video_items[0]))
-                elif accepts_array:
-                    video_attachments.append(self._build_attachment(video_items[0]))'''
+                    taken = list(video_items)
+                elif accepts_single or accepts_array:
+                    taken = [video_items[0]]
+                else:
+                    taken = []
+                for item in taken:
+                    claimed_ids.add(self._file_id(item))
+                    video_attachments.append(self._build_attachment(item))'''
 
     audio_select_block = ""
     if accepts_audio_attachment:
         audio_select_block = '''            if audio_items:
+                claimed_ids.add(self._file_id(audio_items[0]))
                 audio_attachments.append(self._build_attachment(audio_items[0]))'''
 
-    select_blocks = "\n".join(b for b in (image_select_block, video_select_block, audio_select_block) if b)
+    reference_select_block = '''            for item in image_items + video_items + audio_items:
+                if self._file_id(item) in claimed_ids:
+                    continue
+                claimed_ids.add(self._file_id(item))
+                input_references.append(self._build_attachment(item))'''
+
+    select_blocks = "\n".join(
+        block
+        for block in (
+            image_select_block,
+            video_select_block,
+            audio_select_block,
+            reference_select_block,
+        )
+        if block
+    )
 
     return f'''        files = body.get("files")
         if not (isinstance(files, list) and files) and isinstance(__metadata__, dict):
@@ -1177,8 +1254,12 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
             if isinstance(user_message, dict):
                 files = user_message.get("files")
         retained: list[Any] = []
+        claimed: list[Any] = []
+        unclaimed: list[Any] = []
         video_attachments: list[dict[str, Any]] = []
         audio_attachments: list[dict[str, Any]] = []
+        input_references: list[dict[str, Any]] = []
+        claimed_ids: set[str] = set()
 {frame_mode_line}        if isinstance(files, list) and files:
             image_items: list[dict[str, Any]] = []
             video_items: list[dict[str, Any]] = []
@@ -1201,10 +1282,17 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                 else:
                     retained.append(item)
 {select_blocks}
+            for item in image_items + video_items + audio_items:
+                if self._file_id(item) in claimed_ids:
+                    claimed.append(item)
+                else:
+                    unclaimed.append(item)
 
-        body["files"] = retained
-        if isinstance(__metadata__, dict):
-            __metadata__["files"] = retained'''
+        if claimed_ids or retained or unclaimed:
+            kept = retained + claimed if self._owui_skips_file_context(__model__) else retained
+            body["files"] = kept
+            if isinstance(__metadata__, dict):
+                __metadata__["files"] = kept'''
 
 
 def _field_block(text: str) -> str:

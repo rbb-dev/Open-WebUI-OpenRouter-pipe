@@ -1,0 +1,50 @@
+{
+  "image": {
+    "properties": [
+      "aspect_ratio",
+      "background",
+      "input_references",
+      "model",
+      "n",
+      "output_compression",
+      "output_format",
+      "prompt",
+      "provider",
+      "quality",
+      "resolution",
+      "seed",
+      "size",
+      "stream"
+    ],
+    "required": [
+      "model",
+      "prompt"
+    ],
+    "schema": "ImageGenerationRequest"
+  },
+  "recorded": "2026-08-09",
+  "source": {
+    "image": "images/generate-an-image.md",
+    "video": "video-generation/submit-a-video-generation-request.md"
+  },
+  "video": {
+    "properties": [
+      "aspect_ratio",
+      "callback_url",
+      "duration",
+      "frame_images",
+      "generate_audio",
+      "input_references",
+      "model",
+      "prompt",
+      "provider",
+      "resolution",
+      "seed",
+      "size"
+    ],
+    "required": [
+      "model"
+    ],
+    "schema": "VideoGenerationRequest"
+  }
+}

@@ -43,6 +43,36 @@ from ..core.config import (
 )
 from ..core.timing_logger import timed
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
+from ..core.warn_latch import warn_level
+from ..integrations.provider_options import CHAT_PROVIDER_KEYS, TRANSPORT_PROVIDER_KEYS
+
+_ROUTING_CONTROL_KEYS: dict[str, str] = {
+    "ORDER": "order",
+    "ALLOW_FALLBACKS": "allow_fallbacks",
+    "REQUIRE_PARAMETERS": "require_parameters",
+    "DATA_COLLECTION": "data_collection",
+    "ZDR": "zdr",
+    "ENFORCE_DISTILLABLE_TEXT": "enforce_distillable_text",
+    "ONLY": "only",
+    "IGNORE": "ignore",
+    "QUANTIZATION": "quantizations",
+    "SORT": "sort",
+    "SORT_PARTITION": "sort",
+    "MIN_THROUGHPUT": "preferred_min_throughput",
+    "MAX_LATENCY": "preferred_max_latency",
+    "MAX_PRICE_PROMPT": "max_price",
+    "MAX_PRICE_COMPLETION": "max_price",
+    "MAX_PRICE_IMAGE": "max_price",
+    "MAX_PRICE_AUDIO": "max_price",
+    "MAX_PRICE_REQUEST": "max_price",
+}
+"""Which request field each routing control feeds.
+
+One table decides both halves: the controls a model's picker draws and the fields its
+inlet writes. Kept apart, the picker drew a retention toggle and a price cap for a
+transport whose request format has no field for either, so the setting was accepted,
+shown as in force, and dropped on the way out.
+"""
 
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -51,6 +81,14 @@ if TYPE_CHECKING:
 
 _PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
 _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
+
+_warned_stale_filter_rows: set[str] = set()
+
+_REPLACE_IMPORTS_REFUSAL = (
+    "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
+    "would rewrite it back on the next refresh: its unanchored replace of 'from utils', "
+    "'from apps', 'from main' or 'from config' matched somewhere in the generated text"
+)
 
 
 class FilterManager:
@@ -238,7 +276,6 @@ class FilterManager:
 
         try:
             compile(source, "<generated-filter>", "exec")
-            return True, None
         except SyntaxError as e:
             if e.lineno:
                 error_msg = f"Line {e.lineno}: {e}"
@@ -247,6 +284,24 @@ class FilterManager:
             return False, error_msg
         except (RecursionError, MemoryError, ValueError) as e:
             return False, f"Parse error: {e!s}"
+
+        try:
+            import open_webui.utils.plugin as owp
+
+            rewritten = owp.replace_imports(source)
+        except ImportError:
+            return True, None
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.utils.plugin.replace_imports is unavailable, so generated "
+                "filter sources are not checked against Open WebUI's import rewrite",
+                exc_info=True,
+            )
+            return True, None
+
+        if rewritten != source:
+            return False, _REPLACE_IMPORTS_REFUSAL
+        return True, None
 
     # GENERIC FILTER INSTALL / UPDATE
 
@@ -359,8 +414,8 @@ class FilterManager:
         if not function_id:
             return None
 
+        existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
         if getattr(self.valves, auto_install_valve, False):
-            existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
             if existing_content != desired_source:
                 self.logger.info("Updating %s: %s", log_label, function_id)
                 await Functions.update_function_by_id(
@@ -385,6 +440,17 @@ class FilterManager:
                         "is_global": False,
                     },
                 )
+        elif existing_content != desired_source:
+            self.logger.log(
+                warn_level(_warned_stale_filter_rows, f"stale_row:{function_id}"),
+                "%s %r is installed and in use but its stored source is out of date. "
+                "%s is off, so the pipe will not rewrite it and every fix to this filter "
+                "stays undelivered. Turn %s on to let the pipe update it.",
+                log_label,
+                function_id,
+                auto_install_valve,
+                auto_install_valve,
+            )
 
         return function_id
 
@@ -1097,6 +1163,52 @@ class Filter:
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
         )
 
+    async def image_gen_filter_selected_model(self) -> str:
+        """The model the installed server-tool image filter is set to generate with.
+
+        Read from the installed function's stored valves rather than from the rendered
+        default, because an admin who changes it there is exactly what the next render
+        has to react to and the sync key is the only thing that decides whether one runs.
+        """
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return ""
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.models.functions failed to import for a reason other than "
+                "absence; the features that depend on it are now disabled",
+                exc_info=True,
+            )
+            return ""
+
+        try:
+            rows = await Functions.get_functions_by_type("filter", active_only=False)
+            chosen = next(
+                (
+                    row
+                    for row in rows or []
+                    if _OPENROUTER_IMAGE_GEN_FILTER_MARKER
+                    in (getattr(row, "content", "") or "")
+                ),
+                None,
+            )
+            if chosen is None:
+                return ""
+            stored = await Functions.get_function_valves_by_id(
+                str(getattr(chosen, "id", "") or "")
+            )
+        except Exception as exc:
+            self.logger.debug(
+                "Could not read the image generation filter's selected model: %s",
+                exc,
+                exc_info=True,
+            )
+            return ""
+
+        selected = (stored or {}).get("IMAGE_GENERATION_MODEL")
+        return selected.strip() if isinstance(selected, str) else ""
+
     def render_openrouter_video_gen_filter_source(
         self,
         *,
@@ -1156,15 +1268,14 @@ class Filter:
 
         spec = build_video_filter_spec(model_id, video_model)
 
-        model_id_token_dq = f'VIDEO_MODEL_ID = "{spec.model_id}"'
-        model_id_token_sq = f"VIDEO_MODEL_ID = '{spec.model_id}'"
+        model_id_token = f"VIDEO_MODEL_ID = {spec.model_id!r}"
 
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
             if _OPENROUTER_VIDEO_GEN_FILTER_MARKER not in content:
                 return False
-            if model_id_token_dq not in content and model_id_token_sq not in content:
+            if model_id_token not in content:
                 return False
             return "class Filter" in content
 
@@ -1246,9 +1357,9 @@ class Filter:
             )
             spec = OpenRouterModelRegistry.spec(model_id)
             image_model = spec.get("image_model") if isinstance(spec, dict) else None
-            endpoint_record = OpenRouterModelRegistry.image_endpoint(
-                canonical_id
-            ) or OpenRouterModelRegistry.image_endpoint(model_id)
+            endpoint_record = OpenRouterModelRegistry.image_endpoint(canonical_id)
+            if endpoint_record is None:
+                endpoint_record = OpenRouterModelRegistry.image_endpoint(model_id)
             if not isinstance(image_model, dict):
                 image_model = dict(model)
 
@@ -1335,7 +1446,9 @@ class Filter:
         from .image_filter_renderer import build_image_model_filter_spec
 
         spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
-        if spec.knob_count == 0 and not await self._image_filter_exists(spec.function_id):
+        if spec.knob_count == 0 and (
+            not spec.contract_read or not await self._image_filter_exists(spec.function_id)
+        ):
             # Nothing to offer and nothing already installed, so install nothing. If a
             # filter IS installed, fall through and overwrite it: a contract that shrank
             # to nothing must not leave the previous controls on screen, writing values
@@ -1869,11 +1982,41 @@ class Filter:
             for slug in sorted(relevant_slugs)
         }
 
-        data = f"{admin_sorted}|{user_sorted}|{provider_data}"
+        transports = {
+            slug: FilterManager.model_transport(slug) for slug in sorted(relevant_slugs)
+        }
+        data = f"{admin_sorted}|{user_sorted}|{provider_data}|{transports}"
         return hashlib.md5(data.encode()).hexdigest()
 
     @staticmethod
-    def _generate_inlet_logic(visibility: str) -> str:
+    def model_transport(model_slug: str) -> str:
+        """Which request format this model answers on.
+
+        Read from the catalogue rather than the slug, because the split is not one a name
+        shows: a model that returns pictures and no words goes to the dedicated image
+        request format, while one that returns both stays on the chat format.
+        """
+        from ..models.registry import OpenRouterModelRegistry, uses_dedicated_image_api
+
+        spec = OpenRouterModelRegistry.spec(model_slug)
+        if not isinstance(spec, dict):
+            return "chat"
+        if "video_generation" in set(spec.get("features") or ()):
+            return "video"
+        return "image" if uses_dedicated_image_api(spec) else "chat"
+
+    @staticmethod
+    def _routing_controls(transport: str) -> frozenset[str]:
+        """The controls worth drawing for one transport: those whose field it accepts."""
+        accepted = TRANSPORT_PROVIDER_KEYS.get(transport, CHAT_PROVIDER_KEYS)
+        return frozenset(
+            control
+            for control, key in _ROUTING_CONTROL_KEYS.items()
+            if key in accepted
+        )
+
+    @staticmethod
+    def _generate_inlet_logic(visibility: str, transport: str = "chat") -> str:
         """Generate the inlet method logic based on visibility.
 
         IMPORTANT: User valves are injected by OWUI into __user__["valves"], NOT into
@@ -1956,8 +2099,10 @@ class Filter:
 '''
         logic += '''            return 0
 
-        # Build provider object
-        # ORDER: Map display value to provider slug list using _ORDER_MAP
+'''
+        drawn = FilterManager._routing_controls(transport)
+        if "ORDER" in drawn:
+            logic += '''        # ORDER: Map display value to provider slug list using _ORDER_MAP
         order_display = get_literal("ORDER")
         if order_display:
             order_slugs = _ORDER_MAP.get(order_display)
@@ -1966,7 +2111,9 @@ class Filter:
             else:
                 self.log.warning("ORDER value %r not found in _ORDER_MAP", order_display)
 
-        # ONLY: Map display name to slug using _PROVIDER_MAP
+'''
+        if "ONLY" in drawn:
+            logic += '''        # ONLY: Map display name to slug using _PROVIDER_MAP
         only_display = get_literal("ONLY")
         if only_display:
             only_slug = _PROVIDER_MAP.get(only_display)
@@ -1975,7 +2122,9 @@ class Filter:
             else:
                 self.log.warning("ONLY value %r not found in _PROVIDER_MAP", only_display)
 
-        # IGNORE: Map display name to slug using _PROVIDER_MAP
+'''
+        if "IGNORE" in drawn:
+            logic += '''        # IGNORE: Map display name to slug using _PROVIDER_MAP
         ignore_display = get_literal("IGNORE")
         if ignore_display:
             ignore_slug = _PROVIDER_MAP.get(ignore_display)
@@ -1984,48 +2133,71 @@ class Filter:
             else:
                 self.log.warning("IGNORE value %r not found in _PROVIDER_MAP", ignore_display)
 
-        # SORT: Literal values map directly
+'''
+        if "SORT" in drawn:
+            logic += '''        # SORT: a bare strategy, or an object when a partition is chosen too
         sort_val = get_literal("SORT")
-        if sort_val:
+        sort_partition = get_literal("SORT_PARTITION")
+        if sort_val and sort_partition:
+            provider["sort"] = {"by": sort_val, "partition": sort_partition}
+        elif sort_val:
             provider["sort"] = sort_val
+        elif sort_partition:
+            provider["sort"] = {"partition": sort_partition}
 
-        # QUANTIZATION: Literal dropdown maps directly
+'''
+        if "QUANTIZATION" in drawn:
+            logic += '''        # QUANTIZATION: Literal dropdown maps directly
         quant_val = get_literal("QUANTIZATION")
         if quant_val:
             provider["quantizations"] = [quant_val]
 
-        # DATA_COLLECTION: Literal values map directly
+'''
+        if "DATA_COLLECTION" in drawn:
+            logic += '''        # DATA_COLLECTION: Literal values map directly
         data_collection = get_literal("DATA_COLLECTION")
         if data_collection:
             provider["data_collection"] = data_collection
 
-        # Boolean fields (only include if explicitly set and differs from API default)
-        allow_fallbacks = get_bool("ALLOW_FALLBACKS", api_default=True)
+'''
+        if "ALLOW_FALLBACKS" in drawn:
+            logic += '''        allow_fallbacks = get_bool("ALLOW_FALLBACKS", api_default=True)
         if allow_fallbacks is not None:
             provider["allow_fallbacks"] = allow_fallbacks
 
-        require_params = get_bool("REQUIRE_PARAMETERS", api_default=False)
+'''
+        if "REQUIRE_PARAMETERS" in drawn:
+            logic += '''        require_params = get_bool("REQUIRE_PARAMETERS", api_default=False)
         if require_params is not None:
             provider["require_parameters"] = require_params
 
-        zdr = get_bool("ZDR", api_default=False)
+'''
+        if "ZDR" in drawn:
+            logic += '''        zdr = get_bool("ZDR", api_default=False)
         if zdr is not None:
             provider["zdr"] = zdr
 
-        distillable = get_bool("ENFORCE_DISTILLABLE_TEXT", api_default=False)
+'''
+        if "ENFORCE_DISTILLABLE_TEXT" in drawn:
+            logic += '''        distillable = get_bool("ENFORCE_DISTILLABLE_TEXT", api_default=False)
         if distillable is not None:
             provider["enforce_distillable_text"] = distillable
 
-        # Numeric fields (only include if > 0)
-        min_throughput = get_float("MIN_THROUGHPUT")
+'''
+        if "MIN_THROUGHPUT" in drawn:
+            logic += '''        min_throughput = get_float("MIN_THROUGHPUT")
         if min_throughput > 0:
             provider["preferred_min_throughput"] = min_throughput
 
-        max_latency = get_float("MAX_LATENCY")
+'''
+        if "MAX_LATENCY" in drawn:
+            logic += '''        max_latency = get_float("MAX_LATENCY")
         if max_latency > 0:
             provider["preferred_max_latency"] = max_latency
 
-        # Price limits
+'''
+        if "MAX_PRICE_PROMPT" in drawn:
+            logic += '''        # Price limits
         max_price_prompt = get_float("MAX_PRICE_PROMPT")
         max_price_completion = get_float("MAX_PRICE_COMPLETION")
         max_price_image = get_float("MAX_PRICE_IMAGE")
@@ -2050,7 +2222,8 @@ class Filter:
             if max_price_request > 0:
                 provider["max_price"]["request"] = max_price_request
 
-        # Inject into metadata if we have any provider settings
+'''
+        logic += '''        # Inject into metadata if we have any provider settings
         if provider:
             if __metadata__ is None:
                 __metadata__ = {}
@@ -2069,6 +2242,7 @@ class Filter:
         *,
         short_name: str = "",
         provider_names: dict[str, str] | None = None,
+        transport: str = "chat",
     ) -> str:
         """Generate filter source code for a specific model's provider routing.
 
@@ -2079,6 +2253,10 @@ class Filter:
             visibility: Who can configure - 'admin' (enforced), 'user' (optional), or 'both'
             short_name: Human-readable model name for filter title (e.g., 'GPT-4o')
             provider_names: Mapping of provider slug to display name (e.g., {'openai': 'OpenAI'})
+            transport: Which request format this model answers on, deciding which
+                controls are worth drawing. A model reached through the dedicated image
+                request format has no field for most of them, so drawing them would
+                promise a setting nothing carries.
         """
         safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
         filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
@@ -2150,35 +2328,55 @@ class Filter:
 
         toggle_value = "False" if visibility == "admin" else "True"
 
-        stale_choice_guard = '''
-        @field_validator("ORDER", "ONLY", "IGNORE", "QUANTIZATION", mode="before")
+        drawn = FilterManager._routing_controls(transport)
+        control_lines = {
+            "ORDER": f'        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")',
+            "ALLOW_FALLBACKS": '        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")',
+            "REQUIRE_PARAMETERS": '        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")',
+            "DATA_COLLECTION": '        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy")',
+            "ZDR": '        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")',
+            "ENFORCE_DISTILLABLE_TEXT": '        ENFORCE_DISTILLABLE_TEXT: bool = Field(default=False, description="Only use providers whose author allows text distillation")',
+            "ONLY": f'        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")',
+            "IGNORE": f'        IGNORE: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Avoid this provider")',
+            "QUANTIZATION": f'        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")',
+            "SORT": '        SORT: Literal[_NO_PREF, "price", "throughput", "latency", "exacto"] = Field(default=_NO_PREF, description="Sort providers by; exacto favours endpoints that reproduce the model most faithfully")',
+            "SORT_PARTITION": '        SORT_PARTITION: Literal[_NO_PREF, "model", "none"] = Field(default=_NO_PREF, description="Whether sorting groups endpoints by model first (model) or ranks them all together (none)")',
+            "MIN_THROUGHPUT": '        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec), 0=no pref")',
+            "MAX_LATENCY": '        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")',
+            "MAX_PRICE_PROMPT": '        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")',
+            "MAX_PRICE_COMPLETION": '        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")',
+            "MAX_PRICE_IMAGE": '        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")',
+            "MAX_PRICE_AUDIO": '        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")',
+            "MAX_PRICE_REQUEST": '        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")',
+        }
+        if set(control_lines) != set(_ROUTING_CONTROL_KEYS):
+            raise ValueError(
+                "every routing control needs both a field and a request field to write; "
+                f"unpaired: {sorted(set(control_lines) ^ set(_ROUTING_CONTROL_KEYS))}"
+            )
+        rendered_controls = "\n".join(
+            line for name, line in control_lines.items() if name in drawn
+        )
+        guarded = [
+            name
+            for name in ("ORDER", "ONLY", "IGNORE", "QUANTIZATION", "SORT", "SORT_PARTITION")
+            if name in drawn
+        ]
+        guarded_literal = ", ".join(json.dumps(name) for name in guarded)
+        stale_choice_guard = f'''
+        @field_validator({guarded_literal}, mode="before")
         @classmethod
         def _coerce_stale_choice(cls, value: Any, info: ValidationInfo) -> Any:
             options = get_args(cls.model_fields[info.field_name].annotation)
             return value if value in options else _NO_PREF
-'''
+''' if guarded else ""
 
         valves_class = ""
         if visibility in ("admin", "both"):
             valves_class = f'''
     class Valves(BaseModel):
         """Admin-level provider routing preferences."""
-        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")
-        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")
-        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")
-        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy")
-        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")
-        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")
-        IGNORE: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Avoid this provider")
-        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")
-        SORT: Literal[_NO_PREF, "price", "throughput", "latency"] = Field(default=_NO_PREF, description="Sort providers by")
-        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec), 0=no pref")
-        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")
-        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")
-        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")
-        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
-        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
-        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
+{rendered_controls}
 {stale_choice_guard}'''
 
         user_valves_class = ""
@@ -2186,22 +2384,7 @@ class Filter:
             user_valves_class = f'''
     class UserValves(BaseModel):
         """User-level provider routing preferences (can override admin defaults)."""
-        ORDER: Literal[{order_literal}] = Field(default=_NO_PREF, description="Provider priority order")
-        ALLOW_FALLBACKS: bool = Field(default=True, description="Allow backup providers if preferred unavailable")
-        REQUIRE_PARAMETERS: bool = Field(default=False, description="Only use providers supporting all request params")
-        DATA_COLLECTION: Literal[_NO_PREF, "allow", "deny"] = Field(default=_NO_PREF, description="Data collection policy")
-        ZDR: bool = Field(default=False, description="Zero Data Retention - only ZDR endpoints")
-        ONLY: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Use only this provider")
-        IGNORE: Literal[{only_ignore_literal}] = Field(default=_NO_PREF, description="Avoid this provider")
-        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")
-        SORT: Literal[_NO_PREF, "price", "throughput", "latency"] = Field(default=_NO_PREF, description="Sort providers by")
-        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec), 0=no pref")
-        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")
-        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")
-        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")
-        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")
-        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")
-        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")
+{rendered_controls}
 {stale_choice_guard}'''
 
         # Generate init based on visibility
@@ -2211,7 +2394,7 @@ class Filter:
         if visibility in ("user", "both"):
             init_body += "\n        self.user_valves = self.UserValves()"
 
-        inlet_logic = FilterManager._generate_inlet_logic(visibility)
+        inlet_logic = FilterManager._generate_inlet_logic(visibility, transport)
 
         return (f'''"""
 title: Provider: {safe_display_name_escaped}
@@ -2374,7 +2557,9 @@ class Filter:
         missing_filters = {
             slug
             for slug in all_models
-            if slug not in existing_filters and (provider_map.get(slug) or {}).get("providers")
+            if slug not in existing_filters
+            and (provider_map.get(slug) or {}).get("providers")
+            and self._routing_controls(self.model_transport(slug))
         }
 
         if hash_unchanged and not missing_filters:
@@ -2399,6 +2584,7 @@ class Filter:
 
         created = 0
         updated = 0
+        undeliverable: list[str] = []
         for slug, visibility in model_visibility.items():
             model_info = provider_map.get(slug, {})
             providers = model_info.get("providers", [])
@@ -2412,6 +2598,17 @@ class Filter:
                 self.logger.warning("Skipping filter for %s: no providers found in catalog (check slug spelling)", slug)
                 continue
 
+            transport = self.model_transport(slug)
+            if not self._routing_controls(transport):
+                undeliverable.append(slug)
+                self.logger.warning(
+                    "Not installing a provider routing filter for %s: its request format "
+                    "carries none of these settings, so every control would be accepted "
+                    "and then dropped.",
+                    slug,
+                )
+                continue
+
             safe_id = self.sanitize_model_for_filter_id(slug)
             filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
 
@@ -2419,6 +2616,7 @@ class Filter:
                 slug, providers, quantizations, visibility,
                 short_name=short_name,
                 provider_names=prov_names,
+                transport=transport,
             ).strip() + "\n"
 
             is_valid, validation_error = self.validate_filter_source(desired_source)
@@ -2507,7 +2705,7 @@ class Filter:
                 self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
 
         for slug, existing in existing_filters.items():
-            if slug not in all_models:
+            if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id:
                     await Functions.update_function_by_id(existing_id, {"is_active": False})

@@ -1173,9 +1173,30 @@ class Pipe:
                 level = warn_level(_warned_pipes_maintenance, f"stale_prune:{type(exc).__name__}")
                 self.logger.log(level, "Startup stale filter ID pruning failed: %s", exc, exc_info=True)
 
+        image_gen_filter_model = ""
+        if self.valves.ENABLE_IMAGE_GENERATION and (
+            self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+            or self.valves.AUTO_ATTACH_IMAGE_GEN_FILTER
+        ):
+            try:
+                image_gen_filter_model = (
+                    await self._ensure_filter_manager().image_gen_filter_selected_model()
+                )
+            except Exception as exc:
+                level = warn_level(
+                    _warned_pipes_maintenance, f"image_gen_model:{type(exc).__name__}"
+                )
+                self.logger.log(
+                    level,
+                    "Reading the image generation filter's selected model failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
         self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
             selected_models,
             pipe_identifier=self.id,
+            image_gen_filter_model=image_gen_filter_model,
         )
 
         if self.valves.ENABLE_PLUGIN_SYSTEM:

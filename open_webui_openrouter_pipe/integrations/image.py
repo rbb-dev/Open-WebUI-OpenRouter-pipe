@@ -8,25 +8,30 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from ..core.config import _select_openrouter_http_referer
+from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from ..core.warn_latch import warn_level
-from ..requests.fusion_engine import latest_user_text
 from .image_client import OpenRouterImageClient
 from .image_types import (
+    SCHEMA_ONLY_PARAMS,
     TOP_LEVEL_PARAMS,
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
     clamp_text,
+    pixel_size,
+    prompt_with_system,
+    reduced_ratio,
     summarise_names,
 )
 from .provider_options import (
     IMAGE_PROVIDER_KEYS,
+    bare_pins,
     carrier_slug,
-    merge_provider_options,
+    fan_provider_options,
+    options_key,
     requested_provider_block,
     restrict_provider_block,
 )
@@ -49,6 +54,23 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
     return clamp_text(text, limit)
 
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
+
+_SCHEMA_ONLY_PARAMS = SCHEMA_ONLY_PARAMS
+"""Sent as given, with no per-model check and no note.
+
+No contract describes these, so there is nothing to fit the value to. The control that
+sets one says as much, and a note here would fire on every request that used it exactly
+as intended -- which is how a warning stops being read.
+"""
+
+_REFERENCE_MODES = frozenset({"auto", "latest-only", "none"})
+
+_SCHEMA_REFERENCE_CAP = 16
+"""The most reference images one request may carry, whatever a model publishes.
+
+The request format caps the list here. Without it a model whose contract could not be
+read carried an uncapped list, which is a rejected request rather than a big one.
+"""
 
 _BILLING_MULTIPLIERS = frozenset({"n"})
 
@@ -86,6 +108,52 @@ class _Note(NamedTuple):
     kind: str
     name: str
     text: str
+
+
+def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
+    """One note for a knob another knob already decided."""
+    return (
+        "superseded",
+        name,
+        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent ({reason})",
+    )
+
+
+def _size_consistency_notes(top_level: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Drop what an explicit ``size`` supersedes, naming each drop.
+
+    OpenRouter documents the tier form of ``size`` as equivalent to ``resolution`` and as
+    combining with ``aspect_ratio``, and the pixel form as authoritative with a mismatched
+    ``resolution`` or ``aspect_ratio`` alongside it rejected with a 400. So a tier collides
+    only with a *differing* resolution and never with a ratio, and pixels collide with a
+    ratio only when the two provably disagree -- ``1920x1080`` with ``16:9`` is the model
+    being asked for one thing twice.
+
+    Pixels supersede ``resolution`` whichever tier it names, because nothing published
+    pairs a tier with a pixel count: the short-side reading is disproved by a model that
+    publishes ``992x432`` under ``480p``, and 0 of 44 recorded image records publish
+    ``size`` at all. Sending an unverifiable pair instead would trade a note for a 400.
+    """
+    size = top_level.get("size")
+    if size is None:
+        return []
+    shown_size = _clamp(repr(size), _NOTE_VALUE_LIMIT)
+    pixels = pixel_size(size)
+    if pixels is None:
+        resolution = top_level.get("resolution")
+        if resolution is None or str(resolution).strip().casefold() == str(size).strip().casefold():
+            return []
+        return [_superseded("resolution", top_level.pop("resolution"),
+                            f"size={shown_size} sets the same thing")]
+    dropped: list[tuple[str, str, str]] = []
+    if "resolution" in top_level:
+        dropped.append(_superseded("resolution", top_level.pop("resolution"),
+                                   f"size={shown_size} already fixes the output dimensions"))
+    ratio = reduced_ratio(top_level.get("aspect_ratio"))
+    if ratio is not None and ratio != reduced_ratio(f"{pixels[0]}:{pixels[1]}"):
+        dropped.append(_superseded("aspect_ratio", top_level.pop("aspect_ratio"),
+                                   f"size={shown_size} is not that shape"))
+    return dropped
 
 
 class ImageGenerationAdapter:
@@ -199,6 +267,9 @@ class ImageGenerationAdapter:
                     f"{shown} was ignored because {name} was set explicitly",
                 )
                 continue
+            if name in _SCHEMA_ONLY_PARAMS:
+                top_level[name] = value
+                continue
             if name in _TOP_LEVEL_PARAMS:
                 if declared is None:
                     if name in _BILLING_MULTIPLIERS:
@@ -236,6 +307,9 @@ class ImageGenerationAdapter:
                 )
             else:
                 _note("not-offered", key, f"{shown} is not offered by this model")
+        for kind, superseded, note_text in _size_consistency_notes(top_level):
+            _note(kind, superseded, note_text)
+        unvalidated = [name for name in unvalidated if name in top_level]
         if unvalidated:
             notes.append(
                 _Note(
@@ -323,24 +397,52 @@ class ImageGenerationAdapter:
     ) -> tuple[dict[str, Any] | None, str]:
         """Pick the record for the provider that will serve this request.
 
+        Both sides are reduced to the bare provider key before they are compared, because
+        one provider is spelled two ways: the pipe's own routing dropdown emits
+        ``google-ai-studio`` while the record carries ``google-ai-studio/global``. Matching
+        those verbatim dropped the whole contract and told the user the provider does not
+        serve this model, and it silently ignored a bare ``order`` pin -- asking for
+        ``google-ai-studio`` handed the request to ``google-vertex``.
+
+        Several records can reduce to one key, so the tie is broken on the published slug
+        in sorted order rather than on the order the catalog happened to list them in.
+        The no-pin choice is still the first published record, which is what routing itself
+        prefers.
+
         The second element names an operator pin that no record carries. Collapsing that
         onto a bare ``None`` would make a readable contract indistinguishable from an
         unreadable one, and the caller would blame an outage that did not happen.
         """
         if not records:
             return None, ""
-        known = [
-            slug
-            for slug in (record.get("provider_slug") for record in records)
-            if isinstance(slug, str) and slug
+        keyed = [
+            (options_key(slug), slug, record)
+            for record in records
+            if isinstance(slug := record.get("provider_slug"), str) and options_key(slug)
         ]
-        chosen = carrier_slug(requested or {}, known)
-        for record in records:
-            if record.get("provider_slug") == chosen:
-                return record, ""
+        known = [key for key, _slug, _record in keyed]
+        chosen = carrier_slug(bare_pins(requested or {}), known)
+        matched = sorted(
+            ((slug, record) for key, slug, record in keyed if key == chosen),
+            key=lambda pair: pair[0],
+        )
+        if matched:
+            return matched[0][1], ""
         if chosen and chosen not in known:
             return None, chosen
         return records[0], ""
+
+    @staticmethod
+    def _option_carriers(records: list[dict[str, Any]]) -> list[str]:
+        """Every provider key this model's published records can be addressed under.
+
+        Selection answers whose contract validates the request; this answers who might
+        receive it, and that is not settled until after the request leaves. Reading every
+        published record rather than the selected one is what stops a multi-provider model
+        keying its options to a guess.
+        """
+        keys = {options_key(record.get("provider_slug")) for record in records}
+        return sorted(key for key in keys if key)
 
     @staticmethod
     def _reference_limit(record: dict[str, Any] | None) -> int | None:
@@ -373,6 +475,97 @@ class ImageGenerationAdapter:
                     url = url.get("url")
                 if part.get("type") in ("input_image", "image_url") and isinstance(url, str) and url:
                     refs.append({"type": "image_url", "image_url": {"url": url}})
+        return refs
+
+    @staticmethod
+    def _reference_settings(metadata: dict[str, Any] | None) -> tuple[str, list[str]]:
+        """What the user asked for about references, defaulting to today's behaviour.
+
+        An unrecognised mode falls back to ``auto`` rather than raising: the value comes
+        from a stored per-user setting that a later contract change can orphan, and a
+        request refused over a stale dropdown entry is worse than one that generates.
+        """
+        pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
+        chosen = pipe_meta.get("image_generation") if isinstance(pipe_meta, dict) else None
+        if not isinstance(chosen, dict):
+            return "auto", []
+        mode = chosen.get("reference_mode")
+        raw = chosen.get("reference_urls")
+        urls = (
+            [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+            if isinstance(raw, list)
+            else []
+        )
+        return (mode if mode in _REFERENCE_MODES else "auto"), urls
+
+    async def _vetted_reference_urls(self, urls: list[str]) -> list[str]:
+        """Put a user-supplied link through the gate every other fetched URL passes.
+
+        OpenRouter fetches whatever is listed here, so a link typed into a chat control
+        is a request this deployment makes to an address its user chose. Refusing the
+        whole generation rather than dropping the link keeps a paid render from returning
+        an image that quietly ignored what was asked for.
+        """
+        if not urls:
+            return []
+        handler = self._pipe._multimodal_handler
+        vetted: list[str] = []
+        for url in urls[:_SCHEMA_REFERENCE_CAP]:
+            if url.startswith("data:"):
+                vetted.append(url)
+                continue
+            if not await handler._is_safe_url(url):
+                raise ImageGenerationError(
+                    f"Refusing to send the reference image link {_clamp(url)}. Use https, "
+                    "or a plain http address this deployment allows."
+                )
+            vetted.append(url)
+        return vetted
+
+    async def _reference_payload(
+        self,
+        responses_body: Any,
+        metadata: dict[str, Any] | None,
+        *,
+        record: dict[str, Any] | None,
+        notes: list[_Note],
+    ) -> list[dict[str, Any]]:
+        """The reference list this request should carry, in the order the user chose.
+
+        Links typed in the chat controls go first, so an explicit choice is the one that
+        survives on the many models that take a single reference.
+        """
+        mode, chosen = self._reference_settings(metadata)
+        attached = self._input_references(responses_body)
+        if mode == "none":
+            attached = []
+        elif mode == "latest-only":
+            attached = attached[-1:]
+        refs = [
+            {"type": "image_url", "image_url": {"url": url}}
+            for url in await self._vetted_reference_urls(chosen)
+        ]
+        refs.extend(attached)
+        published = self._reference_limit(record)
+        limit = (
+            _SCHEMA_REFERENCE_CAP
+            if published is None
+            else min(published, _SCHEMA_REFERENCE_CAP)
+        )
+        if len(refs) > limit:
+            reason = (
+                f"this model accepts {limit}"
+                if published is not None
+                else f"a request carries at most {limit}"
+            )
+            notes.append(
+                _Note(
+                    "refs-dropped",
+                    "input_references",
+                    f"dropped {len(refs) - limit} reference image(s); {reason}",
+                )
+            )
+            refs = refs[:limit]
         return refs
 
     @staticmethod
@@ -586,9 +779,9 @@ class ImageGenerationAdapter:
         api_model_id: str,
         outcome: _Outcome,
     ) -> str:
-        prompt = latest_user_text(getattr(responses_body, "input", None))
+        prompt = prompt_with_system(getattr(responses_body, "input", None))
         if not prompt.strip():
-            prompt = latest_user_text(body.get("messages") if isinstance(body, dict) else None)
+            prompt = prompt_with_system(body.get("messages") if isinstance(body, dict) else None)
         if not prompt.strip():
             raise ImageGenerationError(
                 "An image prompt is required. Describe the image you want, or say what to "
@@ -618,22 +811,15 @@ class ImageGenerationAdapter:
         payload: dict[str, Any] = {"model": api_model_id, "prompt": prompt}
         payload.update(top_level)
 
-        refs = self._input_references(responses_body)
-        limit = self._reference_limit(record)
-        if limit is not None and len(refs) > limit:
-            notes.append(
-                _Note(
-                    "refs-dropped",
-                    "input_references",
-                    f"dropped {len(refs) - limit} reference image(s); this model accepts {limit}",
-                )
-            )
-            refs = refs[:limit]
+        refs = await self._reference_payload(
+            responses_body, metadata, record=record, notes=notes
+        )
         if refs:
             payload["input_references"] = refs
 
-        slug = (record or {}).get("provider_slug")
-        if provider_params and not (isinstance(slug, str) and slug):
+        cached = self._endpoint_cache.get(api_model_id)
+        carriers = self._option_carriers(list(cached[1]) if cached else [])
+        if provider_params and not carriers:
             names = summarise_names(sorted(provider_params), _PROVIDER_KEY_REPORT_LIMIT)
             notes.append(
                 _Note(
@@ -650,7 +836,7 @@ class ImageGenerationAdapter:
                 names,
             )
         provider, unsupported = restrict_provider_block(
-            merge_provider_options(requested_provider, slug, provider_params),
+            fan_provider_options(requested_provider, carriers, provider_params),
             IMAGE_PROVIDER_KEYS,
         )
         if unserved_pin:

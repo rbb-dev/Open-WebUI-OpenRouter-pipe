@@ -374,6 +374,22 @@ def resolve_fusion_prompt(valve_value: Any, default: str) -> str:
     return text.strip() and text or default
 
 
+def item_text(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            text for p in content
+            if isinstance(p, dict) and isinstance(text := p.get("text"), str)
+        ]
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
 def latest_user_text(input_items: Any) -> str:
     if isinstance(input_items, str):
         return input_items
@@ -382,16 +398,9 @@ def latest_user_text(input_items: Any) -> str:
     for item in reversed(input_items):
         if not isinstance(item, dict) or item.get("role") != "user":
             continue
-        content = item.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = [
-                text for p in content
-                if isinstance(p, dict) and isinstance(text := p.get("text"), str)
-            ]
-            if parts:
-                return "\n".join(parts)
+        text = item_text(item)
+        if text is not None:
+            return text
     return ""
 
 

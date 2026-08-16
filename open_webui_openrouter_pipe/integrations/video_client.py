@@ -47,8 +47,42 @@ class OpenRouterVideoClient:
         self._user = user
         self._owui_chat_id = owui_chat_id
 
-    def content_url(self, job_id: str) -> str:
-        return f"{self._base_url}/videos/{job_id}/content"
+    def content_url(self, job_id: str, index: int = 0) -> str:
+        url = f"{self._base_url}/videos/{job_id}/content"
+        return url if index <= 0 else f"{url}?index={index}"
+
+    def poll_url(self, job_id: str, polling_url: Any = None) -> str:
+        """The URL the API told us to poll, when it points at our own base.
+
+        `polling_url` is required on every video response and is the only field that
+        survives a change to the job route, so it is preferred over a rebuilt path. It
+        arrives as a path (`/api/v1/videos/{id}`) and is joined to the configured origin;
+        anything naming another host is ignored rather than followed with the bearer token
+        attached.
+        """
+        fallback = f"{self._base_url}/videos/{job_id}"
+        candidate = polling_url.strip() if isinstance(polling_url, str) else ""
+        if not candidate:
+            return fallback
+        if candidate.startswith("/"):
+            parts = self._base_url.split("/", 3)
+            return f"{parts[0]}//{parts[2]}{candidate}" if len(parts) >= 3 else fallback
+        if candidate == self._base_url or candidate.startswith(f"{self._base_url}/"):
+            return candidate
+        return fallback
+
+    @staticmethod
+    def output_count(payload: Any) -> int:
+        """How many clips the job produced.
+
+        `unsigned_urls` is the only field that says a job has more than one output, and the
+        content route addresses each by `index`, so its length drives the download loop. A
+        job that reports none still has one output to fetch at index 0.
+        """
+        urls = payload.get("unsigned_urls") if isinstance(payload, dict) else None
+        if not isinstance(urls, list):
+            return 1
+        return max(1, sum(1 for item in urls if isinstance(item, str) and item.strip()))
 
     def bearer_header(self) -> dict[str, str]:
         if not self._api_key:
@@ -96,11 +130,11 @@ class OpenRouterVideoClient:
             raise VideoGenerationError("OpenRouter video generation returned an invalid response.")
         return data
 
-    async def status(self, job_id: str) -> dict[str, Any]:
+    async def status(self, job_id: str, polling_url: Any = None) -> dict[str, Any]:
         safe_job_id = (job_id or "").strip()
         if not safe_job_id:
             raise VideoGenerationError("Video generation job id is missing.")
-        url = f"{self._base_url}/videos/{safe_job_id}"
+        url = self.poll_url(safe_job_id, polling_url)
         headers = self._headers()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=self._logger)
         async with self._session.get(url, headers=headers) as resp:

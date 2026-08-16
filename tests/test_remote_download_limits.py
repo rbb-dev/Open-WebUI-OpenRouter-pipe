@@ -267,10 +267,10 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
         def __init__(self, *_args, **_kwargs):
             pass
 
-        async def status(self, _job_id):
+        async def status(self, _job_id, polling_url=None):
             return {"status": "completed", "usage": {"cost": 0.1}}
 
-        def content_url(self, job_id):
+        def content_url(self, job_id, index=0):
             return f"https://example.test/videos/{job_id}/content"
 
         def bearer_header(self):

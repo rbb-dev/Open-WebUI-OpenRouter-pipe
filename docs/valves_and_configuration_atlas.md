@@ -220,6 +220,39 @@ choices), `n` (1 to 6) and the provider options `style`, `controls` and
 `text_layout`, so its filter carries `IMAGE_ASPECT_RATIO`, `IMAGE_N`,
 `IMAGE_STYLE`, `IMAGE_CONTROLS` and `IMAGE_TEXT_LAYOUT`.
 
+Three controls appear on **every** image model whatever its contract publishes,
+because the request format defines them and no model's contract describes them:
+
+| Valve | Type | Default | Maps to |
+| --- | --- | --- | --- |
+| `IMAGE_PROVIDER_OPTIONS_JSON` | `str` (JSON object) | `""` | `provider.options`, keyed by provider slug |
+| `IMAGE_REFERENCE_MODE` | `Literal["auto", "latest-only", "none"]` | `"auto"` | which attached images become `input_references` |
+| `IMAGE_REFERENCE_URLS` | `str` (JSON array) | `""` | extra `input_references` entries, placed first |
+| `IMAGE_SIZE` | `str` | `""` | top-level `size`, sent unvalidated |
+
+`IMAGE_PROVIDER_OPTIONS_JSON` is the image sibling of
+`VIDEO_PROVIDER_OPTIONS_JSON` and writes the same metadata key the provider
+routing filter writes, merging into it rather than replacing it. Six of the forty
+recorded models publish an empty passthrough list, so it is the only way to
+address a provider on those. `IMAGE_SIZE` is rendered on every model because
+**no** endpoint record publishes a `size` descriptor; its value is sent as typed
+and the provider decides. `IMAGE_REFERENCE_URLS` entries go through the same
+`MultimodalHandler._is_safe_url` gate as every other fetched URL, and a refused
+link fails the request rather than generating without it. A request carries at
+most 16 references, the request format's own ceiling, whether or not the model's
+contract could be read.
+
+A provider option whose accepted values OpenRouter publishes renders as a choice
+rather than free text — today that is `moderation` (`auto`, `low`), delivered on
+the six OpenAI image models that name it.
+
+Where a model is served by several providers whose published choices differ, the
+values only some of them accept are still offered, marked on the control; the
+adapter fits the chosen value to whichever record serves the request and reports
+it if that provider does not accept it. Measured across all forty recorded
+models this affects one value: `4K` for `resolution` on
+`google/gemini-3-pro-image`.
+
 **Skip-when-default sentinel**: an empty string for text and choice fields, and
 an empty numeric field for numbers, means "not set" and is left out of the
 request, so the model's own default applies. Numbers use an empty field rather
@@ -390,6 +423,7 @@ Notes:
 - Admin-only filters use `toggle=False` (always run, cannot be disabled per-chat).
 - User-configurable filters use `toggle=True` (can be toggled on/off per-chat) and start enabled in new chats while `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` is on.
 - Provider routing is **not applied** to task model requests (title, tags, follow-ups).
+- The controls a generated filter draws depend on the model's request format: chat completions carries all of them, the dedicated image format carries only `ORDER`, `ONLY`, `IGNORE`, `SORT`, `SORT_PARTITION` and `ALLOW_FALLBACKS`, and the video format carries none — so no filter is installed for a video model and an existing one is deactivated. See [OpenRouter Provider Routing](openrouter_provider_routing.md).
 - Variant-only providers (e.g., Venice serving only `:free` variants) are excluded from base model routing options.
 
 See: [OpenRouter Provider Routing](openrouter_provider_routing.md).

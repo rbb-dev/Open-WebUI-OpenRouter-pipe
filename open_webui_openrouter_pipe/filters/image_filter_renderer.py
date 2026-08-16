@@ -15,11 +15,13 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.config import _OPENROUTER_IMAGE_FILTER_MARKER
+from ..core.config import _OPENROUTER_IMAGE_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
+    PASSTHROUGH_ENUMS,
     RENDERABLE_FIELD_NAME_RE,
+    SCHEMA_ONLY_PARAMS,
     TOP_LEVEL_PARAMS,
     scrub_surrogates,
 )
@@ -75,6 +77,12 @@ class ImageModelFilterSpec:
     function_id: str
     marker: str
     dotted_id: str = ""
+    contract_read: bool = False
+    """Whether a published contract was available at all, however empty it turned out.
+
+    A failed read and a contract that shrank to nothing are both knobless and must be
+    treated in opposite ways, so the read outcome cannot be inferred from the knobs.
+    """
     published_anything: bool = False
     """Whether any record published a renderable setting, before agreement was applied.
 
@@ -82,6 +90,21 @@ class ImageModelFilterSpec:
     or its providers publish different things and nothing survives the intersection.
     """
     enums: tuple[tuple[str, tuple[Any, ...]], ...] = ()
+    narrowed: tuple[tuple[str, tuple[Any, ...]], ...] = ()
+    """Enum values one of this model's providers accepts and the others do not.
+
+    A model served by several companies gets the values they all accept, because which
+    one takes the request is decided after the controls are drawn. Offering nothing else
+    hid a size that one of them does accept, with no way to ask for it. These are offered
+    too, marked in the control, and reported back if the company that takes the request
+    turns out not to accept the one chosen.
+    """
+    schema_only: tuple[str, ...] = ()
+    """Documented request fields this model publishes no description of.
+
+    Rendered whatever the contract says, because a field that is in the request format
+    and in no contract is otherwise unreachable on every model at once.
+    """
     ranges: tuple[tuple[str, int, int], ...] = ()
     supported: tuple[str, ...] = ()
     """Parameters the model declares it supports without publishing a domain.
@@ -180,13 +203,22 @@ def _agreed_parameters(records: list[dict]) -> dict[str, dict]:
                 continue
             if any(not isinstance(other.get("values"), list) for other in others):  # type: ignore[union-attr]
                 continue
+            union: list[Any] = list(descriptor["values"])
+            for other in others:
+                for value in other.get("values") or []:  # type: ignore[union-attr]
+                    if value not in union:
+                        union.append(value)
             shared = [
                 value
                 for value in descriptor["values"]
                 if all(value in (other.get("values") or []) for other in others)  # type: ignore[union-attr]
             ]
             if shared:
-                agreed[name] = {"type": "enum", "values": shared}
+                agreed[name] = {
+                    "type": "enum",
+                    "values": shared,
+                    "narrowed": [value for value in union if value not in shared],
+                }
         elif kind == "range":
             lows = [descriptor.get("min"), *(other.get("min") for other in others)]  # type: ignore[union-attr]
             highs = [descriptor.get("max"), *(other.get("max") for other in others)]  # type: ignore[union-attr]
@@ -242,6 +274,7 @@ def build_image_model_filter_spec(
     declared = _agreed_parameters(records)
 
     enums: list[tuple[str, tuple[str, ...]]] = []
+    narrowed: list[tuple[str, tuple[Any, ...]]] = []
     ranges: list[tuple[str, int, int]] = []
     supported_names: list[str] = []
     for name in TOP_LEVEL_PARAMS:
@@ -253,6 +286,9 @@ def build_image_model_filter_spec(
             values = _descriptor_enum(descriptor)
             if values:
                 enums.append((name, values))
+                extra = _descriptor_enum({"values": descriptor.get("narrowed")})
+                if extra:
+                    narrowed.append((name, extra))
         elif kind == "range":
             low = _descriptor_bound(descriptor, "min")
             high = _descriptor_bound(descriptor, "max")
@@ -261,9 +297,17 @@ def build_image_model_filter_spec(
         elif kind == "boolean":
             supported_names.append(name)
 
-    taken = {
+    typed = {name for name, _ in enums} | {name for name, _, _ in ranges} | set(supported_names)
+    schema_only = tuple(name for name in SCHEMA_ONLY_PARAMS if name not in typed)
+
+    taken = set(ALWAYS_ON_VALVE_NAMES) | {
         _valve_name(name)
-        for name in (*(n for n, _ in enums), *(n for n, _, _ in ranges), *supported_names)
+        for name in (
+            *(n for n, _ in enums),
+            *(n for n, _, _ in ranges),
+            *supported_names,
+            *schema_only,
+        )
     }
     # `taken` grows as names are accepted, so two published names differing only in case
     # cannot both render: they produce one field, and the second write would put a
@@ -287,6 +331,7 @@ def build_image_model_filter_spec(
         function_id=sanitize_image_filter_id(canonical),
         marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
         dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
+        contract_read=endpoint_record is not None,
         published_anything=any(
             isinstance((record.get("supported_parameters") or {}), dict)
             and any(
@@ -297,6 +342,8 @@ def build_image_model_filter_spec(
             for record in records
         ),
         enums=tuple(enums),
+        narrowed=tuple(narrowed),
+        schema_only=schema_only,
         ranges=tuple(ranges),
         supported=tuple(supported_names),
         passthrough=passthrough,
@@ -356,6 +403,71 @@ def _image_literal_union(values: tuple[Any, ...]) -> str:
     return ", ".join(repr(value) for value in values)
 
 
+_SCHEMA_ONLY_CAVEAT = (
+    "This model publishes no list of what it accepts here, so the value goes out as "
+    "typed and the company running it decides. Empty leaves it unset."
+)
+"""Said on the control itself, because it is the only place the reader is looking.
+
+A field the request format defines and no model describes cannot be checked before it is
+sent. Rendering it silently would promise a validation that does not happen.
+"""
+
+_ALWAYS_ON_VALVES = (
+    (
+        'IMAGE_PROVIDER_OPTIONS_JSON: str = Field(\n'
+        '            default="",\n'
+        '            title="Provider options",\n'
+        '            description="Extra settings for the company that runs this model, as '
+        'a JSON object keyed by its OpenRouter name. Use it for anything this panel does '
+        'not already offer. Empty sends nothing.",\n'
+        "        )"
+    ),
+    (
+        'IMAGE_REFERENCE_MODE: Literal["auto", "latest-only", "none"] = Field(\n'
+        '            default="auto",\n'
+        '            title="Reference images",\n'
+        '            description="Which attached images go to the model as references. '
+        'auto sends every one on this turn, oldest first; latest-only sends just the most '
+        'recent; none sends none of them.",\n'
+        "        )"
+    ),
+    (
+        'IMAGE_REFERENCE_URLS: str = Field(\n'
+        '            default="",\n'
+        '            title="Reference image links",\n'
+        '            description="Reference images to use as well as, or instead of, the '
+        'attached ones: a JSON list of https links or data URLs. These are placed first, '
+        'so they survive when the model takes fewer references than are on offer.",\n'
+        "        )"
+    ),
+)
+"""Controls every image model gets, whatever its contract publishes.
+
+Two capabilities that are in the request format for every model and in no model's list of
+settings: options addressed to the company serving the request, and which images are sent
+as references. Gating them on a contract that never mentions them would hide them
+everywhere at once.
+"""
+
+ALWAYS_ON_VALVE_NAMES = frozenset(
+    {"IMAGE_PROVIDER_OPTIONS_JSON", "IMAGE_REFERENCE_MODE", "IMAGE_REFERENCE_URLS"}
+)
+"""Reserved field names, so a published setting cannot quietly take one of them over."""
+
+
+def _image_shared_by_some(values: tuple[Any, ...]) -> str:
+    listed = ", ".join(str(value) for value in values)
+    return (
+        f"Only some of the companies serving this model accept {listed}; if another one "
+        "takes the request you are told it was not sent."
+    )
+
+
+def _render_image_always_on_valves() -> str:
+    return "\n".join(_image_field(block) for block in _ALWAYS_ON_VALVES)
+
+
 def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
     """Render only the knobs this model publishes, each with its published values.
 
@@ -363,15 +475,33 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
     Python. Callers decide separately whether a knobless filter is worth installing.
     """
     fields: list[str] = []
+    extra = dict(spec.narrowed)
     for name, values in spec.enums:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
-        literals = _image_literal_union(("", *values))
+        also = extra.get(name, ())
+        literals = _image_literal_union(("", *values, *also))
+        caveat = (
+            f" {_image_shared_by_some(also)}"
+            if also
+            else ""
+        )
         fields.append(
             _image_field(
                 f"{_valve_name(name)}: Literal[{literals}] = Field(\n"
                 '            default="",\n'
                 f'            title="{title}",\n'
-                f'            description="{description} Empty uses the model default.",\n'
+                f'            description="{description} Empty uses the model default.{caveat}",\n'
+                "        )"
+            )
+        )
+    for name in spec.schema_only:
+        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        fields.append(
+            _image_field(
+                f"{_valve_name(name)}: str = Field(\n"
+                '            default="",\n'
+                f'            title="{title}",\n'
+                f'            description="{description} {_SCHEMA_ONLY_CAVEAT}",\n'
                 "        )"
             )
         )
@@ -402,6 +532,20 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             )
         )
     for name in spec.passthrough:
+        published = PASSTHROUGH_ENUMS.get(name)
+        if published is not None:
+            values, meaning = published
+            literals = _image_literal_union(("", *values))
+            fields.append(
+                _image_field(
+                    f"{_valve_name(name)}: Literal[{literals}] = Field(\n"
+                    '            default="",\n'
+                    f"            title={name!r},\n"
+                    f'            description="{meaning} Empty leaves it unset.",\n'
+                    "        )"
+                )
+            )
+            continue
         fields.append(
             _image_field(
                 f"{_valve_name(name)}: str = Field(\n"
@@ -425,6 +569,10 @@ def _render_image_overrides(spec: ImageModelFilterSpec) -> str:
         lines.append(f"        count = user_valves.{_valve_name(name)}")
         lines.append("        if count is not None:")
         lines.append(f"            overrides[{name!r}] = int(count)")
+    for name in spec.schema_only:
+        lines.append(f'        wanted = (user_valves.{_valve_name(name)} or "").strip()')
+        lines.append("        if wanted:")
+        lines.append(f"            overrides[{name!r}] = wanted")
     for name in spec.supported:
         lines.append(f"        chosen = user_valves.{_valve_name(name)}")
         lines.append("        if chosen is not None:")
@@ -438,12 +586,15 @@ def _render_image_overrides(spec: ImageModelFilterSpec) -> str:
 
 def render_image_model_filter_source(spec: ImageModelFilterSpec) -> str:
     """Render one model's filter, offering exactly the knobs its contract publishes."""
+    from open_webui_openrouter_pipe import __version__
+
     return f'''"""OpenRouter image companion filter."""
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
@@ -454,8 +605,10 @@ except Exception:  # pragma: no cover - OWUI runtime only
     SRC_LOG_LEVELS = {{}}
 
 OWUI_OPENROUTER_PIPE_MARKER = {spec.marker!r}
+OPENROUTER_PIPE_VERSION = {__version__!r}
 IMAGE_FILTER_MODEL_ID = {spec.model_id!r}
 IMAGE_FILTER_MODEL_DOTTED = {spec.dotted_id!r}
+PIPE_METADATA_KEY = {_PIPE_METADATA_KEY!r}
 
 
 def _matches_model(raw: str) -> bool:
@@ -475,6 +628,17 @@ def _matches_model(raw: str) -> bool:
 
 class ImageFilterInputError(ValueError):
     """A value the user typed that this filter will not put on the wire."""
+
+
+def _json_number(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{{text}} is out of range for JSON")
+    return value
+
+
+def _json_constant(literal: str) -> float:
+    raise ValueError(f"{{literal}} is not valid JSON")
 
 
 class Filter:
@@ -516,6 +680,7 @@ class Filter:
                 kept[name] = data[name]
             return kept
 
+{_render_image_always_on_valves()}
 {_render_image_model_user_valves(spec)}
 
     def __init__(self) -> None:
@@ -525,21 +690,90 @@ class Filter:
         self.valves = self.Valves()
 
     @staticmethod
-    def _decode(raw: str, field: str) -> Any:
-        """Parse a passthrough value only when the user wrote a JSON container.
+    def _json_object(raw: Any, field: str) -> dict:
+        """A JSON object keyed by provider name, or nothing.
 
-        Anything else is passed through as the string it is -- ``style`` really does take
-        a bare word like ``realistic_image``, and parsing it would turn ``null`` into
-        None and ``123`` into an int. A container that does not parse raises here, where
-        the message can name the field, rather than reaching the provider as a string
-        that produces an error about something else.
+        Rejected here rather than on the wire, so the message can name the setting the
+        user typed instead of an upstream complaint about a request they never saw.
         """
-        if raw[:1] not in ("[", "{{"):
-            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return {{}}
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except ValueError as exc:
             raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
+        if not isinstance(parsed, dict):
+            raise ImageFilterInputError(
+                f"{{field}} must be a JSON object keyed by provider name."
+            )
+        return {{
+            name.strip(): dict(payload)
+            for name, payload in parsed.items()
+            if isinstance(name, str) and name.strip() and isinstance(payload, dict)
+        }}
+
+    @staticmethod
+    def _json_array(raw: Any, field: str) -> list:
+        """A JSON list of links, given either as strings or as objects carrying one."""
+        if not isinstance(raw, str) or not raw.strip():
+            return []
+        try:
+            parsed = json.loads(raw)
+        except ValueError as exc:
+            raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
+        if not isinstance(parsed, list):
+            raise ImageFilterInputError(f"{{field}} must be a JSON list.")
+        links = []
+        for item in parsed:
+            url = item.get("url") if isinstance(item, dict) else item
+            if isinstance(url, str) and url.strip():
+                links.append(url.strip())
+        return links
+
+    @staticmethod
+    def _deep_merge_pipe_provider(existing: Any, options: dict) -> dict:
+        """Add these options to whatever another filter already asked for.
+
+        Provider routing writes the same place. Replacing the block outright would drop
+        an operator's routing choice whenever a user typed one option.
+        """
+        merged = dict(existing) if isinstance(existing, dict) else {{}}
+        current = merged.get("options")
+        merged_options = dict(current) if isinstance(current, dict) else {{}}
+        for name, payload in options.items():
+            merged_options[name] = payload
+        if merged_options:
+            merged["options"] = merged_options
+        return merged
+
+    @staticmethod
+    def _decode(raw: str, field: str) -> Any:
+        """Parse a passthrough value without inventing a type the user did not write.
+
+        A JSON container is parsed, and so is a bare number, because 8 of the 17 published
+        passthrough names take numbers and a quoted one is a different request. Everything
+        else stays the string it is -- ``style`` really does take a bare word like
+        ``realistic_image``, and ``null``, ``true`` and ``2K`` are values in their own
+        right here rather than spellings of something else.
+
+        ``NaN``, ``Infinity`` and ``1e400`` are refused instead of parsed. No JSON encoder
+        can put the float they produce on the wire, so accepting one only moves the failure
+        to a place where the message names something else entirely. Alone they stay the
+        string that was typed; inside a container they raise here, where the field can be
+        named.
+        """
+        container = raw[:1] in ("[", "{{")
+        try:
+            parsed = json.loads(raw, parse_float=_json_number, parse_constant=_json_constant)
+        except ValueError as exc:
+            if container:
+                raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
+            return raw
+        if container:
+            return parsed
+        if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
+            return raw
+        return parsed
 
     def inlet(
         self,
@@ -576,5 +810,32 @@ class Filter:
                 existing = dict(existing)
             existing.update(overrides)
             body["image_config"] = existing
+
+        provider_options = self._json_object(
+            getattr(user_valves, "IMAGE_PROVIDER_OPTIONS_JSON", ""), "Provider options"
+        )
+        reference_mode = getattr(user_valves, "IMAGE_REFERENCE_MODE", "auto")
+        reference_links = self._json_array(
+            getattr(user_valves, "IMAGE_REFERENCE_URLS", ""), "Reference image links"
+        )
+        if isinstance(__metadata__, dict) and (
+            provider_options or reference_links or reference_mode != "auto"
+        ):
+            previous = __metadata__.get(PIPE_METADATA_KEY)
+            pipe_meta = dict(previous) if isinstance(previous, dict) else {{}}
+            __metadata__[PIPE_METADATA_KEY] = pipe_meta
+            if provider_options:
+                pipe_meta["provider"] = self._deep_merge_pipe_provider(
+                    pipe_meta.get("provider"), provider_options
+                )
+            if reference_links or reference_mode != "auto":
+                previous_images = pipe_meta.get("image_generation")
+                image_meta = (
+                    dict(previous_images) if isinstance(previous_images, dict) else {{}}
+                )
+                image_meta["reference_mode"] = reference_mode
+                if reference_links:
+                    image_meta["reference_urls"] = reference_links
+                pipe_meta["image_generation"] = image_meta
         return body
 '''

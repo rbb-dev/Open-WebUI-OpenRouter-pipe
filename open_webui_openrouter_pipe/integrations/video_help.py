@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "alibaba/happyhorse-1.1": {
@@ -558,26 +558,41 @@ _SKU_MODIFIERS: tuple[tuple[str, str], ...] = (
     ("image_to_video", "image-to-video"),
 )
 
-# Tuple-of-pairs (not dict) so the longest-prefix-match invariant is
-# structurally guaranteed: iteration order is fixed by source position,
-# making it impossible for an alphabetizer or auto-formatter to silently
-# break label resolution. Longer composite tokens MUST come before shorter
-# prefixes so the first-match-wins logic in _format_sku_unit picks the
-# right base.
 _SKU_BASE_LABELS: tuple[tuple[str, str], ...] = (
     ("video_output_second", "per output second"),
+    ("second_video_continuation", "per second of continued video"),
+    ("second_output", "per output second"),
     ("image_input", "per input image"),
     ("duration_seconds", "per second"),
     ("video_tokens", "per video token"),
+    ("reference_images", "per reference image"),
+    ("generation", "per generation"),
 )
 
 _SKU_RESOLUTION_TAGS: tuple[str, ...] = ("480p", "720p", "1024p", "1080p", "2k", "4k")
 
-# OpenRouter's newer SKU format encodes the unit in the key prefix rather than
-# the value: keys like "cents_per_video_output_second_720p" mean the numeric
-# value is denominated in cents. We convert to dollars at display time so the
-# help panel uses one consistent currency convention.
-_CENTS_PER_PREFIX = "cents_per_"
+_SKU_CENTS_MARKER = "cents_per_"
+_SKU_MINIMUM_PREFIX = "minimum_"
+_SKU_TOKEN_BASE = "video_tokens"
+_SKU_RATE = "rate"
+_SKU_FLOOR = "floor"
+_SKU_UNCLASSIFIED = "unclassified"
+
+_VIDEO_COST_HEADING = "**Cost** (as OpenRouter publishes it for this model)"
+
+_VIDEO_TOKEN_RATE_NOTE = (
+    "These are per-video-token rates. OpenRouter does not publish how many tokens a clip "
+    "uses, so what a clip costs cannot be worked out from them here — and the numbers do "
+    "not compare with each other, because a higher resolution burns far more tokens per "
+    "second than its smaller per-token rate suggests. Check this model's pricing on "
+    "OpenRouter before committing to a setting."
+)
+
+
+class _SkuUnit(NamedTuple):
+    kind: str
+    label: str
+    per_token: bool
 
 
 def _format_cents_as_dollars(cents_value: str) -> str:
@@ -604,37 +619,36 @@ def _format_cents_as_dollars(cents_value: str) -> str:
     return formatted
 
 
-def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
-    if not isinstance(pricing_skus, dict) or not pricing_skus:
-        return ""
-    bullets: list[tuple[str, str]] = []
-    for raw_key in sorted(pricing_skus):
-        raw_value = pricing_skus.get(raw_key)
-        if not isinstance(raw_value, (int, float, str)) or str(raw_value).strip() == "":
-            continue
-        unit = _format_sku_unit(raw_key)
-        value = str(raw_value).strip()
-        # Cents-prefixed keys carry their unit in the key; convert the cents
-        # value to dollars so the whole panel uses one currency convention.
-        # Other keys retain the historical "$" prefix (value already in dollars).
-        if raw_key.lower().startswith(_CENTS_PER_PREFIX):
-            bullets.append((raw_key, f"- {unit}: ${_format_cents_as_dollars(value)}"))
-        else:
-            bullets.append((raw_key, f"- {unit}: ${value}"))
-    if not bullets:
-        return ""
-    bullets.sort(key=lambda pair: pair[0])
-    return "\n".join(line for _, line in bullets)
+def _sku_priced_in_cents(raw_key: str) -> bool:
+    """Whether the key says its own value is denominated in cents.
+
+    The token appears at the start of ``cents_per_second_output`` and in the middle of
+    ``minimum_cents_per_generation``; reading only the start billed a floor at a hundred
+    times its real figure.
+    """
+    return _SKU_CENTS_MARKER in (raw_key or "").strip().lower()
 
 
-def _format_sku_unit(raw_key: str) -> str:
+def _sku_modifier_text(remainder: str) -> str:
+    return " ".join(
+        word.upper() if word in _SKU_RESOLUTION_TAGS and word.endswith("k") else word
+        for word in remainder.split("_")
+    )
+
+
+def _sku_unit(raw_key: str) -> _SkuUnit:
+    """Read one published charge key as a label and the kind of charge it is.
+
+    A key whose base unit is not one this reader knows comes back unclassified rather
+    than as an invented "per <the rest of the key>" rate: OpenRouter's vocabulary is not
+    all rates, and guessing turned a per-generation floor into a per-second bullet.
+    """
     key = (raw_key or "").strip().lower()
-    if not key:
-        return "per unit"
-    # Strip the cents-per prefix — callers handle the unit symbol; here we only
-    # need to expose the base label to the existing token-matching logic.
-    key = key.removeprefix(_CENTS_PER_PREFIX)
-    remainder = key
+    kind = _SKU_RATE
+    if key.startswith(_SKU_MINIMUM_PREFIX):
+        kind = _SKU_FLOOR
+        key = key[len(_SKU_MINIMUM_PREFIX):]
+    remainder = key.removeprefix(_SKU_CENTS_MARKER)
     modifiers: list[str] = []
     for token, label in _SKU_MODIFIERS:
         if token in remainder:
@@ -645,25 +659,53 @@ def _format_sku_unit(raw_key: str) -> str:
     for tag in _SKU_RESOLUTION_TAGS:
         if remainder.endswith("_" + tag) or remainder == tag:
             modifiers.append(tag.upper() if tag.endswith("k") else tag)
-            if remainder == tag:
-                remainder = ""
-            else:
-                remainder = remainder[: -(len(tag) + 1)].rstrip("_")
+            remainder = "" if remainder == tag else remainder[: -(len(tag) + 1)].rstrip("_")
             break
-    base_label = ""
     for base_token, label in _SKU_BASE_LABELS:
-        if remainder == base_token or remainder.startswith(base_token):
-            base_label = label
-            remainder = remainder[len(base_token):].lstrip("_")
-            break
-    if not base_label and remainder:
-        base_label = "per " + remainder.replace("_", " ")
-        remainder = ""
-    elif remainder:
-        modifiers.append(remainder.replace("_", " "))
-    if modifiers:
-        return f"{base_label} ({', '.join(modifiers)})" if base_label else "per " + ", ".join(modifiers)
-    return base_label or "per unit"
+        if remainder.startswith(base_token):
+            leftover = remainder[len(base_token):].lstrip("_")
+            if leftover:
+                modifiers.append(_sku_modifier_text(leftover))
+            if modifiers:
+                return _SkuUnit(kind, f"{label} ({', '.join(modifiers)})", base_token == _SKU_TOKEN_BASE)
+            return _SkuUnit(kind, label, base_token == _SKU_TOKEN_BASE)
+    return _SkuUnit(_SKU_UNCLASSIFIED, "", False)
+
+
+def _format_pricing_skus(pricing_skus: dict[str, str] | None) -> str:
+    if not isinstance(pricing_skus, dict) or not pricing_skus:
+        return ""
+    rates: list[str] = []
+    floors: list[str] = []
+    unnamed: list[str] = []
+    per_token = False
+    for raw_key in sorted(pricing_skus):
+        raw_value = pricing_skus.get(raw_key)
+        if not isinstance(raw_value, (int, float, str)) or str(raw_value).strip() == "":
+            continue
+        value = str(raw_value).strip()
+        amount = _format_cents_as_dollars(value) if _sku_priced_in_cents(raw_key) else value
+        unit = _sku_unit(raw_key)
+        if unit.kind == _SKU_RATE:
+            per_token = per_token or unit.per_token
+            rates.append(f"- {unit.label}: ${amount}")
+        elif unit.kind == _SKU_FLOOR:
+            floors.append(
+                f"Minimum charge {unit.label}: ${amount} — a job that would come to less "
+                "than this is billed this much anyway."
+            )
+        else:
+            unnamed.append(
+                f'OpenRouter publishes a charge it calls "{raw_key}" at ${amount} here '
+                "without saying what it is charged per. Check this model's rates on "
+                "OpenRouter before relying on it."
+            )
+    sections = ["\n".join(rates)] if rates else []
+    sections.extend(floors)
+    if per_token:
+        sections.append(_VIDEO_TOKEN_RATE_NOTE)
+    sections.extend(unnamed)
+    return "\n\n".join(sections)
 
 
 def _format_csv(value: Any) -> str:
@@ -720,10 +762,9 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
     pricing_section = ""
     if pricing_block:
         pricing_section = (
-            "\n\n**Cost** (live from OpenRouter catalog `pricing_skus`)\n"
+            f"\n\n{_VIDEO_COST_HEADING}\n"
             f"{pricing_block}\n\n"
-            "The final status line shows the actual usage cost from the "
-            "OpenRouter poll response when generation completes."
+            "The cost of a clip is reported on the status line when it finishes."
         )
 
     tips = data.get("tips_and_pitfalls") or []
@@ -790,10 +831,7 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     pricing_block = _format_pricing_skus(model.get("pricing_skus") or {})
     pricing_section = ""
     if pricing_block:
-        pricing_section = (
-            "\n\n**Cost** (live from OpenRouter catalog `pricing_skus`)\n"
-            f"{pricing_block}"
-        )
+        pricing_section = f"\n\n{_VIDEO_COST_HEADING}\n{pricing_block}"
     return (
         f"### {display}\n\n"
         f"Capability: {description.strip() or 'OpenRouter video generation model.'}\n\n"

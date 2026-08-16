@@ -214,3 +214,60 @@ async def test_the_content_url_addresses_the_jobs_own_content(job_id, base_url):
 )
 def test_the_extension_follows_the_mime_type(mime, expected):
     assert extension_for_video_mime(mime) == expected
+
+
+
+# ============================================================================
+# REGFIX: video client -- index, poll_url, output_count
+# ============================================================================
+
+
+@pytest.mark.parametrize(("index", "suffix"), [(0, ""), (1, "?index=1"), (3, "?index=3")])
+@pytest.mark.parametrize("job_id", ["job-1", "vid_29f4c0"])
+@pytest.mark.asyncio
+async def test_the_content_url_addresses_each_output_by_index(job_id, base_url, index, suffix):
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session, base_url=base_url)
+        assert client.content_url(job_id, index) == (
+            f"{base_url}/videos/{job_id}/content{suffix}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"unsigned_urls": ["a", "b", "c"]}, 3),
+        ({"unsigned_urls": ["a"]}, 1),
+        ({"unsigned_urls": []}, 1),
+        ({}, 1),
+        ({"unsigned_urls": "nope"}, 1),
+        ({"unsigned_urls": ["a", "", None, "b"]}, 2),
+    ],
+)
+def test_the_output_count_comes_from_the_urls_the_api_returned(payload, expected):
+    assert OpenRouterVideoClient.output_count(payload) == expected
+
+
+@pytest.mark.parametrize(
+    ("polling_url", "expected_path"),
+    [
+        ("/api/v1/videos/job-9", "/api/v1/videos/job-9"),
+        ("/api/v2/videos/job-9/state", "/api/v2/videos/job-9/state"),
+        ("https://evil.example/steal", None),
+        ("", None),
+        (None, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_poll_url_follows_the_api_but_never_leaves_the_configured_origin(
+    base_url, polling_url, expected_path
+):
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session, base_url=base_url)
+        resolved = client.poll_url("job-9", polling_url)
+
+        if expected_path is None:
+            assert resolved == f"{base_url}/videos/job-9"
+        else:
+            origin = "/".join(base_url.split("/", 3)[:3])
+            assert resolved == f"{origin}{expected_path}"

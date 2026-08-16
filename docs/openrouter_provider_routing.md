@@ -71,7 +71,25 @@ When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVI
 
 ## Generated filter options
 
-Each generated filter exposes OpenRouter's provider routing fields as user-friendly options. Every filter carries the full set below (16 fields) at each visibility level:
+Each generated filter exposes OpenRouter's provider routing fields as user-friendly options.
+
+**The set depends on the model's request format.** OpenRouter defines these fields on
+chat completions; its dedicated image request format defines only five of them, and its
+video request format none. A control whose field the format does not define would be set,
+shown as in force, and dropped on the way out — so the filter draws only the controls the
+model's own format can carry:
+
+| Request format | Controls drawn | Provider fields written |
+|---|---|---|
+| chat completions | all 18 below | `order`, `only`, `ignore`, `sort`, `quantizations`, `data_collection`, `allow_fallbacks`, `require_parameters`, `zdr`, `enforce_distillable_text`, `preferred_min_throughput`, `preferred_max_latency`, `max_price` |
+| dedicated image (models that return pictures and no text) | `ORDER`, `ONLY`, `IGNORE`, `SORT`, `SORT_PARTITION`, `ALLOW_FALLBACKS` | `order`, `only`, `ignore`, `sort`, `allow_fallbacks` |
+| video | none — no filter is installed, and an existing one is deactivated | none |
+
+The control list and the field each one writes come from one table, and the adapters strip
+anything their format does not define regardless, so a setting can never be drawn for a
+field that would be dropped.
+
+On chat completions every filter carries the full set below at each visibility level:
 
 ### ORDER dropdown
 
@@ -105,6 +123,7 @@ Sort candidate providers by `price`, `throughput`, or `latency` — or leave `(n
 | `ALLOW_FALLBACKS` | `True` | Use backup providers if preferred ones are unavailable |
 | `REQUIRE_PARAMETERS` | `False` | Only use providers that support all request parameters |
 | `ZDR` | `False` | Zero Data Retention — only use ZDR-compliant endpoints |
+| `ENFORCE_DISTILLABLE_TEXT` | `False` | Only use providers whose model author permits text distillation. Maps to `provider.enforce_distillable_text` |
 
 ### DATA_COLLECTION
 
@@ -124,6 +143,18 @@ Skip any provider that would charge more than the cap (`0` = no limit on that ax
 - **MAX_PRICE_IMAGE** — `$/image`
 - **MAX_PRICE_AUDIO** — `$/unit` audio
 - **MAX_PRICE_REQUEST** — `$/request`
+
+### Sorting
+
+`SORT` selects OpenRouter's ranking strategy: `price`, `throughput`, `latency`, or
+`exacto` (favours endpoints that reproduce the model most faithfully). Setting it turns
+off load balancing, and it applies only when `ORDER` is unset.
+
+`SORT_PARTITION` chooses what the ranking is applied across: `model` groups endpoints by
+model first, so fallback models stay fallbacks; `none` ranks every endpoint together.
+Leaving it at `(no preference)` sends `provider.sort` as a bare string; setting it sends
+the object form `{"by": …, "partition": …}`, and setting only the partition sends
+`{"partition": …}`. Both shapes are accepted on chat completions and on the image format.
 
 ### Quantization
 
@@ -155,10 +186,12 @@ Each generated filter has its own valves based on visibility:
 | `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` |
 | `DATA_COLLECTION` | `Literal[...]` | `"(no preference)"` | `provider.data_collection` |
 | `ZDR` | `bool` | `False` | `provider.zdr` |
+| `ENFORCE_DISTILLABLE_TEXT` | `bool` | `False` | `provider.enforce_distillable_text` |
 | `ONLY` | `Literal[...]` | `"(no preference)"` | `provider.only` |
 | `IGNORE` | `Literal[...]` | `"(no preference)"` | `provider.ignore` |
 | `QUANTIZATION` | `Literal[...]` | `"(no preference)"` | `provider.quantizations` |
-| `SORT` | `Literal[...]` | `"(no preference)"` | `provider.sort` |
+| `SORT` | `Literal[...]` | `"(no preference)"` | `provider.sort` (`price`, `throughput`, `latency`, `exacto`) |
+| `SORT_PARTITION` | `Literal[...]` | `"(no preference)"` | `provider.sort.partition` (`model`, `none`) |
 | `MIN_THROUGHPUT` | `float` | `0` | `provider.preferred_min_throughput` |
 | `MAX_LATENCY` | `float` | `0` | `provider.preferred_max_latency` |
 | `MAX_PRICE_PROMPT` | `float` | `0` | `provider.max_price.prompt` |
